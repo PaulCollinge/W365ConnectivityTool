@@ -29,6 +29,7 @@ const EndpointConfig = {
     turnRelayPort: 3478,
 
     // Geo-IP (must be HTTPS for GitHub Pages)
+    // Order used in browser-tests.js: geoIpFallbackUrl (primary) → geoIpApiUrl → geoIpFallback2Url
     geoIpApiUrl: 'https://ipwho.is/',
     geoIpFallbackUrl: 'https://get.geojs.io/v1/ip/geo.json',
     geoIpFallback2Url: 'https://freeipapi.com/api/json',

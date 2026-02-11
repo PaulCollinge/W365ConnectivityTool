@@ -178,29 +178,9 @@ let _geoCache = null;
 
 async function fetchGeoIp() {
     if (_geoCache) return _geoCache;
-    // Primary: ipwho.is (HTTPS, no key required)
+    // Primary: geojs.io (reliable, CORS-friendly, no key required)
     try {
-        const r = await fetch(EndpointConfig.geoIpApiUrl);
-        const data = await r.json();
-        if (data.success !== false) {
-            _geoCache = {
-                status: 'success',
-                query: data.ip,
-                country: data.country,
-                regionName: data.region,
-                city: data.city,
-                lat: data.latitude,
-                lon: data.longitude,
-                isp: data.connection?.isp || 'Unknown',
-                org: data.connection?.org || data.connection?.isp || 'Unknown',
-                as: data.connection?.asn ? `AS${data.connection.asn}` : 'Unknown'
-            };
-            return _geoCache;
-        }
-    } catch (e) { /* try fallback */ }
-    // Fallback 1: geojs.io
-    try {
-        const r = await fetch(EndpointConfig.geoIpFallbackUrl);
+        const r = await fetch(EndpointConfig.geoIpFallbackUrl, { signal: AbortSignal.timeout(5000) });
         const data = await r.json();
         if (data.ip) {
             _geoCache = {
@@ -217,10 +197,30 @@ async function fetchGeoIp() {
             };
             return _geoCache;
         }
-    } catch (e) { /* try next fallback */ }
+    } catch (e) { console.warn('GeoIP primary (geojs.io) failed:', e.message); }
+    // Fallback 1: ipwho.is
+    try {
+        const r = await fetch(EndpointConfig.geoIpApiUrl, { signal: AbortSignal.timeout(5000) });
+        const data = await r.json();
+        if (data.success !== false) {
+            _geoCache = {
+                status: 'success',
+                query: data.ip,
+                country: data.country,
+                regionName: data.region,
+                city: data.city,
+                lat: data.latitude,
+                lon: data.longitude,
+                isp: data.connection?.isp || 'Unknown',
+                org: data.connection?.org || data.connection?.isp || 'Unknown',
+                as: data.connection?.asn ? `AS${data.connection.asn}` : 'Unknown'
+            };
+            return _geoCache;
+        }
+    } catch (e) { console.warn('GeoIP fallback 1 (ipwho.is) failed:', e.message); }
     // Fallback 2: freeipapi.com
     try {
-        const r = await fetch(EndpointConfig.geoIpFallback2Url);
+        const r = await fetch(EndpointConfig.geoIpFallback2Url, { signal: AbortSignal.timeout(5000) });
         const data = await r.json();
         if (data.ipAddress) {
             _geoCache = {
@@ -237,7 +237,8 @@ async function fetchGeoIp() {
             };
             return _geoCache;
         }
-    } catch (e) { /* all failed */ }
+    } catch (e) { console.warn('GeoIP fallback 2 (freeipapi.com) failed:', e.message); }
+    console.error('All GeoIP providers failed');
     return null;
 }
 
