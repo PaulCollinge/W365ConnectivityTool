@@ -90,7 +90,19 @@ class Program
 
         Console.WriteLine();
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
-        Console.WriteLine($"  Import this file into the web diagnostics page.");
+
+        // Auto-open browser with results embedded in URL fragment
+        try
+        {
+            var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+            var url = $"https://paulcollinge.github.io/W365ConnectivityTool/#results={base64}";
+            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            Console.WriteLine($"  Opening browser with results...");
+        }
+        catch
+        {
+            Console.WriteLine($"  Could not open browser. Import the JSON file manually into the web page.");
+        }
         Console.WriteLine();
 
         // Summary

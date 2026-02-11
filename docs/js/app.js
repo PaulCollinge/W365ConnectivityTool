@@ -9,6 +9,7 @@ let isRunning = false;
 // ── Initialize on page load ──
 document.addEventListener('DOMContentLoaded', () => {
     renderTestList();
+    checkForAutoImport();
 });
 
 // ── Run all browser tests ──
@@ -70,7 +71,7 @@ async function runAllBrowserTests() {
     isRunning = false;
 }
 
-// ── Import local scanner results ──
+// ── Import local scanner results from file picker ──
 async function importLocalResults(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -78,71 +79,92 @@ async function importLocalResults(event) {
     try {
         const text = await file.text();
         const data = JSON.parse(text);
-
-        // The local scanner outputs: { timestamp, machineName, results: [...] }
-        let localResults = [];
-        if (Array.isArray(data.results)) {
-            localResults = data.results;
-        } else if (Array.isArray(data)) {
-            localResults = data;
-        } else {
-            alert('Invalid results file. Expected JSON with a "results" array.');
-            return;
-        }
-
-        // Map local scanner IDs to our test list
-        // The local scanner uses the same ID scheme (L-LE-04, L-TCP-04, etc.)
-        let importedCount = 0;
-        for (const lr of localResults) {
-            // Remove any existing result with this ID
-            allResults = allResults.filter(r => r.id !== lr.id);
-
-            const mapped = {
-                id: lr.id,
-                name: lr.name || lr.id,
-                description: lr.description || '',
-                category: lr.category || mapCategoryFromId(lr.id),
-                source: 'local',
-                status: lr.status || 'Passed',
-                resultValue: lr.resultValue || lr.result || '',
-                detailedInfo: lr.detailedInfo || lr.details || '',
-                duration: lr.duration || 0,
-                remediationUrl: lr.remediationUrl || ''
-            };
-
-            allResults.push(mapped);
-
-            // Update UI - find matching test definition or create inline
-            const testDef = ALL_TESTS.find(t => t.id === lr.id);
-            if (testDef) {
-                updateTestUI(lr.id, mapped);
-            }
-
-            importedCount++;
-        }
-
-        // Update summary and badges
-        updateSummary(allResults);
-        updateCategoryBadges(allResults);
-
-        // Show confirmation
-        const info = document.getElementById('info-banner');
-        info.classList.remove('hidden');
-        info.querySelector('.info-text').innerHTML =
-            `<strong>Imported ${importedCount} local scan results.</strong> ` +
-            (data.machineName ? `Machine: ${data.machineName}. ` : '') +
-            (data.timestamp ? `Scanned: ${new Date(data.timestamp).toLocaleString()}. ` : '') +
-            'Combined results are shown below.';
-
-        // Hide download banner if we have local results
-        if (importedCount > 0) hideDownloadBanner();
-
+        processImportedData(data);
     } catch (e) {
         alert(`Error reading file: ${e.message}`);
     }
 
     // Reset file input so same file can be re-imported
     event.target.value = '';
+}
+
+// ── Auto-import from URL hash (scanner opens browser with #results=BASE64) ──
+function checkForAutoImport() {
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#results=')) return;
+
+    try {
+        const base64 = hash.substring('#results='.length);
+        const json = atob(base64);
+        const data = JSON.parse(json);
+
+        // Clear the hash so it doesn't re-import on refresh / bookmarking
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+
+        processImportedData(data);
+    } catch (e) {
+        console.error('Auto-import from URL failed:', e);
+    }
+}
+
+// ── Shared import logic ──
+function processImportedData(data) {
+    // The local scanner outputs: { timestamp, machineName, results: [...] }
+    let localResults = [];
+    if (Array.isArray(data.results)) {
+        localResults = data.results;
+    } else if (Array.isArray(data)) {
+        localResults = data;
+    } else {
+        alert('Invalid results file. Expected JSON with a "results" array.');
+        return;
+    }
+
+    // Map local scanner IDs to our test list
+    let importedCount = 0;
+    for (const lr of localResults) {
+        // Remove any existing result with this ID
+        allResults = allResults.filter(r => r.id !== lr.id);
+
+        const mapped = {
+            id: lr.id,
+            name: lr.name || lr.id,
+            description: lr.description || '',
+            category: lr.category || mapCategoryFromId(lr.id),
+            source: 'local',
+            status: lr.status || 'Passed',
+            resultValue: lr.resultValue || lr.result || '',
+            detailedInfo: lr.detailedInfo || lr.details || '',
+            duration: lr.duration || 0,
+            remediationUrl: lr.remediationUrl || ''
+        };
+
+        allResults.push(mapped);
+
+        // Update UI - find matching test definition or create inline
+        const testDef = ALL_TESTS.find(t => t.id === lr.id);
+        if (testDef) {
+            updateTestUI(lr.id, mapped);
+        }
+
+        importedCount++;
+    }
+
+    // Update summary and badges
+    updateSummary(allResults);
+    updateCategoryBadges(allResults);
+
+    // Show confirmation
+    const info = document.getElementById('info-banner');
+    info.classList.remove('hidden');
+    info.querySelector('.info-text').innerHTML =
+        `<strong>Imported ${importedCount} local scan results.</strong> ` +
+        (data.machineName ? `Machine: ${data.machineName}. ` : '') +
+        (data.timestamp ? `Scanned: ${new Date(data.timestamp).toLocaleString()}. ` : '') +
+        'Combined results are shown below.';
+
+    // Hide download banner if we have local results
+    if (importedCount > 0) hideDownloadBanner();
 }
 
 // ── Helpers ──
