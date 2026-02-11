@@ -2333,7 +2333,7 @@ public class EndpointAccessTest : BaseTest
         ("ecs.office.com",                     "ecs.office.com",                     443, "Connection center"),
 
         // ── Telemetry ──
-        ("*.events.data.microsoft.com",        "v10.events.data.microsoft.com",      443, "Client telemetry"),
+        ("*.events.data.microsoft.com",        "watson.events.data.microsoft.com",   443, "Client telemetry"),
 
         // ── Certificates (port 80) ──
         ("*.microsoftaik.azure.net",           "azcsprodeusaikpublish.microsoftaik.azure.net", 80, "Certificates"),
