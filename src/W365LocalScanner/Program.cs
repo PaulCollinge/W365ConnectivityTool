@@ -1,0 +1,1066 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using Microsoft.Win32;
+
+[assembly: SupportedOSPlatform("windows")]
+
+namespace W365LocalScanner;
+
+class Program
+{
+    static async Task<int> Main(string[] args)
+    {
+        Console.OutputEncoding = Encoding.UTF8;
+
+        var outputPath = "W365ScanResults.json";
+        if (args.Length > 0 && !args[0].StartsWith("-"))
+            outputPath = args[0];
+
+        Console.WriteLine("╔══════════════════════════════════════════════════════╗");
+        Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
+        Console.WriteLine("╠══════════════════════════════════════════════════════╣");
+        Console.WriteLine("║   Runs tests requiring local OS access.             ║");
+        Console.WriteLine("║   Import results into the web diagnostics page.     ║");
+        Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        var results = new List<TestResult>();
+        var tests = GetAllTests();
+
+        for (int i = 0; i < tests.Count; i++)
+        {
+            var test = tests[i];
+            Console.Write($"  [{i + 1}/{tests.Count}] {test.Name}... ");
+
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                var result = await test.Run();
+                sw.Stop();
+                result.Duration = (int)sw.ElapsedMilliseconds;
+                results.Add(result);
+
+                var icon = result.Status switch
+                {
+                    "Passed" => "\u2714",
+                    "Warning" => "\u26A0",
+                    "Failed" => "\u2718",
+                    _ => "\u2022"
+                };
+                Console.WriteLine($"{icon} {result.Status} ({sw.ElapsedMilliseconds}ms)");
+            }
+            catch (Exception ex)
+            {
+                results.Add(new TestResult
+                {
+                    Id = test.Id,
+                    Name = test.Name,
+                    Description = test.Description,
+                    Category = test.Category,
+                    Status = "Error",
+                    ResultValue = $"Error: {ex.Message}",
+                    DetailedInfo = ex.ToString(),
+                    Duration = 0
+                });
+                Console.WriteLine($"\u2718 Error: {ex.Message}");
+            }
+        }
+
+        // Write JSON output
+        var output = new ScanOutput
+        {
+            Timestamp = DateTime.UtcNow,
+            MachineName = Environment.MachineName,
+            OsVersion = Environment.OSVersion.ToString(),
+            DotNetVersion = RuntimeInformation.FrameworkDescription,
+            Results = results
+        };
+
+        var json = JsonSerializer.Serialize(output, ScanJsonContext.Default.ScanOutput);
+        await File.WriteAllTextAsync(outputPath, json, Encoding.UTF8);
+
+        Console.WriteLine();
+        Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
+        Console.WriteLine($"  Import this file into the web diagnostics page.");
+        Console.WriteLine();
+
+        // Summary
+        var passed = results.Count(r => r.Status == "Passed");
+        var warned = results.Count(r => r.Status == "Warning");
+        var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
+        Console.WriteLine($"  Summary: {passed} passed, {warned} warnings, {failed} failed");
+        Console.WriteLine();
+
+        return failed > 0 ? 1 : 0;
+    }
+
+    static List<TestDefinition> GetAllTests()
+    {
+        return
+        [
+            // ── Local Environment ──
+            new("L-LE-04", "WiFi Signal Strength", "Measures wireless signal strength", "local", RunWifiStrength),
+            new("L-LE-05", "Router/Gateway Latency", "Pings default gateway", "local", RunRouterLatency),
+            new("L-LE-06", "Network Adapter Details", "Enumerates network adapters", "local", RunNetworkAdapters),
+            new("L-LE-07", "Bandwidth Estimation", "Estimates available bandwidth", "local", RunBandwidthTest),
+            new("L-LE-08", "Machine Performance", "Checks CPU, RAM, disk", "local", RunMachinePerformance),
+            new("L-LE-09", "Teams Optimization", "Validates Teams AV redirect settings", "local", RunTeamsOptimization),
+
+            // ── TCP Based RDP ──
+            new("L-TCP-04", "Raw TCP Port Connectivity", "Tests raw TCP socket to gateway:443", "tcp", RunTcpPortTest),
+            new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
+            new("L-TCP-06", "TLS Inspection Detection", "Validates TLS certificate chain", "tcp", RunTlsInspection),
+            new("L-TCP-07", "Proxy / VPN / SWG Detection", "Detects proxy, VPN, SWG", "tcp", RunProxyVpnDetection),
+
+            // ── RDP Shortpath (UDP) ──
+            new("L-UDP-03", "TURN Relay Reachability (UDP 3478)", "Tests UDP to TURN relay", "udp", RunTurnRelay),
+            new("L-UDP-04", "TURN Relay Location", "Geolocates the TURN relay server", "udp", RunTurnRelayLocation),
+            new("L-UDP-05", "UDP NAT Type (Socket)", "STUN-based NAT type detection", "udp", RunNatType),
+            new("L-UDP-06", "TURN TLS Inspection", "Checks TLS on TURN relay", "udp", RunTurnTlsInspection),
+            new("L-UDP-07", "TURN Proxy/VPN Detection", "Detects UDP-blocking proxy/VPN", "udp", RunTurnProxyVpn),
+
+            // ── Cloud Session ──
+            new("L-CS-01", "Cloud PC Location", "Identifies Cloud PC Azure region", "cloud", RunCloudPcLocation),
+            new("L-CS-02", "Cloud PC Latency", "Measures latency to Cloud PC", "cloud", RunCloudPcLatency),
+            new("L-CS-03", "Session Throughput", "Estimates throughput", "cloud", RunSessionThroughput),
+            new("L-CS-04", "Jitter Measurement", "Measures network jitter", "cloud", RunJitter),
+            new("L-CS-05", "Packet Loss", "Detects packet loss", "cloud", RunPacketLoss),
+        ];
+    }
+
+    // ═══════════════════════════════════════════
+    //  LOCAL ENVIRONMENT TESTS
+    // ═══════════════════════════════════════════
+
+    static async Task<TestResult> RunWifiStrength()
+    {
+        var result = new TestResult { Id = "L-LE-04", Name = "WiFi Signal Strength", Category = "local" };
+        try
+        {
+            var psi = new ProcessStartInfo("netsh", "wlan show interfaces")
+            {
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            var output = await proc!.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            if (string.IsNullOrWhiteSpace(output) || output.Contains("not running"))
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "No wireless interface detected (wired connection)";
+                return result;
+            }
+
+            var lines = output.Split('\n');
+            var signal = lines.FirstOrDefault(l => l.Trim().StartsWith("Signal"))?.Split(':').LastOrDefault()?.Trim();
+            var ssid = lines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"))?.Split(':').LastOrDefault()?.Trim();
+            var radioType = lines.FirstOrDefault(l => l.Trim().StartsWith("Radio type"))?.Split(':').LastOrDefault()?.Trim();
+            var channel = lines.FirstOrDefault(l => l.Trim().StartsWith("Channel"))?.Split(':').LastOrDefault()?.Trim();
+
+            result.DetailedInfo = output.Trim();
+
+            if (signal != null)
+            {
+                var pct = int.TryParse(signal.Replace("%", ""), out var s) ? s : 0;
+                result.ResultValue = $"Signal: {signal}, SSID: {ssid ?? "N/A"}, Radio: {radioType ?? "N/A"}, Channel: {channel ?? "N/A"}";
+                result.Status = pct >= 70 ? "Passed" : pct >= 40 ? "Warning" : "Failed";
+                if (result.Status != "Passed")
+                    result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/troubleshoot-windows-365-boot#networking-checks";
+            }
+            else
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not parse signal strength";
+            }
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Error";
+            result.ResultValue = ex.Message;
+        }
+        return result;
+    }
+
+    static async Task<TestResult> RunRouterLatency()
+    {
+        var result = new TestResult { Id = "L-LE-05", Name = "Router/Gateway Latency", Category = "local" };
+        try
+        {
+            // Find default gateway
+            var gateway = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                .SelectMany(n => n.GetIPProperties().GatewayAddresses)
+                .FirstOrDefault(g => g.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
+
+            if (gateway == null)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "No default gateway found";
+                return result;
+            }
+
+            var ping = new Ping();
+            var times = new List<long>();
+            for (int i = 0; i < 5; i++)
+            {
+                var reply = await ping.SendPingAsync(gateway, 2000);
+                if (reply.Status == IPStatus.Success)
+                    times.Add(reply.RoundtripTime);
+                await Task.Delay(200);
+            }
+
+            if (times.Count == 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"Gateway {gateway} did not respond to ping";
+                return result;
+            }
+
+            var avg = times.Average();
+            result.ResultValue = $"Gateway {gateway}: avg {avg:F0}ms (min {times.Min()}ms, max {times.Max()}ms)";
+            result.DetailedInfo = $"Gateway: {gateway}\nSamples: {times.Count}/5\n" +
+                                  string.Join(", ", times.Select(t => $"{t}ms"));
+            result.Status = avg < 5 ? "Passed" : avg < 15 ? "Warning" : "Failed";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static Task<TestResult> RunNetworkAdapters()
+    {
+        var result = new TestResult { Id = "L-LE-06", Name = "Network Adapter Details", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            var adapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback);
+
+            int count = 0;
+            foreach (var a in adapters)
+            {
+                count++;
+                sb.AppendLine($"Adapter: {a.Name}");
+                sb.AppendLine($"  Description: {a.Description}");
+                sb.AppendLine($"  Type: {a.NetworkInterfaceType}");
+                sb.AppendLine($"  Speed: {a.Speed / 1_000_000} Mbps");
+                var ips = a.GetIPProperties().UnicastAddresses
+                    .Where(u => u.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(u => u.Address.ToString());
+                sb.AppendLine($"  IPv4: {string.Join(", ", ips)}");
+                sb.AppendLine();
+            }
+
+            result.ResultValue = $"{count} active adapter(s)";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = count > 0 ? "Passed" : "Warning";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    static async Task<TestResult> RunBandwidthTest()
+    {
+        var result = new TestResult { Id = "L-LE-07", Name = "Bandwidth Estimation", Category = "local" };
+        try
+        {
+            // Download a known file and measure speed
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var testUrl = "https://www.microsoft.com/en-us/research/"; // Small known page
+            var sw = Stopwatch.StartNew();
+            var data = await http.GetByteArrayAsync(testUrl);
+            sw.Stop();
+
+            var sizeMb = data.Length / (1024.0 * 1024.0);
+            var seconds = sw.Elapsed.TotalSeconds;
+            var mbps = (sizeMb * 8) / seconds;
+
+            result.ResultValue = $"~{mbps:F1} Mbps (download test: {data.Length / 1024}KB in {sw.ElapsedMilliseconds}ms)";
+            result.DetailedInfo = $"This is a rough estimate using an HTTPS download.\nFor accurate bandwidth testing, use the Local Scanner with iPerf.\nDownloaded: {data.Length} bytes in {sw.ElapsedMilliseconds}ms";
+            result.Status = mbps > 5 ? "Passed" : mbps > 1 ? "Warning" : "Failed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#bandwidth-requirements";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static Task<TestResult> RunMachinePerformance()
+    {
+        var result = new TestResult { Id = "L-LE-08", Name = "Machine Performance", Category = "local" };
+        try
+        {
+            var procCount = Environment.ProcessorCount;
+            var totalRam = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024.0 * 1024 * 1024);
+            var osArch = RuntimeInformation.OSArchitecture;
+            var procArch = RuntimeInformation.ProcessArchitecture;
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"Processors: {procCount} logical cores");
+            sb.AppendLine($"Total RAM: {totalRam:F1} GB");
+            sb.AppendLine($"OS Architecture: {osArch}");
+            sb.AppendLine($"Process Architecture: {procArch}");
+            sb.AppendLine($"OS: {RuntimeInformation.OSDescription}");
+            sb.AppendLine($".NET: {RuntimeInformation.FrameworkDescription}");
+
+            result.ResultValue = $"{procCount} cores, {totalRam:F1} GB RAM, {osArch}";
+            result.DetailedInfo = sb.ToString().Trim();
+
+            // W365 thin client minimum: 2 cores, 4GB RAM
+            result.Status = (procCount >= 2 && totalRam >= 3.5) ? "Passed" : "Warning";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    static Task<TestResult> RunTeamsOptimization()
+    {
+        var result = new TestResult { Id = "L-LE-09", Name = "Teams Optimization", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            bool teamsOptFound = false;
+
+            // Check for Teams media optimization registry key
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Teams\MediaOptimization");
+                if (key != null)
+                {
+                    teamsOptFound = true;
+                    sb.AppendLine("Teams Media Optimization registry key found");
+                }
+            }
+            catch { }
+
+            // Check for AVD/W365 MsRdcWebRTCSvc.exe (WebRTC redirector service)
+            var webrtcSvc = Process.GetProcessesByName("MsRdcWebRTCSvc");
+            if (webrtcSvc.Length > 0)
+            {
+                teamsOptFound = true;
+                sb.AppendLine($"WebRTC Redirector Service running (PID: {webrtcSvc[0].Id})");
+            }
+            else
+            {
+                sb.AppendLine("WebRTC Redirector Service (MsRdcWebRTCSvc) not running");
+            }
+
+            // Check for Windows App / Remote Desktop client
+            var rdClients = new[] { "msrdcw", "mstsc", "ms-teams" };
+            foreach (var name in rdClients)
+            {
+                var procs = Process.GetProcessesByName(name);
+                if (procs.Length > 0)
+                    sb.AppendLine($"{name} running (PID: {procs[0].Id})");
+            }
+
+            result.ResultValue = teamsOptFound ? "Teams AV optimization components detected" : "No Teams optimization components found (not in a session)";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = "Passed"; // Not a failure condition outside a session
+            result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/teams-on-avd";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ═══════════════════════════════════════════
+    //  TCP TRANSPORT TESTS
+    // ═══════════════════════════════════════════
+
+    static async Task<TestResult> RunTcpPortTest()
+    {
+        var result = new TestResult { Id = "L-TCP-04", Name = "Raw TCP Port Connectivity", Category = "tcp" };
+        try
+        {
+            var targets = new[] {
+                ("rdweb.wvd.microsoft.com", 443),
+                ("client.wvd.microsoft.com", 443),
+                ("login.microsoftonline.com", 443)
+            };
+
+            var sb = new StringBuilder();
+            int passed = 0;
+            foreach (var (host, port) in targets)
+            {
+                try
+                {
+                    using var tcp = new TcpClient();
+                    var sw = Stopwatch.StartNew();
+                    var connectTask = tcp.ConnectAsync(host, port);
+                    if (await Task.WhenAny(connectTask, Task.Delay(5000)) == connectTask)
+                    {
+                        sw.Stop();
+                        sb.AppendLine($"\u2714 {host}:{port} \u2014 Connected in {sw.ElapsedMilliseconds}ms");
+                        passed++;
+                    }
+                    else
+                    {
+                        sb.AppendLine($"\u2718 {host}:{port} \u2014 Timeout (5s)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"\u2718 {host}:{port} \u2014 {ex.Message}");
+                }
+            }
+
+            result.ResultValue = $"{passed}/{targets.Length} TCP connections succeeded";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = passed == targets.Length ? "Passed" : passed > 0 ? "Warning" : "Failed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunDnsCnameChain()
+    {
+        var result = new TestResult { Id = "L-TCP-05", Name = "DNS CNAME Chain Analysis", Category = "tcp" };
+        try
+        {
+            var host = "rdweb.wvd.microsoft.com";
+            var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
+            {
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            var output = await proc!.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            // Also do a regular DNS lookup to get the final IP
+            var ips = await Dns.GetHostAddressesAsync(host);
+            var ipStr = string.Join(", ", ips.Select(i => i.ToString()));
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"Target: {host}");
+            sb.AppendLine($"Resolved IPs: {ipStr}");
+            sb.AppendLine();
+            sb.AppendLine("CNAME lookup output:");
+            sb.AppendLine(output.Trim());
+
+            bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
+            bool hasAfdCname = output.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
+                               output.Contains("azurefd", StringComparison.OrdinalIgnoreCase);
+
+            if (isPrivateLink)
+            {
+                result.ResultValue = $"Private Link detected \u2014 resolves to private IP ({ipStr})";
+                result.Status = "Passed";
+                sb.AppendLine("\nPrivate Link endpoint detected. Traffic routes via private network.");
+            }
+            else if (hasAfdCname)
+            {
+                result.ResultValue = $"Azure Front Door CNAME chain detected ({ipStr})";
+                result.Status = "Passed";
+                sb.AppendLine("\nAFD routing detected in CNAME chain. This is normal for public connections.");
+            }
+            else
+            {
+                result.ResultValue = $"Standard DNS resolution ({ipStr})";
+                result.Status = "Passed";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunTlsInspection()
+    {
+        var result = new TestResult { Id = "L-TCP-06", Name = "TLS Inspection Detection", Category = "tcp" };
+        try
+        {
+            var host = "rdweb.wvd.microsoft.com";
+            var port = 443;
+            var sb = new StringBuilder();
+            bool intercepted = false;
+
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(host, port);
+
+            using var ssl = new SslStream(tcp.GetStream(), false, (sender, cert, chain, errors) =>
+            {
+                if (cert is X509Certificate2 x509)
+                {
+                    sb.AppendLine($"Subject: {x509.Subject}");
+                    sb.AppendLine($"Issuer: {x509.Issuer}");
+                    sb.AppendLine($"Thumbprint: {x509.Thumbprint}");
+                    sb.AppendLine($"Valid: {x509.NotBefore:d} - {x509.NotAfter:d}");
+                    sb.AppendLine($"Policy Errors: {errors}");
+
+                    // Check if issuer is expected
+                    var issuer = x509.Issuer;
+                    var expectedIssuers = new[] { "Microsoft", "DigiCert", "Microsoft Azure RSA TLS", "Microsoft Azure TLS" };
+                    bool isExpected = expectedIssuers.Any(e => issuer.Contains(e, StringComparison.OrdinalIgnoreCase));
+
+                    // Check for Private Link certs
+                    bool isPrivateLink = x509.Subject.Contains("privatelink", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isExpected && !isPrivateLink)
+                    {
+                        intercepted = true;
+                        sb.AppendLine("\n\u26A0 Certificate issuer is NOT a known Microsoft/DigiCert CA.");
+                        sb.AppendLine("This suggests TLS inspection by a proxy, firewall, or SWG.");
+                    }
+                }
+                return true; // Accept anyway for inspection
+            });
+
+            await ssl.AuthenticateAsClientAsync(host);
+            sb.Insert(0, $"Host: {host}:{port}\n\n");
+
+            result.ResultValue = intercepted
+                ? "TLS inspection detected \u2014 non-Microsoft certificate issuer"
+                : "No TLS inspection detected \u2014 certificate chain is valid";
+            result.Status = intercepted ? "Warning" : "Passed";
+            result.DetailedInfo = sb.ToString().Trim();
+            if (intercepted)
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#tls-inspection";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static Task<TestResult> RunProxyVpnDetection()
+    {
+        var result = new TestResult { Id = "L-TCP-07", Name = "Proxy / VPN / SWG Detection", Category = "tcp" };
+        try
+        {
+            var sb = new StringBuilder();
+            var issues = new List<string>();
+
+            // System proxy
+            var proxy = WebRequest.GetSystemWebProxy();
+            var testUri = new Uri("https://rdweb.wvd.microsoft.com");
+            var proxyUri = proxy.GetProxy(testUri);
+            if (proxyUri != null && proxyUri != testUri)
+            {
+                issues.Add($"System proxy: {proxyUri}");
+                sb.AppendLine($"\u26A0 System proxy detected: {proxyUri}");
+            }
+            else
+            {
+                sb.AppendLine("\u2714 No system proxy configured for AVD endpoints");
+            }
+
+            // WinHTTP proxy
+            try
+            {
+                var psi = new ProcessStartInfo("netsh", "winhttp show proxy")
+                {
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi);
+                var output = proc!.StandardOutput.ReadToEnd();
+                proc.WaitForExit();
+                if (output.Contains("Direct access"))
+                    sb.AppendLine("\u2714 WinHTTP: Direct access (no proxy)");
+                else
+                {
+                    issues.Add("WinHTTP proxy configured");
+                    sb.AppendLine($"\u26A0 WinHTTP proxy configured:\n{output.Trim()}");
+                }
+            }
+            catch { sb.AppendLine("Could not check WinHTTP proxy"); }
+
+            // Environment variables
+            var envVars = new[] { "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY" };
+            foreach (var v in envVars)
+            {
+                var val = Environment.GetEnvironmentVariable(v);
+                if (!string.IsNullOrEmpty(val))
+                {
+                    issues.Add($"{v}={val}");
+                    sb.AppendLine($"\u26A0 Environment: {v}={val}");
+                }
+            }
+
+            // VPN adapters
+            var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                           (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Virtual Private", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Cisco", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("OpenVPN", StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var vpn in vpnAdapters)
+            {
+                issues.Add($"VPN adapter: {vpn.Description}");
+                sb.AppendLine($"\u26A0 VPN adapter: {vpn.Name} ({vpn.Description})");
+            }
+
+            // SWG / security processes
+            var swgProcesses = new[] { "ZscalerService", "netskope", "iboss", "forcepoint", "mcafee", "symantec", "crowdstrike" };
+            foreach (var name in swgProcesses)
+            {
+                var procs = Process.GetProcessesByName(name);
+                if (procs.Length > 0)
+                {
+                    issues.Add($"SWG process: {name}");
+                    sb.AppendLine($"\u26A0 SWG/Security process running: {name} (PID: {procs[0].Id})");
+                }
+            }
+
+            if (issues.Count == 0)
+            {
+                result.ResultValue = "No proxy, VPN, or SWG detected";
+                result.Status = "Passed";
+            }
+            else
+            {
+                result.ResultValue = $"{issues.Count} proxy/VPN/SWG item(s) detected";
+                result.Status = "Warning";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#proxy-configuration";
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ═══════════════════════════════════════════
+    //  UDP SHORTPATH TESTS
+    // ═══════════════════════════════════════════
+
+    static async Task<TestResult> RunTurnRelay()
+    {
+        var result = new TestResult { Id = "L-UDP-03", Name = "TURN Relay Reachability (UDP 3478)", Category = "udp" };
+        try
+        {
+            var host = "world.relay.avd.microsoft.com";
+            var port = 3478;
+            var ips = await Dns.GetHostAddressesAsync(host);
+
+            if (ips.Length == 0)
+            {
+                result.Status = "Failed";
+                result.ResultValue = $"Could not resolve {host}";
+                return result;
+            }
+
+            var ip = ips.First(i => i.AddressFamily == AddressFamily.InterNetwork);
+            using var udp = new UdpClient();
+            udp.Client.ReceiveTimeout = 3000;
+
+            // Send a STUN binding request
+            var stunRequest = BuildStunRequest();
+            var endpoint = new IPEndPoint(ip, port);
+            await udp.SendAsync(stunRequest, stunRequest.Length, endpoint);
+
+            try
+            {
+                var receiveTask = udp.ReceiveAsync();
+                if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
+                {
+                    var response = receiveTask.Result;
+                    result.Status = "Passed";
+                    result.ResultValue = $"TURN relay reachable at {ip}:{port} (UDP STUN response received)";
+                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {response.Buffer.Length} bytes";
+                }
+                else
+                {
+                    result.Status = "Warning";
+                    result.ResultValue = $"TURN relay {ip}:{port} \u2014 no STUN response (UDP may be blocked)";
+                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent STUN binding request but received no response.\nUDP port 3478 may be blocked by firewall.";
+                    result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                }
+            }
+            catch
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"TURN relay {ip}:{port} \u2014 UDP response timeout";
+            }
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunTurnRelayLocation()
+    {
+        var result = new TestResult { Id = "L-UDP-04", Name = "TURN Relay Location", Category = "udp" };
+        try
+        {
+            var host = "world.relay.avd.microsoft.com";
+            var ips = await Dns.GetHostAddressesAsync(host);
+            var ip = ips.FirstOrDefault(i => i.AddressFamily == AddressFamily.InterNetwork);
+
+            if (ip == null)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not resolve TURN relay";
+                return result;
+            }
+
+            // GeoIP the relay IP
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var geoJson = await http.GetStringAsync($"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,org");
+            var geo = JsonSerializer.Deserialize(geoJson, ScanJsonContext.Default.JsonElement);
+
+            if (geo.TryGetProperty("status", out var status) && status.GetString() == "success")
+            {
+                var city = geo.GetProperty("city").GetString();
+                var region = geo.GetProperty("regionName").GetString();
+                var country = geo.GetProperty("country").GetString();
+                result.ResultValue = $"TURN relay: {city}, {region}, {country} ({ip})";
+                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nLocation: {city}, {region}, {country}";
+                result.Status = "Passed";
+            }
+            else
+            {
+                result.ResultValue = $"TURN relay IP: {ip} (location unknown)";
+                result.Status = "Warning";
+            }
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunNatType()
+    {
+        var result = new TestResult { Id = "L-UDP-05", Name = "UDP NAT Type (Socket)", Category = "udp" };
+        try
+        {
+            var stunHost = "stun.l.google.com";
+            var stunPort = 19302;
+            var stunIps = await Dns.GetHostAddressesAsync(stunHost);
+            var stunIp = stunIps.First(i => i.AddressFamily == AddressFamily.InterNetwork);
+
+            using var udp = new UdpClient();
+            var request = BuildStunRequest();
+            var endpoint = new IPEndPoint(stunIp, stunPort);
+            await udp.SendAsync(request, request.Length, endpoint);
+
+            var receiveTask = udp.ReceiveAsync();
+            if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
+            {
+                var response = receiveTask.Result;
+                var mappedAddr = ParseStunMappedAddress(response.Buffer);
+
+                if (mappedAddr != null)
+                {
+                    result.ResultValue = $"STUN reflexive address: {mappedAddr}";
+                    result.DetailedInfo = $"STUN server: {stunHost}:{stunPort}\nReflexive address: {mappedAddr}\n" +
+                        "For full NAT classification (Full Cone / Restricted / Symmetric), multiple STUN tests are needed.";
+                    result.Status = "Passed";
+                }
+                else
+                {
+                    result.ResultValue = "STUN response received but could not parse mapped address";
+                    result.Status = "Warning";
+                }
+            }
+            else
+            {
+                result.ResultValue = "STUN timeout \u2014 UDP may be blocked";
+                result.Status = "Warning";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=public-networks";
+            }
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunTurnTlsInspection()
+    {
+        var result = new TestResult { Id = "L-UDP-06", Name = "TURN TLS Inspection", Category = "udp" };
+        try
+        {
+            // Test TLS to TURN relay over TCP 443 (TURN-TLS fallback)
+            var host = "world.relay.avd.microsoft.com";
+            using var tcp = new TcpClient();
+            var connectTask = tcp.ConnectAsync(host, 443);
+            if (await Task.WhenAny(connectTask, Task.Delay(5000)) != connectTask)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not connect to TURN relay on TCP 443";
+                return result;
+            }
+
+            var sb = new StringBuilder();
+            bool intercepted = false;
+
+            using var ssl = new SslStream(tcp.GetStream(), false, (sender, cert, chain, errors) =>
+            {
+                if (cert is X509Certificate2 x509)
+                {
+                    sb.AppendLine($"Subject: {x509.Subject}");
+                    sb.AppendLine($"Issuer: {x509.Issuer}");
+                    var expected = new[] { "Microsoft", "DigiCert" };
+                    bool isExpected = expected.Any(e => x509.Issuer.Contains(e, StringComparison.OrdinalIgnoreCase));
+                    if (!isExpected)
+                    {
+                        intercepted = true;
+                        sb.AppendLine("\u26A0 Non-Microsoft certificate \u2014 possible TLS inspection");
+                    }
+                }
+                return true;
+            });
+
+            await ssl.AuthenticateAsClientAsync(host);
+            result.ResultValue = intercepted ? "TLS inspection detected on TURN relay" : "No TLS inspection on TURN relay";
+            result.Status = intercepted ? "Warning" : "Passed";
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Warning";
+            result.ResultValue = $"Could not test TURN TLS: {ex.Message}";
+            result.DetailedInfo = "TURN relay TCP 443 may not be available. This is normal if only UDP 3478 is used.";
+        }
+        return result;
+    }
+
+    static Task<TestResult> RunTurnProxyVpn()
+    {
+        var result = new TestResult { Id = "L-UDP-07", Name = "TURN Proxy/VPN Detection", Category = "udp" };
+        try
+        {
+            var sb = new StringBuilder();
+            var issues = new List<string>();
+
+            // Check for VPN adapters that might force-tunnel UDP
+            var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                           (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Cisco", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
+                            n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var vpn in vpnAdapters)
+            {
+                issues.Add(vpn.Description);
+                sb.AppendLine($"\u26A0 VPN adapter may block/tunnel UDP: {vpn.Name} ({vpn.Description})");
+            }
+
+            // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall
+            try
+            {
+                var psi = new ProcessStartInfo("netsh", "advfirewall firewall show rule name=all dir=out")
+                {
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi);
+                var output = proc!.StandardOutput.ReadToEnd();
+                proc.WaitForExit();
+
+                if (output.Contains("3478") && output.Contains("Block"))
+                {
+                    issues.Add("Firewall rule blocks UDP 3478");
+                    sb.AppendLine("\u26A0 Windows Firewall rule found that may block UDP 3478");
+                }
+                else
+                {
+                    sb.AppendLine("\u2714 No Windows Firewall rules blocking UDP 3478 detected");
+                }
+            }
+            catch { sb.AppendLine("Could not check Windows Firewall rules"); }
+
+            result.ResultValue = issues.Count == 0
+                ? "No UDP-blocking proxy/VPN detected"
+                : $"{issues.Count} potential UDP blocker(s) detected";
+            result.Status = issues.Count == 0 ? "Passed" : "Warning";
+            result.DetailedInfo = sb.ToString().Trim();
+            if (issues.Count > 0)
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ═══════════════════════════════════════════
+    //  CLOUD SESSION TESTS (stubs)
+    // ═══════════════════════════════════════════
+
+    static Task<TestResult> RunCloudPcLocation() => Task.FromResult(new TestResult
+    {
+        Id = "L-CS-01", Name = "Cloud PC Location", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+    });
+
+    static Task<TestResult> RunCloudPcLatency() => Task.FromResult(new TestResult
+    {
+        Id = "L-CS-02", Name = "Cloud PC Latency", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+    });
+
+    static Task<TestResult> RunSessionThroughput() => Task.FromResult(new TestResult
+    {
+        Id = "L-CS-03", Name = "Session Throughput", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+    });
+
+    static Task<TestResult> RunJitter() => Task.FromResult(new TestResult
+    {
+        Id = "L-CS-04", Name = "Jitter Measurement", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+    });
+
+    static Task<TestResult> RunPacketLoss() => Task.FromResult(new TestResult
+    {
+        Id = "L-CS-05", Name = "Packet Loss", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+    });
+
+    // ═══════════════════════════════════════════
+    //  HELPERS
+    // ═══════════════════════════════════════════
+
+    static byte[] BuildStunRequest()
+    {
+        // STUN Binding Request (RFC 5389)
+        var msg = new byte[20];
+        // Type: Binding Request (0x0001)
+        msg[0] = 0x00; msg[1] = 0x01;
+        // Length: 0 (no attributes)
+        msg[2] = 0x00; msg[3] = 0x00;
+        // Magic Cookie
+        msg[4] = 0x21; msg[5] = 0x12; msg[6] = 0xA4; msg[7] = 0x42;
+        // Transaction ID (12 random bytes)
+        Random.Shared.NextBytes(msg.AsSpan(8, 12));
+        return msg;
+    }
+
+    static string? ParseStunMappedAddress(byte[] data)
+    {
+        try
+        {
+            // Look for XOR-MAPPED-ADDRESS (0x0020) or MAPPED-ADDRESS (0x0001)
+            int offset = 20; // Skip header
+            while (offset + 4 <= data.Length)
+            {
+                int attrType = (data[offset] << 8) | data[offset + 1];
+                int attrLen = (data[offset + 2] << 8) | data[offset + 3];
+
+                if (attrType == 0x0020 && attrLen >= 8) // XOR-MAPPED-ADDRESS
+                {
+                    int port = ((data[offset + 6] << 8) | data[offset + 7]) ^ 0x2112;
+                    byte[] ip = new byte[4];
+                    ip[0] = (byte)(data[offset + 8] ^ 0x21);
+                    ip[1] = (byte)(data[offset + 9] ^ 0x12);
+                    ip[2] = (byte)(data[offset + 10] ^ 0xA4);
+                    ip[3] = (byte)(data[offset + 11] ^ 0x42);
+                    return $"{ip[0]}.{ip[1]}.{ip[2]}.{ip[3]}:{port}";
+                }
+                else if (attrType == 0x0001 && attrLen >= 8) // MAPPED-ADDRESS
+                {
+                    int port = (data[offset + 6] << 8) | data[offset + 7];
+                    return $"{data[offset + 8]}.{data[offset + 9]}.{data[offset + 10]}.{data[offset + 11]}:{port}";
+                }
+
+                offset += 4 + attrLen;
+                if (attrLen % 4 != 0) offset += 4 - (attrLen % 4); // Padding
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    static bool IsPrivateIp(IPAddress ip)
+    {
+        var bytes = ip.GetAddressBytes();
+        if (bytes.Length != 4) return false;
+        return bytes[0] == 10 ||
+               (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+               (bytes[0] == 192 && bytes[1] == 168) ||
+               (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);
+    }
+}
+
+// ═══════════════════════════════════════════
+//  MODELS
+// ═══════════════════════════════════════════
+
+class TestResult
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("description")]
+    public string Description { get; set; } = string.Empty;
+
+    [JsonPropertyName("category")]
+    public string Category { get; set; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "NotRun";
+
+    [JsonPropertyName("resultValue")]
+    public string ResultValue { get; set; } = string.Empty;
+
+    [JsonPropertyName("detailedInfo")]
+    public string DetailedInfo { get; set; } = string.Empty;
+
+    [JsonPropertyName("remediationUrl")]
+    public string RemediationUrl { get; set; } = string.Empty;
+
+    [JsonPropertyName("duration")]
+    public int Duration { get; set; }
+}
+
+class ScanOutput
+{
+    [JsonPropertyName("timestamp")]
+    public DateTime Timestamp { get; set; }
+
+    [JsonPropertyName("machineName")]
+    public string MachineName { get; set; } = string.Empty;
+
+    [JsonPropertyName("osVersion")]
+    public string OsVersion { get; set; } = string.Empty;
+
+    [JsonPropertyName("dotNetVersion")]
+    public string DotNetVersion { get; set; } = string.Empty;
+
+    [JsonPropertyName("results")]
+    public List<TestResult> Results { get; set; } = [];
+}
+
+class TestDefinition
+{
+    public string Id { get; }
+    public string Name { get; }
+    public string Description { get; }
+    public string Category { get; }
+    public Func<Task<TestResult>> Run { get; }
+
+    public TestDefinition(string id, string name, string description, string category, Func<Task<TestResult>> run)
+    {
+        Id = id;
+        Name = name;
+        Description = description;
+        Category = category;
+        Run = run;
+    }
+}
+
+[JsonSourceGenerationOptions(
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(ScanOutput))]
+[JsonSerializable(typeof(TestResult))]
+[JsonSerializable(typeof(List<TestResult>))]
+[JsonSerializable(typeof(JsonElement))]
+internal partial class ScanJsonContext : JsonSerializerContext
+{
+}

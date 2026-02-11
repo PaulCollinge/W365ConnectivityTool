@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/W365ConnectivityTool/W365ConnectivityTool.csproj" />
+    <Project Path="src/W365LocalScanner/W365LocalScanner.csproj" />
+  </Folder>
+</Solution>

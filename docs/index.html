@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Windows 365 Connectivity Diagnostics</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                    <rect width="32" height="32" rx="6" fill="#0078d4"/>
+                    <path d="M8 8h7v7H8zM17 8h7v7h-7zM8 17h7v7H8zM17 17h7v7h-7z" fill="white" opacity="0.9"/>
+                </svg>
+                <h1>Windows 365 Connectivity Diagnostics</h1>
+            </div>
+            <div class="header-actions">
+                <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
+                    <span class="btn-icon">▶</span> Run Browser Tests
+                </button>
+                <button id="btn-import" class="btn btn-secondary" onclick="document.getElementById('file-import').click()">
+                    <span class="btn-icon">📁</span> Import Local Results
+                </button>
+                <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Summary Bar -->
+        <div id="summary-bar" class="summary-bar hidden">
+            <div class="summary-item">
+                <span class="summary-count" id="summary-total">0</span>
+                <span class="summary-label">Total</span>
+            </div>
+            <div class="summary-item passed">
+                <span class="summary-count" id="summary-passed">0</span>
+                <span class="summary-label">Passed</span>
+            </div>
+            <div class="summary-item warning">
+                <span class="summary-count" id="summary-warnings">0</span>
+                <span class="summary-label">Warnings</span>
+            </div>
+            <div class="summary-item failed">
+                <span class="summary-count" id="summary-failed">0</span>
+                <span class="summary-label">Failed</span>
+            </div>
+            <div class="summary-item pending">
+                <span class="summary-count" id="summary-pending">0</span>
+                <span class="summary-label">Needs Local Scan</span>
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div id="progress-container" class="progress-container hidden">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="progress-text" class="progress-text">0 / 0</span>
+        </div>
+
+        <!-- Info Banner -->
+        <div id="info-banner" class="info-banner">
+            <div class="info-icon">ℹ️</div>
+            <div class="info-text">
+                <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser 
+                (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy, 
+                registry), download the <strong>Local Scanner</strong> and import the results here.
+            </div>
+        </div>
+
+        <!-- Download Banner -->
+        <div id="download-banner" class="download-banner hidden">
+            <div class="download-content">
+                <div class="download-icon">⬇️</div>
+                <div class="download-text">
+                    <h3>Complete your diagnostics with the Local Scanner</h3>
+                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains, 
+                    VPN detection). Download and run the scanner, then import the results JSON here.</p>
+                </div>
+                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe" 
+                   class="btn btn-download">
+                    <span class="btn-icon">⬇️</span> Download Scanner (.exe)
+                </a>
+            </div>
+        </div>
+
+        <!-- Test Categories -->
+        <div id="test-results" class="test-categories">
+            <!-- Category: Required Endpoint Access -->
+            <section class="category" id="cat-endpoint">
+                <div class="category-header">
+                    <span class="category-icon">🌐</span>
+                    <h2>Required Endpoint Access</h2>
+                    <span class="category-badge" id="badge-endpoint"></span>
+                </div>
+                <div class="test-list" id="tests-endpoint"></div>
+            </section>
+
+            <!-- Category: Local Environment -->
+            <section class="category" id="cat-local">
+                <div class="category-header">
+                    <span class="category-icon">💻</span>
+                    <h2>Local Environment</h2>
+                    <span class="category-badge" id="badge-local"></span>
+                    <span class="source-tag local-only">Requires Local Scanner</span>
+                </div>
+                <div class="test-list" id="tests-local"></div>
+            </section>
+
+            <!-- Category: TCP Based RDP -->
+            <section class="category" id="cat-tcp">
+                <div class="category-header">
+                    <span class="category-icon">🔗</span>
+                    <h2>TCP Based RDP</h2>
+                    <span class="category-badge" id="badge-tcp"></span>
+                </div>
+                <div class="test-list" id="tests-tcp"></div>
+            </section>
+
+            <!-- Category: RDP Shortpath (UDP) -->
+            <section class="category" id="cat-udp">
+                <div class="category-header">
+                    <span class="category-icon">⚡</span>
+                    <h2>RDP Shortpath (UDP)</h2>
+                    <span class="category-badge" id="badge-udp"></span>
+                </div>
+                <div class="test-list" id="tests-udp"></div>
+            </section>
+
+            <!-- Category: Cloud Session -->
+            <section class="category" id="cat-cloud">
+                <div class="category-header">
+                    <span class="category-icon">☁️</span>
+                    <h2>Cloud Session</h2>
+                    <span class="category-badge" id="badge-cloud"></span>
+                    <span class="source-tag local-only">Requires Local Scanner</span>
+                </div>
+                <div class="test-list" id="tests-cloud"></div>
+            </section>
+        </div>
+    </main>
+
+    <footer>
+        <p>Windows 365 / Azure Virtual Desktop Connectivity Diagnostic Tool &mdash; 
+        <a href="https://learn.microsoft.com/windows-365/enterprise/requirements-network" target="_blank">Network Requirements</a></p>
+    </footer>
+
+    <script src="js/config.js"></script>
+    <script src="js/browser-tests.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

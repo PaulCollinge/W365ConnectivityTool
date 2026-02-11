@@ -1,0 +1,355 @@
+<UserControl x:Class="W365ConnectivityTool.Views.ConnectivityMapControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinHeight="380">
+
+    <Border Background="White" CornerRadius="8" Padding="0" Margin="0,0,0,12"
+            BorderBrush="#E1DFDD" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*" MinHeight="260"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- ═══ Title bar ═══ -->
+            <Border Grid.Row="0" Background="#F8F9FA" CornerRadius="8,8,0,0"
+                    Padding="16,10" BorderBrush="#E1DFDD" BorderThickness="0,0,0,1">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="🔗" FontSize="16" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="Connectivity Path" FontSize="15" FontWeight="SemiBold"
+                               Foreground="#323130" VerticalAlignment="Center"/>
+                    <TextBlock Text="  —  Network flow diagram" FontSize="12"
+                               Foreground="#8A8886" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ Flow Diagram ═══ -->
+            <Grid Grid.Row="1" x:Name="DiagramArea" Margin="28,20,28,20"
+                  SizeChanged="DiagramArea_SizeChanged">
+
+                <!-- Connection lines canvas (behind cards) -->
+                <Canvas x:Name="LinesCanvas" IsHitTestVisible="False"/>
+
+                <!-- Card layout grid -->
+                <Grid x:Name="CardsGrid">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>       <!-- 0: Client -->
+                        <ColumnDefinition Width="0.3*" MinWidth="24"/>  <!-- 1: gap -->
+                        <ColumnDefinition Width="*"/>       <!-- 2: Local GW / DNS -->
+                        <ColumnDefinition Width="0.3*" MinWidth="24"/>  <!-- 3: gap -->
+                        <ColumnDefinition Width="*"/>       <!-- 4: ISP -->
+                        <ColumnDefinition Width="0.4*" MinWidth="30"/>  <!-- 5: gap (fan-out) -->
+                        <ColumnDefinition Width="1.2*"/>    <!-- 6: AFD / Gateway / TURN -->
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>    <!-- 0: AFD -->
+                        <RowDefinition Height="8"/>    <!-- 1: gap -->
+                        <RowDefinition Height="*"/>    <!-- 2: RD Gateway -->
+                        <RowDefinition Height="8"/>    <!-- 3: gap -->
+                        <RowDefinition Height="*"/>    <!-- 4: TURN -->
+                        <RowDefinition Height="10"/>   <!-- 5: gap -->
+                        <RowDefinition Height="Auto"/> <!-- 6: DNS -->
+                    </Grid.RowDefinitions>
+
+                    <!-- ═══ Client Card (spans all rows) ═══ -->
+                    <Border x:Name="ClientCard" Grid.Column="0" Grid.Row="0" Grid.RowSpan="5"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="ClientAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="💻" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="You (Client)" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="ClientLocation" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="ClientIp" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0" FontFamily="Consolas"/>
+                                <TextBlock x:Name="ClientDns" FontSize="10.5"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- ═══ Local Gateway Card ═══ -->
+                    <Border x:Name="LocalGwCard" Grid.Column="2" Grid.Row="0" Grid.RowSpan="5"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="LocalGwAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="🏠" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Local Gateway" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="LocalGwDetail1" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="LocalGwDetail2" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- ═══ ISP Card ═══ -->
+                    <Border x:Name="IspCard" Grid.Column="4" Grid.Row="0" Grid.RowSpan="5"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="IspAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="🌐" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="ISP" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="IspDetail1" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="IspDetail2" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                <TextBlock x:Name="IspDetail3" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- ═══ AFD Edge PoP Card (fan-out top) ═══ -->
+                    <Border x:Name="AfdCard" Grid.Column="6" Grid.Row="0"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="AfdAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="⚡" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="AFD Edge" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="AfdDetail1" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="AfdDetail2" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                <Border x:Name="AfdLatencyBadge" CornerRadius="3" Padding="5,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left" Visibility="Collapsed"
+                                        Background="#E8F4FD" BorderBrush="#0078D4" BorderThickness="1">
+                                    <TextBlock x:Name="AfdLatency" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="#0078D4" FontFamily="Consolas"/>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- ═══ RD Gateway Card (fan-out middle) ═══ -->
+                    <Border x:Name="GatewayCard" Grid.Column="6" Grid.Row="2"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="GwAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="🖥" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="RD Gateway" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="GwDetail1" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="GwDetail2" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                <Border x:Name="GwLatencyBadge" CornerRadius="3" Padding="5,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left" Visibility="Collapsed"
+                                        Background="#E8F4FD" BorderBrush="#0078D4" BorderThickness="1">
+                                    <TextBlock x:Name="GwLatency" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="#0078D4" FontFamily="Consolas"/>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- ═══ TURN Relay Card (fan-out bottom) ═══ -->
+                    <Border x:Name="TurnCard" Grid.Column="6" Grid.Row="4"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="TurnAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="🔄" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="TURN Relay" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="TurnDetail1" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="TurnDetail2" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                <Border x:Name="TurnLatencyBadge" CornerRadius="3" Padding="5,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left" Visibility="Collapsed"
+                                        Background="#FFF3E0" BorderBrush="#FF8C00" BorderThickness="1">
+                                    <TextBlock x:Name="TurnLatency" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="#FF8C00" FontFamily="Consolas"/>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <!-- ═══ DNS Resolution Card (fork off Local Gateway) ═══ -->
+                    <Border x:Name="DnsCard" Grid.Column="2" Grid.Row="6"
+                            CornerRadius="8" Background="White"
+                            BorderBrush="#E1DFDD" BorderThickness="1"
+                            VerticalAlignment="Center" Margin="0,4">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="14" Opacity="0.10" ShadowDepth="2" Direction="270"/>
+                        </Border.Effect>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="DnsAccent" Background="#8A8886" CornerRadius="8,0,0,8"/>
+                            <StackPanel Grid.Column="1" Margin="12,10">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="🔍" FontSize="15" Margin="0,0,6,0"/>
+                                    <TextBlock Text="DNS" FontWeight="SemiBold" FontSize="12.5"
+                                               Foreground="#323130" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock x:Name="DnsDetail1" Text="Awaiting results..."
+                                           FontSize="10.5" Foreground="#605E5C" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="DnsDetail2" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                <TextBlock x:Name="DnsDetail3" FontSize="10.5" Foreground="#605E5C"
+                                           TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                <Border x:Name="DnsLatencyBadge" CornerRadius="3" Padding="5,2" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left" Visibility="Collapsed"
+                                        Background="#E8F4FD" BorderBrush="#0078D4" BorderThickness="1">
+                                    <TextBlock x:Name="DnsLatency" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="#0078D4" FontFamily="Consolas"/>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+
+            <!-- ═══ Security Status Bar ═══ -->
+            <Border Grid.Row="2" x:Name="SecurityBar" Background="#F0FFF0"
+                    Padding="16,6" BorderBrush="#E1DFDD" BorderThickness="0,1,0,0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <Border x:Name="TlsBadge" CornerRadius="4" Padding="8,3" Margin="0,0,12,0"
+                            Background="#E8F4E8" BorderBrush="#107C10" BorderThickness="1">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="TlsIcon" Text="🛡" FontSize="11" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TlsStatus" Text="TLS: Checking..." FontSize="10.5"
+                                       Foreground="#107C10" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="ProxyBadge" CornerRadius="4" Padding="8,3"
+                            Background="#E8F4E8" BorderBrush="#107C10" BorderThickness="1">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="ProxyIcon" Text="🛡" FontSize="11" Margin="0,0,5,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ProxyStatus" Text="VPN/SWG/Proxy: Checking..." FontSize="10.5"
+                                       Foreground="#107C10" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ Legend ═══ -->
+            <Border Grid.Row="3" Background="#F8F9FA" CornerRadius="0,0,8,8"
+                    Padding="16,8" BorderBrush="#E1DFDD" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                            <Border Width="24" Height="3" Background="#0078D4"
+                                    VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="TCP 443:  You → Local GW → ISP → AFD Edge / RD Gateway"
+                                       FontSize="10.5" Foreground="#323130" FontFamily="Consolas"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
+                            <Border Width="24" Height="3" VerticalAlignment="Center" Margin="0,0,6,0">
+                                <Border.Background>
+                                    <VisualBrush TileMode="Tile" Viewport="0,0,8,3" ViewportUnits="Absolute">
+                                        <VisualBrush.Visual>
+                                            <Rectangle Width="5" Height="3" Fill="#FF8C00"/>
+                                        </VisualBrush.Visual>
+                                    </VisualBrush>
+                                </Border.Background>
+                            </Border>
+                            <TextBlock Text="UDP 3478: You → Local GW → ISP → TURN Relay  (shortpath)"
+                                       FontSize="10.5" Foreground="#323130" FontFamily="Consolas"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border CornerRadius="4" Background="#E8F4E8" Padding="6,2" Margin="0,0,6,0"
+                                BorderBrush="#107C10" BorderThickness="1">
+                            <TextBlock Text="✓ OK" FontSize="9" Foreground="#107C10"/>
+                        </Border>
+                        <Border CornerRadius="4" Background="#FFF3CD" Padding="6,2" Margin="0,0,6,0"
+                                BorderBrush="#FF8C00" BorderThickness="1">
+                            <TextBlock Text="⚠ Warning" FontSize="9" Foreground="#856404"/>
+                        </Border>
+                        <Border CornerRadius="4" Background="#F8D7DA" Padding="6,2"
+                                BorderBrush="#D13438" BorderThickness="1">
+                            <TextBlock Text="✗ Failed" FontSize="9" Foreground="#D13438"/>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</UserControl>

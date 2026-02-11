@@ -1,0 +1,152 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ═══ Color Palette ═══ -->
+    <Color x:Key="MicrosoftBlue">#0078D4</Color>
+    <Color x:Key="MicrosoftDarkBlue">#004578</Color>
+    <Color x:Key="BackgroundColor">#F3F3F3</Color>
+    <Color x:Key="CardColor">#FFFFFF</Color>
+    <Color x:Key="BorderColor">#E1DFDD</Color>
+    <Color x:Key="TextPrimary">#323130</Color>
+    <Color x:Key="TextSecondary">#605E5C</Color>
+
+    <SolidColorBrush x:Key="MicrosoftBlueBrush" Color="{StaticResource MicrosoftBlue}"/>
+    <SolidColorBrush x:Key="MicrosoftDarkBlueBrush" Color="{StaticResource MicrosoftDarkBlue}"/>
+    <SolidColorBrush x:Key="BackgroundBrush" Color="{StaticResource BackgroundColor}"/>
+    <SolidColorBrush x:Key="CardBrush" Color="{StaticResource CardColor}"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondary}"/>
+
+    <!-- ═══ Button Style ═══ -->
+    <Style x:Key="PrimaryButton" TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource MicrosoftBlueBrush}"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Padding" Value="20,8"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="{StaticResource MicrosoftDarkBlueBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Background" Value="#A0A0A0"/>
+                            <Setter Property="Foreground" Value="#D0D0D0"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="SecondaryButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource MicrosoftBlueBrush}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Padding" Value="12,6"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="BorderBrush" Value="{StaticResource MicrosoftBlueBrush}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#E8F0FE"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="#A0A0A0"/>
+                            <Setter Property="BorderBrush" Value="#D0D0D0"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="LinkButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource MicrosoftBlueBrush}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <TextBlock Text="{TemplateBinding Content}"
+                               Foreground="{TemplateBinding Foreground}"
+                               TextDecorations="Underline"
+                               Padding="{TemplateBinding Padding}"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource MicrosoftDarkBlueBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ═══ Card Style ═══ -->
+    <Style x:Key="CardBorder" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="6"/>
+        <Setter Property="Padding" Value="16"/>
+        <Setter Property="Margin" Value="0,0,0,8"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.1" Color="Black"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ═══ Expander Style ═══ -->
+    <Style x:Key="CategoryExpander" TargetType="Expander">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Margin" Value="0,0,0,12"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+    </Style>
+
+    <!-- ═══ Progress Bar Style ═══ -->
+    <Style x:Key="ModernProgressBar" TargetType="ProgressBar">
+        <Setter Property="Height" Value="4"/>
+        <Setter Property="Background" Value="#E1DFDD"/>
+        <Setter Property="Foreground" Value="{StaticResource MicrosoftBlueBrush}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Grid>
+                        <Border Background="{TemplateBinding Background}" CornerRadius="2"/>
+                        <Border x:Name="PART_Indicator" HorizontalAlignment="Left"
+                                Background="{TemplateBinding Foreground}" CornerRadius="2"/>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>
