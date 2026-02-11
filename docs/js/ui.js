@@ -145,12 +145,25 @@ function updateSummary(results) {
     const localOnlyTests = ALL_TESTS.filter(t => t.source === 'local');
     const importedIds = results.map(r => r.id);
     const pending = localOnlyTests.filter(t => !importedIds.includes(t.id));
+    const skipped = results.filter(r => r.status === 'Skipped').length;
 
     document.getElementById('summary-total').textContent = results.length + pending.length;
     document.getElementById('summary-passed').textContent = results.filter(r => r.status === 'Passed').length;
     document.getElementById('summary-warnings').textContent = results.filter(r => r.status === 'Warning').length;
     document.getElementById('summary-failed').textContent = results.filter(r => r.status === 'Failed' || r.status === 'Error').length;
-    document.getElementById('summary-pending').textContent = pending.length;
+    // Show number of pending OR skipped in the 'Needs Local Scan' slot
+    const pendingEl = document.getElementById('summary-pending');
+    const pendingLabel = pendingEl.parentElement.querySelector('.summary-label');
+    if (pending.length > 0) {
+        pendingEl.textContent = pending.length;
+        pendingLabel.textContent = 'Needs Local Scan';
+    } else if (skipped > 0) {
+        pendingEl.textContent = skipped;
+        pendingLabel.textContent = 'Skipped';
+    } else {
+        pendingEl.textContent = '0';
+        pendingLabel.textContent = 'Needs Local Scan';
+    }
 }
 
 /**
@@ -207,6 +220,8 @@ function updateCategoryBadges(results) {
         const warned = catResults.filter(r => r.status === 'Warning').length;
         const passed = catResults.filter(r => r.status === 'Passed').length;
 
+        const skipped = catResults.filter(r => r.status === 'Skipped').length;
+
         if (failed > 0) {
             badge.textContent = `${failed} failed`;
             badge.style.background = 'var(--red-bg)';
@@ -215,10 +230,14 @@ function updateCategoryBadges(results) {
             badge.textContent = `${warned} warning${warned > 1 ? 's' : ''}`;
             badge.style.background = 'var(--yellow-bg)';
             badge.style.color = '#92400e';
-        } else {
+        } else if (passed > 0) {
             badge.textContent = `${passed} passed`;
             badge.style.background = 'var(--green-bg)';
             badge.style.color = 'var(--green)';
+        } else if (skipped > 0) {
+            badge.textContent = `${skipped} skipped`;
+            badge.style.background = 'var(--bg-surface)';
+            badge.style.color = 'var(--text-muted)';
         }
     }
 }

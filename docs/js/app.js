@@ -10,7 +10,25 @@ let isRunning = false;
 document.addEventListener('DOMContentLoaded', () => {
     renderTestList();
     checkForAutoImport();
+    setupDragDrop();
 });
+
+// ── Drag-and-drop import ──
+function setupDragDrop() {
+    document.body.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    document.body.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files[0];
+        if (!file || !file.name.endsWith('.json')) return;
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            processImportedData(data);
+        } catch (err) {
+            console.error('Drag-drop import failed:', err);
+        }
+    });
+}
 
 // ── Run all browser tests ──
 async function runAllBrowserTests() {
@@ -67,7 +85,10 @@ async function runAllBrowserTests() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
-    showDownloadBanner();
+
+    // Only show download banner if no scanner results have been imported
+    const hasLocalResults = allResults.some(r => r.source === 'local');
+    if (!hasLocalResults) showDownloadBanner();
 
     btn.disabled = false;
     btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';
@@ -98,14 +119,18 @@ function checkForAutoImport() {
 
     try {
         const raw = hash.substring('#results='.length);
-        // Handle URL-safe base64 (replace - with +, _ with /) and standard base64
-        const base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+        // Handle URL-safe base64 (replace - with +, _ with /) and restore padding
+        let base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+        // Restore padding removed by scanner
+        const pad = (4 - (base64.length % 4)) % 4;
+        if (pad > 0) base64 += '='.repeat(pad);
         const json = atob(base64);
         const data = JSON.parse(json);
 
         // Clear the hash so it doesn't re-import on refresh / bookmarking
         history.replaceState(null, '', window.location.pathname + window.location.search);
 
+        console.log(`Auto-import: decoded ${json.length} chars, parsed ${data.results?.length ?? 0} results`);
         processImportedData(data);
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
@@ -114,8 +139,8 @@ function checkForAutoImport() {
         info.classList.remove('hidden');
         info.querySelector('.info-text').innerHTML =
             `<strong>Auto-import failed.</strong> The scanner results could not be loaded from the URL. ` +
-            `Please click <em>Import Scan Results</em> and select the <strong>W365ScanResults.json</strong> file ` +
-            `from the folder where you ran the scanner.`;
+            `Please drag and drop the <strong>W365ScanResults.json</strong> file onto this page, ` +
+            `or open the file manually from the folder where you ran the scanner.`;
         // Clear the hash
         history.replaceState(null, '', window.location.pathname + window.location.search);
     }
@@ -159,6 +184,8 @@ function processImportedData(data) {
         const testDef = ALL_TESTS.find(t => t.id === lr.id);
         if (testDef) {
             updateTestUI(lr.id, mapped);
+        } else {
+            console.warn(`Import: No test definition found for ${lr.id}`);
         }
 
         importedCount++;
