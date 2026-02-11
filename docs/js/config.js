@@ -52,12 +52,11 @@ const EndpointConfig = {
         // Wildcard exemplars (specific hosts representing *.wildcard patterns)
         { url: 'microsoft.servicebus.windows.net', purpose: 'Troubleshooting data (*.servicebus.windows.net)', port: 443 },
         { url: 'statics.teams.cdn.office.net', purpose: 'Automatic updates (*.cdn.office.net)', port: 443 },
-        { url: 'v10.events.data.microsoft.com', purpose: 'Client telemetry (*.events.data.microsoft.com)', port: 443 },
-        // Certificate endpoints (official docs specify port 80, tested via HTTPS 443 as proxy)
-        { url: 'eusaikpublish.microsoftaik.azure.net', purpose: 'Certificates (*.microsoftaik.azure.net)', port: 443 },
-        { url: 'www.microsoft.com', purpose: 'Certificates', port: 443 },
-        { url: 'eus.aikcertaia.microsoft.com', purpose: 'Certificates (*.aikcertaia.microsoft.com)', port: 443 },
-        { url: 'azcsprodeusaikpublish.blob.core.windows.net', purpose: 'Certificates', port: 443 }
+        { url: 'v10.events.data.microsoft.com', purpose: 'Client telemetry (*.events.data.microsoft.com)', port: 443 }
+        // Port 80 certificate endpoints — cannot be tested from browser (mixed-content blocked).
+        // Tested by the local scanner on TCP port 80 as required by official docs:
+        //   *.microsoftaik.azure.net, www.microsoft.com,
+        //   *.aikcertaia.microsoft.com, azcsprodeusaikpublish.blob.core.windows.net
     ],
 
     // Documentation links

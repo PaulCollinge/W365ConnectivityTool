@@ -14,6 +14,11 @@ const ALL_TESTS = [
         description: 'Tests HTTPS connectivity to all required Windows 365 / AVD service endpoints',
         category: 'endpoint', source: 'browser', run: testEndpointReachability
     },
+    {
+        id: 'L-EP-01', name: 'Certificate Endpoints (Port 80)',
+        description: 'Tests TCP port 80 connectivity to certificate endpoints (requires Local Scanner)',
+        category: 'endpoint', source: 'local'
+    },
 
     // ── Local Environment ──
     {

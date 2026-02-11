@@ -127,6 +127,9 @@ class Program
             new("L-LE-08", "Machine Performance", "Checks CPU, RAM, disk", "local", RunMachinePerformance),
             new("L-LE-09", "Teams Optimization", "Validates Teams AV redirect settings", "local", RunTeamsOptimization),
 
+            // ── Endpoint Access ──
+            new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
+
             // ── TCP Based RDP ──
             new("L-TCP-04", "Raw TCP Port Connectivity", "Tests raw TCP socket to gateway:443", "tcp", RunTcpPortTest),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
@@ -147,6 +150,61 @@ class Program
             new("L-CS-04", "Jitter Measurement", "Measures network jitter", "cloud", RunJitter),
             new("L-CS-05", "Packet Loss", "Detects packet loss", "cloud", RunPacketLoss),
         ];
+    }
+
+    // ═══════════════════════════════════════════
+    //  ENDPOINT ACCESS TESTS
+    // ═══════════════════════════════════════════
+
+    static async Task<TestResult> RunCertEndpointTest()
+    {
+        var result = new TestResult { Id = "L-EP-01", Name = "Certificate Endpoints (Port 80)", Category = "endpoint" };
+        try
+        {
+            // Official AVD required FQDNs for end-user devices — TCP port 80 (Certificates)
+            // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#end-user-devices
+            var targets = new (string host, string wildcard)[]
+            {
+                ("eusaikpublish.microsoftaik.azure.net", "*.microsoftaik.azure.net"),
+                ("www.microsoft.com", "www.microsoft.com"),
+                ("eus.aikcertaia.microsoft.com", "*.aikcertaia.microsoft.com"),
+                ("azcsprodeusaikpublish.blob.core.windows.net", "azcsprodeusaikpublish.blob.core.windows.net")
+            };
+
+            var sb = new StringBuilder();
+            int passed = 0;
+            foreach (var (host, wildcard) in targets)
+            {
+                try
+                {
+                    using var tcp = new TcpClient();
+                    var sw = Stopwatch.StartNew();
+                    var connectTask = tcp.ConnectAsync(host, 80);
+                    if (await Task.WhenAny(connectTask, Task.Delay(5000)) == connectTask)
+                    {
+                        sw.Stop();
+                        sb.AppendLine($"\u2714 {wildcard} ({host}:80) \u2014 Connected in {sw.ElapsedMilliseconds}ms");
+                        passed++;
+                    }
+                    else
+                    {
+                        sb.AppendLine($"\u2718 {wildcard} ({host}:80) \u2014 Timeout (5s)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"\u2718 {wildcard} ({host}:80) \u2014 {ex.Message}");
+                }
+            }
+
+            result.ResultValue = $"{passed}/{targets.Length} certificate endpoints reachable on port 80";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = passed == targets.Length ? "Passed" : passed > 0 ? "Warning" : "Failed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#end-user-devices";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
     }
 
     // ═══════════════════════════════════════════
