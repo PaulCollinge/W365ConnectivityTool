@@ -94,14 +94,33 @@ class Program
         // Auto-open browser with results embedded in URL fragment
         try
         {
-            var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+            // Use URL-safe base64 (replace +→-, /→_, remove = padding)
+            var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .Replace('+', '-')
+                .Replace('/', '_')
+                .TrimEnd('=');
             var url = $"https://paulcollinge.github.io/W365ConnectivityTool/#results={base64}";
+
+            // Check URL length — most browsers handle ~2MB but Windows ShellExecute can truncate
+            if (url.Length > 32000)
+            {
+                Console.WriteLine($"  Results too large for URL auto-import ({url.Length} chars).");
+                Console.WriteLine($"  Opening browser — use 'Import Scan Results' button to load: {Path.GetFullPath(outputPath)}");
+                url = "https://paulcollinge.github.io/W365ConnectivityTool/";
+            }
+            else
+            {
+                Console.WriteLine($"  Opening browser with results ({url.Length} chars)...");
+            }
+
             Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-            Console.WriteLine($"  Opening browser with results...");
         }
         catch
         {
-            Console.WriteLine($"  Could not open browser. Import the JSON file manually into the web page.");
+            Console.WriteLine($"  Could not open browser. Import the JSON file manually:");
+            Console.WriteLine($"    1. Open https://paulcollinge.github.io/W365ConnectivityTool/");
+            Console.WriteLine($"    2. Click 'Import Scan Results'");
+            Console.WriteLine($"    3. Select {Path.GetFullPath(outputPath)}");
         }
         Console.WriteLine();
 
@@ -383,52 +402,75 @@ class Program
                 }
             }
 
-            // Fallback: multi-chunk HTTPS download for better accuracy
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-            // Use Azure CDN test file (~10MB) for more accurate measurement
+            // Fallback: streaming HTTPS download for 10 seconds
+            Console.Write("(measuring ~10s) ");
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            http.DefaultRequestHeaders.Add("User-Agent", "W365ConnectivityTool/2.0");
+
+            // Test URLs in order of preference (progressively smaller for resilience)
             var testUrls = new[]
             {
-                "https://speed.cloudflare.com/__down?bytes=10000000",
-                "https://proof.ovh.net/files/1Mb.dat"
+                ("https://speed.cloudflare.com/__down?bytes=25000000", 25_000_000L),
+                ("https://speed.cloudflare.com/__down?bytes=10000000", 10_000_000L),
+                ("https://proof.ovh.net/files/10Mb.dat", 10_000_000L)
             };
 
             double bestMbps = 0;
             string bestDetail = "";
-            foreach (var testUrl in testUrls)
+
+            foreach (var (testUrl, expectedSize) in testUrls)
             {
                 try
                 {
-                    // Warm up connection
-                    using var warmup = await http.GetAsync(testUrl, HttpCompletionOption.ResponseHeadersRead);
-                    await warmup.Content.ReadAsByteArrayAsync();
-
+                    // Streaming download - measure bytes received over time
                     var sw = Stopwatch.StartNew();
-                    var data = await http.GetByteArrayAsync(testUrl);
+                    using var response = await http.GetAsync(testUrl, HttpCompletionOption.ResponseHeadersRead);
+                    response.EnsureSuccessStatusCode();
+
+                    using var stream = await response.Content.ReadAsStreamAsync();
+                    var buffer = new byte[65536]; // 64KB chunks
+                    long totalBytes = 0;
+                    int bytesRead;
+                    var measureDuration = TimeSpan.FromSeconds(10);
+
+                    while ((bytesRead = await stream.ReadAsync(buffer)) > 0)
+                    {
+                        totalBytes += bytesRead;
+                        if (sw.Elapsed > measureDuration)
+                            break; // Stop after 10 seconds regardless
+                    }
                     sw.Stop();
 
-                    var sizeMb = data.Length / (1024.0 * 1024.0);
+                    if (totalBytes < 50_000 || sw.Elapsed.TotalSeconds < 0.5)
+                        continue; // Too little data for reliable measurement
+
+                    var sizeMB = totalBytes / (1024.0 * 1024.0);
                     var seconds = sw.Elapsed.TotalSeconds;
-                    var mbps = (sizeMb * 8) / seconds;
+                    var mbps = (sizeMB * 8) / seconds;
 
                     if (mbps > bestMbps)
                     {
                         bestMbps = mbps;
-                        bestDetail = $"Downloaded {data.Length / 1024}KB in {sw.ElapsedMilliseconds}ms from {new Uri(testUrl).Host}";
+                        bestDetail = $"Downloaded {sizeMB:F2} MB in {seconds:F1}s from {new Uri(testUrl).Host}";
                     }
+
+                    // If we got a good measurement, no need to try other URLs
+                    if (totalBytes > 1_000_000)
+                        break;
                 }
                 catch { /* try next URL */ }
             }
 
             if (bestMbps > 0)
             {
-                result.ResultValue = $"~{bestMbps:F1} Mbps (HTTPS download test)";
-                result.DetailedInfo = $"Estimate via HTTPS download (for accurate results, Ookla Speedtest CLI is recommended).\n{bestDetail}";
+                result.ResultValue = $"~{bestMbps:F1} Mbps (HTTPS streaming download test)";
+                result.DetailedInfo = $"Measured via HTTPS streaming download.\n{bestDetail}\n\nFor more accurate results, install Ookla Speedtest CLI in tools/speedtest/";
                 result.Status = bestMbps > 5 ? "Passed" : bestMbps > 1 ? "Warning" : "Failed";
             }
             else
             {
                 result.Status = "Error";
-                result.ResultValue = "Could not complete bandwidth test";
+                result.ResultValue = "Could not complete bandwidth test — all test URLs failed";
             }
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#bandwidth-requirements";

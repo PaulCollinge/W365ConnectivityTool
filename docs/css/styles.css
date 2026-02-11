@@ -211,6 +211,13 @@ header {
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { background: rgba(255,255,255,0.25); color: rgba(255,255,255,0.5); cursor: not-allowed; transform: none; box-shadow: none; }
 
+.btn-import {
+    background: rgba(255,255,255,0.15);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.3);
+}
+.btn-import:hover { background: rgba(255,255,255,0.25); transform: translateY(-1px); }
+
 .btn-secondary { background: var(--n-100); color: var(--n-600); }
 .btn-secondary:hover { background: var(--n-200); }
 

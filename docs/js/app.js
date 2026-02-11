@@ -97,7 +97,9 @@ function checkForAutoImport() {
     if (!hash || !hash.startsWith('#results=')) return;
 
     try {
-        const base64 = hash.substring('#results='.length);
+        const raw = hash.substring('#results='.length);
+        // Handle URL-safe base64 (replace - with +, _ with /) and standard base64
+        const base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
         const json = atob(base64);
         const data = JSON.parse(json);
 
@@ -107,6 +109,15 @@ function checkForAutoImport() {
         processImportedData(data);
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
+        // Show a helpful message to the user instead of failing silently
+        const info = document.getElementById('info-banner');
+        info.classList.remove('hidden');
+        info.querySelector('.info-text').innerHTML =
+            `<strong>Auto-import failed.</strong> The scanner results could not be loaded from the URL. ` +
+            `Please click <em>Import Scan Results</em> and select the <strong>W365ScanResults.json</strong> file ` +
+            `from the folder where you ran the scanner.`;
+        // Clear the hash
+        history.replaceState(null, '', window.location.pathname + window.location.search);
     }
 }
 
