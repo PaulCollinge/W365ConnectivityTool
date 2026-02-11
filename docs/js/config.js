@@ -6,8 +6,7 @@ const EndpointConfig = {
 
     // Authentication endpoints
     authEndpoints: [
-        'login.microsoftonline.com',
-        'login.windows.net'
+        'login.microsoftonline.com'
     ],
 
     // AVD / Windows 365 Service endpoints
@@ -33,17 +32,31 @@ const EndpointConfig = {
     geoIpApiUrl: 'https://ipwho.is/',
     geoIpFallbackUrl: 'https://ipapi.co/json/',
 
-    // Required URLs for endpoint access testing (subset testable via HTTPS fetch)
+    // Required FQDNs for end-user devices (Azure cloud)
+    // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint?tabs=azure#end-user-devices
+    // Only includes HTTPS (port 443) endpoints testable from a browser.
+    // Wildcard entries (*.wvd.microsoft.com etc.) tested via known subdomains.
     requiredEndpoints: [
         { url: 'login.microsoftonline.com', purpose: 'Authentication', port: 443 },
-        { url: 'login.windows.net', purpose: 'Authentication', port: 443 },
-        { url: 'rdweb.wvd.microsoft.com', purpose: 'AVD Web Client', port: 443 },
-        { url: 'client.wvd.microsoft.com', purpose: 'AVD Client Service', port: 443 },
-        { url: 'rdbroker.wvd.microsoft.com', purpose: 'AVD Connection Broker', port: 443 },
-        { url: 'go.microsoft.com', purpose: 'Microsoft Redirects', port: 443 },
-        { url: 'aka.ms', purpose: 'Microsoft Short URLs', port: 443 },
-        { url: 'learn.microsoft.com', purpose: 'Documentation/Config', port: 443 },
-        { url: 'portal.azure.com', purpose: 'Azure Portal', port: 443 }
+        { url: 'rdweb.wvd.microsoft.com', purpose: 'Service traffic (*.wvd.microsoft.com)', port: 443 },
+        { url: 'client.wvd.microsoft.com', purpose: 'Service traffic (*.wvd.microsoft.com)', port: 443 },
+        { url: 'rdbroker.wvd.microsoft.com', purpose: 'Service traffic (*.wvd.microsoft.com)', port: 443 },
+        { url: 'go.microsoft.com', purpose: 'Microsoft FWLinks', port: 443 },
+        { url: 'aka.ms', purpose: 'Microsoft URL shortener', port: 443 },
+        { url: 'learn.microsoft.com', purpose: 'Documentation', port: 443 },
+        { url: 'privacy.microsoft.com', purpose: 'Privacy statement', port: 443 },
+        { url: 'graph.microsoft.com', purpose: 'Service traffic', port: 443 },
+        { url: 'windows.cloud.microsoft', purpose: 'Connection center', port: 443 },
+        { url: 'windows365.microsoft.com', purpose: 'Service traffic', port: 443 },
+        { url: 'ecs.office.com', purpose: 'Connection center', port: 443 }
+        // Not testable from browser (wildcard / port 80 / CORS):
+        // *.servicebus.windows.net (TCP 443, Troubleshooting data)
+        // *.cdn.office.net (TCP 443, Automatic updates - Windows Desktop)
+        // *.events.data.microsoft.com (TCP 443, Client telemetry)
+        // *.microsoftaik.azure.net (TCP 80, Certificates)
+        // www.microsoft.com (TCP 80, Certificates)
+        // *.aikcertaia.microsoft.com (TCP 80, Certificates)
+        // azcsprodeusaikpublish.blob.core.windows.net (TCP 80, Certificates)
     ],
 
     // Documentation links
