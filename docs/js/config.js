@@ -30,7 +30,8 @@ const EndpointConfig = {
 
     // Geo-IP (must be HTTPS for GitHub Pages)
     geoIpApiUrl: 'https://ipwho.is/',
-    geoIpFallbackUrl: 'https://ipapi.co/json/',
+    geoIpFallbackUrl: 'https://get.geojs.io/v1/ip/geo.json',
+    geoIpFallback2Url: 'https://freeipapi.com/api/json',
 
     // Required FQDNs for end-user devices (Azure cloud)
     // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint?tabs=azure#end-user-devices

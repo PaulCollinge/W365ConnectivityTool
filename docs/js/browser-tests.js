@@ -198,7 +198,7 @@ async function fetchGeoIp() {
             return _geoCache;
         }
     } catch (e) { /* try fallback */ }
-    // Fallback: ipapi.co
+    // Fallback 1: geojs.io
     try {
         const r = await fetch(EndpointConfig.geoIpFallbackUrl);
         const data = await r.json();
@@ -206,18 +206,38 @@ async function fetchGeoIp() {
             _geoCache = {
                 status: 'success',
                 query: data.ip,
-                country: data.country_name,
-                regionName: data.region,
-                city: data.city,
-                lat: data.latitude,
-                lon: data.longitude,
-                isp: data.org || 'Unknown',
-                org: data.org || 'Unknown',
-                as: data.asn || 'Unknown'
+                country: data.country || 'Unknown',
+                regionName: data.region || 'Unknown',
+                city: data.city || 'Unknown',
+                lat: parseFloat(data.latitude) || 0,
+                lon: parseFloat(data.longitude) || 0,
+                isp: data.organization_name || data.organization || 'Unknown',
+                org: data.organization_name || data.organization || 'Unknown',
+                as: data.asn ? `AS${data.asn}` : 'Unknown'
             };
             return _geoCache;
         }
-    } catch (e) { /* both failed */ }
+    } catch (e) { /* try next fallback */ }
+    // Fallback 2: freeipapi.com
+    try {
+        const r = await fetch(EndpointConfig.geoIpFallback2Url);
+        const data = await r.json();
+        if (data.ipAddress) {
+            _geoCache = {
+                status: 'success',
+                query: data.ipAddress,
+                country: data.countryName || 'Unknown',
+                regionName: data.regionName || 'Unknown',
+                city: data.cityName || 'Unknown',
+                lat: data.latitude || 0,
+                lon: data.longitude || 0,
+                isp: data.isp || 'Unknown',
+                org: data.isp || 'Unknown',
+                as: 'Unknown'
+            };
+            return _geoCache;
+        }
+    } catch (e) { /* all failed */ }
     return null;
 }
 
