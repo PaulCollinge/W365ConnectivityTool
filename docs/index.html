@@ -4,24 +4,43 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Windows 365 Connectivity Diagnostics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/styles.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
     <header>
-        <div class="header-content">
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                    <rect width="32" height="32" rx="6" fill="rgba(255,255,255,0.2)"/>
-                    <path d="M8 8h7v7H8zM17 8h7v7h-7zM8 17h7v7H8zM17 17h7v7h-7z" fill="white" opacity="0.95"/>
-                </svg>
-                <h1>Windows 365 Connectivity Diagnostics</h1>
+        <div class="header-top-bar">
+            <div class="header-top-inner">
+                <span class="header-breadcrumb">Microsoft Cloud Tools</span>
+                <span class="header-version">v2.0</span>
             </div>
-            <div class="header-actions">
-                <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
-                    <span class="btn-icon">▶</span> Run Browser Tests
-                </button>
-                <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+        </div>
+        <div class="header-main">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-mark">
+                        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                            <rect x="2" y="2" width="16" height="16" rx="2" fill="white" opacity="0.95"/>
+                            <rect x="22" y="2" width="16" height="16" rx="2" fill="white" opacity="0.75"/>
+                            <rect x="2" y="22" width="16" height="16" rx="2" fill="white" opacity="0.75"/>
+                            <rect x="22" y="22" width="16" height="16" rx="2" fill="white" opacity="0.55"/>
+                        </svg>
+                    </div>
+                    <div class="logo-text">
+                        <h1>Windows 365 Connectivity Diagnostics</h1>
+                        <p class="logo-subtitle">Network readiness assessment for Cloud PC and AVD</p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
+                        Run Browser Tests
+                    </button>
+                    <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+                </div>
             </div>
         </div>
     </header>
@@ -259,8 +278,17 @@
     </main>
 
     <footer>
-        <p>Windows 365 / Azure Virtual Desktop Connectivity Diagnostic Tool &mdash; 
-        <a href="https://learn.microsoft.com/windows-365/enterprise/requirements-network" target="_blank">Network Requirements</a></p>
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1" y="1" width="8" height="8" rx="1" fill="#0078d4" opacity="0.6"/><rect x="11" y="1" width="8" height="8" rx="1" fill="#0078d4" opacity="0.4"/><rect x="1" y="11" width="8" height="8" rx="1" fill="#0078d4" opacity="0.4"/><rect x="11" y="11" width="8" height="8" rx="1" fill="#0078d4" opacity="0.2"/></svg>
+                <span>Windows 365 / Azure Virtual Desktop Connectivity Diagnostic Tool</span>
+            </div>
+            <div class="footer-links">
+                <a href="https://learn.microsoft.com/windows-365/enterprise/requirements-network" target="_blank">Network Requirements</a>
+                <span class="footer-sep">·</span>
+                <a href="https://github.com/PaulCollinge/W365ConnectivityTool" target="_blank">GitHub</a>
+            </div>
+        </div>
     </footer>
 
     <script src="js/config.js"></script>
