@@ -29,8 +29,9 @@ const EndpointConfig = {
     ],
     turnRelayPort: 3478,
 
-    // Geo-IP
-    geoIpApiUrl: 'http://ip-api.com/json/?fields=status,message,country,regionName,city,isp,org,as,query,lat,lon',
+    // Geo-IP (must be HTTPS for GitHub Pages)
+    geoIpApiUrl: 'https://ipwho.is/',
+    geoIpFallbackUrl: 'https://ipapi.co/json/',
 
     // Required URLs for endpoint access testing (subset testable via HTTPS fetch)
     requiredEndpoints: [

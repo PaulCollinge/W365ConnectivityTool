@@ -173,11 +173,46 @@ let _geoCache = null;
 
 async function fetchGeoIp() {
     if (_geoCache) return _geoCache;
+    // Primary: ipwho.is (HTTPS, no key required)
     try {
         const r = await fetch(EndpointConfig.geoIpApiUrl);
         const data = await r.json();
-        if (data.status === 'success') { _geoCache = data; return data; }
-    } catch (e) { /* fallback below */ }
+        if (data.success !== false) {
+            _geoCache = {
+                status: 'success',
+                query: data.ip,
+                country: data.country,
+                regionName: data.region,
+                city: data.city,
+                lat: data.latitude,
+                lon: data.longitude,
+                isp: data.connection?.isp || 'Unknown',
+                org: data.connection?.org || data.connection?.isp || 'Unknown',
+                as: data.connection?.asn ? `AS${data.connection.asn}` : 'Unknown'
+            };
+            return _geoCache;
+        }
+    } catch (e) { /* try fallback */ }
+    // Fallback: ipapi.co
+    try {
+        const r = await fetch(EndpointConfig.geoIpFallbackUrl);
+        const data = await r.json();
+        if (data.ip) {
+            _geoCache = {
+                status: 'success',
+                query: data.ip,
+                country: data.country_name,
+                regionName: data.region,
+                city: data.city,
+                lat: data.latitude,
+                lon: data.longitude,
+                isp: data.org || 'Unknown',
+                org: data.org || 'Unknown',
+                as: data.asn || 'Unknown'
+            };
+            return _geoCache;
+        }
+    } catch (e) { /* both failed */ }
     return null;
 }
 

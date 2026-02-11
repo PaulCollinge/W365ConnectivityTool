@@ -273,20 +273,93 @@ class Program
         var result = new TestResult { Id = "L-LE-07", Name = "Bandwidth Estimation", Category = "local" };
         try
         {
-            // Download a known file and measure speed
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            var testUrl = "https://www.microsoft.com/en-us/research/"; // Small known page
-            var sw = Stopwatch.StartNew();
-            var data = await http.GetByteArrayAsync(testUrl);
-            sw.Stop();
+            // Try Ookla Speedtest CLI first (bundled in tools/speedtest/)
+            var speedtestPath = Path.Combine(AppContext.BaseDirectory, "tools", "speedtest", "speedtest.exe");
+            if (!File.Exists(speedtestPath))
+                speedtestPath = Path.Combine(Directory.GetCurrentDirectory(), "tools", "speedtest", "speedtest.exe");
 
-            var sizeMb = data.Length / (1024.0 * 1024.0);
-            var seconds = sw.Elapsed.TotalSeconds;
-            var mbps = (sizeMb * 8) / seconds;
+            if (File.Exists(speedtestPath))
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = speedtestPath,
+                    Arguments = "--accept-license --accept-gdpr --format=json",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi)!;
+                var output = await proc.StandardOutput.ReadToEndAsync();
+                await proc.WaitForExitAsync();
 
-            result.ResultValue = $"~{mbps:F1} Mbps (download test: {data.Length / 1024}KB in {sw.ElapsedMilliseconds}ms)";
-            result.DetailedInfo = $"This is a rough estimate using an HTTPS download.\nFor accurate bandwidth testing, use the Local Scanner with iPerf.\nDownloaded: {data.Length} bytes in {sw.ElapsedMilliseconds}ms";
-            result.Status = mbps > 5 ? "Passed" : mbps > 1 ? "Warning" : "Failed";
+                if (proc.ExitCode == 0 && output.Contains("download"))
+                {
+                    using var doc = JsonDocument.Parse(output);
+                    var root = doc.RootElement;
+                    var dlBandwidth = root.GetProperty("download").GetProperty("bandwidth").GetDouble();
+                    var ulBandwidth = root.GetProperty("upload").GetProperty("bandwidth").GetDouble();
+                    var ping = root.GetProperty("ping").GetProperty("latency").GetDouble();
+                    var server = root.GetProperty("server").GetProperty("name").GetString();
+                    var dlMbps = dlBandwidth * 8 / 1_000_000;
+                    var ulMbps = ulBandwidth * 8 / 1_000_000;
+
+                    result.ResultValue = $"Download: {dlMbps:F1} Mbps | Upload: {ulMbps:F1} Mbps | Ping: {ping:F0}ms";
+                    result.DetailedInfo = $"Speedtest by Ookla\nServer: {server}\nDownload: {dlMbps:F1} Mbps\nUpload: {ulMbps:F1} Mbps\nPing: {ping:F1} ms";
+                    result.Status = dlMbps > 5 ? "Passed" : dlMbps > 1 ? "Warning" : "Failed";
+                    if (result.Status != "Passed")
+                        result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#bandwidth-requirements";
+                    return result;
+                }
+            }
+
+            // Fallback: multi-chunk HTTPS download for better accuracy
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            // Use Azure CDN test file (~10MB) for more accurate measurement
+            var testUrls = new[]
+            {
+                "https://speed.cloudflare.com/__down?bytes=10000000",
+                "https://proof.ovh.net/files/1Mb.dat"
+            };
+
+            double bestMbps = 0;
+            string bestDetail = "";
+            foreach (var testUrl in testUrls)
+            {
+                try
+                {
+                    // Warm up connection
+                    using var warmup = await http.GetAsync(testUrl, HttpCompletionOption.ResponseHeadersRead);
+                    await warmup.Content.ReadAsByteArrayAsync();
+
+                    var sw = Stopwatch.StartNew();
+                    var data = await http.GetByteArrayAsync(testUrl);
+                    sw.Stop();
+
+                    var sizeMb = data.Length / (1024.0 * 1024.0);
+                    var seconds = sw.Elapsed.TotalSeconds;
+                    var mbps = (sizeMb * 8) / seconds;
+
+                    if (mbps > bestMbps)
+                    {
+                        bestMbps = mbps;
+                        bestDetail = $"Downloaded {data.Length / 1024}KB in {sw.ElapsedMilliseconds}ms from {new Uri(testUrl).Host}";
+                    }
+                }
+                catch { /* try next URL */ }
+            }
+
+            if (bestMbps > 0)
+            {
+                result.ResultValue = $"~{bestMbps:F1} Mbps (HTTPS download test)";
+                result.DetailedInfo = $"Estimate via HTTPS download (for accurate results, Ookla Speedtest CLI is recommended).\n{bestDetail}";
+                result.Status = bestMbps > 5 ? "Passed" : bestMbps > 1 ? "Warning" : "Failed";
+            }
+            else
+            {
+                result.Status = "Error";
+                result.ResultValue = "Could not complete bandwidth test";
+            }
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#bandwidth-requirements";
         }
