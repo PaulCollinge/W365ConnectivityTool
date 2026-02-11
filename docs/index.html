@@ -77,53 +77,40 @@
                 <span class="map-subtitle">Network flow diagram</span>
             </div>
             <div class="map-diagram">
-                <!-- Row: Client → Local GW → ISP → fan-out → Azure services -->
-                <div class="map-card-col map-col-left">
-                    <div class="map-card" id="map-client">
-                        <div class="map-card-accent" id="map-client-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">💻</span> You (Client)</div>
-                            <div class="map-card-detail" id="map-client-location">Awaiting results...</div>
-                            <div class="map-card-detail mono" id="map-client-ip"></div>
-                        </div>
+                <!-- All cards placed via CSS Grid for precise alignment -->
+                <div class="map-card map-g-client" id="map-client">
+                    <div class="map-card-accent" id="map-client-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">💻</span> You (Client)</div>
+                        <div class="map-card-detail" id="map-client-location">Awaiting results...</div>
+                        <div class="map-card-detail mono" id="map-client-ip"></div>
                     </div>
                 </div>
-                <div class="map-connector"><div class="map-line solid"></div><div class="map-arrow">▸</div></div>
-                <div class="map-card-col map-col-center">
-                    <div class="map-card" id="map-localgw">
-                        <div class="map-card-accent" id="map-localgw-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">🏠</span> Local Gateway</div>
-                            <div class="map-card-detail" id="map-localgw-detail">Awaiting results...</div>
-                            <div class="map-card-detail" id="map-localgw-detail2"></div>
-                        </div>
-                    </div>
-                    <div class="map-dns-connector">
-                        <div class="map-vline"></div>
-                    </div>
-                    <div class="map-card map-card-dns" id="map-dns">
-                        <div class="map-card-accent" id="map-dns-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">🔍</span> DNS</div>
-                            <div class="map-card-detail" id="map-dns-detail">Awaiting results...</div>
-                            <div class="map-card-detail" id="map-dns-detail2"></div>
-                            <div class="map-card-badge hidden" id="map-dns-badge"></div>
-                        </div>
+
+                <div class="map-arrow-cell map-g-arrow1"><span class="map-hline"></span><span class="map-arrow">▸</span></div>
+
+                <div class="map-card map-g-localgw" id="map-localgw">
+                    <div class="map-card-accent" id="map-localgw-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">🏠</span> Local Gateway</div>
+                        <div class="map-card-detail" id="map-localgw-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-localgw-detail2"></div>
                     </div>
                 </div>
-                <div class="map-connector"><div class="map-line solid"></div><div class="map-arrow">▸</div></div>
-                <div class="map-card-col map-col-isp">
-                    <div class="map-card" id="map-isp">
-                        <div class="map-card-accent" id="map-isp-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">🌐</span> ISP</div>
-                            <div class="map-card-detail" id="map-isp-detail">Awaiting results...</div>
-                            <div class="map-card-detail" id="map-isp-detail2"></div>
-                            <div class="map-card-detail" id="map-isp-detail3"></div>
-                        </div>
+
+                <div class="map-arrow-cell map-g-arrow2"><span class="map-hline"></span><span class="map-arrow">▸</span></div>
+
+                <div class="map-card map-g-isp" id="map-isp">
+                    <div class="map-card-accent" id="map-isp-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">🌐</span> ISP</div>
+                        <div class="map-card-detail" id="map-isp-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-isp-detail2"></div>
+                        <div class="map-card-detail" id="map-isp-detail3"></div>
                     </div>
                 </div>
-                <div class="map-fanout">
+
+                <div class="map-fanout map-g-fanout">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
                         <line x1="0" y1="100" x2="30" y2="100" stroke="#0078d4" stroke-width="2"/>
                         <line x1="30" y1="100" x2="30" y2="33" stroke="#0078d4" stroke-width="2"/>
@@ -133,33 +120,46 @@
                         <line x1="30" y1="167" x2="60" y2="167" stroke="#FF8C00" stroke-width="2" stroke-dasharray="6,4"/>
                     </svg>
                 </div>
-                <div class="map-card-col map-col-azure">
-                    <div class="map-card" id="map-afd">
-                        <div class="map-card-accent" id="map-afd-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">⚡</span> AFD Edge</div>
-                            <div class="map-card-detail" id="map-afd-detail">Awaiting results...</div>
-                            <div class="map-card-detail" id="map-afd-detail2"></div>
-                            <div class="map-card-badge hidden" id="map-afd-badge"></div>
-                        </div>
+
+                <div class="map-card map-g-afd" id="map-afd">
+                    <div class="map-card-accent" id="map-afd-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">⚡</span> AFD Edge</div>
+                        <div class="map-card-detail" id="map-afd-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-afd-detail2"></div>
+                        <div class="map-card-badge hidden" id="map-afd-badge"></div>
                     </div>
-                    <div class="map-card" id="map-rdgw">
-                        <div class="map-card-accent" id="map-rdgw-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">🖥</span> RD Gateway</div>
-                            <div class="map-card-detail" id="map-rdgw-detail">Awaiting results...</div>
-                            <div class="map-card-detail" id="map-rdgw-detail2"></div>
-                            <div class="map-card-badge hidden" id="map-rdgw-badge"></div>
-                        </div>
+                </div>
+
+                <div class="map-card map-g-rdgw" id="map-rdgw">
+                    <div class="map-card-accent" id="map-rdgw-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">🖥</span> RD Gateway</div>
+                        <div class="map-card-detail" id="map-rdgw-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-rdgw-detail2"></div>
+                        <div class="map-card-badge hidden" id="map-rdgw-badge"></div>
                     </div>
-                    <div class="map-card" id="map-turn">
-                        <div class="map-card-accent" id="map-turn-accent"></div>
-                        <div class="map-card-body">
-                            <div class="map-card-title"><span class="map-emoji">🔄</span> TURN Relay</div>
-                            <div class="map-card-detail" id="map-turn-detail">Awaiting results...</div>
-                            <div class="map-card-detail" id="map-turn-detail2"></div>
-                            <div class="map-card-badge hidden" id="map-turn-badge"></div>
-                        </div>
+                </div>
+
+                <div class="map-card map-g-turn" id="map-turn">
+                    <div class="map-card-accent" id="map-turn-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">🔄</span> TURN Relay</div>
+                        <div class="map-card-detail" id="map-turn-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-turn-detail2"></div>
+                        <div class="map-card-badge hidden" id="map-turn-badge"></div>
+                    </div>
+                </div>
+
+                <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div></div>
+
+                <div class="map-card map-g-dns" id="map-dns">
+                    <div class="map-card-accent" id="map-dns-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">🔍</span> DNS</div>
+                        <div class="map-card-detail" id="map-dns-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-dns-detail2"></div>
+                        <div class="map-card-badge hidden" id="map-dns-badge"></div>
                     </div>
                 </div>
             </div>

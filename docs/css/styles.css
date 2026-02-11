@@ -255,25 +255,46 @@ main {
 .map-subtitle { font-size: 12px; color: var(--gray-500); margin-left: 4px; }
 
 .map-diagram {
-    display: flex;
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr 36px 1fr 36px 1fr 50px 1.2fr;
+    grid-template-rows: auto 8px auto 8px auto 12px auto;
+    align-items: center;
     padding: 24px 20px;
-    gap: 0;
     min-height: 260px;
 }
 
-.map-card-col {
+/* Grid placement — Client/LGW/ISP span all 3 azure rows, centered */
+.map-g-client  { grid-column: 1; grid-row: 1 / 6; align-self: center; }
+.map-g-arrow1  { grid-column: 2; grid-row: 1 / 6; align-self: center; justify-self: center; }
+.map-g-localgw { grid-column: 3; grid-row: 1 / 6; align-self: center; }
+.map-g-arrow2  { grid-column: 4; grid-row: 1 / 6; align-self: center; justify-self: center; }
+.map-g-isp     { grid-column: 5; grid-row: 1 / 6; align-self: center; }
+.map-g-fanout  { grid-column: 6; grid-row: 1 / 6; align-self: stretch; }
+.map-g-afd     { grid-column: 7; grid-row: 1; }
+.map-g-rdgw    { grid-column: 7; grid-row: 3; }
+.map-g-turn    { grid-column: 7; grid-row: 5; }
+.map-g-dnsline { grid-column: 3; grid-row: 6; justify-self: center; }
+.map-g-dns     { grid-column: 3; grid-row: 7; }
+
+/* Arrow cells (horizontal connector line + arrow) */
+.map-arrow-cell {
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 8px;
-    flex-shrink: 0;
+    align-items: center;
+    width: 100%;
 }
 
-.map-col-left { width: 150px; }
-.map-col-center { width: 150px; align-items: stretch; }
-.map-col-isp { width: 150px; }
-.map-col-azure { width: 175px; }
+.map-hline {
+    flex: 1;
+    height: 2px;
+    background: var(--blue);
+}
+
+.map-arrow {
+    color: var(--blue);
+    font-size: 16px;
+    line-height: 1;
+    margin-left: -4px;
+}
 
 .map-card {
     display: flex;
@@ -367,30 +388,7 @@ main {
     border: 1px solid var(--red);
 }
 
-/* Connectors between cards */
-.map-connector {
-    display: flex;
-    align-items: center;
-    width: 36px;
-    flex-shrink: 0;
-    padding-bottom: 60px; /* offset for DNS card below center col */
-}
-
-.map-line {
-    flex: 1;
-    height: 2px;
-}
-
-.map-line.solid { background: var(--blue); }
-
-.map-arrow {
-    color: var(--blue);
-    font-size: 16px;
-    line-height: 1;
-    margin-left: -4px;
-}
-
-/* DNS connector (vertical line from Local GW to DNS) */
+/* Connectors */
 .map-dns-connector {
     display: flex;
     justify-content: center;
@@ -403,21 +401,15 @@ main {
     background: var(--blue);
 }
 
-.map-card-dns {
-    /* slightly smaller DNS card */
-}
-
 /* Fan-out SVG area */
 .map-fanout {
-    width: 50px;
-    flex-shrink: 0;
     display: flex;
     align-items: stretch;
 }
 
 .map-fanout-svg {
     width: 100%;
-    height: auto;
+    height: 100%;
 }
 
 /* Security Status Bar */
@@ -534,15 +526,14 @@ main {
 /* Map responsive */
 @media (max-width: 900px) {
     .map-diagram {
-        flex-wrap: wrap;
-        justify-content: center;
+        display: flex;
+        flex-direction: column;
         gap: 8px;
     }
-    .map-connector { display: none; }
+    .map-arrow-cell { display: none; }
     .map-fanout { display: none; }
-    .map-card-col { width: 100% !important; flex-direction: row; flex-wrap: wrap; }
-    .map-col-azure { flex-direction: column; }
     .map-dns-connector { display: none; }
+    .map-card { width: 100%; }
 }
 
 .category {
