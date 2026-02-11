@@ -43,8 +43,7 @@ const EndpointConfig = {
         { url: 'go.microsoft.com', purpose: 'Microsoft Redirects', port: 443 },
         { url: 'aka.ms', purpose: 'Microsoft Short URLs', port: 443 },
         { url: 'learn.microsoft.com', purpose: 'Documentation/Config', port: 443 },
-        { url: 'portal.azure.com', purpose: 'Azure Portal', port: 443 },
-        { url: 'windows.net', purpose: 'Azure Services', port: 443 }
+        { url: 'portal.azure.com', purpose: 'Azure Portal', port: 443 }
     ],
 
     // Documentation links
