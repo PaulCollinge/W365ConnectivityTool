@@ -232,6 +232,319 @@ main {
     gap: 20px;
 }
 
+/* ── Connectivity Map ── */
+.connectivity-map {
+    background: white;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 20px;
+    overflow: hidden;
+}
+
+.map-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 20px;
+    background: var(--gray-50);
+    border-bottom: 1px solid var(--gray-200);
+}
+
+.map-icon { font-size: 16px; }
+.map-header h2 { font-size: 15px; font-weight: 600; color: var(--gray-900); }
+.map-subtitle { font-size: 12px; color: var(--gray-500); margin-left: 4px; }
+
+.map-diagram {
+    display: flex;
+    align-items: stretch;
+    padding: 24px 20px;
+    gap: 0;
+    min-height: 260px;
+}
+
+.map-card-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.map-col-left { width: 150px; }
+.map-col-center { width: 150px; align-items: stretch; }
+.map-col-isp { width: 150px; }
+.map-col-azure { width: 175px; }
+
+.map-card {
+    display: flex;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    background: white;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    overflow: hidden;
+    min-height: 60px;
+}
+
+.map-card-accent {
+    width: 5px;
+    background: var(--gray-300);
+    flex-shrink: 0;
+    border-radius: 8px 0 0 8px;
+    transition: background 0.3s ease;
+}
+
+.map-card-accent.status-passed { background: var(--green); }
+.map-card-accent.status-warning { background: var(--yellow); }
+.map-card-accent.status-failed { background: var(--red); }
+.map-card-accent.status-running { background: var(--blue); }
+
+.map-card-body {
+    padding: 10px 12px;
+    flex: 1;
+    min-width: 0;
+}
+
+.map-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin-bottom: 4px;
+    white-space: nowrap;
+}
+
+.map-emoji { margin-right: 4px; }
+
+.map-card-detail {
+    font-size: 10.5px;
+    color: var(--gray-500);
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.map-card-detail.mono {
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+}
+
+.map-card-detail.warning-text { color: #b45309; }
+
+.map-card-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-top: 4px;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+}
+
+.map-card-badge.latency-good {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green);
+}
+
+.map-card-badge.latency-medium {
+    background: var(--yellow-bg);
+    color: #92400e;
+    border: 1px solid var(--yellow);
+}
+
+.map-card-badge.latency-bad {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid var(--red);
+}
+
+.map-card-badge.status-ok {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green);
+}
+
+.map-card-badge.status-fail {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid var(--red);
+}
+
+/* Connectors between cards */
+.map-connector {
+    display: flex;
+    align-items: center;
+    width: 36px;
+    flex-shrink: 0;
+    padding-bottom: 60px; /* offset for DNS card below center col */
+}
+
+.map-line {
+    flex: 1;
+    height: 2px;
+}
+
+.map-line.solid { background: var(--blue); }
+
+.map-arrow {
+    color: var(--blue);
+    font-size: 16px;
+    line-height: 1;
+    margin-left: -4px;
+}
+
+/* DNS connector (vertical line from Local GW to DNS) */
+.map-dns-connector {
+    display: flex;
+    justify-content: center;
+    height: 12px;
+}
+
+.map-vline {
+    width: 2px;
+    height: 100%;
+    background: var(--blue);
+}
+
+.map-card-dns {
+    /* slightly smaller DNS card */
+}
+
+/* Fan-out SVG area */
+.map-fanout {
+    width: 50px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+}
+
+.map-fanout-svg {
+    width: 100%;
+    height: auto;
+}
+
+/* Security Status Bar */
+.map-security-bar {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    padding: 8px 20px;
+    background: #f0fff0;
+    border-top: 1px solid var(--gray-200);
+    flex-wrap: wrap;
+}
+
+.map-security-bar.has-warning {
+    background: #fff3e0;
+}
+
+.security-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    background: #e8f4e8;
+    border: 1px solid var(--green);
+    color: var(--green);
+}
+
+.security-badge.warn {
+    background: #fff3cd;
+    border-color: #ff8c00;
+    color: #856404;
+}
+
+.security-badge.fail {
+    background: var(--red-bg);
+    border-color: var(--red);
+    color: var(--red);
+}
+
+.security-badge.pending {
+    background: var(--gray-100);
+    border-color: var(--gray-300);
+    color: var(--gray-500);
+}
+
+/* Legend */
+.map-legend {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 20px;
+    background: var(--gray-50);
+    border-top: 1px solid var(--gray-200);
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.legend-lines { display: flex; flex-direction: column; gap: 3px; }
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--gray-700);
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+}
+
+.legend-line {
+    display: inline-block;
+    width: 24px;
+    height: 3px;
+    flex-shrink: 0;
+}
+
+.legend-line.solid { background: var(--blue); }
+.legend-line.dashed {
+    background: repeating-linear-gradient(90deg, #ff8c00 0, #ff8c00 5px, transparent 5px, transparent 8px);
+}
+
+.legend-badges {
+    display: flex;
+    gap: 6px;
+}
+
+.legend-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.legend-badge.ok {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green);
+}
+
+.legend-badge.warn {
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ff8c00;
+}
+
+.legend-badge.fail {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid var(--red);
+}
+
+/* Map responsive */
+@media (max-width: 900px) {
+    .map-diagram {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+    }
+    .map-connector { display: none; }
+    .map-fanout { display: none; }
+    .map-card-col { width: 100% !important; flex-direction: row; flex-wrap: wrap; }
+    .map-col-azure { flex-direction: column; }
+    .map-dns-connector { display: none; }
+}
+
 .category {
     background: white;
     border-radius: var(--radius);

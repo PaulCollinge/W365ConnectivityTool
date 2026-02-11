@@ -42,6 +42,7 @@ async function runAllBrowserTests() {
             result.source = 'browser';
             allResults.push(result);
             updateTestUI(test.id, result);
+            updateConnectivityMap(allResults);
         } catch (err) {
             const errorResult = {
                 id: test.id,
@@ -55,6 +56,7 @@ async function runAllBrowserTests() {
             };
             allResults.push(errorResult);
             updateTestUI(test.id, errorResult);
+            updateConnectivityMap(allResults);
         }
 
         completed++;
@@ -64,6 +66,7 @@ async function runAllBrowserTests() {
     hideProgress();
     updateSummary(allResults);
     updateCategoryBadges(allResults);
+    updateConnectivityMap(allResults);
     showDownloadBanner();
 
     btn.disabled = false;
@@ -153,6 +156,7 @@ function processImportedData(data) {
     // Update summary and badges
     updateSummary(allResults);
     updateCategoryBadges(allResults);
+    updateConnectivityMap(allResults);
 
     // Show confirmation
     const info = document.getElementById('info-banner');
