@@ -11,42 +11,40 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
+    <!-- Background decoration -->
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-1" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-2" aria-hidden="true"></div>
+
     <header>
-        <div class="header-top-bar">
-            <div class="header-top-inner">
-                <span class="header-breadcrumb">Microsoft Cloud Tools</span>
-                <span class="header-version">v2.0</span>
-            </div>
-        </div>
-        <div class="header-main">
-            <div class="header-content">
-                <div class="logo">
-                    <div class="logo-mark">
-                        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-                            <rect x="2" y="2" width="16" height="16" rx="2" fill="white" opacity="0.95"/>
-                            <rect x="22" y="2" width="16" height="16" rx="2" fill="white" opacity="0.75"/>
-                            <rect x="2" y="22" width="16" height="16" rx="2" fill="white" opacity="0.75"/>
-                            <rect x="22" y="22" width="16" height="16" rx="2" fill="white" opacity="0.55"/>
-                        </svg>
-                    </div>
-                    <div class="logo-text">
-                        <h1>Windows 365 Connectivity Diagnostics</h1>
-                        <p class="logo-subtitle">Network readiness assessment for Cloud PC and AVD</p>
-                    </div>
+        <div class="header-inner">
+            <div class="logo">
+                <div class="logo-mark">
+                    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                        <rect x="1" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.9"/>
+                        <rect x="20" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.55"/>
+                        <rect x="1" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.55"/>
+                        <rect x="20" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.3"/>
+                    </svg>
                 </div>
-                <div class="header-actions">
-                    <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
-                        Run Browser Tests
-                    </button>
-                    <button class="btn btn-import" onclick="document.getElementById('file-import').click()">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10v2h12v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                        Import Scan Results
-                    </button>
-                    <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+                <div class="logo-text">
+                    <h1>Windows 365 Connectivity Diagnostics</h1>
+                    <p class="logo-subtitle">Network readiness assessment for Cloud PC and AVD</p>
                 </div>
             </div>
+            <div class="header-actions">
+                <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
+                    Run Browser Tests
+                </button>
+                <button class="btn btn-ghost" onclick="document.getElementById('file-import').click()">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10v2h12v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Import Scan Results
+                </button>
+                <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+            </div>
         </div>
+        <div class="header-border" aria-hidden="true"></div>
     </header>
 
     <main>
@@ -84,10 +82,12 @@
 
         <!-- Info Banner -->
         <div id="info-banner" class="info-banner">
-            <div class="info-icon">ℹ️</div>
+            <div class="info-icon">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="currentColor" stroke-width="1.5"/><path d="M9 8v5M9 5.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
             <div class="info-text">
-                <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser 
-                (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy, 
+                <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser
+                (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy,
                 registry), download and run the <strong>Local Scanner</strong> — it will automatically open this page with results.
             </div>
         </div>
@@ -100,7 +100,6 @@
                 <span class="map-subtitle">Network flow diagram</span>
             </div>
             <div class="map-diagram">
-                <!-- All cards placed via CSS Grid for precise alignment -->
                 <div class="map-card map-g-client" id="map-client">
                     <div class="map-card-accent" id="map-client-accent"></div>
                     <div class="map-card-body">
@@ -135,12 +134,12 @@
 
                 <div class="map-fanout map-g-fanout">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
-                        <line x1="0" y1="100" x2="30" y2="100" stroke="#0078d4" stroke-width="2"/>
-                        <line x1="30" y1="100" x2="30" y2="33" stroke="#0078d4" stroke-width="2"/>
-                        <line x1="30" y1="100" x2="30" y2="167" stroke="#FF8C00" stroke-width="2" stroke-dasharray="6,4"/>
-                        <line x1="30" y1="33" x2="60" y2="33" stroke="#0078d4" stroke-width="2"/>
-                        <line x1="30" y1="100" x2="60" y2="100" stroke="#0078d4" stroke-width="2"/>
-                        <line x1="30" y1="167" x2="60" y2="167" stroke="#FF8C00" stroke-width="2" stroke-dasharray="6,4"/>
+                        <line x1="0" y1="100" x2="30" y2="100" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="100" x2="30" y2="33" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="100" x2="30" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
+                        <line x1="30" y1="33" x2="60" y2="33" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="100" x2="60" y2="100" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="167" x2="60" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
                     </svg>
                 </div>
 
@@ -215,10 +214,10 @@
                 <div class="download-icon">⬇️</div>
                 <div class="download-text">
                     <h3>Complete your diagnostics with the Local Scanner</h3>
-                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains, 
+                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
                     VPN detection). Download and run the scanner — it will automatically open this page with results.</p>
                 </div>
-                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe" 
+                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
                    class="btn btn-download">
                     <span class="btn-icon">⬇️</span> Download Scanner (.exe)
                 </a>
@@ -227,7 +226,6 @@
 
         <!-- Test Categories -->
         <div id="test-results" class="test-categories">
-            <!-- Category: Required Endpoint Access -->
             <section class="category" id="cat-endpoint">
                 <div class="category-header">
                     <span class="category-icon">🌐</span>
@@ -237,7 +235,6 @@
                 <div class="test-list" id="tests-endpoint"></div>
             </section>
 
-            <!-- Category: Local Environment -->
             <section class="category" id="cat-local">
                 <div class="category-header">
                     <span class="category-icon">💻</span>
@@ -248,7 +245,6 @@
                 <div class="test-list" id="tests-local"></div>
             </section>
 
-            <!-- Category: TCP Based RDP -->
             <section class="category" id="cat-tcp">
                 <div class="category-header">
                     <span class="category-icon">🔗</span>
@@ -258,7 +254,6 @@
                 <div class="test-list" id="tests-tcp"></div>
             </section>
 
-            <!-- Category: RDP Shortpath (UDP) -->
             <section class="category" id="cat-udp">
                 <div class="category-header">
                     <span class="category-icon">⚡</span>
@@ -268,7 +263,6 @@
                 <div class="test-list" id="tests-udp"></div>
             </section>
 
-            <!-- Category: Cloud Session -->
             <section class="category" id="cat-cloud">
                 <div class="category-header">
                     <span class="category-icon">☁️</span>
@@ -284,7 +278,12 @@
     <footer>
         <div class="footer-inner">
             <div class="footer-brand">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1" y="1" width="8" height="8" rx="1" fill="#0078d4" opacity="0.6"/><rect x="11" y="1" width="8" height="8" rx="1" fill="#0078d4" opacity="0.4"/><rect x="1" y="11" width="8" height="8" rx="1" fill="#0078d4" opacity="0.4"/><rect x="11" y="11" width="8" height="8" rx="1" fill="#0078d4" opacity="0.2"/></svg>
+                <svg width="18" height="18" viewBox="0 0 36 36" fill="none">
+                    <rect x="1" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.6"/>
+                    <rect x="20" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.35"/>
+                    <rect x="1" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.35"/>
+                    <rect x="20" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.15"/>
+                </svg>
                 <span>Windows 365 / Azure Virtual Desktop Connectivity Diagnostic Tool</span>
             </div>
             <div class="footer-links">
@@ -302,6 +301,3 @@
     <script src="js/app.js"></script>
 </body>
 </html>
-< ! - -   d e p l o y e d   - - > 
- 
- 
