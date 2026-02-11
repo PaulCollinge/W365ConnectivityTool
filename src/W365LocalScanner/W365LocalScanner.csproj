@@ -10,6 +10,20 @@
     <AssemblyName>W365LocalScanner</AssemblyName>
     <RootNamespace>W365LocalScanner</RootNamespace>
     
+    <!-- Assembly metadata — improves SmartScreen trust signals -->
+    <Product>Windows 365 Local Connectivity Scanner</Product>
+    <Company>Microsoft</Company>
+    <Authors>Paul Collinge</Authors>
+    <Description>Local connectivity diagnostics tool for Windows 365 and Azure Virtual Desktop. Runs network tests requiring OS-level access and exports results to the web dashboard.</Description>
+    <Copyright>Copyright © Microsoft 2025-2026</Copyright>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <NeutralLanguage>en</NeutralLanguage>
+    
+    <!-- Application icon -->
+    <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
+    
     <!-- Single-file self-contained publish settings -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
