@@ -48,11 +48,12 @@ const EndpointConfig = {
         { url: 'graph.microsoft.com', purpose: 'Service traffic', port: 443 },
         { url: 'windows.cloud.microsoft', purpose: 'Connection center', port: 443 },
         { url: 'windows365.microsoft.com', purpose: 'Service traffic', port: 443 },
-        { url: 'ecs.office.com', purpose: 'Connection center', port: 443 }
-        // Not testable from browser (wildcard / port 80 / CORS):
-        // *.servicebus.windows.net (TCP 443, Troubleshooting data)
-        // *.cdn.office.net (TCP 443, Automatic updates - Windows Desktop)
-        // *.events.data.microsoft.com (TCP 443, Client telemetry)
+        { url: 'ecs.office.com', purpose: 'Connection center', port: 443 },
+        // Wildcard exemplars (specific hosts representing *.wildcard patterns)
+        { url: 'microsoft.servicebus.windows.net', purpose: 'Troubleshooting data (*.servicebus.windows.net)', port: 443 },
+        { url: 'statics.teams.cdn.office.net', purpose: 'Automatic updates (*.cdn.office.net)', port: 443 },
+        { url: 'v10.events.data.microsoft.com', purpose: 'Client telemetry (*.events.data.microsoft.com)', port: 443 }
+        // Not testable from browser (port 80 only):
         // *.microsoftaik.azure.net (TCP 80, Certificates)
         // www.microsoft.com (TCP 80, Certificates)
         // *.aikcertaia.microsoft.com (TCP 80, Certificates)
