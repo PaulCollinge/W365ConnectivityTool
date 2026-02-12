@@ -716,7 +716,7 @@ class Program
             result.ResultValue = $"Gateway {gateway}: avg {avg:F0}ms (min {times.Min()}ms, max {times.Max()}ms)";
             result.DetailedInfo = $"Gateway: {gateway}\nSamples: {times.Count}/5\n" +
                                   string.Join(", ", times.Select(t => $"{t}ms"));
-            result.Status = avg < 5 ? "Passed" : avg < 15 ? "Warning" : "Failed";
+            result.Status = avg < 20 ? "Passed" : avg < 50 ? "Warning" : "Failed";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;

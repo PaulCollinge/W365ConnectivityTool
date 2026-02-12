@@ -395,17 +395,17 @@ public class RouterLatencyTest : BaseTest
         result.ResultValue = $"{avg:F0}ms avg ({max}ms max)";
         result.DetailedInfo = $"Gateway: {gateway}\nPing responses: {latencies.Count}/5\nValues: {string.Join(", ", latencies.Select(l => $"{l}ms"))}";
 
-        if (avg < 5)
+        if (avg < 20)
             result.Status = TestStatus.Passed;
-        else if (avg < 20)
+        else if (avg < 50)
         {
             result.Status = TestStatus.Warning;
-            result.RemediationText = "Local network latency is elevated. Check for network congestion or Wi-Fi interference.";
+            result.RemediationText = "Local network latency is elevated (>20ms). Check for network congestion, Wi-Fi interference, or long cable runs.";
         }
         else
         {
             result.Status = TestStatus.Failed;
-            result.RemediationText = "Local network latency is very high. This will significantly impact remote desktop performance. Check physical network connections, switch to wired, or investigate local network issues.";
+            result.RemediationText = "Local network latency is very high (>50ms). This will significantly impact remote desktop performance. Check physical network connections, switch to wired, or investigate local network issues.";
         }
     }
 
