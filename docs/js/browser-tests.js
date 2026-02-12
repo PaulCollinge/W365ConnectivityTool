@@ -180,7 +180,8 @@ async function fetchGeoIp() {
     if (_geoCache) return _geoCache;
     // Primary: ipinfo.io (most accurate city-level geo, HTTPS, CORS-friendly)
     try {
-        const r = await fetch(EndpointConfig.geoIpPrimaryUrl, { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(EndpointConfig.geoIpPrimaryUrl, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.ip) {
             const [lat, lon] = (data.loc || '0,0').split(',').map(Number);
@@ -201,13 +202,14 @@ async function fetchGeoIp() {
     } catch (e) { console.warn('GeoIP primary (ipinfo.io) failed:', e.message); }
     // Fallback 1: freeipapi.com
     try {
-        const r = await fetch(EndpointConfig.geoIpFallbackUrl, { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(EndpointConfig.geoIpFallbackUrl, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.ipAddress) {
             _geoCache = {
                 status: 'success',
                 query: data.ipAddress,
-                country: data.countryName || 'Unknown',
+                country: data.countryCode || data.countryName || 'Unknown',
                 regionName: data.regionName || 'Unknown',
                 city: data.cityName || 'Unknown',
                 lat: data.latitude || 0,
@@ -219,15 +221,37 @@ async function fetchGeoIp() {
             return _geoCache;
         }
     } catch (e) { console.warn('GeoIP fallback 1 (freeipapi.com) failed:', e.message); }
-    // Fallback 2: ipwho.is
+    // Fallback 2: geojs.io (HTTPS, CORS-friendly, generous rate limits)
     try {
-        const r = await fetch(EndpointConfig.geoIpFallback2Url, { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(EndpointConfig.geoIpFallback2Url, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        if (data.ip) {
+            _geoCache = {
+                status: 'success',
+                query: data.ip,
+                country: data.country_code || data.country || 'Unknown',
+                regionName: data.region || 'Unknown',
+                city: data.city || 'Unknown',
+                lat: parseFloat(data.latitude) || 0,
+                lon: parseFloat(data.longitude) || 0,
+                isp: data.organization || 'Unknown',
+                org: data.organization || 'Unknown',
+                as: data.organization_name || 'Unknown'
+            };
+            return _geoCache;
+        }
+    } catch (e) { console.warn('GeoIP fallback 2 (geojs.io) failed:', e.message); }
+    // Fallback 3: ipwho.is
+    try {
+        const r = await fetch('https://ipwho.is/', { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.success !== false) {
             _geoCache = {
                 status: 'success',
                 query: data.ip,
-                country: data.country,
+                country: data.country_code || data.country,
                 regionName: data.region,
                 city: data.city,
                 lat: data.latitude,
@@ -238,7 +262,7 @@ async function fetchGeoIp() {
             };
             return _geoCache;
         }
-    } catch (e) { console.warn('GeoIP fallback 2 (ipwho.is) failed:', e.message); }
+    } catch (e) { console.warn('GeoIP fallback 3 (ipwho.is) failed:', e.message); }
     console.error('All GeoIP providers failed');
     return null;
 }
