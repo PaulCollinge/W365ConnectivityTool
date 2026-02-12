@@ -766,6 +766,16 @@ main {
 .map-card-detail.proximity-moderate { color: var(--yellow); }
 .map-card-detail.proximity-far { color: var(--red); }
 
+.country-flag {
+    display: inline-block;
+    vertical-align: middle;
+    border-radius: 2px;
+    box-shadow: 0 0 1px rgba(0,0,0,0.3);
+    margin-right: 2px;
+    position: relative;
+    top: -1px;
+}
+
 .map-card-badges {
     display: flex;
     flex-wrap: wrap;

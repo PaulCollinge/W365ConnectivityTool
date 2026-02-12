@@ -21,29 +21,72 @@ function updateConnectivityMap(results) {
 
 // ── Card helpers ──
 
-/** Convert a 2-letter ISO country code to its flag emoji (regional indicators). */
-function countryCodeToFlag(code) {
-    if (!code || code.length !== 2) return '';
-    const upper = code.toUpperCase();
-    const cp1 = 0x1F1E6 + (upper.charCodeAt(0) - 65);
-    const cp2 = 0x1F1E6 + (upper.charCodeAt(1) - 65);
-    return String.fromCodePoint(cp1, cp2);
+/**
+ * Extract a 2-letter ISO country code from a location string like "London, GB".
+ * Returns lowercase code (e.g. "gb") for use with flag CDN, or '' if not found.
+ */
+function extractCountryCode(locationStr) {
+    if (!locationStr) return '';
+    const parts = locationStr.split(',');
+    if (parts.length < 2) return '';
+    const last = parts[parts.length - 1].trim();
+    if (/^[A-Z]{2}$/.test(last)) return last.toLowerCase();
+    return '';
 }
 
 /**
- * Prepend a country flag emoji to a location string like "London, GB".
- * Handles both 2-letter codes and full country names by trying a lookup first.
+ * Create a small flag <img> element for a 2-letter country code.
+ * Uses flagcdn.com (free, no key required, CDN-backed).
  */
-function addFlag(locationStr) {
-    if (!locationStr) return locationStr;
-    const parts = locationStr.split(',');
-    if (parts.length < 2) return locationStr;
-    const last = parts[parts.length - 1].trim();
-    // 2-letter country code?
-    if (/^[A-Z]{2}$/.test(last)) {
-        return `${countryCodeToFlag(last)} ${locationStr}`;
+function createFlagImg(code) {
+    if (!code) return null;
+    const img = document.createElement('img');
+    img.src = `https://flagcdn.com/20x15/${code}.png`;
+    img.alt = code.toUpperCase();
+    img.width = 20;
+    img.height = 15;
+    img.className = 'country-flag';
+    img.onerror = function() { this.style.display = 'none'; };
+    return img;
+}
+
+/**
+ * Set text on an element, prepending a country flag image if a 2-letter code is found.
+ */
+function setFlaggedText(elementId, text) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.textContent = '';
+    const code = extractCountryCode(text);
+    if (code) {
+        const flag = createFlagImg(code);
+        if (flag) el.appendChild(flag);
+        el.appendChild(document.createTextNode(' ' + text));
+    } else {
+        el.textContent = text || '';
     }
-    return locationStr;
+}
+
+/**
+ * Set badge content with optional country flag image.
+ */
+function setFlaggedBadge(elementId, text, cssClass, locationStr) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!text) {
+        el.classList.add('hidden');
+        return;
+    }
+    el.textContent = '';
+    el.className = 'map-card-badge ' + cssClass;
+    const code = extractCountryCode(locationStr || text);
+    if (code) {
+        const flag = createFlagImg(code);
+        if (flag) el.appendChild(flag);
+        el.appendChild(document.createTextNode(' ' + text.replace('📍 ', '')));
+    } else {
+        el.textContent = text;
+    }
 }
 
 function setAccentStatus(elementId, status) {
@@ -115,7 +158,7 @@ function updateMapClientCard(lookup) {
         publicIp = extractLine(userLoc.detailedInfo, 'Public IP:');
     }
 
-    setText('map-client-location', location ? addFlag(location) : 'Awaiting results...');
+    setFlaggedText('map-client-location', location || 'Awaiting results...');
     setText('map-client-ip', publicIp ? `🌐 ${publicIp}` : '');
     setAccentStatus('map-client-accent', status);
 }
@@ -155,7 +198,7 @@ function updateMapIspCard(lookup) {
     // Show egress city from GeoIP
     const userLoc = lookup['B-LE-01'];
     const egressCity = userLoc ? userLoc.resultValue : '';
-    setText('map-isp-detail3', egressCity ? `📍 ${addFlag(egressCity)}` : '');
+    setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
 
     setAccentStatus('map-isp-accent', isp.status);
 }
@@ -182,7 +225,7 @@ function updateMapAfdCard(lookup) {
         // Show location as a badge
         const locLine = extractGatewayLocation(gwUsed.detailedInfo);
         if (locLine) {
-            setBadge('map-afd-loc-badge', `📍 ${addFlag(locLine)}`, 'location-badge');
+            setFlaggedBadge('map-afd-loc-badge', `📍 ${locLine}`, 'location-badge', locLine);
         }
     }
 
@@ -221,7 +264,7 @@ function updateMapRdGwCard(lookup) {
     if (gwUsed && gwUsed.detailedInfo) {
         const locInfo = extractGatewayLocationWithProximity(gwUsed.detailedInfo);
         if (locInfo.location) {
-            setBadge('map-rdgw-loc-badge', `📍 ${addFlag(locInfo.location)}`, 'location-badge');
+            setFlaggedBadge('map-rdgw-loc-badge', `📍 ${locInfo.location}`, 'location-badge', locInfo.location);
         }
         if (locInfo.proximity) {
             if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near')) {
@@ -272,7 +315,7 @@ function updateMapTurnCard(lookup) {
         const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
         const city = locMatch ? locMatch[1] : '';
         if (city) {
-            setBadge('map-turn-loc-badge', `📍 ${addFlag(city)}`, 'location-badge');
+            setFlaggedBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge', city);
         }
         status = worstStatus(status, turnLoc.status);
     }
