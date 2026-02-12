@@ -143,29 +143,25 @@ function updateMapAfdCard(lookup) {
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
-    let detail2 = '';
 
     if (reach && reach.status !== 'NotRun') {
         status = reach.status;
         detail1 = reach.status === 'Passed' ? '✓ HTTPS reachable' : reach.resultValue || 'Unreachable';
     }
 
-    // Extract route type and location from L-TCP-09
+    // Extract route type from L-TCP-09
     if (gwUsed && gwUsed.detailedInfo) {
         const route = extractLine(gwUsed.detailedInfo, 'Route:');
         if (route) detail1 = `✓ Via ${route}`;
 
-        // Show location from gateway
+        // Show location as a badge
         const locLine = extractGatewayLocation(gwUsed.detailedInfo);
-        if (locLine) detail2 = `📍 ${locLine}`;
+        if (locLine) {
+            setBadge('map-afd-loc-badge', `📍 ${locLine}`, 'location-badge');
+        }
     }
 
     setText('map-afd-detail', detail1);
-    const d2El = document.getElementById('map-afd-detail2');
-    if (d2El) {
-        d2El.textContent = detail2;
-        d2El.className = detail2 ? 'map-card-detail' : 'map-card-detail';
-    }
 
     // Latency badge
     if (latency && latency.resultValue) {
@@ -187,7 +183,6 @@ function updateMapRdGwCard(lookup) {
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
-    let detail2 = '';
 
     if (tcpPorts && tcpPorts.status !== 'NotRun' && tcpPorts.status !== 'Pending') {
         status = tcpPorts.status;
@@ -197,13 +192,19 @@ function updateMapRdGwCard(lookup) {
         detail1 = latency.status === 'Passed' ? '✓ Gateway reachable' : latency.resultValue || '';
     }
 
-    // Show gateway location + proximity from L-TCP-09
+    // Show gateway location + proximity as badges from L-TCP-09
     if (gwUsed && gwUsed.detailedInfo) {
         const locInfo = extractGatewayLocationWithProximity(gwUsed.detailedInfo);
         if (locInfo.location) {
-            detail2 = `📍 ${locInfo.location}`;
-            if (locInfo.proximity) {
-                detail2 += ` ${locInfo.proximity}`;
+            setBadge('map-rdgw-loc-badge', `📍 ${locInfo.location}`, 'location-badge');
+        }
+        if (locInfo.proximity) {
+            if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near')) {
+                setBadge('map-rdgw-prox-badge', '✔ Near', 'proximity-near');
+            } else if (locInfo.proximity.includes('⚠') || locInfo.proximity.includes('Far')) {
+                setBadge('map-rdgw-prox-badge', '⚠ Far', 'proximity-far');
+            } else if (locInfo.proximity.includes('≈') || locInfo.proximity.includes('Moderate')) {
+                setBadge('map-rdgw-prox-badge', '≈ Moderate', 'proximity-moderate');
             }
         }
     }
@@ -217,15 +218,6 @@ function updateMapRdGwCard(lookup) {
     }
 
     setText('map-rdgw-detail', detail1);
-    const d2El = document.getElementById('map-rdgw-detail2');
-    if (d2El) {
-        d2El.textContent = detail2;
-        // Color proximity indicator
-        if (detail2.includes('✔') || detail2.includes('Near')) d2El.className = 'map-card-detail proximity-near';
-        else if (detail2.includes('⚠') || detail2.includes('Far')) d2El.className = 'map-card-detail proximity-far';
-        else if (detail2.includes('≈') || detail2.includes('Moderate')) d2El.className = 'map-card-detail proximity-moderate';
-        else d2El.className = 'map-card-detail';
-    }
     setAccentStatus('map-rdgw-accent', status);
 }
 
@@ -234,37 +226,42 @@ function updateMapTurnCard(lookup) {
     const stunTest = lookup['B-UDP-01'];
     const turnReach = lookup['L-UDP-03'];
     const turnLoc = lookup['L-UDP-04'];
-    const userLoc = lookup['B-LE-01'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
-    let detail2 = '';
 
-    if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
-        // Extract just the city/location part
-        const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
-        detail1 = locMatch ? `📍 ${locMatch[1]}` : turnLoc.resultValue || '';
-        status = turnLoc.status;
+    if (turnReach && turnReach.status !== 'NotRun' && turnReach.status !== 'Pending') {
+        status = turnReach.status;
+        if (turnReach.status === 'Passed') {
+            detail1 = '✓ Reachable (UDP 3478)';
+        } else {
+            detail1 = '✗ Unreachable (UDP 3478)';
+        }
     } else if (stunTest && stunTest.status !== 'NotRun') {
-        detail1 = stunTest.resultValue || '';
+        detail1 = stunTest.status === 'Passed' ? '✓ STUN OK' : stunTest.resultValue || '';
         status = stunTest.status;
     }
 
+    // Location badge from L-UDP-04
+    if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
+        const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
+        const city = locMatch ? locMatch[1] : '';
+        if (city) {
+            setBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge');
+        }
+        status = worstStatus(status, turnLoc.status);
+    }
+
+    // Reachability badge
     if (turnReach && turnReach.status !== 'NotRun' && turnReach.status !== 'Pending') {
-        status = worstStatus(status, turnReach.status);
         if (turnReach.status === 'Passed') {
-            detail2 = '✓ Reachable (UDP 3478)';
             setBadge('map-turn-badge', '✓ Reachable', 'status-ok');
         } else {
-            detail2 = '✗ Unreachable (UDP 3478)';
             setBadge('map-turn-badge', '✗ Unreachable', 'status-fail');
         }
-    } else if (stunTest && stunTest.status !== 'NotRun') {
-        detail2 = stunTest.status === 'Passed' ? '✓ STUN OK' : stunTest.resultValue || '';
     }
 
     setText('map-turn-detail', detail1);
-    setText('map-turn-detail2', detail2);
     setAccentStatus('map-turn-accent', status);
 }
 

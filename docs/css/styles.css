@@ -766,6 +766,16 @@ main {
 .map-card-detail.proximity-moderate { color: var(--yellow); }
 .map-card-detail.proximity-far { color: var(--red); }
 
+.map-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 5px;
+}
+.map-card-badges .map-card-badge {
+    margin-top: 0;
+}
+
 .map-card-badge {
     display: inline-flex;
     align-items: center;
@@ -782,6 +792,10 @@ main {
 .map-card-badge.latency-bad    { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 .map-card-badge.status-ok      { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
 .map-card-badge.status-fail    { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+.map-card-badge.location-badge { background: rgba(88,166,255,0.08); color: var(--accent); border: 1px solid rgba(88,166,255,0.25); font-weight: 600; }
+.map-card-badge.proximity-near { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.map-card-badge.proximity-moderate { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+.map-card-badge.proximity-far  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
 .map-dns-connector { display: flex; justify-content: center; height: 12px; }
 .map-vline { width: 2px; height: 100%; background: var(--accent); border-radius: 1px; box-shadow: 0 0 6px var(--accent-glow); }
