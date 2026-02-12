@@ -92,7 +92,9 @@ class Program
         Console.WriteLine();
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
 
-        // Auto-open browser with results embedded in URL fragment
+        // Auto-open browser with results via local redirect file
+        // (Windows ShellExecute can lose URL fragments, so we create a tiny HTML
+        //  file whose JS does the redirect — the browser handles the full URL.)
         try
         {
             // Compress JSON with raw deflate, then URL-safe base64
@@ -109,24 +111,36 @@ class Program
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
-            var url = $"https://paulcollinge.github.io/W365ConnectivityTool/#zresults={base64}";
+            var targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/#zresults={base64}";
 
-            Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {base64.Length} chars, URL: {url.Length} chars)");
-            if (url.Length > 32000)
+            Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {base64.Length} chars, URL: {targetUrl.Length} chars)");
+
+            if (targetUrl.Length > 32000)
             {
-                Console.WriteLine($"  Results too large for URL auto-import ({url.Length} chars).");
-                Console.WriteLine($"  Opening browser — use 'Import Scan Results' button to load: {Path.GetFullPath(outputPath)}");
-                url = "https://paulcollinge.github.io/W365ConnectivityTool/";
-            }
-            else
-            {
-                Console.WriteLine($"  Opening browser with results ({url.Length} chars)...");
+                Console.WriteLine($"  Results too large for URL auto-import ({targetUrl.Length} chars).");
+                Console.WriteLine($"  Drag and drop {Path.GetFullPath(outputPath)} onto the web page.");
+                targetUrl = "https://paulcollinge.github.io/W365ConnectivityTool/";
             }
 
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            // Write a local HTML redirect file that the browser can open reliably
+            var redirectPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outputPath))!, "W365_OpenResults.html");
+            // Escape URL for JS string: replace \ with \\ and ' with \'
+            var jsUrl = targetUrl.Replace("\\", "\\\\").Replace("'", "\\'");
+            var redirectHtml = $@"<!DOCTYPE html>
+<html><head><meta charset=""utf-8""><title>Opening W365 Diagnostics...</title>
+<style>body{{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}}
+.box{{text-align:center;padding:2em}}.spinner{{display:inline-block;width:24px;height:24px;border:3px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin 1s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style></head>
+<body><div class=""box""><div class=""spinner""></div><p>Opening Windows 365 Connectivity Diagnostics...</p>
+<p style=""font-size:0.8em;color:#8b949e"">This page will close automatically.</p></div>
+<script>window.location.href='{jsUrl}';</script></body></html>";
+            await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
+
+            Console.WriteLine($"  Opening browser with results ({targetUrl.Length} chars)...");
+            Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine($"  Error: {ex.GetType().Name}: {ex.Message}");
             Console.WriteLine($"  Could not open browser. Import the JSON file manually:");
             Console.WriteLine($"    1. Open https://paulcollinge.github.io/W365ConnectivityTool/");
             Console.WriteLine($"    2. Drag and drop {Path.GetFullPath(outputPath)} onto the page");
