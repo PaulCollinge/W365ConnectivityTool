@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.Security;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
@@ -57,7 +58,28 @@ class Program
             try
             {
                 var sw = Stopwatch.StartNew();
-                var result = await test.Run();
+                var testTask = test.Run();
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
+
+                if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
+                {
+                    sw.Stop();
+                    results.Add(new TestResult
+                    {
+                        Id = test.Id,
+                        Name = test.Name,
+                        Description = test.Description,
+                        Category = test.Category,
+                        Status = "Warning",
+                        ResultValue = $"Timed out after 60s",
+                        DetailedInfo = "The test did not complete within 60 seconds. This may indicate a network issue (hanging TLS handshake, unresponsive proxy, etc.).",
+                        Duration = (int)sw.ElapsedMilliseconds
+                    });
+                    Console.WriteLine($"\u26A0 Timed out (60s)");
+                    continue;
+                }
+
+                var result = await testTask;
                 sw.Stop();
                 result.Duration = (int)sw.ElapsedMilliseconds;
                 results.Add(result);
@@ -175,6 +197,50 @@ class Program
         Console.WriteLine();
 
         return failed > 0 ? 1 : 0;
+    }
+
+    // ── Shared helpers ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Creates an HttpClient that forwards default proxy credentials (NTLM/Kerberos).
+    /// Use this instead of bare "new HttpClient" so tests work behind authenticated proxies.
+    /// </summary>
+    static HttpClient CreateProxyAwareHttpClient(TimeSpan timeout, HttpClientHandler? customHandler = null)
+    {
+        var handler = customHandler ?? new HttpClientHandler();
+        handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
+        return new HttpClient(handler) { Timeout = timeout };
+    }
+
+    /// <summary>
+    /// Fetches GeoIP data with fallback: ipinfo.io → ipapi.co.
+    /// Returns the parsed JsonElement root or throws if both fail.
+    /// </summary>
+    static async Task<JsonElement> FetchGeoIpAsync(string url, TimeSpan timeout)
+    {
+        using var http = CreateProxyAwareHttpClient(timeout);
+        try
+        {
+            var json = await http.GetStringAsync(url);
+            return JsonSerializer.Deserialize(json, ScanJsonContext.Default.JsonElement);
+        }
+        catch
+        {
+            // Fallback: rewrite ipinfo.io URL → ipapi.co equivalent
+            string fallbackUrl;
+            if (url == "https://ipinfo.io/json")
+                fallbackUrl = "https://ipapi.co/json";
+            else if (url.StartsWith("https://ipinfo.io/") && url.EndsWith("/json"))
+            {
+                var ip = url.Replace("https://ipinfo.io/", "").Replace("/json", "");
+                fallbackUrl = $"https://ipapi.co/{ip}/json";
+            }
+            else
+                throw;
+
+            var fallbackJson = await http.GetStringAsync(fallbackUrl);
+            return JsonSerializer.Deserialize(fallbackJson, ScanJsonContext.Default.JsonElement);
+        }
     }
 
     static List<TestDefinition> GetAllTests()
@@ -458,7 +524,7 @@ class Program
 
             // Fallback: streaming HTTPS download for 10 seconds
             Console.Write("(measuring ~10s) ");
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(30));
             http.DefaultRequestHeaders.Add("User-Agent", "W365ConnectivityTool/2.0");
 
             // Test URLs in order of preference (progressively smaller for resilience)
@@ -635,7 +701,7 @@ class Program
                 ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
                 AllowAutoRedirect = false
             };
-            using var http = new HttpClient(httpHandler) { Timeout = TimeSpan.FromSeconds(10) };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
             foreach (var (host, port) in targets)
             {
@@ -800,7 +866,8 @@ class Program
             bool intercepted = false;
 
             using var tcp = new TcpClient();
-            await tcp.ConnectAsync(host, port);
+            using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await tcp.ConnectAsync(host, port, connectCts.Token);
 
             using var ssl = new SslStream(tcp.GetStream(), false, (sender, cert, chain, errors) =>
             {
@@ -830,7 +897,8 @@ class Program
                 return true; // Accept anyway for inspection
             });
 
-            await ssl.AuthenticateAsClientAsync(host);
+            using var tlsCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, tlsCts.Token);
             sb.Insert(0, $"Host: {host}:{port}\n\n");
 
             result.ResultValue = intercepted
@@ -1020,9 +1088,7 @@ class Program
             }
 
             // GeoIP the relay IP
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var geoJson = await http.GetStringAsync($"https://ipinfo.io/{ip}/json");
-            var geo = JsonSerializer.Deserialize(geoJson, ScanJsonContext.Default.JsonElement);
+            var geo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
 
             if (geo.TryGetProperty("city", out var cityProp))
             {
@@ -1079,7 +1145,8 @@ class Program
                 return true;
             });
 
-            await ssl.AuthenticateAsClientAsync(host);
+            using var turnTlsCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, turnTlsCts.Token);
             result.ResultValue = intercepted ? "TLS inspection detected on TURN relay" : "No TLS inspection on TURN relay";
             result.Status = intercepted ? "Warning" : "Passed";
             result.DetailedInfo = sb.ToString().Trim();
@@ -1128,7 +1195,20 @@ class Program
                 var output = proc!.StandardOutput.ReadToEnd();
                 proc.WaitForExit();
 
-                if (output.Contains("3478") && output.Contains("Block"))
+                // Parse rule blocks and check for specific UDP 3478 block rules
+                var ruleBlocks = output.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+                bool found3478Block = false;
+                foreach (var block in ruleBlocks)
+                {
+                    if (block.Contains("3478") &&
+                        block.Contains("Block", StringComparison.OrdinalIgnoreCase) &&
+                        block.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        found3478Block = true;
+                        break;
+                    }
+                }
+                if (found3478Block)
                 {
                     issues.Add("Firewall rule blocks UDP 3478");
                     sb.AppendLine("\u26A0 Windows Firewall rule found that may block UDP 3478");
@@ -1409,7 +1489,7 @@ class Program
                 },
                 AllowAutoRedirect = false
             };
-            using var http = new HttpClient(httpHandler) { Timeout = TimeSpan.FromSeconds(10) };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
             // Fetch user's location via GeoIP
             string userCity = null, userCountry = null;
@@ -1417,9 +1497,7 @@ class Program
             var gatewayLocations = new List<string>(); // collect for summary
             try
             {
-                using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                var userGeoJson = await geoHttp.GetStringAsync("https://ipinfo.io/json");
-                var userGeo = JsonSerializer.Deserialize(userGeoJson, ScanJsonContext.Default.JsonElement);
+                var userGeo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
                 if (userGeo.TryGetProperty("city", out var cityProp))
                 {
                     userCity = cityProp.GetString();
@@ -1473,9 +1551,7 @@ class Program
                 string gwCity = null, gwCountry = null;
                 try
                 {
-                    using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                    var gwGeoJson = await geoHttp.GetStringAsync($"https://ipinfo.io/{ip}/json");
-                    var gwGeo = JsonSerializer.Deserialize(gwGeoJson, ScanJsonContext.Default.JsonElement);
+                    var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
                     if (gwGeo.TryGetProperty("city", out var gwCityProp))
                     {
                         gwCity = gwCityProp.GetString();

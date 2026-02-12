@@ -265,8 +265,8 @@ public class UserLocationTest : BaseTest
 
     protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var json = await http.GetStringAsync(EndpointConfiguration.GeoIpApiUrl, ct);
+        using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(10) };
+        var json = await EndpointConfiguration.FetchGeoIpJsonAsync(http, ct);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -364,7 +364,8 @@ public class NetworkEgressLocationTest : BaseTest
         {
             using var handler = new HttpClientHandler
             {
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
 
@@ -475,7 +476,8 @@ public class AfdServiceLocationTest : BaseTest
         {
             using var handler = new HttpClientHandler
             {
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
 
@@ -761,8 +763,8 @@ public class AfdEgressLocationTest : BaseTest
         string? userCity = null;
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var geoJson = await http.GetStringAsync(EndpointConfiguration.GeoIpApiUrl, ct);
+            using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(5) };
+            var geoJson = await EndpointConfiguration.FetchGeoIpJsonAsync(http, ct);
             using var doc = JsonDocument.Parse(geoJson);
             var root = doc.RootElement;
             if (root.TryGetProperty("country", out var c)) userCountry = c.GetString();
@@ -786,7 +788,8 @@ public class AfdEgressLocationTest : BaseTest
                 // Make HTTPS request to AFD and read the response headers
                 using var handler = new HttpClientHandler
                 {
-                    ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+                    ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                    DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials
                 };
                 using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
 
@@ -1342,8 +1345,8 @@ public class TurnRelayTest : BaseTest
         request[2] = 0x00; request[3] = 0x00;
         // Magic Cookie: 0x2112A442
         request[4] = 0x21; request[5] = 0x12; request[6] = 0xA4; request[7] = 0x42;
-        // Transaction ID: 12 random bytes
-        Random.Shared.NextBytes(request.AsSpan(8, 12));
+        // Transaction ID: 12 cryptographically random bytes (RFC 5389 §6)
+        System.Security.Cryptography.RandomNumberGenerator.Fill(request.AsSpan(8, 12));
         return request;
     }
 
@@ -1648,7 +1651,7 @@ public class IndirectRdpTest : BaseTest
         request[0] = 0x00; request[1] = 0x01; // Binding Request
         request[2] = 0x00; request[3] = 0x00; // Length: 0
         request[4] = 0x21; request[5] = 0x12; request[6] = 0xA4; request[7] = 0x42; // Magic Cookie
-        Random.Shared.NextBytes(request.AsSpan(8, 12));
+        System.Security.Cryptography.RandomNumberGenerator.Fill(request.AsSpan(8, 12));
         return request;
     }
 
@@ -2370,7 +2373,8 @@ public class EndpointAccessTest : BaseTest
         {
             // Accept any cert — we're testing reachability, not validity
             ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
-            AllowAutoRedirect = false
+            AllowAutoRedirect = false,
+            DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials
         })
         { Timeout = TimeSpan.FromSeconds(10) };
 

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 
 namespace W365ConnectivityTool.Services;
 
@@ -92,6 +93,23 @@ public static class EndpointConfiguration
 
     // ── Geo-IP API (HTTPS required for secure transport) ──
     public const string GeoIpApiUrl = "https://ipinfo.io/json";
+    public const string GeoIpFallbackUrl = "https://ipapi.co/json";
+
+    /// <summary>
+    /// Fetches GeoIP JSON with automatic fallback from ipinfo.io to ipapi.co.
+    /// Both providers return compatible fields: ip, city, region, country, org, loc.
+    /// </summary>
+    public static async Task<string> FetchGeoIpJsonAsync(HttpClient http, CancellationToken ct)
+    {
+        try
+        {
+            return await http.GetStringAsync(GeoIpApiUrl, ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return await http.GetStringAsync(GeoIpFallbackUrl, ct);
+        }
+    }
 
     // ── DNS Test targets ──
     public static readonly string[] DnsTestHostnames =

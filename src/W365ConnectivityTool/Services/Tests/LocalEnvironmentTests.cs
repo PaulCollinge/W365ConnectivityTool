@@ -24,8 +24,8 @@ public class LocationTest : BaseTest
 
     protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var json = await http.GetStringAsync(EndpointConfiguration.GeoIpApiUrl, ct);
+        using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(10) };
+        var json = await EndpointConfiguration.FetchGeoIpJsonAsync(http, ct);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -433,8 +433,8 @@ public class IspDetectionTest : BaseTest
 
     protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var json = await http.GetStringAsync(EndpointConfiguration.GeoIpApiUrl, ct);
+        using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(10) };
+        var json = await EndpointConfiguration.FetchGeoIpJsonAsync(http, ct);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -688,7 +688,7 @@ public class BandwidthTest : BaseTest
         {
             details.Add("── Cloudflare Speed Test ──");
 
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(30) };
             var sw = Stopwatch.StartNew();
 
             using var response = await http.GetAsync(CloudflareUrl, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -725,7 +725,7 @@ public class BandwidthTest : BaseTest
             details.Add("Downloading Speedtest CLI...");
             Directory.CreateDirectory(SpeedtestDir);
 
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(30) };
             var zipBytes = await http.GetByteArrayAsync(SpeedtestDownloadUrl, ct);
 
             var zipPath = Path.Combine(Path.GetTempPath(), "speedtest-cli.zip");
@@ -844,8 +844,8 @@ public class NatTypeTest : BaseTest
         request[5] = 0x12;
         request[6] = 0xA4;
         request[7] = 0x42;
-        // Transaction ID (12 random bytes)
-        Random.Shared.NextBytes(request.AsSpan(8, 12));
+        // Transaction ID (12 cryptographically random bytes — RFC 5389 §6)
+        System.Security.Cryptography.RandomNumberGenerator.Fill(request.AsSpan(8, 12));
         return request;
     }
 
