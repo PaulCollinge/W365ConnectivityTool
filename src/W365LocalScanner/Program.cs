@@ -188,10 +188,9 @@ class Program
             new("L-TCP-06", "TLS Inspection Detection", "Validates TLS certificate chain", "tcp", RunTlsInspection),
             new("L-TCP-07", "Proxy / VPN / SWG Detection", "Detects proxy, VPN, SWG", "tcp", RunProxyVpnDetection),
 
-            // ── RDP Shortpath (UDP) ──
+            // ── UDP Based RDP Connectivity ──
             new("L-UDP-03", "TURN Relay Reachability (UDP 3478)", "Tests UDP to TURN relay", "udp", RunTurnRelay),
             new("L-UDP-04", "TURN Relay Location", "Geolocates the TURN relay server", "udp", RunTurnRelayLocation),
-            new("L-UDP-05", "UDP NAT Type (Socket)", "STUN-based NAT type detection", "udp", RunNatType),
             new("L-UDP-06", "TURN TLS Inspection", "Checks TLS on TURN relay", "udp", RunTurnTlsInspection),
             new("L-UDP-07", "TURN Proxy/VPN Detection", "Detects UDP-blocking proxy/VPN", "udp", RunTurnProxyVpn),
 
@@ -936,7 +935,7 @@ class Program
     }
 
     // ═══════════════════════════════════════════
-    //  UDP SHORTPATH TESTS
+    //  UDP BASED RDP CONNECTIVITY TESTS
     // ═══════════════════════════════════════════
 
     static async Task<TestResult> RunTurnRelay()
@@ -1026,51 +1025,6 @@ class Program
             {
                 result.ResultValue = $"TURN relay IP: {ip} (location unknown)";
                 result.Status = "Warning";
-            }
-        }
-        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
-        return result;
-    }
-
-    static async Task<TestResult> RunNatType()
-    {
-        var result = new TestResult { Id = "L-UDP-05", Name = "UDP NAT Type (Socket)", Category = "udp" };
-        try
-        {
-            var stunHost = "stun.l.google.com";
-            var stunPort = 19302;
-            var stunIps = await Dns.GetHostAddressesAsync(stunHost);
-            var stunIp = stunIps.First(i => i.AddressFamily == AddressFamily.InterNetwork);
-
-            using var udp = new UdpClient();
-            var request = BuildStunRequest();
-            var endpoint = new IPEndPoint(stunIp, stunPort);
-            await udp.SendAsync(request, request.Length, endpoint);
-
-            var receiveTask = udp.ReceiveAsync();
-            if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
-            {
-                var response = receiveTask.Result;
-                var mappedAddr = ParseStunMappedAddress(response.Buffer);
-
-                if (mappedAddr != null)
-                {
-                    result.ResultValue = $"STUN reflexive address: {mappedAddr}";
-                    result.DetailedInfo = $"STUN server: {stunHost}:{stunPort}\nReflexive address: {mappedAddr}\n" +
-                        "For full NAT classification (Full Cone / Restricted / Symmetric), multiple STUN tests are needed.";
-                    result.Status = "Passed";
-                }
-                else
-                {
-                    result.ResultValue = "STUN response received but could not parse mapped address";
-                    result.Status = "Warning";
-                }
-            }
-            else
-            {
-                result.ResultValue = "STUN timeout \u2014 UDP may be blocked";
-                result.Status = "Warning";
-                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=public-networks";
             }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }

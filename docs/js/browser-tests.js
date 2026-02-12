@@ -109,16 +109,16 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
 
-    // ── RDP Shortpath (UDP) ──
+    // ── UDP Based RDP Connectivity ──
     {
-        id: 'B-UDP-01', name: 'WebRTC / STUN Connectivity',
-        description: 'Tests STUN server reachability and gathers ICE candidates via WebRTC',
-        category: 'udp', source: 'browser', run: testWebRtcStun
+        id: 'B-UDP-02', name: 'NAT Type Detection',
+        description: 'Analyses ICE candidates to determine NAT type and STUN compatibility',
+        category: 'udp', source: 'browser', run: testNatType
     },
     {
-        id: 'B-UDP-02', name: 'NAT Type Detection (WebRTC)',
-        description: 'Analyses ICE candidates to determine NAT type and reflexive address',
-        category: 'udp', source: 'browser', run: testNatType
+        id: 'B-UDP-01', name: 'STUN Connectivity',
+        description: 'Tests STUN server reachability and gathers ICE candidates',
+        category: 'udp', source: 'browser', run: testWebRtcStun
     },
     {
         id: 'L-UDP-03', name: 'TURN Relay Reachability (UDP 3478)',
@@ -128,11 +128,6 @@ const ALL_TESTS = [
     {
         id: 'L-UDP-04', name: 'TURN Relay Location',
         description: 'Resolves TURN relay IP and geolocates the relay server (requires Local Scanner)',
-        category: 'udp', source: 'local'
-    },
-    {
-        id: 'L-UDP-05', name: 'UDP NAT Type (Socket)',
-        description: 'Performs STUN-based NAT type detection via raw UDP socket (requires Local Scanner)',
         category: 'udp', source: 'local'
     },
     {
@@ -462,7 +457,7 @@ async function testDnsPerformance(test) {
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.dnsConfig);
 }
 
-// ── WebRTC / STUN Connectivity ──
+// ── STUN Connectivity ──
 async function testWebRtcStun(test) {
     const t0 = performance.now();
 
@@ -507,7 +502,7 @@ async function testWebRtcStun(test) {
     }
 }
 
-// ── NAT Type Detection (WebRTC) ──
+// ── NAT Type Detection ──
 async function testNatType(test) {
     const t0 = performance.now();
 
@@ -546,20 +541,18 @@ async function testNatType(test) {
                 natType = 'Possible Symmetric NAT';
                 status = 'Warning';
                 detail = `Multiple reflexive IPs detected: ${[...uniqueIps].join(', ')}\n` +
-                    'Symmetric NAT may reduce RDP Shortpath effectiveness.';
+                    'Symmetric NAT may limit STUN connectivity for RDP Shortpath.';
             } else {
-                natType = 'Cone NAT (Full Cone / Restricted)';
+                natType = 'Cone NAT — NAT SUPPORTS STUN connectivity';
                 status = 'Passed';
                 detail = `Reflexive IP: ${srflx[0].address}\n` +
-                    'NAT appears compatible with RDP Shortpath.';
+                    'NAT type is compatible with STUN — RDP Shortpath (UDP) should work.';
             }
         }
 
         detail += '\n\nAll candidates:\n' + candidates.map(c =>
             `  ${c.type}: ${c.address}:${c.port} (${c.protocol})`
         ).join('\n');
-
-        detail += '\n\nNote: For precise STUN-based NAT classification, use the Local Scanner.';
 
         return makeResult(test, status, natType, detail, duration,
             status !== 'Passed' ? EndpointConfig.docs.natType : '');
