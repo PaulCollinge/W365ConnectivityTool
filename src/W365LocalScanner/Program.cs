@@ -237,6 +237,20 @@ class Program
     }
 
     /// <summary>
+    /// Returns a comma-separated list of IPv4 addresses assigned to a network adapter.
+    /// </summary>
+    static string GetAdapterIps(NetworkInterface adapter)
+    {
+        try
+        {
+            return string.Join(", ", adapter.GetIPProperties().UnicastAddresses
+                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                .Select(a => a.Address.ToString()));
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
     /// Creates an HttpClient that forwards default proxy credentials (NTLM/Kerberos).
     /// Use this instead of bare "new HttpClient" so tests work behind authenticated proxies.
     /// </summary>
@@ -1029,14 +1043,18 @@ class Program
                         {
                             foreach (var vpn in vpnAdapters)
                             {
+                                var vpnIpList = GetAdapterIps(vpn);
                                 issues.Add($"VPN adapter carrying RDP traffic: {vpn.Description}");
-                                sb.AppendLine($"\u26A0 VPN adapter: {vpn.Name} ({vpn.Description}) — RDP traffic routes through VPN (local IP {localIp})");
+                                sb.AppendLine($"\u26A0 VPN adapter: {vpn.Name} ({vpn.Description})");
+                                sb.AppendLine($"    RDP gateway {gwIp} routes via local IP {localIp} (VPN interface)");
+                                if (!string.IsNullOrEmpty(vpnIpList))
+                                    sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
                             }
                         }
                         else
                         {
                             foreach (var vpn in vpnAdapters)
-                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, RDP traffic bypasses VPN (routed via {localIp})");
+                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
                         }
                     }
                     else
@@ -1264,14 +1282,18 @@ class Program
                         {
                             foreach (var vpn in vpnAdapters)
                             {
+                                var vpnIpList = GetAdapterIps(vpn);
                                 issues.Add(vpn.Description);
-                                sb.AppendLine($"\u26A0 VPN adapter may block/tunnel UDP: {vpn.Name} ({vpn.Description}) — TURN traffic routes through VPN (local IP {localIp})");
+                                sb.AppendLine($"\u26A0 VPN adapter may block/tunnel UDP: {vpn.Name} ({vpn.Description})");
+                                sb.AppendLine($"    TURN relay {turnIp} routes via local IP {localIp} (VPN interface)");
+                                if (!string.IsNullOrEmpty(vpnIpList))
+                                    sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
                             }
                         }
                         else
                         {
                             foreach (var vpn in vpnAdapters)
-                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, TURN traffic bypasses VPN (routed via {localIp})");
+                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, TURN traffic bypasses VPN (relay {turnIp} routed via {localIp})");
                         }
                     }
                     else

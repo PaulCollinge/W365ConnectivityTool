@@ -1978,14 +1978,20 @@ public class ProxyVpnDetectionTest : BaseTest
                     {
                         foreach (var adapter in vpnAdapters)
                         {
+                            var vpnIpList = string.Join(", ", adapter.GetIPProperties().UnicastAddresses
+                                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                                .Select(a => a.Address.ToString()));
                             issues.Add($"VPN adapter carrying RDP traffic: {adapter.Description}");
-                            details.Add($"⚠ VPN adapter: {adapter.Name} ({adapter.Description}) — RDP traffic routes through VPN (local IP {localIp})");
+                            details.Add($"⚠ VPN adapter: {adapter.Name} ({adapter.Description})");
+                            details.Add($"    RDP gateway {gwIp} routes via local IP {localIp} (VPN interface)");
+                            if (!string.IsNullOrEmpty(vpnIpList))
+                                details.Add($"    VPN adapter IPs: {vpnIpList}");
                         }
                     }
                     else
                     {
                         foreach (var adapter in vpnAdapters)
-                            details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, RDP traffic bypasses VPN (routed via {localIp})");
+                            details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
                     }
                 }
                 else
