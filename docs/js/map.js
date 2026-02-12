@@ -270,8 +270,9 @@ function updateMapRdGwCard(lookup) {
     }
 
     // Show gateway location + proximity as badges from L-TCP-09
+    // Use rdweb/client location (not the AFD anycast IP which GeoIP maps to Redmond)
     if (gwUsed && gwUsed.detailedInfo) {
-        const locInfo = extractGatewayLocationWithProximity(gwUsed.detailedInfo);
+        const locInfo = extractRdGwLocationWithProximity(gwUsed.detailedInfo);
         if (locInfo.location) {
             setFlaggedBadge('map-rdgw-loc-badge', `📍 ${locInfo.location}`, 'location-badge', locInfo.location);
         }
@@ -374,11 +375,14 @@ function updateMapDnsCard(lookup) {
 }
 
 // ── Helper: extract location from gateway detailedInfo ──
+// L-TCP-09 detailedInfo contains multiple endpoint blocks. The first is the AFD
+// endpoint (anycast — GeoIP is wrong), followed by rdweb/client (regional GW).
+// extractGatewayLocation returns the first Location: line (AFD block).
+// extractRdGwLocation skips the AFD block and returns the rdweb/client location.
 function extractGatewayLocation(detailedInfo) {
     if (!detailedInfo) return '';
     const match = detailedInfo.match(/Location:\s*([^\n\r]+)/i);
     if (!match) return '';
-    // Strip proximity suffix (everything after ✔/≈/⚠)
     return match[1].replace(/\s*[✔≈⚠].*/g, '').trim();
 }
 
@@ -387,7 +391,20 @@ function extractGatewayLocationWithProximity(detailedInfo) {
     const match = detailedInfo.match(/Location:\s*([^\n\r]+)/i);
     if (!match) return { location: '', proximity: '' };
     const full = match[1].trim();
-    // Split at proximity indicator
+    const proxMatch = full.match(/(.+?)\s+([✔≈⚠].+)/);
+    if (proxMatch) return { location: proxMatch[1].trim(), proximity: proxMatch[2].trim() };
+    return { location: full, proximity: '' };
+}
+
+// Extract location for RD Gateway (rdweb/client endpoint, not AFD)
+function extractRdGwLocationWithProximity(detailedInfo) {
+    if (!detailedInfo) return { location: '', proximity: '' };
+    // Find all Location: lines — the 2nd+ are rdweb/client (regional gateway)
+    const matches = [...detailedInfo.matchAll(/Location:\s*([^\n\r]+)/gi)];
+    // Use the second match (rdweb) if available, otherwise fall back to first
+    const locMatch = matches.length > 1 ? matches[1] : matches[0];
+    if (!locMatch) return { location: '', proximity: '' };
+    const full = locMatch[1].trim();
     const proxMatch = full.match(/(.+?)\s+([✔≈⚠].+)/);
     if (proxMatch) return { location: proxMatch[1].trim(), proximity: proxMatch[2].trim() };
     return { location: full, proximity: '' };
@@ -449,7 +466,7 @@ function updateMapSecurityBar(lookup) {
     const gwText = document.getElementById('sec-gw-badge-text');
     if (gwBadge && gwIcon && gwText) {
         if (gwUsed && gwUsed.status !== 'NotRun' && gwUsed.status !== 'Pending') {
-            const info = extractGatewayLocationWithProximity(gwUsed.detailedInfo);
+            const info = extractRdGwLocationWithProximity(gwUsed.detailedInfo);
             if (info.proximity && (info.proximity.includes('✔') || info.proximity.includes('Near'))) {
                 gwIcon.textContent = '✓';
                 gwText.textContent = 'Gateway Near You';
