@@ -29,12 +29,12 @@ public class LocationTest : BaseTest
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (root.TryGetProperty("status", out var status) && status.GetString() == "success")
+        if (root.TryGetProperty("city", out var cityProp) && !string.IsNullOrEmpty(cityProp.GetString()))
         {
-            var city = root.GetProperty("city").GetString();
-            var country = root.GetProperty("country").GetString();
+            var city = cityProp.GetString();
+            var country = root.TryGetProperty("country", out var countryProp) ? countryProp.GetString() : "Unknown";
             result.ResultValue = $"{city}, {country}";
-            result.DetailedInfo = $"Public IP: {root.GetProperty("query").GetString()}";
+            result.DetailedInfo = root.TryGetProperty("ip", out var ipProp) ? $"Public IP: {ipProp.GetString()}" : "";
             result.Status = TestStatus.Passed;
         }
         else
@@ -438,14 +438,18 @@ public class IspDetectionTest : BaseTest
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (root.TryGetProperty("status", out var status) && status.GetString() == "success")
+        // ipinfo.io returns a single "org" field containing ASN + ISP name
+        // e.g. "AS5089 Virgin Media Limited"
+        if (root.TryGetProperty("org", out var orgProp) && !string.IsNullOrEmpty(orgProp.GetString()))
         {
-            var isp = root.GetProperty("isp").GetString();
-            var org = root.GetProperty("org").GetString();
-            var asn = root.GetProperty("as").GetString();
+            var orgFull = orgProp.GetString()!;
+            // Split "AS12345 ISP Name" into ASN and ISP
+            var spaceIdx = orgFull.IndexOf(' ');
+            var asn = spaceIdx > 0 ? orgFull[..spaceIdx] : orgFull;
+            var isp = spaceIdx > 0 ? orgFull[(spaceIdx + 1)..] : orgFull;
 
-            result.ResultValue = isp ?? "Unknown";
-            result.DetailedInfo = $"Organization: {org}\nAS: {asn}\n\n" +
+            result.ResultValue = isp;
+            result.DetailedInfo = $"Organization: {isp}\nAS: {asn}\n\n" +
                                   "Tip: Check https://downdetector.com to see if your ISP is currently experiencing issues.";
             result.Status = TestStatus.Passed;
         }

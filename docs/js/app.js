@@ -47,9 +47,13 @@ scannerChannel.onmessage = (event) => {
         const info = document.getElementById('info-banner');
         if (info) {
             info.classList.remove('hidden');
-            info.querySelector('.info-text').innerHTML =
-                `<strong>Browser test results synced from your other tab.</strong> ` +
-                `All ${allResults.length} results (browser + local) are shown below.`;
+            const infoText = info.querySelector('.info-text');
+            infoText.textContent = '';
+            const strong = document.createElement('strong');
+            strong.textContent = 'Browser test results synced from your other tab.';
+            infoText.appendChild(strong);
+            infoText.appendChild(document.createTextNode(
+                ` All ${allResults.length} results (browser + local) are shown below.`));
         }
     }
 };
@@ -346,10 +350,12 @@ function processImportedData(data) {
     // Show confirmation
     const info = document.getElementById('info-banner');
     info.classList.remove('hidden');
+    const machineName = data.machineName ? escapeHtml(String(data.machineName)) : '';
+    const scanTime = data.timestamp ? escapeHtml(new Date(data.timestamp).toLocaleString()) : '';
     info.querySelector('.info-text').innerHTML =
         `<strong>Imported ${importedCount} local scan results.</strong> ` +
-        (data.machineName ? `Machine: ${data.machineName}. ` : '') +
-        (data.timestamp ? `Scanned: ${new Date(data.timestamp).toLocaleString()}. ` : '') +
+        (machineName ? `Machine: ${machineName}. ` : '') +
+        (scanTime ? `Scanned: ${scanTime}. ` : '') +
         'Combined results are shown below.';
 
     // Hide download banner if we have local results

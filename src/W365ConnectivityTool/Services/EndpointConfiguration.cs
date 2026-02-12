@@ -90,8 +90,8 @@ public static class EndpointConfiguration
     public const string StunServer = "stun.l.google.com";
     public const int StunPort = 19302;
 
-    // ── Geo-IP API ──
-    public const string GeoIpApiUrl = "http://ip-api.com/json/?fields=status,message,country,regionName,city,isp,org,as,query,lat,lon";
+    // ── Geo-IP API (HTTPS required for secure transport) ──
+    public const string GeoIpApiUrl = "https://ipinfo.io/json";
 
     // ── DNS Test targets ──
     public static readonly string[] DnsTestHostnames =

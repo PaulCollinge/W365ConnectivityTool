@@ -24,7 +24,19 @@ class Program
 
         var outputPath = "W365ScanResults.json";
         if (args.Length > 0 && !args[0].StartsWith("-"))
-            outputPath = args[0];
+        {
+            // Validate output path — only allow local file paths, no UNC or path traversal
+            var candidate = args[0];
+            if (candidate.StartsWith(@"\\") || candidate.Contains(".."))
+            {
+                Console.WriteLine($"  Invalid output path: {candidate}");
+                Console.WriteLine($"  Using default: {outputPath}");
+            }
+            else
+            {
+                outputPath = candidate;
+            }
+        }
 
         Console.WriteLine("╔══════════════════════════════════════════════════════╗");
         Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
@@ -1009,14 +1021,14 @@ class Program
 
             // GeoIP the relay IP
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var geoJson = await http.GetStringAsync($"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,org");
+            var geoJson = await http.GetStringAsync($"https://ipinfo.io/{ip}/json");
             var geo = JsonSerializer.Deserialize(geoJson, ScanJsonContext.Default.JsonElement);
 
-            if (geo.TryGetProperty("status", out var status) && status.GetString() == "success")
+            if (geo.TryGetProperty("city", out var cityProp))
             {
-                var city = geo.GetProperty("city").GetString();
-                var region = geo.GetProperty("regionName").GetString();
-                var country = geo.GetProperty("country").GetString();
+                var city = cityProp.GetString();
+                var region = geo.TryGetProperty("region", out var rProp) ? rProp.GetString() : "";
+                var country = geo.TryGetProperty("country", out var cProp) ? cProp.GetString() : "";
                 result.ResultValue = $"TURN relay: {city}, {region}, {country} ({ip})";
                 result.DetailedInfo = $"Host: {host}\nIP: {ip}\nLocation: {city}, {region}, {country}";
                 result.Status = "Passed";
@@ -1188,8 +1200,8 @@ class Program
         msg[2] = 0x00; msg[3] = 0x00;
         // Magic Cookie
         msg[4] = 0x21; msg[5] = 0x12; msg[6] = 0xA4; msg[7] = 0x42;
-        // Transaction ID (12 random bytes)
-        Random.Shared.NextBytes(msg.AsSpan(8, 12));
+        // Transaction ID (12 cryptographically random bytes per RFC 5389)
+        System.Security.Cryptography.RandomNumberGenerator.Fill(msg.AsSpan(8, 12));
         return msg;
     }
 
@@ -1406,14 +1418,22 @@ class Program
             try
             {
                 using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                var userGeoJson = await geoHttp.GetStringAsync("http://ip-api.com/json/?fields=status,city,country,lat,lon");
+                var userGeoJson = await geoHttp.GetStringAsync("https://ipinfo.io/json");
                 var userGeo = JsonSerializer.Deserialize(userGeoJson, ScanJsonContext.Default.JsonElement);
-                if (userGeo.TryGetProperty("status", out var us) && us.GetString() == "success")
+                if (userGeo.TryGetProperty("city", out var cityProp))
                 {
-                    userCity = userGeo.GetProperty("city").GetString();
-                    userCountry = userGeo.GetProperty("country").GetString();
-                    userLat = userGeo.GetProperty("lat").GetDouble();
-                    userLon = userGeo.GetProperty("lon").GetDouble();
+                    userCity = cityProp.GetString();
+                    userCountry = userGeo.TryGetProperty("country", out var cProp) ? cProp.GetString() : "";
+                    // ipinfo.io returns loc as "lat,lon" string
+                    if (userGeo.TryGetProperty("loc", out var locProp))
+                    {
+                        var parts = locProp.GetString()?.Split(',');
+                        if (parts?.Length == 2)
+                        {
+                            double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out userLat);
+                            double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out userLon);
+                        }
+                    }
                 }
             }
             catch { /* user location is best-effort */ }
@@ -1454,14 +1474,22 @@ class Program
                 try
                 {
                     using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                    var gwGeoJson = await geoHttp.GetStringAsync($"http://ip-api.com/json/{ip}?fields=status,city,country,lat,lon");
+                    var gwGeoJson = await geoHttp.GetStringAsync($"https://ipinfo.io/{ip}/json");
                     var gwGeo = JsonSerializer.Deserialize(gwGeoJson, ScanJsonContext.Default.JsonElement);
-                    if (gwGeo.TryGetProperty("status", out var gs) && gs.GetString() == "success")
+                    if (gwGeo.TryGetProperty("city", out var gwCityProp))
                     {
-                        gwCity = gwGeo.GetProperty("city").GetString();
-                        gwCountry = gwGeo.GetProperty("country").GetString();
-                        var gwLat = gwGeo.GetProperty("lat").GetDouble();
-                        var gwLon = gwGeo.GetProperty("lon").GetDouble();
+                        gwCity = gwCityProp.GetString();
+                        gwCountry = gwGeo.TryGetProperty("country", out var gwCProp) ? gwCProp.GetString() : "";
+                        double gwLat = 0, gwLon = 0;
+                        if (gwGeo.TryGetProperty("loc", out var gwLocProp))
+                        {
+                            var parts = gwLocProp.GetString()?.Split(',');
+                            if (parts?.Length == 2)
+                            {
+                                double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out gwLat);
+                                double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out gwLon);
+                            }
+                        }
 
                         var locationStr = $"{gwCity}, {gwCountry}";
                         gatewayLocations.Add(locationStr);

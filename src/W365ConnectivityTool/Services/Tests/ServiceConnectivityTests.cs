@@ -270,23 +270,37 @@ public class UserLocationTest : BaseTest
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        if (root.TryGetProperty("status", out var status) && status.GetString() == "success")
+        if (root.TryGetProperty("city", out var cityProp) && !string.IsNullOrEmpty(cityProp.GetString()))
         {
-            var city = root.GetProperty("city").GetString();
-            var region = root.TryGetProperty("regionName", out var regionVal) ? regionVal.GetString() : null;
-            var country = root.GetProperty("country").GetString();
-            var ip = root.GetProperty("query").GetString();
-            var isp = root.TryGetProperty("isp", out var ispVal) ? ispVal.GetString() : null;
+            var city = cityProp.GetString();
+            var region = root.TryGetProperty("region", out var regionVal) ? regionVal.GetString() : null;
+            var country = root.TryGetProperty("country", out var countryProp) ? countryProp.GetString() : "Unknown";
+            var ip = root.TryGetProperty("ip", out var ipVal) ? ipVal.GetString() : null;
+
+            // ipinfo.io org field contains "AS12345 ISP Name"
+            string? isp = null;
+            if (root.TryGetProperty("org", out var orgVal))
+            {
+                var orgStr = orgVal.GetString() ?? "";
+                var spaceIdx = orgStr.IndexOf(' ');
+                isp = spaceIdx > 0 ? orgStr[(spaceIdx + 1)..] : orgStr;
+            }
 
             result.ResultValue = $"{city}, {country}";
             result.DetailedInfo = $"Public IP: {ip}\n" +
                                   $"Location: {city}, {region}, {country}\n" +
                                   (isp != null ? $"ISP: {isp}\n" : "");
 
-            // Emit lat/lon for the connectivity map
-            if (root.TryGetProperty("lat", out var latVal) && root.TryGetProperty("lon", out var lonVal))
+            // Emit lat/lon for the connectivity map — ipinfo.io returns "loc": "51.5074,-0.1278"
+            if (root.TryGetProperty("loc", out var locVal))
             {
-                result.DetailedInfo += $"GeoData: lat={latVal.GetDouble():F4},lon={lonVal.GetDouble():F4}\n";
+                var parts = (locVal.GetString() ?? "").Split(',');
+                if (parts.Length == 2 &&
+                    double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lat) &&
+                    double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lon))
+                {
+                    result.DetailedInfo += $"GeoData: lat={lat:F4},lon={lon:F4}\n";
+                }
             }
 
             result.DetailedInfo += "\nThis is where your public IP address geolocates to.\n" +

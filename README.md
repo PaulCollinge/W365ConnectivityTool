@@ -74,8 +74,8 @@ W365ConnectivityTool/
 | Test | Browser | Local Scanner | Notes |
 |------|---------|---------------|-------|
 | Endpoint HTTPS Reachability | ✅ | — | Uses `fetch()` with `no-cors` |
-| User Location | ✅ | — | ip-api.com GeoIP |
-| ISP Detection | ✅ | — | ip-api.com |
+| User Location | ✅ | — | ipinfo.io GeoIP (HTTPS) |
+| ISP Detection | ✅ | — | ipinfo.io (HTTPS) |
 | Connection Type | ✅ | — | Network Information API |
 | Gateway HTTPS Reachability | ✅ | — | Fetch timing |
 | Gateway Latency | ✅ | — | 5-sample fetch timing |
