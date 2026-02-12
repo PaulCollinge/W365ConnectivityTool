@@ -446,34 +446,78 @@ class Program
     }
 
     /// <summary>
-    /// Fetches GeoIP data with fallback: ipinfo.io → ipapi.co.
-    /// Returns the parsed JsonElement root or throws if both fail.
+    /// Simple in-memory cache for GeoIP results keyed by IP (or "" for self).
+    /// Prevents redundant API calls within a single scan run.
+    /// </summary>
+    static readonly Dictionary<string, JsonElement> _geoIpCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Fetches GeoIP data with cascading fallback across 4 providers and retry on 429.
+    /// Providers: ipinfo.io → ipapi.co → ipwho.is → geojs.io
+    /// Results are cached per IP for the duration of the scan.
     /// </summary>
     static async Task<JsonElement> FetchGeoIpAsync(string url, TimeSpan timeout)
     {
-        using var http = CreateProxyAwareHttpClient(timeout);
-        try
-        {
-            var json = await http.GetStringAsync(url);
-            return JsonSerializer.Deserialize(json, ScanJsonContext.Default.JsonElement);
-        }
-        catch
-        {
-            // Fallback: rewrite ipinfo.io URL → ipapi.co equivalent
-            string fallbackUrl;
-            if (url == "https://ipinfo.io/json")
-                fallbackUrl = "https://ipapi.co/json";
-            else if (url.StartsWith("https://ipinfo.io/") && url.EndsWith("/json"))
-            {
-                var ip = url.Replace("https://ipinfo.io/", "").Replace("/json", "");
-                fallbackUrl = $"https://ipapi.co/{ip}/json";
-            }
-            else
-                throw;
+        // Extract IP from url for cache key (empty string = self)
+        string cacheKey = "";
+        if (url.StartsWith("https://ipinfo.io/") && url.EndsWith("/json") && url != "https://ipinfo.io/json")
+            cacheKey = url.Replace("https://ipinfo.io/", "").Replace("/json", "");
 
-            var fallbackJson = await http.GetStringAsync(fallbackUrl);
-            return JsonSerializer.Deserialize(fallbackJson, ScanJsonContext.Default.JsonElement);
+        if (_geoIpCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        // Build provider URLs for this request (self vs specific IP)
+        var providers = string.IsNullOrEmpty(cacheKey)
+            ? new[]
+            {
+                "https://ipinfo.io/json",
+                "https://ipapi.co/json",
+                "https://ipwho.is/",
+                "https://get.geojs.io/v1/ip/geo.json"
+            }
+            : new[]
+            {
+                $"https://ipinfo.io/{cacheKey}/json",
+                $"https://ipapi.co/{cacheKey}/json",
+                $"https://ipwho.is/{cacheKey}",
+                $"https://get.geojs.io/v1/ip/geo/{cacheKey}.json"
+            };
+
+        using var http = CreateProxyAwareHttpClient(timeout);
+        Exception? lastEx = null;
+
+        foreach (var providerUrl in providers)
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    var response = await http.GetAsync(providerUrl);
+                    if (response.StatusCode == (System.Net.HttpStatusCode)429)
+                    {
+                        // Rate limited — wait briefly then retry once, else move to next provider
+                        if (attempt == 0)
+                        {
+                            await Task.Delay(1500);
+                            continue;
+                        }
+                        throw new HttpRequestException($"429 Too Many Requests from {new Uri(providerUrl).Host}");
+                    }
+                    response.EnsureSuccessStatusCode();
+                    var json = await response.Content.ReadAsStringAsync();
+                    var element = JsonSerializer.Deserialize(json, ScanJsonContext.Default.JsonElement);
+                    _geoIpCache[cacheKey] = element;
+                    return element;
+                }
+                catch (Exception ex)
+                {
+                    lastEx = ex;
+                    break; // don't retry on non-429 errors, move to next provider
+                }
+            }
         }
+
+        throw lastEx ?? new HttpRequestException("All GeoIP providers failed");
     }
 
     static List<TestDefinition> GetAllTests()

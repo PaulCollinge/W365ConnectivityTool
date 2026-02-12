@@ -94,21 +94,41 @@ public static class EndpointConfiguration
     // ── Geo-IP API (HTTPS required for secure transport) ──
     public const string GeoIpApiUrl = "https://ipinfo.io/json";
     public const string GeoIpFallbackUrl = "https://ipapi.co/json";
+    public const string GeoIpFallback2Url = "https://ipwho.is/";
+    public const string GeoIpFallback3Url = "https://get.geojs.io/v1/ip/geo.json";
+
+    private static readonly string[] GeoIpProviders = [GeoIpApiUrl, GeoIpFallbackUrl, GeoIpFallback2Url, GeoIpFallback3Url];
 
     /// <summary>
-    /// Fetches GeoIP JSON with automatic fallback from ipinfo.io to ipapi.co.
-    /// Both providers return compatible fields: ip, city, region, country, org, loc.
+    /// Fetches GeoIP JSON with cascading fallback across 4 providers and 429 retry.
+    /// Providers: ipinfo.io → ipapi.co → ipwho.is → geojs.io
     /// </summary>
     public static async Task<string> FetchGeoIpJsonAsync(HttpClient http, CancellationToken ct)
     {
-        try
+        Exception? lastEx = null;
+        foreach (var providerUrl in GeoIpProviders)
         {
-            return await http.GetStringAsync(GeoIpApiUrl, ct);
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    var response = await http.GetAsync(providerUrl, ct);
+                    if (response.StatusCode == (System.Net.HttpStatusCode)429)
+                    {
+                        if (attempt == 0) { await Task.Delay(1500, ct); continue; }
+                        break; // move to next provider
+                    }
+                    response.EnsureSuccessStatusCode();
+                    return await response.Content.ReadAsStringAsync(ct);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    lastEx = ex;
+                    break; // move to next provider
+                }
+            }
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
-        {
-            return await http.GetStringAsync(GeoIpFallbackUrl, ct);
-        }
+        throw lastEx ?? new HttpRequestException("All GeoIP providers failed");
     }
 
     // ── DNS Test targets ──
