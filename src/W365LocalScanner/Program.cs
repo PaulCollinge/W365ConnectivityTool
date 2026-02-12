@@ -1084,7 +1084,7 @@ class Program
         var result = new TestResult { Id = "L-TCP-05", Name = "DNS CNAME Chain Analysis", Category = "tcp" };
         try
         {
-            var host = "rdweb.wvd.microsoft.com";
+            var host = "afdfp-rdgateway-r1.wvd.microsoft.com";
             var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
             {
                 RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
@@ -1813,7 +1813,7 @@ class Program
         var result = new TestResult { Id = "L-TCP-09", Name = "Gateway Used", Category = "tcp" };
         try
         {
-            var gateways = new[] { "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+            var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
             var sb = new StringBuilder();
 
             using var httpHandler = new HttpClientHandler
