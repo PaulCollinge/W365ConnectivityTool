@@ -259,6 +259,16 @@ class Program
                 return result;
             }
 
+            // Check if there's a connected WiFi profile — "State" line should say "connected"
+            var stateLine = output.Split('\n').FirstOrDefault(l => l.Trim().StartsWith("State"))?.Split(':').LastOrDefault()?.Trim();
+            if (stateLine == null || !stateLine.Equals("connected", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "Not connected by WiFi";
+                result.DetailedInfo = output.Trim();
+                return result;
+            }
+
             var lines = output.Split('\n');
             var signal = lines.FirstOrDefault(l => l.Trim().StartsWith("Signal"))?.Split(':').LastOrDefault()?.Trim();
             var ssid = lines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"))?.Split(':').LastOrDefault()?.Trim();
@@ -277,8 +287,8 @@ class Program
             }
             else
             {
-                result.Status = "Warning";
-                result.ResultValue = "Could not parse signal strength";
+                result.Status = "Skipped";
+                result.ResultValue = "Not connected by WiFi (no signal data)";
             }
         }
         catch (Exception ex)
