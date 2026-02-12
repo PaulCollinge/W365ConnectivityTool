@@ -6,6 +6,28 @@
 let allResults = [];
 let isRunning = false;
 
+// ── Cross-tab communication ──
+// When the scanner opens a NEW browser tab with results, the new tab
+// broadcasts results to any EXISTING tabs via BroadcastChannel.
+const scannerChannel = new BroadcastChannel('w365-scanner-results');
+scannerChannel.onmessage = (event) => {
+    console.log('Received scanner results from another tab via BroadcastChannel');
+    processImportedData(event.data);
+};
+
+// Fallback: listen for localStorage changes from other tabs
+window.addEventListener('storage', (event) => {
+    if (event.key === 'w365-scanner-results' && event.newValue) {
+        try {
+            const data = JSON.parse(event.newValue);
+            console.log('Received scanner results from another tab via localStorage');
+            processImportedData(data);
+        } catch (e) {
+            console.error('Failed to parse localStorage scanner results:', e);
+        }
+    }
+});
+
 // ── Initialize on page load ──
 document.addEventListener('DOMContentLoaded', () => {
     renderTestList();
@@ -151,6 +173,17 @@ async function checkForAutoImport() {
 
         console.log(`Auto-import (${source}): parsed ${data.results?.length ?? 0} results`);
         processImportedData(data);
+
+        // Broadcast to any existing tabs so they also get the results
+        try {
+            scannerChannel.postMessage(data);
+            // Also write to localStorage as a fallback signal
+            localStorage.setItem('w365-scanner-results', JSON.stringify(data));
+            // Clean up immediately so it doesn't persist
+            localStorage.removeItem('w365-scanner-results');
+        } catch (broadcastErr) {
+            console.warn('Could not broadcast to other tabs:', broadcastErr);
+        }
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
         // Show a helpful message to the user instead of failing silently
