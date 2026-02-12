@@ -6,37 +6,51 @@
 let allResults = [];
 let isRunning = false;
 
-// ── Cross-tab communication ──
-// When the scanner opens a NEW browser tab with results, the new tab
-// broadcasts results to any EXISTING tabs via BroadcastChannel.
-// If an existing tab acknowledges receipt, the new tab closes itself
-// so the user stays on the tab that already has browser test results.
+// ── Cross-tab communication (bidirectional sync) ──
+// When the scanner opens a NEW tab with results, both tabs exchange data:
+//   New tab  → sends scanner results  → Existing tab
+//   Existing tab → sends browser results back → New tab
+// Result: BOTH tabs end up with complete data (browser + local).
 const scannerChannel = new BroadcastChannel('w365-scanner-results');
-let isRelayTab = false; // true if this tab was opened by the scanner and an existing tab took the results
+let isNewScannerTab = false; // true if this tab was opened by the scanner with ?zresults=
 
 scannerChannel.onmessage = (event) => {
-    if (event.data?.type === 'scanner-results') {
-        // We're an existing tab receiving results from the new tab
-        console.log('Received scanner results from another tab via BroadcastChannel');
-        processImportedData(event.data.payload);
-        // Acknowledge so the new tab knows it can close
-        scannerChannel.postMessage({ type: 'ack' });
-        // Try to bring this tab to front
-        window.focus();
-    } else if (event.data?.type === 'ack' && isRelayTab) {
-        // We're the new tab and an existing tab confirmed receipt — close ourselves
-        console.log('Existing tab acknowledged receipt, closing this relay tab');
-        document.body.innerHTML = `
-            <div style="display:flex;justify-content:center;align-items:center;height:100vh;
-                        font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9">
-                <div style="text-align:center;padding:2em">
-                    <div style="font-size:2em;margin-bottom:0.5em">✅</div>
-                    <h2>Scanner results sent to your existing tab</h2>
-                    <p style="color:#8b949e">You can close this tab.</p>
-                </div>
-            </div>`;
-        // Attempt to close (works in some browsers for non-script-opened tabs)
-        setTimeout(() => window.close(), 1000);
+    const msg = event.data;
+    if (!msg?.type) return;
+
+    if (msg.type === 'scanner-results') {
+        // We're an EXISTING tab — import the scanner's local results
+        console.log('Received scanner results from new tab via BroadcastChannel');
+        processImportedData(msg.payload);
+        // Send our browser results back so the new tab also has them
+        const browserResults = allResults.filter(r => r.source === 'browser');
+        if (browserResults.length > 0) {
+            console.log(`Sending ${browserResults.length} browser results back to new tab`);
+            scannerChannel.postMessage({ type: 'browser-results', payload: browserResults });
+        }
+    } else if (msg.type === 'browser-results' && isNewScannerTab) {
+        // We're the NEW tab — merge in browser results from the existing tab
+        console.log(`Received ${msg.payload?.length ?? 0} browser results from existing tab`);
+        const browserResults = msg.payload || [];
+        for (const br of browserResults) {
+            // Only add if we don't already have a result for this test
+            if (!allResults.some(r => r.id === br.id)) {
+                br.source = 'browser';
+                allResults.push(br);
+                updateTestUI(br.id, br);
+            }
+        }
+        updateSummary(allResults);
+        updateCategoryBadges(allResults);
+        updateConnectivityMap(allResults);
+        // Show confirmation
+        const info = document.getElementById('info-banner');
+        if (info) {
+            info.classList.remove('hidden');
+            info.querySelector('.info-text').innerHTML =
+                `<strong>Browser test results synced from your other tab.</strong> ` +
+                `All ${allResults.length} results (browser + local) are shown below.`;
+        }
     }
 };
 
@@ -198,10 +212,14 @@ async function checkForAutoImport() {
 
         console.log(`Auto-import (${source}): parsed ${data.results?.length ?? 0} results`);
 
-        // Mark ourselves as a relay tab — we'll try to hand off to an existing tab
-        isRelayTab = true;
+        // Mark this as a scanner-opened tab so we accept browser-results replies
+        isNewScannerTab = true;
 
-        // Broadcast to any existing tabs so they get the results
+        // Process scanner results immediately on THIS tab
+        processImportedData(data);
+
+        // Broadcast to any existing tabs so they also get the scanner results
+        // (and can send back their browser results)
         try {
             scannerChannel.postMessage({ type: 'scanner-results', payload: data });
             // Also write to localStorage as a fallback signal
@@ -209,16 +227,6 @@ async function checkForAutoImport() {
             localStorage.removeItem('w365-scanner-results');
         } catch (broadcastErr) {
             console.warn('Could not broadcast to other tabs:', broadcastErr);
-        }
-
-        // Wait briefly for an ack from an existing tab.
-        // If no ack arrives, this is the only tab — process results here.
-        await new Promise(resolve => setTimeout(resolve, 800));
-        if (isRelayTab) {
-            // No ack received — no existing tab is listening
-            console.log('No existing tab responded, processing results in this tab');
-            isRelayTab = false;
-            processImportedData(data);
         }
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
