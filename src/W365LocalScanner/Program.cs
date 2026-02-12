@@ -1215,50 +1215,35 @@ class Program
 
             if (vpnAdapters.Count > 0)
             {
-                // Resolve gateway IP and check if OS routes through the VPN adapter
+                // List VPN adapters found
+                foreach (var vpn in vpnAdapters)
+                {
+                    var vpnIpList = GetAdapterIps(vpn);
+                    sb.AppendLine($"\u2139 VPN adapter detected: {vpn.Name} ({vpn.Description})");
+                    if (!string.IsNullOrEmpty(vpnIpList))
+                        sb.AppendLine($"    Adapter IPs: {vpnIpList}");
+                }
+
+                // Routing table is the authoritative source for what's routed via VPN
+                var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                foreach (var range in caught)
+                    issues.Add($"W365/AVD range {range} routes through VPN tunnel");
+
+                // Also show single-IP probe as informational context
                 try
                 {
                     var gwIps = Dns.GetHostAddresses("rdweb.wvd.microsoft.com");
                     var gwIp = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                     if (gwIp != null)
                     {
-                        var (routedViaVpn, localIp, adapterName) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
+                        var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
                         if (routedViaVpn)
-                        {
-                            foreach (var vpn in vpnAdapters)
-                            {
-                                var vpnIpList = GetAdapterIps(vpn);
-                                issues.Add($"VPN adapter carrying RDP traffic: {vpn.Description}");
-                                sb.AppendLine($"\u26A0 VPN adapter: {vpn.Name} ({vpn.Description})");
-                                sb.AppendLine($"    RDP gateway {gwIp} routes via local IP {localIp} (VPN interface)");
-                                if (!string.IsNullOrEmpty(vpnIpList))
-                                    sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
-                            }
-                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
-                            foreach (var range in caught)
-                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                        }
+                            sb.AppendLine($"\n  \u26A0 Note: RDP gateway {gwIp} (rdweb.wvd.microsoft.com) routes via VPN interface {localIp}");
                         else
-                        {
-                            foreach (var vpn in vpnAdapters)
-                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
-                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
-                            foreach (var range in caught)
-                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                        }
-                    }
-                    else
-                    {
-                        // Can't resolve gateway — report VPN presence as info only
-                        foreach (var vpn in vpnAdapters)
-                            sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify routing (DNS failed)");
+                            sb.AppendLine($"\n  \u2714 RDP gateway {gwIp} (rdweb.wvd.microsoft.com) routes direct via {localIp}");
                     }
                 }
-                catch
-                {
-                    foreach (var vpn in vpnAdapters)
-                        sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify routing");
-                }
+                catch { /* DNS or probe failed — non-critical since routing table already checked */ }
             }
             else
             {
@@ -1461,6 +1446,21 @@ class Program
 
             if (vpnAdapters.Count > 0)
             {
+                // List VPN adapters found
+                foreach (var vpn in vpnAdapters)
+                {
+                    var vpnIpList = GetAdapterIps(vpn);
+                    sb.AppendLine($"\u2139 VPN adapter detected: {vpn.Name} ({vpn.Description})");
+                    if (!string.IsNullOrEmpty(vpnIpList))
+                        sb.AppendLine($"    Adapter IPs: {vpnIpList}");
+                }
+
+                // Routing table is the authoritative source for what's routed via VPN
+                var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                foreach (var range in caught)
+                    issues.Add($"W365/AVD range {range} routes through VPN tunnel");
+
+                // Also show single-IP probe as informational context
                 try
                 {
                     var turnIps = Dns.GetHostAddresses("world.relay.avd.microsoft.com");
@@ -1469,40 +1469,12 @@ class Program
                     {
                         var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(turnIp, vpnAdapters);
                         if (routedViaVpn)
-                        {
-                            foreach (var vpn in vpnAdapters)
-                            {
-                                var vpnIpList = GetAdapterIps(vpn);
-                                issues.Add(vpn.Description);
-                                sb.AppendLine($"\u26A0 VPN adapter may block/tunnel UDP: {vpn.Name} ({vpn.Description})");
-                                sb.AppendLine($"    TURN relay {turnIp} routes via local IP {localIp} (VPN interface)");
-                                if (!string.IsNullOrEmpty(vpnIpList))
-                                    sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
-                            }
-                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
-                            foreach (var range in caught)
-                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                        }
+                            sb.AppendLine($"\n  \u26A0 Note: TURN relay {turnIp} (world.relay.avd.microsoft.com) routes via VPN interface {localIp}");
                         else
-                        {
-                            foreach (var vpn in vpnAdapters)
-                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, TURN traffic bypasses VPN (relay {turnIp} routed via {localIp})");
-                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
-                            foreach (var range in caught)
-                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                        }
-                    }
-                    else
-                    {
-                        foreach (var vpn in vpnAdapters)
-                            sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify TURN routing (DNS failed)");
+                            sb.AppendLine($"\n  \u2714 TURN relay {turnIp} (world.relay.avd.microsoft.com) routes direct via {localIp}");
                     }
                 }
-                catch
-                {
-                    foreach (var vpn in vpnAdapters)
-                        sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify TURN routing");
-                }
+                catch { /* DNS or probe failed — non-critical since routing table already checked */ }
             }
 
             // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall

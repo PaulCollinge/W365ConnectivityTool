@@ -1965,7 +1965,23 @@ public class ProxyVpnDetectionTest : BaseTest
 
         if (vpnAdapters.Count > 0)
         {
-            // Resolve gateway IP and check if OS routes through the VPN adapter
+            // List VPN adapters found
+            foreach (var adapter in vpnAdapters)
+            {
+                var vpnIpList = string.Join(", ", adapter.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.Address.ToString()));
+                details.Add($"ℹ VPN adapter detected: {adapter.Name} ({adapter.Description})");
+                if (!string.IsNullOrEmpty(vpnIpList))
+                    details.Add($"    Adapter IPs: {vpnIpList}");
+            }
+
+            // Routing table is the authoritative source for what's routed via VPN
+            var caught = ProbeAvdServiceRanges(vpnAdapters, details);
+            foreach (var range in caught)
+                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
+
+            // Also show single-IP probe as informational context
             try
             {
                 var gateway = EndpointConfiguration.GetBestGatewayEndpoint();
@@ -1975,42 +1991,12 @@ public class ProxyVpnDetectionTest : BaseTest
                 {
                     var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
                     if (routedViaVpn)
-                    {
-                        foreach (var adapter in vpnAdapters)
-                        {
-                            var vpnIpList = string.Join(", ", adapter.GetIPProperties().UnicastAddresses
-                                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
-                                .Select(a => a.Address.ToString()));
-                            issues.Add($"VPN adapter carrying RDP traffic: {adapter.Description}");
-                            details.Add($"⚠ VPN adapter: {adapter.Name} ({adapter.Description})");
-                            details.Add($"    RDP gateway {gwIp} routes via local IP {localIp} (VPN interface)");
-                            if (!string.IsNullOrEmpty(vpnIpList))
-                                details.Add($"    VPN adapter IPs: {vpnIpList}");
-                        }
-                        var caught = ProbeAvdServiceRanges(vpnAdapters, details);
-                        foreach (var range in caught)
-                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                    }
+                        details.Add($"\n  ⚠ Note: RDP gateway {gwIp} ({gateway}) routes via VPN interface {localIp}");
                     else
-                    {
-                        foreach (var adapter in vpnAdapters)
-                            details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
-                        var caught = ProbeAvdServiceRanges(vpnAdapters, details);
-                        foreach (var range in caught)
-                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                    }
-                }
-                else
-                {
-                    foreach (var adapter in vpnAdapters)
-                        details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify routing (DNS failed)");
+                        details.Add($"\n  ✓ RDP gateway {gwIp} ({gateway}) routes direct via {localIp}");
                 }
             }
-            catch
-            {
-                foreach (var adapter in vpnAdapters)
-                    details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify routing");
-            }
+            catch { /* DNS or probe failed — non-critical since routing table already checked */ }
         }
         else
         {
@@ -2459,6 +2445,23 @@ public class TurnProxyVpnDetectionTest : BaseTest
 
         if (vpnAdapters.Count > 0)
         {
+            // List VPN adapters found
+            foreach (var adapter in vpnAdapters)
+            {
+                var vpnIpList = string.Join(", ", adapter.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                    .Select(a => a.Address.ToString()));
+                details.Add($"ℹ VPN adapter detected: {adapter.Name} ({adapter.Description})");
+                if (!string.IsNullOrEmpty(vpnIpList))
+                    details.Add($"    Adapter IPs: {vpnIpList}");
+            }
+
+            // Routing table is the authoritative source for what's routed via VPN
+            var caught = ProxyVpnDetectionTest.ProbeAvdServiceRanges(vpnAdapters, details);
+            foreach (var range in caught)
+                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
+
+            // Also show single-IP probe as informational context
             try
             {
                 var turnEndpoint = EndpointConfiguration.TurnRelayEndpoints[0];
@@ -2468,42 +2471,12 @@ public class TurnProxyVpnDetectionTest : BaseTest
                 {
                     var (routedViaVpn, localIp, _) = ProxyVpnDetectionTest.CheckIfRoutedViaVpn(turnIp, vpnAdapters);
                     if (routedViaVpn)
-                    {
-                        foreach (var adapter in vpnAdapters)
-                        {
-                            var vpnIpList = string.Join(", ", adapter.GetIPProperties().UnicastAddresses
-                                .Where(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                                .Select(a => a.Address.ToString()));
-                            issues.Add($"VPN adapter tunnelling UDP: {adapter.Description}");
-                            details.Add($"⚠ VPN adapter: {adapter.Name} ({adapter.Description})");
-                            details.Add($"    TURN relay {turnIp} routes via local IP {localIp} (VPN interface)");
-                            if (!string.IsNullOrEmpty(vpnIpList))
-                                details.Add($"    VPN adapter IPs: {vpnIpList}");
-                        }
-                        var caught = ProxyVpnDetectionTest.ProbeAvdServiceRanges(vpnAdapters, details);
-                        foreach (var range in caught)
-                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                    }
+                        details.Add($"\n  ⚠ Note: TURN relay {turnIp} ({turnEndpoint}) routes via VPN interface {localIp}");
                     else
-                    {
-                        foreach (var adapter in vpnAdapters)
-                            details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, TURN traffic bypasses VPN (relay {turnIp} routed via {localIp})");
-                        var caught = ProxyVpnDetectionTest.ProbeAvdServiceRanges(vpnAdapters, details);
-                        foreach (var range in caught)
-                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
-                    }
-                }
-                else
-                {
-                    foreach (var adapter in vpnAdapters)
-                        details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify TURN routing (DNS failed)");
+                        details.Add($"\n  ✓ TURN relay {turnIp} ({turnEndpoint}) routes direct via {localIp}");
                 }
             }
-            catch
-            {
-                foreach (var adapter in vpnAdapters)
-                    details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify TURN routing");
-            }
+            catch { /* DNS or probe failed — non-critical since routing table already checked */ }
         }
         else
         {
