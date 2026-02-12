@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -94,14 +95,23 @@ class Program
         // Auto-open browser with results embedded in URL fragment
         try
         {
-            // Use URL-safe base64 (replace +→-, /→_, remove = padding)
-            var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+            // Compress JSON with raw deflate, then URL-safe base64
+            byte[] compressed;
+            using (var ms = new MemoryStream())
+            {
+                using (var deflate = new DeflateStream(ms, CompressionLevel.SmallestSize))
+                {
+                    deflate.Write(Encoding.UTF8.GetBytes(json));
+                }
+                compressed = ms.ToArray();
+            }
+            var base64 = Convert.ToBase64String(compressed)
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
-            var url = $"https://paulcollinge.github.io/W365ConnectivityTool/#results={base64}";
+            var url = $"https://paulcollinge.github.io/W365ConnectivityTool/#zresults={base64}";
 
-            // Check URL length — most browsers handle ~2MB but Windows ShellExecute can truncate
+            Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {base64.Length} chars, URL: {url.Length} chars)");
             if (url.Length > 32000)
             {
                 Console.WriteLine($"  Results too large for URL auto-import ({url.Length} chars).");
@@ -119,8 +129,7 @@ class Program
         {
             Console.WriteLine($"  Could not open browser. Import the JSON file manually:");
             Console.WriteLine($"    1. Open https://paulcollinge.github.io/W365ConnectivityTool/");
-            Console.WriteLine($"    2. Click 'Import Scan Results'");
-            Console.WriteLine($"    3. Select {Path.GetFullPath(outputPath)}");
+            Console.WriteLine($"    2. Drag and drop {Path.GetFullPath(outputPath)} onto the page");
         }
         Console.WriteLine();
 

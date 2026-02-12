@@ -13,6 +13,11 @@ document.addEventListener('DOMContentLoaded', () => {
     setupDragDrop();
 });
 
+// ── Handle hash changes (e.g. browser reuses existing tab) ──
+window.addEventListener('hashchange', () => {
+    checkForAutoImport();
+});
+
 // ── Drag-and-drop import ──
 function setupDragDrop() {
     document.body.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
@@ -112,25 +117,30 @@ async function importLocalResults(event) {
     event.target.value = '';
 }
 
-// ── Auto-import from URL hash (scanner opens browser with #results=BASE64) ──
-function checkForAutoImport() {
+// ── Auto-import from URL hash (scanner opens browser with #zresults=COMPRESSED or #results=BASE64) ──
+async function checkForAutoImport() {
     const hash = window.location.hash;
-    if (!hash || !hash.startsWith('#results=')) return;
+    if (!hash) return;
+
+    let data = null;
 
     try {
-        const raw = hash.substring('#results='.length);
-        // Handle URL-safe base64 (replace - with +, _ with /) and restore padding
-        let base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
-        // Restore padding removed by scanner
-        const pad = (4 - (base64.length % 4)) % 4;
-        if (pad > 0) base64 += '='.repeat(pad);
-        const json = atob(base64);
-        const data = JSON.parse(json);
+        if (hash.startsWith('#zresults=')) {
+            // Compressed format (deflate-raw + URL-safe base64)
+            const raw = hash.substring('#zresults='.length);
+            data = await decodeCompressedHash(raw);
+        } else if (hash.startsWith('#results=')) {
+            // Uncompressed format (plain URL-safe base64)
+            const raw = hash.substring('#results='.length);
+            data = decodeUncompressedHash(raw);
+        } else {
+            return;
+        }
 
         // Clear the hash so it doesn't re-import on refresh / bookmarking
         history.replaceState(null, '', window.location.pathname + window.location.search);
 
-        console.log(`Auto-import: decoded ${json.length} chars, parsed ${data.results?.length ?? 0} results`);
+        console.log(`Auto-import: parsed ${data.results?.length ?? 0} results`);
         processImportedData(data);
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
@@ -144,6 +154,50 @@ function checkForAutoImport() {
         // Clear the hash
         history.replaceState(null, '', window.location.pathname + window.location.search);
     }
+}
+
+// ── Decode compressed hash (deflate-raw → JSON) ──
+async function decodeCompressedHash(raw) {
+    let base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = (4 - (base64.length % 4)) % 4;
+    if (pad > 0) base64 += '='.repeat(pad);
+
+    const binaryStr = atob(base64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+    const ds = new DecompressionStream('deflate-raw');
+    const writer = ds.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+
+    const reader = ds.readable.getReader();
+    const chunks = [];
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+    }
+    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const decompressed = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+        decompressed.set(chunk, offset);
+        offset += chunk.length;
+    }
+    const json = new TextDecoder().decode(decompressed);
+    console.log(`Auto-import (compressed): decompressed ${bytes.length} → ${json.length} bytes`);
+    return JSON.parse(json);
+}
+
+// ── Decode uncompressed hash (plain base64 → JSON) ──
+function decodeUncompressedHash(raw) {
+    let base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = (4 - (base64.length % 4)) % 4;
+    if (pad > 0) base64 += '='.repeat(pad);
+    const json = atob(base64);
+    console.log(`Auto-import (uncompressed): decoded ${json.length} chars`);
+    return JSON.parse(json);
 }
 
 // ── Shared import logic ──
