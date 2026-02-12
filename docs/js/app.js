@@ -427,7 +427,7 @@ function exportTextReport() {
                          r.status === 'Warning' ? '⚠' :
                          r.status === 'Failed' || r.status === 'Error' ? '✗' :
                          r.status === 'Skipped' ? '—' : '?';
-            const dur = r.duration ? ` (${r.duration}ms)` : '';
+            const dur = r.duration ? ` (ran in ${r.duration}ms)` : '';
             const src = r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
 
             lines.push(`  ${icon} [${r.status.toUpperCase()}] ${r.id} — ${r.name}${dur}${src}`);
