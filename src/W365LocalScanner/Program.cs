@@ -1423,6 +1423,25 @@ class Program
             };
             using var http = new HttpClient(httpHandler) { Timeout = TimeSpan.FromSeconds(10) };
 
+            // Fetch user's location via GeoIP
+            string userCity = null, userCountry = null;
+            double userLat = 0, userLon = 0;
+            var gatewayLocations = new List<string>(); // collect for summary
+            try
+            {
+                using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                var userGeoJson = await geoHttp.GetStringAsync("http://ip-api.com/json/?fields=status,city,country,lat,lon");
+                var userGeo = JsonSerializer.Deserialize(userGeoJson, ScanJsonContext.Default.JsonElement);
+                if (userGeo.TryGetProperty("status", out var us) && us.GetString() == "success")
+                {
+                    userCity = userGeo.GetProperty("city").GetString();
+                    userCountry = userGeo.GetProperty("country").GetString();
+                    userLat = userGeo.GetProperty("lat").GetDouble();
+                    userLon = userGeo.GetProperty("lon").GetDouble();
+                }
+            }
+            catch { /* user location is best-effort */ }
+
             foreach (var host in gateways)
             {
                 sb.AppendLine($"  {host}");
@@ -1454,6 +1473,40 @@ class Program
                     sb.AppendLine($"    Edge: (no reverse DNS)");
                 }
 
+                // GeoIP the gateway IP to show location
+                string gwCity = null, gwCountry = null;
+                try
+                {
+                    using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                    var gwGeoJson = await geoHttp.GetStringAsync($"http://ip-api.com/json/{ip}?fields=status,city,country,lat,lon");
+                    var gwGeo = JsonSerializer.Deserialize(gwGeoJson, ScanJsonContext.Default.JsonElement);
+                    if (gwGeo.TryGetProperty("status", out var gs) && gs.GetString() == "success")
+                    {
+                        gwCity = gwGeo.GetProperty("city").GetString();
+                        gwCountry = gwGeo.GetProperty("country").GetString();
+                        var gwLat = gwGeo.GetProperty("lat").GetDouble();
+                        var gwLon = gwGeo.GetProperty("lon").GetDouble();
+
+                        var locationStr = $"{gwCity}, {gwCountry}";
+                        gatewayLocations.Add(locationStr);
+
+                        // Compare with user location
+                        if (userLat != 0 && userLon != 0)
+                        {
+                            var distKm = HaversineDistanceKm(userLat, userLon, gwLat, gwLon);
+                            if (distKm < 300)
+                                locationStr += $" \u2714 Near you ({userCity}, {userCountry}) — {distKm:0} km";
+                            else if (distKm < 1000)
+                                locationStr += $" \u2248 Moderate distance from you ({userCity}) — {distKm:0} km";
+                            else
+                                locationStr += $" \u26A0 Far from you ({userCity}, {userCountry}) — {distKm:0} km";
+                        }
+
+                        sb.AppendLine($"    Location: {locationStr}");
+                    }
+                }
+                catch { /* GeoIP is best-effort */ }
+
                 // CNAME chain via nslookup for AFD identification
                 try
                 {
@@ -1464,12 +1517,6 @@ class Program
                     using var proc = Process.Start(psi);
                     var output = await proc!.StandardOutput.ReadToEndAsync();
                     await proc.WaitForExitAsync();
-
-                    // Extract CNAME aliases from nslookup output
-                    var aliases = output.Split('\n')
-                        .Where(l => l.TrimStart().StartsWith("Aliases:") || l.TrimStart().StartsWith("canonical name"))
-                        .Select(l => l.Trim())
-                        .ToList();
 
                     if (output.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
                         output.Contains("azurefd", StringComparison.OrdinalIgnoreCase))
@@ -1512,16 +1559,27 @@ class Program
                 sb.AppendLine();
             }
 
-            result.ResultValue = string.Join(", ", gateways.Select(g =>
-            {
-                try { return $"{g} \u2192 {Dns.GetHostAddresses(g).First()}"; }
-                catch { return $"{g} \u2192 ?"; }
-            }));
+            // Build result summary from cached gateway locations
+            var summary = gatewayLocations.Distinct().ToList();
+            result.ResultValue = summary.Any()
+                ? $"Gateway edge: {string.Join(" / ", summary)}"
+                : string.Join(", ", gateways.Select(g => { try { return $"{g} → {Dns.GetHostAddresses(g).First()}"; } catch { return g; } }));
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = "Passed";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    static double HaversineDistanceKm(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double R = 6371; // Earth radius in km
+        var dLat = (lat2 - lat1) * Math.PI / 180;
+        var dLon = (lon2 - lon1) * Math.PI / 180;
+        var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                Math.Cos(lat1 * Math.PI / 180) * Math.Cos(lat2 * Math.PI / 180) *
+                Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
     }
 
     static bool IsPrivateIp(IPAddress ip)
