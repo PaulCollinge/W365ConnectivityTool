@@ -18,6 +18,7 @@ const EndpointConfig = {
 
     // RD Gateway
     gatewayEndpoints: [
+        'afdfp-rdgateway-r1.wvd.microsoft.com',
         'rdweb.wvd.microsoft.com',
         'client.wvd.microsoft.com'
     ],
