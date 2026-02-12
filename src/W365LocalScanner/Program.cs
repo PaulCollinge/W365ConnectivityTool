@@ -110,7 +110,7 @@ class Program
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
-            var targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?zresults={base64}";
+            var targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}&zresults={base64}";
 
             Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {base64.Length} chars, URL: {targetUrl.Length} chars)");
 
@@ -118,7 +118,7 @@ class Program
             {
                 Console.WriteLine($"  Results too large for URL auto-import ({targetUrl.Length} chars).");
                 Console.WriteLine($"  Drag and drop {Path.GetFullPath(outputPath)} onto the web page.");
-                targetUrl = "https://paulcollinge.github.io/W365ConnectivityTool/";
+                targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
             }
 
             Console.WriteLine($"  Opening browser with results ({targetUrl.Length} chars)...");
