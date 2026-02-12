@@ -29,10 +29,10 @@ const EndpointConfig = {
     turnRelayPort: 3478,
 
     // Geo-IP (must be HTTPS for GitHub Pages)
-    // Order used in browser-tests.js: geoIpFallbackUrl (primary) → geoIpApiUrl → geoIpFallback2Url
-    geoIpApiUrl: 'https://ipwho.is/',
-    geoIpFallbackUrl: 'https://get.geojs.io/v1/ip/geo.json',
-    geoIpFallback2Url: 'https://freeipapi.com/api/json',
+    // Order used in browser-tests.js: ipinfo.io (primary) → freeipapi.com → ipwho.is
+    geoIpPrimaryUrl: 'https://ipinfo.io/json',
+    geoIpFallbackUrl: 'https://freeipapi.com/api/json',
+    geoIpFallback2Url: 'https://ipwho.is/',
 
     // Required FQDNs for end-user devices (Azure cloud)
     // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint?tabs=azure#end-user-devices
