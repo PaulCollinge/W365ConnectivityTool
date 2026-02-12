@@ -69,11 +69,6 @@ const ALL_TESTS = [
 
     // ── TCP Based RDP ──
     {
-        id: 'B-TCP-02', name: 'Gateway Latency',
-        description: 'Measures round-trip time to RD Gateway via fetch timing',
-        category: 'tcp', source: 'browser', run: testGatewayLatency
-    },
-    {
         id: 'B-TCP-03', name: 'DNS Resolution Performance',
         description: 'Measures DNS lookup time for key service endpoints',
         category: 'tcp', source: 'browser', run: testDnsPerformance
@@ -82,6 +77,11 @@ const ALL_TESTS = [
         id: 'L-TCP-04', name: 'Gateway Connectivity',
         description: 'Tests DNS → TCP → TLS → HTTPS layers to RD Gateway endpoints, pinpoints failures (requires Local Scanner)',
         category: 'tcp', source: 'local'
+    },
+    {
+        id: 'B-TCP-02', name: 'Gateway Latency',
+        description: 'Measures round-trip time to RD Gateway via fetch timing',
+        category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
         id: 'L-TCP-05', name: 'DNS CNAME Chain Analysis',
