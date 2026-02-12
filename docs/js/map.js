@@ -137,8 +137,8 @@ function updateMapIspCard(lookup) {
 
 // ── AFD Edge Card ──
 function updateMapAfdCard(lookup) {
-    // Use Gateway HTTPS reachability and Gateway Latency browser tests
-    const reach = lookup['B-TCP-01'];
+    // Use Gateway Connectivity (local scanner) or Gateway Latency (browser) for status
+    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'];
     const latency = lookup['B-TCP-02'];
     const tlsInspect = lookup['L-TCP-06'];
 

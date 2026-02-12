@@ -69,11 +69,6 @@ const ALL_TESTS = [
 
     // ── TCP Based RDP ──
     {
-        id: 'B-TCP-01', name: 'Gateway HTTPS Reachability',
-        description: 'Tests HTTPS fetch connectivity to RD Gateway endpoints',
-        category: 'tcp', source: 'browser', run: testGatewayReachability
-    },
-    {
         id: 'B-TCP-02', name: 'Gateway Latency',
         description: 'Measures round-trip time to RD Gateway via fetch timing',
         category: 'tcp', source: 'browser', run: testGatewayLatency
@@ -84,8 +79,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'browser', run: testDnsPerformance
     },
     {
-        id: 'L-TCP-04', name: 'Raw TCP Port Connectivity',
-        description: 'Tests raw TCP socket connections to gateway ports (requires Local Scanner)',
+        id: 'L-TCP-04', name: 'Gateway Connectivity',
+        description: 'Tests DNS → TCP → TLS → HTTPS layers to RD Gateway endpoints, pinpoints failures (requires Local Scanner)',
         category: 'tcp', source: 'local'
     },
     {
@@ -375,36 +370,6 @@ async function testConnectionType(test) {
     return makeResult(test, slow ? 'Warning' : 'Passed', value, detail, duration,
         slow ? EndpointConfig.docs.bandwidth : '');
 }
-
-// ── Gateway HTTPS Reachability ──
-async function testGatewayReachability(test) {
-    const t0 = performance.now();
-    const endpoints = EndpointConfig.gatewayEndpoints;
-    const results = [];
-
-    for (const ep of endpoints) {
-        try {
-            const start = performance.now();
-            await fetch(`https://${ep}/`, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(8000) });
-            results.push({ host: ep, status: 'Reachable', time: Math.round(performance.now() - start) });
-        } catch (e) {
-            results.push({ host: ep, status: e.name === 'AbortError' ? 'Timeout' : 'Error', time: -1 });
-        }
-    }
-
-    const duration = Math.round(performance.now() - t0);
-    const reachable = results.filter(r => r.status === 'Reachable');
-    const detail = results.map(r => `${r.host}: ${r.status}${r.time > 0 ? ' (' + r.time + 'ms)' : ''}`).join('\n');
-
-    if (reachable.length === 0) {
-        return makeResult(test, 'Failed', 'No gateway endpoints reachable via HTTPS',
-            detail, duration, EndpointConfig.docs.networkRequirements);
-    }
-
-    return makeResult(test, 'Passed', `${reachable.length}/${results.length} gateways reachable`,
-        detail, duration);
-}
-
 // ── Gateway Latency ──
 async function testGatewayLatency(test) {
     const t0 = performance.now();

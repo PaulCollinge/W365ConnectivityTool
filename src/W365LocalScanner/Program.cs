@@ -159,7 +159,7 @@ class Program
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
 
             // ── TCP Based RDP ──
-            new("L-TCP-04", "Raw TCP Port Connectivity", "Tests raw TCP socket to gateway:443", "tcp", RunTcpPortTest),
+            new("L-TCP-04", "Gateway Connectivity", "Tests DNS, TCP, TLS, HTTP layers to gateways", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
             new("L-TCP-06", "TLS Inspection Detection", "Validates TLS certificate chain", "tcp", RunTlsInspection),
             new("L-TCP-07", "Proxy / VPN / SWG Detection", "Detects proxy, VPN, SWG", "tcp", RunProxyVpnDetection),
@@ -580,9 +580,9 @@ class Program
     //  TCP TRANSPORT TESTS
     // ═══════════════════════════════════════════
 
-    static async Task<TestResult> RunTcpPortTest()
+    static async Task<TestResult> RunGatewayConnectivity()
     {
-        var result = new TestResult { Id = "L-TCP-04", Name = "Raw TCP Port Connectivity", Category = "tcp" };
+        var result = new TestResult { Id = "L-TCP-04", Name = "Gateway Connectivity", Category = "tcp" };
         try
         {
             var targets = new[] {
@@ -593,31 +593,105 @@ class Program
 
             var sb = new StringBuilder();
             int passed = 0;
+            var issues = new List<string>();
+
+            using var httpHandler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                AllowAutoRedirect = false
+            };
+            using var http = new HttpClient(httpHandler) { Timeout = TimeSpan.FromSeconds(10) };
+
             foreach (var (host, port) in targets)
             {
+                sb.AppendLine($"  {host}:{port}");
+
+                // Layer 1: DNS
+                System.Net.IPAddress[] addresses;
+                try
+                {
+                    addresses = await System.Net.Dns.GetHostAddressesAsync(host);
+                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addresses.Select(a => a.ToString()))}");
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"    ✗ DNS failed: {ex.Message}");
+                    issues.Add($"{host}: DNS resolution failed");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                // Layer 2: TCP
                 try
                 {
                     using var tcp = new TcpClient();
                     var sw = Stopwatch.StartNew();
-                    var connectTask = tcp.ConnectAsync(host, port);
-                    if (await Task.WhenAny(connectTask, Task.Delay(5000)) == connectTask)
-                    {
-                        sw.Stop();
-                        sb.AppendLine($"\u2714 {host}:{port} \u2014 Connected in {sw.ElapsedMilliseconds}ms");
-                        passed++;
-                    }
-                    else
-                    {
-                        sb.AppendLine($"\u2718 {host}:{port} \u2014 Timeout (5s)");
-                    }
+                    using var cts = new CancellationTokenSource(5000);
+                    await tcp.ConnectAsync(host, port, cts.Token);
+                    sw.Stop();
+                    sb.AppendLine($"    ✓ TCP connected in {sw.ElapsedMilliseconds}ms");
+                }
+                catch (OperationCanceledException)
+                {
+                    sb.AppendLine($"    ✗ TCP connection timed out (5s)");
+                    issues.Add($"{host}: TCP port {port} blocked or timed out — check firewall rules");
+                    sb.AppendLine();
+                    continue;
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"\u2718 {host}:{port} \u2014 {ex.Message}");
+                    sb.AppendLine($"    ✗ TCP failed: {ex.InnerException?.Message ?? ex.Message}");
+                    issues.Add($"{host}: TCP port {port} refused — firewall or port blocked");
+                    sb.AppendLine();
+                    continue;
                 }
+
+                // Layer 3: TLS + HTTP
+                try
+                {
+                    var sw2 = Stopwatch.StartNew();
+                    var response = await http.GetAsync($"https://{host}/");
+                    sw2.Stop();
+                    var code = (int)response.StatusCode;
+                    sb.AppendLine($"    ✓ HTTPS {code} in {sw2.ElapsedMilliseconds}ms");
+                    passed++;
+                }
+                catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
+                {
+                    sb.AppendLine($"    ✗ TLS handshake failed: {ex.InnerException.Message}");
+                    issues.Add($"{host}: TLS handshake failed — possible TLS inspection or certificate issue");
+                    sb.AppendLine();
+                    continue;
+                }
+                catch (TaskCanceledException)
+                {
+                    sb.AppendLine($"    ✗ HTTPS request timed out (10s)");
+                    issues.Add($"{host}: TCP connected but HTTPS timed out — possible proxy or DPI blocking");
+                    sb.AppendLine();
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    var inner = ex.InnerException?.Message ?? ex.Message;
+                    sb.AppendLine($"    ✗ HTTPS failed: {inner}");
+                    issues.Add($"{host}: TCP connected but HTTPS failed — {inner}");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                sb.AppendLine();
             }
 
-            result.ResultValue = $"{passed}/{targets.Length} TCP connections succeeded";
+            if (issues.Count > 0)
+            {
+                sb.AppendLine("Issues found:");
+                foreach (var issue in issues)
+                    sb.AppendLine($"  ⚠ {issue}");
+            }
+
+            result.ResultValue = passed == targets.Length
+                ? $"All {targets.Length} gateways fully reachable (DNS+TCP+HTTPS)"
+                : $"{passed}/{targets.Length} gateways fully reachable";
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = passed == targets.Length ? "Passed" : passed > 0 ? "Warning" : "Failed";
             if (result.Status != "Passed")
