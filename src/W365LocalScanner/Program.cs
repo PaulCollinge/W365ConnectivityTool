@@ -92,8 +92,11 @@ class Program
         Console.WriteLine();
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
 
-        // Auto-open browser with results via query parameter
-        // (Windows ShellExecute preserves ?query params but drops #hash fragments)
+        // Auto-open browser with results via local redirect HTML
+        // We create a temp HTML file that redirects via JavaScript, which:
+        //  1. Preserves #hash fragments (Windows ShellExecute strips them from URLs)
+        //  2. Sends BOTH ?zresults=compressed AND #results=uncompressed so the page
+        //     works whether the CDN is serving the new or old version of app.js
         try
         {
             // Compress JSON with raw deflate, then URL-safe base64
@@ -106,23 +109,42 @@ class Program
                 }
                 compressed = ms.ToArray();
             }
-            var base64 = Convert.ToBase64String(compressed)
+            var compressedBase64 = Convert.ToBase64String(compressed)
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
-            var targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}&zresults={base64}";
 
-            Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {base64.Length} chars, URL: {targetUrl.Length} chars)");
+            // Also create uncompressed URL-safe base64 for legacy #results= hash format
+            var uncompressedBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .Replace('+', '-')
+                .Replace('/', '_')
+                .TrimEnd('=');
 
-            if (targetUrl.Length > 32000)
+            var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var pageUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&zresults={compressedBase64}#results={uncompressedBase64}";
+
+            Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
+
+            if (pageUrl.Length > 2_000_000) // Browser URL limit ~2MB
             {
-                Console.WriteLine($"  Results too large for URL auto-import ({targetUrl.Length} chars).");
+                Console.WriteLine($"  Results too large for URL auto-import ({pageUrl.Length} chars).");
                 Console.WriteLine($"  Drag and drop {Path.GetFullPath(outputPath)} onto the web page.");
-                targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+                pageUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
             }
 
-            Console.WriteLine($"  Opening browser with results ({targetUrl.Length} chars)...");
-            Process.Start(new ProcessStartInfo { FileName = targetUrl, UseShellExecute = true });
+            // Create a temporary HTML file that redirects via JavaScript
+            // (JavaScript redirect preserves hash fragments unlike ShellExecute)
+            var redirectHtml = $@"<!DOCTYPE html>
+<html><head><title>Opening W365 Diagnostics...</title></head>
+<body><p>Redirecting to results page...</p>
+<script>window.location.replace({EscapeJsString(pageUrl)});</script>
+</body></html>";
+
+            var redirectPath = Path.Combine(Path.GetTempPath(), "W365ScanRedirect.html");
+            await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
+
+            Console.WriteLine($"  Opening browser with results...");
+            Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
         }
         catch (Exception ex)
         {
@@ -1590,6 +1612,26 @@ class Program
                (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
                (bytes[0] == 192 && bytes[1] == 168) ||
                (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);
+    }
+
+    /// <summary>Escape a string as a JavaScript single-quoted literal.</summary>
+    static string EscapeJsString(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length + 10);
+        sb.Append('\'');
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '\'': sb.Append("\\'"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                default: sb.Append(c); break;
+            }
+        }
+        sb.Append('\'');
+        return sb.ToString();
     }
 }
 
