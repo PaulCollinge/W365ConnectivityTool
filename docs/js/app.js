@@ -234,6 +234,10 @@ async function checkForAutoImport() {
         } catch (broadcastErr) {
             console.warn('Could not broadcast to other tabs:', broadcastErr);
         }
+
+        // Auto-run browser tests so the scanner tab has complete results
+        // (don't rely solely on cross-tab sync from an existing tab)
+        runAllBrowserTests();
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
         // Show a helpful message to the user instead of failing silently
