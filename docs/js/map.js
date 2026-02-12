@@ -228,8 +228,11 @@ function updateMapAfdCard(lookup) {
             setBadge('map-afd-route-badge', `${icon} ${route}`, routeClass);
         }
 
-        // Show location as a badge
-        const locLine = extractGatewayLocation(gwUsed.detailedInfo);
+        // Show location as a badge — prefer AFD PoP (from X-MSEdge-Ref) over GeoIP Location
+        const popLine = extractLine(gwUsed.detailedInfo, 'AFD PoP:');
+        const locLine = popLine
+            ? popLine.replace(/^[A-Z]{2,5}\s*—\s*/, '')   // strip PoP code prefix e.g. "LHR — "
+            : extractGatewayLocation(gwUsed.detailedInfo);
         if (locLine) {
             setFlaggedBadge('map-afd-loc-badge', `📍 ${locLine}`, 'location-badge', locLine);
         }

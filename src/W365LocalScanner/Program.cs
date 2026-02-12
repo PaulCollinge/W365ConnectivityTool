@@ -1932,6 +1932,31 @@ class Program
                 else
                 {
                     sb.AppendLine($"    Route: Azure Front Door");
+
+                    // For AFD endpoints, the resolved IP is anycast so GeoIP shows the
+                    // registration address (Redmond) rather than the actual edge node.
+                    // The X-MSEdge-Ref response header contains the real PoP code.
+                    try
+                    {
+                        var edgeResponse = await http.GetAsync($"https://{host}/");
+                        if (edgeResponse.Headers.TryGetValues("X-MSEdge-Ref", out var edgeRefs))
+                        {
+                            var edgeRef = edgeRefs.FirstOrDefault() ?? "";
+                            var popMatch = System.Text.RegularExpressions.Regex.Match(edgeRef, @"Ref B:\s*([A-Z]{2,5})\d*EDGE");
+                            if (popMatch.Success)
+                            {
+                                var popCode = popMatch.Groups[1].Value;
+                                var popCity = GetAfdPopLocation(popCode);
+                                sb.AppendLine($"    AFD PoP: {popCode} — {popCity ?? "Unknown"}");
+                                // Replace the GeoIP location in gatewayLocations with the PoP city
+                                if (popCity != null && gatewayLocations.Count > 0)
+                                {
+                                    gatewayLocations[gatewayLocations.Count - 1] = popCity;
+                                }
+                            }
+                        }
+                    }
+                    catch { /* X-MSEdge-Ref is best-effort */ }
                 }
 
                 // TLS cert subject for the specific gateway
@@ -1987,6 +2012,65 @@ class Program
                (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
                (bytes[0] == 192 && bytes[1] == 168) ||
                (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);
+    }
+
+    /// <summary>
+    /// Maps Azure Front Door PoP codes to city names.
+    /// Based on https://learn.microsoft.com/azure/frontdoor/edge-locations-by-abbreviation
+    /// </summary>
+    static string? GetAfdPopLocation(string popCode)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Europe
+            ["LON"] = "London, UK", ["LHR"] = "London, UK", ["LTS"] = "London, UK",
+            ["MAN"] = "Manchester, UK", ["EDG"] = "Edinburgh, UK",
+            ["DUB"] = "Dublin, Ireland", ["AMS"] = "Amsterdam, NL",
+            ["FRA"] = "Frankfurt, DE", ["BER"] = "Berlin, DE", ["MUC"] = "Munich, DE",
+            ["PAR"] = "Paris, FR", ["MRS"] = "Marseille, FR",
+            ["MAD"] = "Madrid, ES", ["BCN"] = "Barcelona, ES",
+            ["MIL"] = "Milan, IT", ["ROM"] = "Rome, IT",
+            ["ZRH"] = "Zurich, CH", ["GVA"] = "Geneva, CH",
+            ["VIE"] = "Vienna, AT", ["CPH"] = "Copenhagen, DK",
+            ["HEL"] = "Helsinki, FI", ["OSL"] = "Oslo, NO",
+            ["STO"] = "Stockholm, SE", ["WAW"] = "Warsaw, PL",
+            ["PRG"] = "Prague, CZ", ["BUD"] = "Budapest, HU",
+            ["BUH"] = "Bucharest, RO", ["SOF"] = "Sofia, BG",
+            ["ATH"] = "Athens, GR", ["LIS"] = "Lisbon, PT", ["BRU"] = "Brussels, BE",
+            // North America
+            ["IAD"] = "Ashburn, VA, US", ["DCA"] = "Washington DC, US",
+            ["JFK"] = "New York, US", ["EWR"] = "Newark, NJ, US",
+            ["BOS"] = "Boston, US", ["PHL"] = "Philadelphia, US",
+            ["ATL"] = "Atlanta, US", ["MIA"] = "Miami, US",
+            ["ORD"] = "Chicago, US", ["DFW"] = "Dallas, US",
+            ["IAH"] = "Houston, US", ["PHX"] = "Phoenix, US",
+            ["LAX"] = "Los Angeles, US", ["SJC"] = "San Jose, US",
+            ["SEA"] = "Seattle, US", ["DEN"] = "Denver, US",
+            ["MSP"] = "Minneapolis, US", ["SLC"] = "Salt Lake City, US",
+            ["YYZ"] = "Toronto, CA", ["YUL"] = "Montreal, CA",
+            ["YVR"] = "Vancouver, CA", ["QRO"] = "Queretaro, MX",
+            // Asia Pacific
+            ["SIN"] = "Singapore", ["HKG"] = "Hong Kong",
+            ["NRT"] = "Tokyo, JP", ["KIX"] = "Osaka, JP",
+            ["ICN"] = "Seoul, KR", ["TPE"] = "Taipei, TW",
+            ["BOM"] = "Mumbai, IN", ["MAA"] = "Chennai, IN",
+            ["DEL"] = "New Delhi, IN", ["HYD"] = "Hyderabad, IN",
+            ["BNE"] = "Brisbane, AU", ["SYD"] = "Sydney, AU",
+            ["MEL"] = "Melbourne, AU", ["PER"] = "Perth, AU",
+            ["AKL"] = "Auckland, NZ",
+            // Middle East & Africa
+            ["JNB"] = "Johannesburg, ZA", ["CPT"] = "Cape Town, ZA",
+            ["DXB"] = "Dubai, AE", ["AUH"] = "Abu Dhabi, AE",
+            ["FJR"] = "Fujairah, AE", ["DOH"] = "Doha, QA",
+            ["BAH"] = "Bahrain", ["TLV"] = "Tel Aviv, IL",
+            ["RUH"] = "Riyadh, SA", ["JED"] = "Jeddah, SA",
+            // South America
+            ["GRU"] = "São Paulo, BR", ["GIG"] = "Rio de Janeiro, BR",
+            ["CWB"] = "Curitiba, BR", ["SCL"] = "Santiago, CL",
+            ["BOG"] = "Bogota, CO", ["EZE"] = "Buenos Aires, AR",
+            ["LIM"] = "Lima, PE"
+        };
+        return map.TryGetValue(popCode, out var city) ? city : null;
     }
 
     /// <summary>Escape a string as a JavaScript single-quoted literal.</summary>
