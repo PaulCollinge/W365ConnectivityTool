@@ -803,6 +803,9 @@ main {
 .map-card-badge.status-ok      { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
 .map-card-badge.status-fail    { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 .map-card-badge.location-badge { background: rgba(88,166,255,0.08); color: var(--accent); border: 1px solid rgba(88,166,255,0.25); font-weight: 600; }
+.map-card-badge.route-privatelink { background: rgba(163,113,247,0.12); color: #a371f7; border: 1px solid rgba(163,113,247,0.3); font-weight: 600; }
+.map-card-badge.route-afd     { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.map-card-badge.route-direct   { background: rgba(88,166,255,0.08); color: var(--accent); border: 1px solid rgba(88,166,255,0.25); }
 .map-card-badge.proximity-near { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
 .map-card-badge.proximity-moderate { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
 .map-card-badge.proximity-far  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }

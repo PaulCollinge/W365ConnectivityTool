@@ -220,7 +220,13 @@ function updateMapAfdCard(lookup) {
     // Extract route type from L-TCP-09
     if (gwUsed && gwUsed.detailedInfo) {
         const route = extractLine(gwUsed.detailedInfo, 'Route:');
-        if (route) detail1 = `✓ Via ${route}`;
+        if (route) {
+            const isPrivateLink = route.toLowerCase().includes('private');
+            const isAfd = route.toLowerCase().includes('front door') || route.toLowerCase().includes('afd');
+            const routeClass = isPrivateLink ? 'route-privatelink' : isAfd ? 'route-afd' : 'route-direct';
+            const icon = isPrivateLink ? '🔒' : isAfd ? '⚡' : '🔗';
+            setBadge('map-afd-route-badge', `${icon} ${route}`, routeClass);
+        }
 
         // Show location as a badge
         const locLine = extractGatewayLocation(gwUsed.detailedInfo);
