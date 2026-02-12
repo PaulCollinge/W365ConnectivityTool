@@ -92,9 +92,8 @@ class Program
         Console.WriteLine();
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
 
-        // Auto-open browser with results via local redirect file
-        // (Windows ShellExecute can lose URL fragments, so we create a tiny HTML
-        //  file whose JS does the redirect — the browser handles the full URL.)
+        // Auto-open browser with results via query parameter
+        // (Windows ShellExecute preserves ?query params but drops #hash fragments)
         try
         {
             // Compress JSON with raw deflate, then URL-safe base64
@@ -111,7 +110,7 @@ class Program
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
-            var targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/#zresults={base64}";
+            var targetUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?zresults={base64}";
 
             Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {base64.Length} chars, URL: {targetUrl.Length} chars)");
 
@@ -122,21 +121,8 @@ class Program
                 targetUrl = "https://paulcollinge.github.io/W365ConnectivityTool/";
             }
 
-            // Write a local HTML redirect file that the browser can open reliably
-            var redirectPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outputPath))!, "W365_OpenResults.html");
-            // Escape URL for JS string: replace \ with \\ and ' with \'
-            var jsUrl = targetUrl.Replace("\\", "\\\\").Replace("'", "\\'");
-            var redirectHtml = $@"<!DOCTYPE html>
-<html><head><meta charset=""utf-8""><title>Opening W365 Diagnostics...</title>
-<style>body{{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}}
-.box{{text-align:center;padding:2em}}.spinner{{display:inline-block;width:24px;height:24px;border:3px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin 1s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style></head>
-<body><div class=""box""><div class=""spinner""></div><p>Opening Windows 365 Connectivity Diagnostics...</p>
-<p style=""font-size:0.8em;color:#8b949e"">This page will close automatically.</p></div>
-<script>window.location.href='{jsUrl}';</script></body></html>";
-            await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
-
             Console.WriteLine($"  Opening browser with results ({targetUrl.Length} chars)...");
-            Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
+            Process.Start(new ProcessStartInfo { FileName = targetUrl, UseShellExecute = true });
         }
         catch (Exception ex)
         {

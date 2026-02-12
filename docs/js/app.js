@@ -117,30 +117,39 @@ async function importLocalResults(event) {
     event.target.value = '';
 }
 
-// ── Auto-import from URL hash (scanner opens browser with #zresults=COMPRESSED or #results=BASE64) ──
+// ── Auto-import from URL query param or hash ──
+// Scanner opens browser with ?zresults=COMPRESSED (query param survives Windows ShellExecute)
+// Also supports legacy #zresults= and #results= hash formats
 async function checkForAutoImport() {
+    const params = new URLSearchParams(window.location.search);
     const hash = window.location.hash;
-    if (!hash) return;
-
     let data = null;
+    let source = '';
 
     try {
-        if (hash.startsWith('#zresults=')) {
-            // Compressed format (deflate-raw + URL-safe base64)
+        if (params.has('zresults')) {
+            // Query-param compressed format (preferred — works with ShellExecute)
+            const raw = params.get('zresults');
+            data = await decodeCompressedHash(raw);
+            source = 'query';
+        } else if (hash.startsWith('#zresults=')) {
+            // Hash compressed format (legacy)
             const raw = hash.substring('#zresults='.length);
             data = await decodeCompressedHash(raw);
+            source = 'hash';
         } else if (hash.startsWith('#results=')) {
-            // Uncompressed format (plain URL-safe base64)
+            // Hash uncompressed format (legacy)
             const raw = hash.substring('#results='.length);
             data = decodeUncompressedHash(raw);
+            source = 'hash';
         } else {
             return;
         }
 
-        // Clear the hash so it doesn't re-import on refresh / bookmarking
-        history.replaceState(null, '', window.location.pathname + window.location.search);
+        // Clear the URL so it doesn't re-import on refresh / bookmarking
+        history.replaceState(null, '', window.location.pathname);
 
-        console.log(`Auto-import: parsed ${data.results?.length ?? 0} results`);
+        console.log(`Auto-import (${source}): parsed ${data.results?.length ?? 0} results`);
         processImportedData(data);
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
