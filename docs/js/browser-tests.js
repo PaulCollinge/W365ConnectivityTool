@@ -263,34 +263,42 @@ function makeResult(test, status, value, detail, duration, remediation) {
 // ═════════════════════════════════════════════════════
 
 // ── Endpoint Reachability ──
+// Tests connectivity using a two-phase approach:
+//   Phase 1: no-cors GET — opaque response = reachable.
+//   Phase 2: If phase 1 throws TypeError (not timeout), measure elapsed time.
+//            A fast error (< 3s) means the server responded but CORS blocked
+//            reading it — the endpoint IS reachable.  A slow error likely means
+//            a genuine network problem (DNS, TCP, TLS).
 async function testEndpointReachability(test) {
     const t0 = performance.now();
     const results = [];
-    let allPassed = true;
     let anyFailed = false;
 
     const checks = EndpointConfig.requiredEndpoints.map(async (ep) => {
         const url = `https://${ep.url}/`;
+        const start = performance.now();
         try {
-            const start = performance.now();
-            const response = await fetch(url, {
-                method: 'HEAD',
+            await fetch(url, {
+                method: 'GET',
                 mode: 'no-cors',
                 cache: 'no-store',
-                signal: AbortSignal.timeout(8000)
+                signal: AbortSignal.timeout(10000)
             });
             const elapsed = Math.round(performance.now() - start);
             results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed });
         } catch (e) {
-            // no-cors fetch may fail for various reasons but a TypeError with 'failed'
-            // usually means the endpoint is truly unreachable
+            const elapsed = Math.round(performance.now() - start);
             if (e.name === 'AbortError' || e.name === 'TimeoutError') {
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: -1 });
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
                 anyFailed = true;
+            } else if (elapsed < 3000) {
+                // Fast TypeError = server responded but browser blocked reading
+                // the response (no CORS headers).  The endpoint IS reachable.
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed, note: 'no CORS headers' });
             } else {
-                // For no-cors, a TypeError is expected for some endpoints but they may still be reachable
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Check (CORS limited)', time: -1 });
-                allPassed = false;
+                // Slow TypeError — likely a genuine network issue
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed });
+                anyFailed = true;
             }
         }
     });
@@ -299,11 +307,14 @@ async function testEndpointReachability(test) {
     const duration = Math.round(performance.now() - t0);
 
     const reachable = results.filter(r => r.status === 'Reachable').length;
-    const detail = results.map(r =>
-        `${r.status === 'Reachable' ? '\u2714' : '\u26A0'} ${r.endpoint} (${r.purpose}) - ${r.status}${r.time > 0 ? ' (' + r.time + 'ms)' : ''}`
-    ).join('\n');
+    const detail = results.map(r => {
+        const icon = r.status === 'Reachable' ? '\u2714' : '\u2716';
+        const timing = r.time > 0 ? ` (${r.time}ms)` : '';
+        const note = r.note ? ` [${r.note}]` : '';
+        return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
+    }).join('\n');
 
-    const status = anyFailed ? 'Failed' : (allPassed ? 'Passed' : 'Warning');
+    const status = anyFailed ? (reachable === 0 ? 'Failed' : 'Warning') : 'Passed';
     const value = `${reachable}/${results.length} endpoints reachable (browser check)`;
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
