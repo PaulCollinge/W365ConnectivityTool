@@ -2075,7 +2075,7 @@ public class ProxyVpnDetectionTest : BaseTest
     /// Determines the local IP the OS would use to reach a given target, then checks
     /// whether that IP belongs to any of the supplied VPN adapter interfaces.
     /// </summary>
-    private static (bool routedViaVpn, string localIp, string? adapterName) CheckIfRoutedViaVpn(
+    internal static (bool routedViaVpn, string localIp, string? adapterName) CheckIfRoutedViaVpn(
         IPAddress targetIp, IEnumerable<NetworkInterface> vpnAdapters)
     {
         try
@@ -2106,7 +2106,7 @@ public class ProxyVpnDetectionTest : BaseTest
     /// Parses the IPv4 routing table and checks which routes cover the key W365/AVD
     /// service CIDR ranges. Returns a list of ranges that route via VPN (empty = all direct).
     /// </summary>
-    private static List<string> ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, List<string> details)
+    internal static List<string> ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, List<string> details)
     {
         var vpnCaughtRanges = new List<string>();
         try
@@ -2210,7 +2210,7 @@ public class ProxyVpnDetectionTest : BaseTest
         return vpnCaughtRanges;
     }
 
-    private record struct RtEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
+    internal record struct RtEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
 
     private static List<RtEntry> ParseRoutePrintOutput(string output)
     {
@@ -2444,7 +2444,7 @@ public class TurnProxyVpnDetectionTest : BaseTest
             details.Add($"✗ UDP test error: {ex.Message}");
         }
 
-        // 2. Check for VPN adapters that may block/tunnel UDP
+        // 2. Check for VPN adapters — verify if TURN/UDP traffic actually routes through them
         var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => n.OperationalStatus == OperationalStatus.Up &&
                         (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
@@ -2459,10 +2459,50 @@ public class TurnProxyVpnDetectionTest : BaseTest
 
         if (vpnAdapters.Count > 0)
         {
-            foreach (var adapter in vpnAdapters)
+            try
             {
-                issues.Add($"VPN adapter may block UDP: {adapter.Description}");
-                details.Add($"⚠ VPN adapter active: {adapter.Name} ({adapter.Description}) — may tunnel/block UDP");
+                var turnEndpoint = EndpointConfiguration.TurnRelayEndpoints[0];
+                var turnIps = await Dns.GetHostAddressesAsync(turnEndpoint, ct);
+                var turnIp = turnIps.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                if (turnIp != null)
+                {
+                    var (routedViaVpn, localIp, _) = ProxyVpnDetectionTest.CheckIfRoutedViaVpn(turnIp, vpnAdapters);
+                    if (routedViaVpn)
+                    {
+                        foreach (var adapter in vpnAdapters)
+                        {
+                            var vpnIpList = string.Join(", ", adapter.GetIPProperties().UnicastAddresses
+                                .Where(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                                .Select(a => a.Address.ToString()));
+                            issues.Add($"VPN adapter tunnelling UDP: {adapter.Description}");
+                            details.Add($"⚠ VPN adapter: {adapter.Name} ({adapter.Description})");
+                            details.Add($"    TURN relay {turnIp} routes via local IP {localIp} (VPN interface)");
+                            if (!string.IsNullOrEmpty(vpnIpList))
+                                details.Add($"    VPN adapter IPs: {vpnIpList}");
+                        }
+                        var caught = ProxyVpnDetectionTest.ProbeAvdServiceRanges(vpnAdapters, details);
+                        foreach (var range in caught)
+                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
+                    }
+                    else
+                    {
+                        foreach (var adapter in vpnAdapters)
+                            details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, TURN traffic bypasses VPN (relay {turnIp} routed via {localIp})");
+                        var caught = ProxyVpnDetectionTest.ProbeAvdServiceRanges(vpnAdapters, details);
+                        foreach (var range in caught)
+                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
+                    }
+                }
+                else
+                {
+                    foreach (var adapter in vpnAdapters)
+                        details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify TURN routing (DNS failed)");
+                }
+            }
+            catch
+            {
+                foreach (var adapter in vpnAdapters)
+                    details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify TURN routing");
             }
         }
         else
