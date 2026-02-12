@@ -325,7 +325,14 @@ function processImportedData(data) {
         if (testDef) {
             updateTestUI(lr.id, mapped);
         } else {
-            console.warn(`Import: No test definition found for ${lr.id}`);
+            // Scanner version is newer than page — dynamically create a card
+            console.warn(`Import: No test definition for ${lr.id}, creating card dynamically`);
+            const dynDef = { id: lr.id, name: lr.name || lr.id, description: lr.description || '', source: 'local', category: mapped.category };
+            const container = document.getElementById(`tests-${mapped.category}`);
+            if (container) {
+                const el = createTestElement(dynDef, mapped);
+                container.appendChild(el);
+            }
         }
 
         importedCount++;
