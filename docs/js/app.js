@@ -43,6 +43,7 @@ scannerChannel.onmessage = (event) => {
         updateSummary(allResults);
         updateCategoryBadges(allResults);
         updateConnectivityMap(allResults);
+        updateExportButton();
         // Show confirmation
         const info = document.getElementById('info-banner');
         if (info) {
@@ -155,6 +156,7 @@ async function runAllBrowserTests() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
+    updateExportButton();
 
     // Only show download banner if no scanner results have been imported
     const hasLocalResults = allResults.some(r => r.source === 'local');
@@ -346,8 +348,7 @@ function processImportedData(data) {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
-
-    // Show confirmation
+    updateExportButton();
     const info = document.getElementById('info-banner');
     info.classList.remove('hidden');
     const machineName = data.machineName ? escapeHtml(String(data.machineName)) : '';
@@ -371,4 +372,95 @@ function mapCategoryFromId(id) {
     if (id.includes('-UDP-')) return 'udp';
     if (id.includes('-CS-')) return 'cloud';
     return 'local';
+}
+
+// ── Export results as a text report ──
+function exportTextReport() {
+    if (allResults.length === 0) return;
+
+    const lines = [];
+    const divider = '═'.repeat(72);
+    const thinDiv = '─'.repeat(72);
+
+    lines.push(divider);
+    lines.push('  Windows 365 Connectivity Diagnostics — Text Report');
+    lines.push(divider);
+    lines.push(`  Generated: ${new Date().toLocaleString()}`);
+    lines.push(`  User Agent: ${navigator.userAgent}`);
+    lines.push('');
+
+    // Summary counts
+    const passed = allResults.filter(r => r.status === 'Passed').length;
+    const warnings = allResults.filter(r => r.status === 'Warning').length;
+    const failed = allResults.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+    const skipped = allResults.filter(r => r.status === 'Skipped').length;
+
+    lines.push(`  Summary: ${allResults.length} tests — ${passed} passed, ${warnings} warnings, ${failed} failed` +
+        (skipped > 0 ? `, ${skipped} skipped` : ''));
+    lines.push('');
+
+    // Group by category
+    const categoryNames = {
+        local: 'Local Environment',
+        endpoint: 'Required Endpoints',
+        tcp: 'TCP / Transport',
+        udp: 'UDP / TURN / STUN',
+        cloud: 'Cloud PC'
+    };
+    const categories = ['local', 'endpoint', 'tcp', 'udp', 'cloud'];
+
+    for (const cat of categories) {
+        const catResults = allResults.filter(r => r.category === cat);
+        if (catResults.length === 0) continue;
+
+        lines.push(divider);
+        lines.push(`  ${categoryNames[cat] || cat}`);
+        lines.push(divider);
+        lines.push('');
+
+        for (const r of catResults) {
+            const icon = r.status === 'Passed' ? '✓' :
+                         r.status === 'Warning' ? '⚠' :
+                         r.status === 'Failed' || r.status === 'Error' ? '✗' :
+                         r.status === 'Skipped' ? '—' : '?';
+            const dur = r.duration ? ` (${r.duration}ms)` : '';
+            const src = r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
+
+            lines.push(`  ${icon} [${r.status.toUpperCase()}] ${r.id} — ${r.name}${dur}${src}`);
+            if (r.resultValue) {
+                lines.push(`    Result: ${r.resultValue}`);
+            }
+            if (r.detailedInfo) {
+                const detailLines = r.detailedInfo.split('\n');
+                for (const dl of detailLines) {
+                    lines.push(`    ${dl}`);
+                }
+            }
+            lines.push('');
+        }
+    }
+
+    lines.push(thinDiv);
+    lines.push('  End of report');
+    lines.push(thinDiv);
+
+    const text = lines.join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `W365-Diagnostics-${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// ── Enable the export button when results are available ──
+function updateExportButton() {
+    const btn = document.getElementById('btn-export-text');
+    if (btn) {
+        btn.disabled = allResults.length === 0;
+        btn.title = allResults.length === 0 ? 'Run tests first' : `Export ${allResults.length} results as text`;
+    }
 }
