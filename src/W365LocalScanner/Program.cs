@@ -254,8 +254,13 @@ class Program
     /// Parses the IPv4 routing table and checks which routes cover the key W365/AVD
     /// service CIDR ranges, reporting whether each range is routed via VPN or direct.
     /// </summary>
-    static void ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, StringBuilder sb)
+    /// <summary>
+    /// Parses the IPv4 routing table and checks which routes cover the key W365/AVD
+    /// service CIDR ranges. Returns a list of ranges that route via VPN (empty = all direct).
+    /// </summary>
+    static List<string> ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, StringBuilder sb)
     {
+        var vpnCaughtRanges = new List<string>();
         try
         {
             // Collect VPN adapter interface IPs
@@ -275,7 +280,7 @@ class Program
             proc.WaitForExit();
 
             var routes = ParseRouteTable(output);
-            if (routes.Count == 0) { sb.AppendLine("\n  Could not parse routing table"); return; }
+            if (routes.Count == 0) { sb.AppendLine("\n  Could not parse routing table"); return vpnCaughtRanges; }
 
             // Target ranges
             var targets = new (string label, uint netAddr, int prefixLen)[]
@@ -286,22 +291,26 @@ class Program
 
             sb.AppendLine("\n  W365/AVD service range routing (from routing table):");
 
+            var directRanges = new List<string>();
+
             foreach (var (label, netAddr, prefixLen) in targets)
             {
                 uint rangeMask = prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - prefixLen);
-                uint rangeEnd = netAddr | ~rangeMask;
 
-                // Find best route for a representative IP in the middle of the range
+                // Find best route for a representative IP in the range
                 uint probeIp = netAddr + 1;
                 var bestRoute = FindBestRoute(routes, probeIp);
 
                 bool bestViaVpn = bestRoute.HasValue && vpnIfIps.Contains(bestRoute.Value.ifIp);
 
+                if (bestViaVpn) vpnCaughtRanges.Add(label);
+                else directRanges.Add(label);
+
                 if (bestRoute.HasValue)
                 {
                     var r = bestRoute.Value;
                     string routeType = bestViaVpn ? "\u26A0" : "\u2714";
-                    string via = bestViaVpn ? "VPN" : "direct";
+                    string via = bestViaVpn ? "VPN tunnel" : "direct";
                     sb.AppendLine($"    {routeType} {label}: routed {via} (best match: {r.destStr}/{r.prefixLen} via {r.gateway}, interface {r.ifIp}, metric {r.metric})");
                 }
                 else
@@ -320,22 +329,42 @@ class Program
                         bool routeCoversRange = (netAddr & routeMask2) == r.dest && r.prefixLen <= prefixLen;
                         return routeInsideRange || routeCoversRange;
                     })
-                    .Where(r => r.destStr != "0.0.0.0") // skip default route (shown via best match)
+                    .Where(r => r.destStr != "0.0.0.0") // skip default route
                     .OrderByDescending(r => r.prefixLen)
                     .ToList();
 
                 foreach (var r in overlapping)
                 {
                     bool viaVpn = vpnIfIps.Contains(r.ifIp);
-                    string marker = viaVpn ? "\u26A0 VPN" : "\u2714 direct";
+                    string marker;
+                    if (viaVpn && !bestViaVpn)
+                        marker = "VPN \u2014 overridden by more-specific direct route";
+                    else if (viaVpn)
+                        marker = "\u26A0 VPN";
+                    else
+                        marker = "\u2714 direct";
                     sb.AppendLine($"      route {r.destStr}/{r.prefixLen} via {r.gateway} (if {r.ifIp}, metric {r.metric}) [{marker}]");
                 }
+            }
+
+            // Summary
+            sb.AppendLine();
+            if (vpnCaughtRanges.Count > 0)
+            {
+                sb.AppendLine($"  \u26A0 VPN tunnel is carrying W365/AVD traffic for: {string.Join(", ", vpnCaughtRanges)}");
+                if (directRanges.Count > 0)
+                    sb.AppendLine($"  \u2714 Split-tunnelled (direct) for: {string.Join(", ", directRanges)}");
+            }
+            else
+            {
+                sb.AppendLine($"  \u2714 No W365/AVD service traffic goes through the VPN tunnel");
             }
         }
         catch (Exception ex)
         {
             sb.AppendLine($"\n  Could not analyze routing table: {ex.Message}");
         }
+        return vpnCaughtRanges;
     }
 
     record struct RouteEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
@@ -1205,13 +1234,17 @@ class Program
                                 if (!string.IsNullOrEmpty(vpnIpList))
                                     sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
                             }
-                            ProbeAvdServiceRanges(vpnAdapters, sb);
+                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                            foreach (var range in caught)
+                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                         }
                         else
                         {
                             foreach (var vpn in vpnAdapters)
                                 sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
-                            ProbeAvdServiceRanges(vpnAdapters, sb);
+                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                            foreach (var range in caught)
+                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                         }
                     }
                     else
@@ -1446,13 +1479,17 @@ class Program
                                 if (!string.IsNullOrEmpty(vpnIpList))
                                     sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
                             }
-                            ProbeAvdServiceRanges(vpnAdapters, sb);
+                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                            foreach (var range in caught)
+                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                         }
                         else
                         {
                             foreach (var vpn in vpnAdapters)
                                 sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, TURN traffic bypasses VPN (relay {turnIp} routed via {localIp})");
-                            ProbeAvdServiceRanges(vpnAdapters, sb);
+                            var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                            foreach (var range in caught)
+                                issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                         }
                     }
                     else

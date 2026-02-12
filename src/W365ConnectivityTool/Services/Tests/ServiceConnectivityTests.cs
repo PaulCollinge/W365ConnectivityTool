@@ -1987,13 +1987,17 @@ public class ProxyVpnDetectionTest : BaseTest
                             if (!string.IsNullOrEmpty(vpnIpList))
                                 details.Add($"    VPN adapter IPs: {vpnIpList}");
                         }
-                        ProbeAvdServiceRanges(vpnAdapters, details);
+                        var caught = ProbeAvdServiceRanges(vpnAdapters, details);
+                        foreach (var range in caught)
+                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                     }
                     else
                     {
                         foreach (var adapter in vpnAdapters)
                             details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
-                        ProbeAvdServiceRanges(vpnAdapters, details);
+                        var caught = ProbeAvdServiceRanges(vpnAdapters, details);
+                        foreach (var range in caught)
+                            issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                     }
                 }
                 else
@@ -2100,10 +2104,11 @@ public class ProxyVpnDetectionTest : BaseTest
 
     /// <summary>
     /// Parses the IPv4 routing table and checks which routes cover the key W365/AVD
-    /// service CIDR ranges, reporting whether each range is routed via VPN or direct.
+    /// service CIDR ranges. Returns a list of ranges that route via VPN (empty = all direct).
     /// </summary>
-    private static void ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, List<string> details)
+    private static List<string> ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, List<string> details)
     {
+        var vpnCaughtRanges = new List<string>();
         try
         {
             var vpnIfIps = new HashSet<string>();
@@ -2117,12 +2122,12 @@ public class ProxyVpnDetectionTest : BaseTest
                 RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
             };
             using var proc = Process.Start(psi);
-            if (proc == null) { details.Add("  Could not run route print"); return; }
+            if (proc == null) { details.Add("  Could not run route print"); return vpnCaughtRanges; }
             var output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit();
 
             var routes = ParseRoutePrintOutput(output);
-            if (routes.Count == 0) { details.Add("  Could not parse routing table"); return; }
+            if (routes.Count == 0) { details.Add("  Could not parse routing table"); return vpnCaughtRanges; }
 
             var targets = new (string label, uint netAddr, int prefixLen)[]
             {
@@ -2133,6 +2138,8 @@ public class ProxyVpnDetectionTest : BaseTest
             details.Add("");
             details.Add("  W365/AVD service range routing (from routing table):");
 
+            var directRanges = new List<string>();
+
             foreach (var (label, netAddr, prefixLen) in targets)
             {
                 uint rangeMask = prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - prefixLen);
@@ -2142,11 +2149,14 @@ public class ProxyVpnDetectionTest : BaseTest
 
                 bool bestViaVpn = bestRoute.HasValue && vpnIfIps.Contains(bestRoute.Value.ifIp);
 
+                if (bestViaVpn) vpnCaughtRanges.Add(label);
+                else directRanges.Add(label);
+
                 if (bestRoute.HasValue)
                 {
                     var r = bestRoute.Value;
                     string routeType = bestViaVpn ? "⚠" : "✓";
-                    string via = bestViaVpn ? "VPN" : "direct";
+                    string via = bestViaVpn ? "VPN tunnel" : "direct";
                     details.Add($"    {routeType} {label}: routed {via} (best match: {r.destStr}/{r.prefixLen} via {r.gateway}, interface {r.ifIp}, metric {r.metric})");
                 }
                 else
@@ -2169,15 +2179,35 @@ public class ProxyVpnDetectionTest : BaseTest
                 foreach (var r in overlapping)
                 {
                     bool viaVpn = vpnIfIps.Contains(r.ifIp);
-                    string marker = viaVpn ? "⚠ VPN" : "✓ direct";
+                    string marker;
+                    if (viaVpn && !bestViaVpn)
+                        marker = "VPN \u2014 overridden by more-specific direct route";
+                    else if (viaVpn)
+                        marker = "⚠ VPN";
+                    else
+                        marker = "✓ direct";
                     details.Add($"      route {r.destStr}/{r.prefixLen} via {r.gateway} (if {r.ifIp}, metric {r.metric}) [{marker}]");
                 }
+            }
+
+            // Summary
+            details.Add("");
+            if (vpnCaughtRanges.Count > 0)
+            {
+                details.Add($"  ⚠ VPN tunnel is carrying W365/AVD traffic for: {string.Join(", ", vpnCaughtRanges)}");
+                if (directRanges.Count > 0)
+                    details.Add($"  ✓ Split-tunnelled (direct) for: {string.Join(", ", directRanges)}");
+            }
+            else
+            {
+                details.Add($"  ✓ No W365/AVD service traffic goes through the VPN tunnel");
             }
         }
         catch (Exception ex)
         {
             details.Add($"  Could not analyze routing table: {ex.Message}");
         }
+        return vpnCaughtRanges;
     }
 
     private record struct RtEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
