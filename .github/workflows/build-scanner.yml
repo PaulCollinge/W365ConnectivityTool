@@ -49,8 +49,7 @@ jobs:
             ## Windows 365 / AVD Local Connectivity Scanner
 
             Download `W365LocalScanner.exe` and run it on the client machine.
-            It will perform local-only diagnostics and generate a `W365ScanResults.json` file.
-            Import the JSON into the [web diagnostics page](https://YOUR_USERNAME.github.io/W365ConnectivityTool/) to see combined results.
+            It will perform local-only diagnostics and **automatically open the web diagnostics page with results**.
 
             ### What it tests
             - WiFi signal strength, gateway latency, network adapters
@@ -60,3 +59,4 @@ jobs:
             - Proxy, VPN, and SWG detection
             - TURN relay UDP reachability and NAT type
             - Machine performance (CPU, RAM)
+            - TURN TLS inspection and relay location
