@@ -1,69 +1,52 @@
 # Windows 365 / AVD Connectivity Diagnostics
 
-A two-part connectivity diagnostic tool for Windows 365 and Azure Virtual Desktop:
+A lightweight diagnostic tool that tests network connectivity for **Windows 365 Cloud PC** and **Azure Virtual Desktop (AVD)** environments from the client's perspective.
 
-1. **Web Dashboard** — runs browser-based tests (endpoint reachability, latency, WebRTC/STUN, location)
-2. **Local Scanner** — a downloadable `.exe` that runs deeper OS-level tests (raw TCP/UDP, WiFi, proxy, TLS inspection, DNS CNAME chains)
-
-Import the local scanner results into the web dashboard to see a combined diagnostic view.
-
-## Architecture
+1. **Download & run** the scanner exe — no install, no admin rights
+2. It performs ~23 network tests in ~30 seconds
+3. Results **automatically open** in a web dashboard
 
 ```
-┌─────────────────────────────────────┐
-│        Web Dashboard (Browser)       │
-│  GitHub Pages static site            │
-│                                      │
-│  ✓ HTTPS endpoint reachability      │
-│  ✓ Gateway latency (fetch timing)   │
-│  ✓ DNS resolution performance       │
-│  ✓ WebRTC / STUN connectivity       │
-│  ✓ NAT type detection (WebRTC)      │
-│  ✓ User location & ISP              │
-│  ✓ Connection type                  │
-│                                      │
-│  📁 Import Local Scanner results    │
-└─────────────────────────────────────┘
-           ▲ JSON import
-           │
-┌─────────────────────────────────────┐
-│     Local Scanner (.exe)             │
-│  Self-contained .NET 8 console app   │
-│                                      │
-│  ✓ Raw TCP port connectivity        │
-│  ✓ DNS CNAME chain / Private Link   │
-│  ✓ TLS inspection detection         │
-│  ✓ Proxy / VPN / SWG detection      │
-│  ✓ TURN relay UDP 3478              │
-│  ✓ STUN NAT type (UDP socket)       │
-│  ✓ WiFi signal strength             │
-│  ✓ Gateway/router latency (ping)    │
-│  ✓ Network adapter details          │
-│  ✓ Machine performance              │
-│  ✓ Teams optimization check         │
-│                                      │
-│  → Outputs W365ScanResults.json     │
-└─────────────────────────────────────┘
+┌──────────────────┐         ┌──────────────────────────────────┐
+│  Local Scanner   │────────▶│  Web Dashboard (GitHub Pages)    │
+│  W365Local       │  opens  │  paulcollinge.github.io/         │
+│  Scanner.exe     │  browser│  W365ConnectivityTool            │
+└──────────────────┘         └──────────────────────────────────┘
 ```
 
 ## Quick Start
 
-### Web Dashboard
-Visit the GitHub Pages deployment or open `docs/index.html` locally:
-1. Click **Run Browser Tests** — runs all browser-capable diagnostics
-2. Download the Local Scanner for deeper tests
-3. Run the scanner, then click **Import Local Results** and select the JSON file
+### 1. Download the scanner
 
-### Local Scanner
+[**⬇ Download W365LocalScanner.exe**](https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe)
+
+Run it — results automatically open in your browser.
+
+### 2. View the web dashboard
+
+The dashboard is at [**paulcollinge.github.io/W365ConnectivityTool**](https://paulcollinge.github.io/W365ConnectivityTool/). The scanner opens this automatically, but you can also visit it directly to run browser-side tests.
+
+## Verify the download
+
+Every release includes a **SHA256 checksum** in the [release notes](https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest) and is built with [GitHub artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) (SLSA provenance).
+
 ```powershell
-# Download from GitHub Releases, then:
-.\W365LocalScanner.exe
-
-# Optionally specify output path:
-.\W365LocalScanner.exe MyResults.json
+# Verify checksum (compare with value in release notes)
+(Get-FileHash W365LocalScanner.exe -Algorithm SHA256).Hash
 ```
 
-The scanner produces `W365ScanResults.json` in the current directory. Import it into the web dashboard.
+```bash
+# Verify build provenance (requires GitHub CLI)
+gh attestation verify W365LocalScanner.exe --repo PaulCollinge/W365ConnectivityTool
+```
+
+## Privacy
+
+- **No data leaves your machine** except to the endpoints being tested
+- Results are passed to the dashboard via the browser URL (stays local)
+- No telemetry, no tracking, no external servers
+- Dashboard runs entirely client-side on GitHub Pages
+- Full source code is in this repo
 
 ## Project Structure
 
@@ -107,8 +90,10 @@ W365ConnectivityTool/
 | Teams Optimization | — | ✅ | Registry + process check |
 | Raw TCP Port Connectivity | — | ✅ | TcpClient socket |
 | DNS CNAME Chain | — | ✅ | nslookup + DNS.Resolve |
+| DNS Hijacking Check | — | ✅ | Verifies DNS responses resolve to Azure IPs |
 | TLS Inspection | — | ✅ | SslStream cert validation |
 | Proxy/VPN/SWG Detection | — | ✅ | System proxy, WinHTTP, env, VPN adapters |
+| Gateway Used & Proximity | — | ✅ | GeoIP on gateway IP, distance calc |
 | TURN Relay (UDP 3478) | — | ✅ | UdpClient STUN request |
 | TURN Relay Location | — | ✅ | GeoIP on relay IP |
 | NAT Type (Socket STUN) | — | ✅ | Raw STUN binding |

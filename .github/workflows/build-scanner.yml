@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -32,6 +34,20 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o publish
         shell: pwsh
+
+      - name: Compute SHA256 checksum
+        id: checksum
+        run: |
+          $hash = (Get-FileHash publish/W365LocalScanner.exe -Algorithm SHA256).Hash
+          Write-Output "sha256=$hash" >> $env:GITHUB_OUTPUT
+          Write-Output "SHA256: $hash"
+        shell: pwsh
+
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: publish/W365LocalScanner.exe
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -60,3 +76,18 @@ jobs:
             - TURN relay UDP reachability and NAT type
             - Machine performance (CPU, RAM)
             - TURN TLS inspection and relay location
+            - DNS hijacking detection
+            - Gateway proximity check
+
+            ### Verify integrity
+            **SHA256:** `${{ steps.checksum.outputs.sha256 }}`
+
+            ```powershell
+            # Verify after download:
+            (Get-FileHash W365LocalScanner.exe -Algorithm SHA256).Hash
+            ```
+
+            ### Verify build provenance
+            ```bash
+            gh attestation verify W365LocalScanner.exe --repo PaulCollinge/W365ConnectivityTool
+            ```
