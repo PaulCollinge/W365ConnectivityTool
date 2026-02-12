@@ -21,6 +21,31 @@ function updateConnectivityMap(results) {
 
 // ── Card helpers ──
 
+/** Convert a 2-letter ISO country code to its flag emoji (regional indicators). */
+function countryCodeToFlag(code) {
+    if (!code || code.length !== 2) return '';
+    const upper = code.toUpperCase();
+    const cp1 = 0x1F1E6 + (upper.charCodeAt(0) - 65);
+    const cp2 = 0x1F1E6 + (upper.charCodeAt(1) - 65);
+    return String.fromCodePoint(cp1, cp2);
+}
+
+/**
+ * Prepend a country flag emoji to a location string like "London, GB".
+ * Handles both 2-letter codes and full country names by trying a lookup first.
+ */
+function addFlag(locationStr) {
+    if (!locationStr) return locationStr;
+    const parts = locationStr.split(',');
+    if (parts.length < 2) return locationStr;
+    const last = parts[parts.length - 1].trim();
+    // 2-letter country code?
+    if (/^[A-Z]{2}$/.test(last)) {
+        return `${countryCodeToFlag(last)} ${locationStr}`;
+    }
+    return locationStr;
+}
+
 function setAccentStatus(elementId, status) {
     const el = document.getElementById(elementId);
     if (!el) return;
@@ -90,7 +115,7 @@ function updateMapClientCard(lookup) {
         publicIp = extractLine(userLoc.detailedInfo, 'Public IP:');
     }
 
-    setText('map-client-location', location || 'Awaiting results...');
+    setText('map-client-location', location ? addFlag(location) : 'Awaiting results...');
     setText('map-client-ip', publicIp ? `🌐 ${publicIp}` : '');
     setAccentStatus('map-client-accent', status);
 }
@@ -130,7 +155,7 @@ function updateMapIspCard(lookup) {
     // Show egress city from GeoIP
     const userLoc = lookup['B-LE-01'];
     const egressCity = userLoc ? userLoc.resultValue : '';
-    setText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
+    setText('map-isp-detail3', egressCity ? `📍 ${addFlag(egressCity)}` : '');
 
     setAccentStatus('map-isp-accent', isp.status);
 }
@@ -157,7 +182,7 @@ function updateMapAfdCard(lookup) {
         // Show location as a badge
         const locLine = extractGatewayLocation(gwUsed.detailedInfo);
         if (locLine) {
-            setBadge('map-afd-loc-badge', `📍 ${locLine}`, 'location-badge');
+            setBadge('map-afd-loc-badge', `📍 ${addFlag(locLine)}`, 'location-badge');
         }
     }
 
@@ -196,7 +221,7 @@ function updateMapRdGwCard(lookup) {
     if (gwUsed && gwUsed.detailedInfo) {
         const locInfo = extractGatewayLocationWithProximity(gwUsed.detailedInfo);
         if (locInfo.location) {
-            setBadge('map-rdgw-loc-badge', `📍 ${locInfo.location}`, 'location-badge');
+            setBadge('map-rdgw-loc-badge', `📍 ${addFlag(locInfo.location)}`, 'location-badge');
         }
         if (locInfo.proximity) {
             if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near')) {
@@ -247,7 +272,7 @@ function updateMapTurnCard(lookup) {
         const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
         const city = locMatch ? locMatch[1] : '';
         if (city) {
-            setBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge');
+            setBadge('map-turn-loc-badge', `📍 ${addFlag(city)}`, 'location-badge');
         }
         status = worstStatus(status, turnLoc.status);
     }
