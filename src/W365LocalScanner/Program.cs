@@ -251,6 +251,63 @@ class Program
     }
 
     /// <summary>
+    /// Probes representative IPs from the key W365/AVD service CIDR ranges to determine
+    /// which are routed through VPN vs direct. Reports per-range routing to the StringBuilder.
+    /// </summary>
+    static void ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, StringBuilder sb)
+    {
+        // Key W365/AVD service IP ranges and sample probe IPs within each
+        var ranges = new (string cidr, IPAddress[] probes)[]
+        {
+            ("40.64.144.0/20", new[]
+            {
+                IPAddress.Parse("40.64.144.1"), IPAddress.Parse("40.64.148.1"),
+                IPAddress.Parse("40.64.152.1"), IPAddress.Parse("40.64.156.1")
+            }),
+            ("51.5.0.0/16", new[]
+            {
+                IPAddress.Parse("51.5.0.1"),   IPAddress.Parse("51.5.64.1"),
+                IPAddress.Parse("51.5.128.1"), IPAddress.Parse("51.5.192.1")
+            })
+        };
+
+        sb.AppendLine("\n  W365/AVD service range routing:");
+        foreach (var (cidr, probes) in ranges)
+        {
+            var inVpn = new List<string>();
+            var direct = new List<string>();
+
+            foreach (var probe in probes)
+            {
+                try
+                {
+                    var (routed, localIp, _) = CheckIfRoutedViaVpn(probe, vpnAdapters);
+                    if (routed)
+                        inVpn.Add($"{probe} \u2192 VPN ({localIp})");
+                    else
+                        direct.Add($"{probe} \u2192 direct ({localIp})");
+                }
+                catch
+                {
+                    inVpn.Add($"{probe} \u2192 unknown");
+                }
+            }
+
+            if (inVpn.Count == probes.Length)
+                sb.AppendLine($"    \u26A0 {cidr}: ALL traffic routed via VPN tunnel");
+            else if (inVpn.Count == 0)
+                sb.AppendLine($"    \u2714 {cidr}: all traffic bypasses VPN (direct)");
+            else
+                sb.AppendLine($"    \u26A0 {cidr}: partial split — {inVpn.Count}/{probes.Length} probes via VPN");
+
+            foreach (var line in inVpn)
+                sb.AppendLine($"      {line}");
+            foreach (var line in direct)
+                sb.AppendLine($"      {line}");
+        }
+    }
+
+    /// <summary>
     /// Creates an HttpClient that forwards default proxy credentials (NTLM/Kerberos).
     /// Use this instead of bare "new HttpClient" so tests work behind authenticated proxies.
     /// </summary>
@@ -1050,6 +1107,7 @@ class Program
                                 if (!string.IsNullOrEmpty(vpnIpList))
                                     sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
                             }
+                            ProbeAvdServiceRanges(vpnAdapters, sb);
                         }
                         else
                         {
@@ -1289,6 +1347,7 @@ class Program
                                 if (!string.IsNullOrEmpty(vpnIpList))
                                     sb.AppendLine($"    VPN adapter IPs: {vpnIpList}");
                             }
+                            ProbeAvdServiceRanges(vpnAdapters, sb);
                         }
                         else
                         {

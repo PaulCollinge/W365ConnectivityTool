@@ -1987,6 +1987,7 @@ public class ProxyVpnDetectionTest : BaseTest
                             if (!string.IsNullOrEmpty(vpnIpList))
                                 details.Add($"    VPN adapter IPs: {vpnIpList}");
                         }
+                        ProbeAvdServiceRanges(vpnAdapters, details);
                     }
                     else
                     {
@@ -2093,6 +2094,63 @@ public class ProxyVpnDetectionTest : BaseTest
         catch
         {
             return (true, "unknown", null);
+        }
+    }
+
+    /// <summary>
+    /// Probes representative IPs from the key W365/AVD service CIDR ranges to determine
+    /// which are routed through VPN vs direct.
+    /// </summary>
+    private static void ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, List<string> details)
+    {
+        var ranges = new (string cidr, IPAddress[] probes)[]
+        {
+            ("40.64.144.0/20", new[]
+            {
+                IPAddress.Parse("40.64.144.1"), IPAddress.Parse("40.64.148.1"),
+                IPAddress.Parse("40.64.152.1"), IPAddress.Parse("40.64.156.1")
+            }),
+            ("51.5.0.0/16", new[]
+            {
+                IPAddress.Parse("51.5.0.1"),   IPAddress.Parse("51.5.64.1"),
+                IPAddress.Parse("51.5.128.1"), IPAddress.Parse("51.5.192.1")
+            })
+        };
+
+        details.Add("");
+        details.Add("  W365/AVD service range routing:");
+        foreach (var (cidr, probes) in ranges)
+        {
+            var inVpn = new List<string>();
+            var direct = new List<string>();
+
+            foreach (var probe in probes)
+            {
+                try
+                {
+                    var (routed, localIp, _) = CheckIfRoutedViaVpn(probe, vpnAdapters);
+                    if (routed)
+                        inVpn.Add($"{probe} → VPN ({localIp})");
+                    else
+                        direct.Add($"{probe} → direct ({localIp})");
+                }
+                catch
+                {
+                    inVpn.Add($"{probe} → unknown");
+                }
+            }
+
+            if (inVpn.Count == probes.Length)
+                details.Add($"    ⚠ {cidr}: ALL traffic routed via VPN tunnel");
+            else if (inVpn.Count == 0)
+                details.Add($"    ✓ {cidr}: all traffic bypasses VPN (direct)");
+            else
+                details.Add($"    ⚠ {cidr}: partial split — {inVpn.Count}/{probes.Length} probes via VPN");
+
+            foreach (var line in inVpn)
+                details.Add($"      {line}");
+            foreach (var line in direct)
+                details.Add($"      {line}");
         }
     }
 
