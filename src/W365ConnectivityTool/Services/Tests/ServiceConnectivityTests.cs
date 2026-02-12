@@ -1993,6 +1993,7 @@ public class ProxyVpnDetectionTest : BaseTest
                     {
                         foreach (var adapter in vpnAdapters)
                             details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, RDP traffic bypasses VPN (gateway {gwIp} routed via {localIp})");
+                        ProbeAvdServiceRanges(vpnAdapters, details);
                     }
                 }
                 else
@@ -2098,60 +2099,148 @@ public class ProxyVpnDetectionTest : BaseTest
     }
 
     /// <summary>
-    /// Probes representative IPs from the key W365/AVD service CIDR ranges to determine
-    /// which are routed through VPN vs direct.
+    /// Parses the IPv4 routing table and checks which routes cover the key W365/AVD
+    /// service CIDR ranges, reporting whether each range is routed via VPN or direct.
     /// </summary>
     private static void ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, List<string> details)
     {
-        var ranges = new (string cidr, IPAddress[] probes)[]
+        try
         {
-            ("40.64.144.0/20", new[]
-            {
-                IPAddress.Parse("40.64.144.1"), IPAddress.Parse("40.64.148.1"),
-                IPAddress.Parse("40.64.152.1"), IPAddress.Parse("40.64.156.1")
-            }),
-            ("51.5.0.0/16", new[]
-            {
-                IPAddress.Parse("51.5.0.1"),   IPAddress.Parse("51.5.64.1"),
-                IPAddress.Parse("51.5.128.1"), IPAddress.Parse("51.5.192.1")
-            })
-        };
+            var vpnIfIps = new HashSet<string>();
+            foreach (var vpn in vpnAdapters)
+                foreach (var addr in vpn.GetIPProperties().UnicastAddresses)
+                    if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
+                        vpnIfIps.Add(addr.Address.ToString());
 
-        details.Add("");
-        details.Add("  W365/AVD service range routing:");
-        foreach (var (cidr, probes) in ranges)
-        {
-            var inVpn = new List<string>();
-            var direct = new List<string>();
-
-            foreach (var probe in probes)
+            var psi = new ProcessStartInfo("route", "print -4")
             {
-                try
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) { details.Add("  Could not run route print"); return; }
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+
+            var routes = ParseRoutePrintOutput(output);
+            if (routes.Count == 0) { details.Add("  Could not parse routing table"); return; }
+
+            var targets = new (string label, uint netAddr, int prefixLen)[]
+            {
+                ("40.64.144.0/20", IpToUint(IPAddress.Parse("40.64.144.0")), 20),
+                ("51.5.0.0/16",    IpToUint(IPAddress.Parse("51.5.0.0")),    16),
+            };
+
+            details.Add("");
+            details.Add("  W365/AVD service range routing (from routing table):");
+
+            foreach (var (label, netAddr, prefixLen) in targets)
+            {
+                uint rangeMask = prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - prefixLen);
+
+                uint probeIp = netAddr + 1;
+                var bestRoute = FindBestRouteMatch(routes, probeIp);
+
+                bool bestViaVpn = bestRoute.HasValue && vpnIfIps.Contains(bestRoute.Value.ifIp);
+
+                if (bestRoute.HasValue)
                 {
-                    var (routed, localIp, _) = CheckIfRoutedViaVpn(probe, vpnAdapters);
-                    if (routed)
-                        inVpn.Add($"{probe} → VPN ({localIp})");
-                    else
-                        direct.Add($"{probe} → direct ({localIp})");
+                    var r = bestRoute.Value;
+                    string routeType = bestViaVpn ? "⚠" : "✓";
+                    string via = bestViaVpn ? "VPN" : "direct";
+                    details.Add($"    {routeType} {label}: routed {via} (best match: {r.destStr}/{r.prefixLen} via {r.gateway}, interface {r.ifIp}, metric {r.metric})");
                 }
-                catch
+                else
                 {
-                    inVpn.Add($"{probe} → unknown");
+                    details.Add($"    ? {label}: no matching route found");
+                }
+
+                var overlapping = routes
+                    .Where(r =>
+                    {
+                        bool routeInsideRange = (r.dest & rangeMask) == netAddr && r.prefixLen >= prefixLen;
+                        uint routeMask2 = r.prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - r.prefixLen);
+                        bool routeCoversRange = (netAddr & routeMask2) == r.dest && r.prefixLen <= prefixLen;
+                        return routeInsideRange || routeCoversRange;
+                    })
+                    .Where(r => r.destStr != "0.0.0.0")
+                    .OrderByDescending(r => r.prefixLen)
+                    .ToList();
+
+                foreach (var r in overlapping)
+                {
+                    bool viaVpn = vpnIfIps.Contains(r.ifIp);
+                    string marker = viaVpn ? "⚠ VPN" : "✓ direct";
+                    details.Add($"      route {r.destStr}/{r.prefixLen} via {r.gateway} (if {r.ifIp}, metric {r.metric}) [{marker}]");
                 }
             }
-
-            if (inVpn.Count == probes.Length)
-                details.Add($"    ⚠ {cidr}: ALL traffic routed via VPN tunnel");
-            else if (inVpn.Count == 0)
-                details.Add($"    ✓ {cidr}: all traffic bypasses VPN (direct)");
-            else
-                details.Add($"    ⚠ {cidr}: partial split — {inVpn.Count}/{probes.Length} probes via VPN");
-
-            foreach (var line in inVpn)
-                details.Add($"      {line}");
-            foreach (var line in direct)
-                details.Add($"      {line}");
         }
+        catch (Exception ex)
+        {
+            details.Add($"  Could not analyze routing table: {ex.Message}");
+        }
+    }
+
+    private record struct RtEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
+
+    private static List<RtEntry> ParseRoutePrintOutput(string output)
+    {
+        var routes = new List<RtEntry>();
+        bool inTable = false;
+        foreach (var rawLine in output.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith("Network Destination")) { inTable = true; continue; }
+            if (!inTable) continue;
+            if (line.StartsWith("=") || string.IsNullOrWhiteSpace(line)) continue;
+            if (line.StartsWith("Persistent") || line.StartsWith("Default")) break;
+
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 5) continue;
+            if (!IPAddress.TryParse(parts[0], out var dest)) continue;
+            if (!IPAddress.TryParse(parts[1], out var mask)) continue;
+
+            uint destUint = IpToUint(dest);
+            uint maskUint = IpToUint(mask);
+            int prefix = CountBits(maskUint);
+            if (!int.TryParse(parts[4], out int metric)) metric = 0;
+
+            routes.Add(new RtEntry(destUint, prefix, parts[2], parts[3], metric, parts[0]));
+        }
+        return routes;
+    }
+
+    private static RtEntry? FindBestRouteMatch(List<RtEntry> routes, uint destIp)
+    {
+        RtEntry? best = null;
+        int bestPrefix = -1;
+        int bestMetric = int.MaxValue;
+        foreach (var r in routes)
+        {
+            uint mask = r.prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - r.prefixLen);
+            if ((destIp & mask) == r.dest)
+            {
+                if (r.prefixLen > bestPrefix || (r.prefixLen == bestPrefix && r.metric < bestMetric))
+                {
+                    best = r;
+                    bestPrefix = r.prefixLen;
+                    bestMetric = r.metric;
+                }
+            }
+        }
+        return best;
+    }
+
+    private static uint IpToUint(IPAddress ip)
+    {
+        var b = ip.GetAddressBytes();
+        return (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+    }
+
+    private static int CountBits(uint mask)
+    {
+        int c = 0;
+        while ((mask & 0x80000000) != 0) { c++; mask <<= 1; }
+        return c;
     }
 
     private static async Task CheckTraceRouteAsync(List<string> details, CancellationToken ct)
