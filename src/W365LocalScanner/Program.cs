@@ -158,7 +158,7 @@ class Program
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
 
-            // ── TCP Based RDP ──
+            // ── TCP Based RDP Connectivity ──
             new("L-TCP-04", "Gateway Connectivity", "Tests DNS, TCP, TLS, HTTP layers to gateways", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
             new("L-TCP-06", "TLS Inspection Detection", "Validates TLS certificate chain", "tcp", RunTlsInspection),

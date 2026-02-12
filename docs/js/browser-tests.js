@@ -67,7 +67,7 @@ const ALL_TESTS = [
         category: 'local', source: 'local'
     },
 
-    // ── TCP Based RDP ──
+    // ── TCP Based RDP Connectivity ──
     {
         id: 'B-TCP-03', name: 'DNS Resolution Performance',
         description: 'Measures DNS lookup time for key service endpoints',

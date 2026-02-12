@@ -233,7 +233,7 @@ public class MainViewModel : ViewModelBase
         {
             (TestCategory.EndpointAccess, "Required Endpoint Access", "🌐"),
             (TestCategory.LocalEnvironment, "Local Environment", "💻"),
-            (TestCategory.TcpTransport, "TCP Based RDP", "🔗"),
+            (TestCategory.TcpTransport, "TCP Based RDP Connectivity", "🔗"),
             (TestCategory.UdpShortpath, "RDP Shortpath (UDP)", "⚡"),
             (TestCategory.CloudSession, "Cloud Session (requires connection)", "☁")
         };
