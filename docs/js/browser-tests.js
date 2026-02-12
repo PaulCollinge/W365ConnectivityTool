@@ -84,6 +84,16 @@ const ALL_TESTS = [
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
+        id: 'L-TCP-08', name: 'DNS Hijacking Check',
+        description: 'Verifies gateway DNS resolves to legitimate Microsoft IPs, not hijacked (requires Local Scanner)',
+        category: 'tcp', source: 'local'
+    },
+    {
+        id: 'L-TCP-09', name: 'Gateway Used',
+        description: 'Shows which gateway edge node, IP, routing method (AFD/Private Link), and cert are in use (requires Local Scanner)',
+        category: 'tcp', source: 'local'
+    },
+    {
         id: 'L-TCP-05', name: 'DNS CNAME Chain Analysis',
         description: 'Traces full DNS resolution chain for AFD/Private Link detection (requires Local Scanner)',
         category: 'tcp', source: 'local'

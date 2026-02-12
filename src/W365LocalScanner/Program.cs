@@ -161,6 +161,8 @@ class Program
             // ── TCP Based RDP Connectivity ──
             new("L-TCP-04", "Gateway Connectivity", "Tests DNS, TCP, TLS, HTTP layers to gateways", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
+            new("L-TCP-08", "DNS Hijacking Check", "Verifies gateway DNS resolves to legitimate Microsoft IPs", "tcp", RunDnsHijackingCheck),
+            new("L-TCP-09", "Gateway Used", "Shows which gateway edge node and IP are being used", "tcp", RunGatewayUsed),
             new("L-TCP-06", "TLS Inspection Detection", "Validates TLS certificate chain", "tcp", RunTlsInspection),
             new("L-TCP-07", "Proxy / VPN / SWG Detection", "Detects proxy, VPN, SWG", "tcp", RunProxyVpnDetection),
 
@@ -1248,6 +1250,226 @@ class Program
         }
         catch { }
         return null;
+    }
+
+    static async Task<TestResult> RunDnsHijackingCheck()
+    {
+        var result = new TestResult { Id = "L-TCP-08", Name = "DNS Hijacking Check", Category = "tcp" };
+        try
+        {
+            var gateways = new[] { "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+            var sb = new StringBuilder();
+            int passed = 0;
+            var issues = new List<string>();
+
+            foreach (var host in gateways)
+            {
+                sb.AppendLine($"  {host}");
+
+                IPAddress[] ips;
+                try
+                {
+                    ips = await Dns.GetHostAddressesAsync(host);
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"    \u2717 DNS resolution failed: {ex.Message}");
+                    issues.Add($"{host}: DNS resolution failed");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                foreach (var ip in ips)
+                {
+                    bool isPrivate = IsPrivateIp(ip);
+                    bool isLoopback = IPAddress.IsLoopback(ip);
+                    bool isLinkLocal = ip.ToString().StartsWith("169.254.");
+
+                    // Reverse DNS to check for Microsoft/Azure ownership
+                    string rdns = "";
+                    try
+                    {
+                        var entry = await Dns.GetHostEntryAsync(ip);
+                        rdns = entry.HostName;
+                    }
+                    catch { rdns = "(no reverse DNS)"; }
+
+                    bool isMicrosoft = rdns.Contains("microsoft", StringComparison.OrdinalIgnoreCase) ||
+                                      rdns.Contains("msedge", StringComparison.OrdinalIgnoreCase) ||
+                                      rdns.Contains("azure", StringComparison.OrdinalIgnoreCase) ||
+                                      rdns.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
+                                      rdns.Contains("trafficmanager", StringComparison.OrdinalIgnoreCase);
+
+                    if (isLoopback)
+                    {
+                        sb.AppendLine($"    \u2717 {ip} \u2192 LOOPBACK \u2014 DNS is hijacked!");
+                        issues.Add($"{host}: resolves to loopback {ip}");
+                    }
+                    else if (isLinkLocal)
+                    {
+                        sb.AppendLine($"    \u2717 {ip} \u2192 LINK-LOCAL \u2014 DNS appears hijacked");
+                        issues.Add($"{host}: resolves to link-local {ip}");
+                    }
+                    else if (isPrivate && !rdns.Contains("privatelink", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sb.AppendLine($"    \u26a0 {ip} \u2192 Private IP (rDNS: {rdns})");
+                        sb.AppendLine($"      Could be legitimate Private Link or DNS hijacking");
+                        // Don't fail — could be Private Link without privatelink in rDNS
+                    }
+                    else if (isMicrosoft || isPrivate)
+                    {
+                        sb.AppendLine($"    \u2713 {ip} \u2192 {rdns}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"    \u26a0 {ip} \u2192 {rdns} \u2014 not a recognized Microsoft host");
+                        issues.Add($"{host}: resolves to non-Microsoft IP {ip} ({rdns})");
+                    }
+                }
+
+                if (!issues.Any(i => i.StartsWith(host)))
+                    passed++;
+
+                sb.AppendLine();
+            }
+
+            if (issues.Count > 0)
+            {
+                sb.AppendLine("Issues found:");
+                foreach (var issue in issues)
+                    sb.AppendLine($"  \u26a0 {issue}");
+            }
+
+            result.ResultValue = issues.Count == 0
+                ? $"All {gateways.Length} gateways resolve to legitimate Microsoft IPs"
+                : $"{issues.Count} potential DNS issue(s) detected";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = issues.Any(i => i.Contains("loopback") || i.Contains("link-local")) ? "Failed"
+                          : issues.Count > 0 ? "Warning" : "Passed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunGatewayUsed()
+    {
+        var result = new TestResult { Id = "L-TCP-09", Name = "Gateway Used", Category = "tcp" };
+        try
+        {
+            var gateways = new[] { "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+            var sb = new StringBuilder();
+
+            using var httpHandler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
+                {
+                    return true;
+                },
+                AllowAutoRedirect = false
+            };
+            using var http = new HttpClient(httpHandler) { Timeout = TimeSpan.FromSeconds(10) };
+
+            foreach (var host in gateways)
+            {
+                sb.AppendLine($"  {host}");
+
+                // Resolve IP
+                IPAddress[] ips;
+                try
+                {
+                    ips = await Dns.GetHostAddressesAsync(host);
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"    IP: could not resolve ({ex.Message})");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                var ip = ips.First();
+                sb.AppendLine($"    IP: {ip}");
+
+                // Reverse DNS for edge node identification
+                try
+                {
+                    var entry = await Dns.GetHostEntryAsync(ip);
+                    sb.AppendLine($"    Edge: {entry.HostName}");
+                }
+                catch
+                {
+                    sb.AppendLine($"    Edge: (no reverse DNS)");
+                }
+
+                // CNAME chain via nslookup for AFD identification
+                try
+                {
+                    var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
+                    {
+                        RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                    };
+                    using var proc = Process.Start(psi);
+                    var output = await proc!.StandardOutput.ReadToEndAsync();
+                    await proc.WaitForExitAsync();
+
+                    // Extract CNAME aliases from nslookup output
+                    var aliases = output.Split('\n')
+                        .Where(l => l.TrimStart().StartsWith("Aliases:") || l.TrimStart().StartsWith("canonical name"))
+                        .Select(l => l.Trim())
+                        .ToList();
+
+                    if (output.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
+                        output.Contains("azurefd", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sb.AppendLine($"    Route: Azure Front Door");
+                    }
+                    else if (output.Contains("privatelink", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sb.AppendLine($"    Route: Private Link");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"    Route: Direct");
+                    }
+                }
+                catch
+                {
+                    sb.AppendLine($"    Route: (could not determine)");
+                }
+
+                // TLS cert subject for the specific gateway
+                try
+                {
+                    using var tcp = new TcpClient();
+                    await tcp.ConnectAsync(ip, 443);
+                    using var ssl = new SslStream(tcp.GetStream(), false, (_, _, _, _) => true);
+                    await ssl.AuthenticateAsClientAsync(host);
+                    var cert = ssl.RemoteCertificate as X509Certificate2;
+                    if (cert != null)
+                    {
+                        var cn = cert.GetNameInfo(X509NameType.SimpleName, false);
+                        sb.AppendLine($"    Cert: {cn}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"    Cert: could not retrieve ({ex.InnerException?.Message ?? ex.Message})");
+                }
+
+                sb.AppendLine();
+            }
+
+            result.ResultValue = string.Join(", ", gateways.Select(g =>
+            {
+                try { return $"{g} \u2192 {Dns.GetHostAddresses(g).First()}"; }
+                catch { return $"{g} \u2192 ?"; }
+            }));
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = "Passed";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
     }
 
     static bool IsPrivateIp(IPAddress ip)
