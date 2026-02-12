@@ -1104,9 +1104,9 @@ class Program
             sb.AppendLine("CNAME lookup output:");
             sb.AppendLine(output.Trim());
 
+            // Determine route by IP, not CNAME text — "privatelink-global" in the
+            // CNAME chain is a standard Microsoft DNS zone, NOT actual Private Link.
             bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
-            bool hasAfdCname = output.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
-                               output.Contains("azurefd", StringComparison.OrdinalIgnoreCase);
 
             if (isPrivateLink)
             {
@@ -1114,16 +1114,11 @@ class Program
                 result.Status = "Passed";
                 sb.AppendLine("\nPrivate Link endpoint detected. Traffic routes via private network.");
             }
-            else if (hasAfdCname)
-            {
-                result.ResultValue = $"Azure Front Door CNAME chain detected ({ipStr})";
-                result.Status = "Passed";
-                sb.AppendLine("\nAFD routing detected in CNAME chain. This is normal for public connections.");
-            }
             else
             {
-                result.ResultValue = $"Standard DNS resolution ({ipStr})";
+                result.ResultValue = $"Azure Front Door routing ({ipStr})";
                 result.Status = "Passed";
+                sb.AppendLine("\nPublic connection via Azure Front Door / Traffic Manager. This is normal.");
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -1702,7 +1697,10 @@ class Program
                     await proc.WaitForExitAsync();
                     cnameHasAfd = nsOutput.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
                                   nsOutput.Contains("azurefd", StringComparison.OrdinalIgnoreCase);
-                    cnameHasPrivateLink = nsOutput.Contains("privatelink", StringComparison.OrdinalIgnoreCase);
+                    // "privatelink-global" is a standard Microsoft DNS zone for ALL connections;
+                    // only match "privatelink" that is NOT followed by "-global"
+                    cnameHasPrivateLink = nsOutput.Contains("privatelink", StringComparison.OrdinalIgnoreCase) &&
+                                         !nsOutput.Contains("privatelink-global", StringComparison.OrdinalIgnoreCase);
                 }
                 catch { /* nslookup unavailable, rely on other checks */ }
 
@@ -1924,34 +1922,16 @@ class Program
                 }
                 catch { /* GeoIP is best-effort */ }
 
-                // CNAME chain via nslookup for AFD identification
-                try
+                // Determine route based on resolved IP — "privatelink-global" in CNAME
+                // is a standard Microsoft DNS zone, NOT actual Private Link.
+                // True Private Link resolves to a private RFC-1918 IP.
+                if (IsPrivateIp(ip))
                 {
-                    var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
-                    {
-                        RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                    };
-                    using var proc = Process.Start(psi);
-                    var output = await proc!.StandardOutput.ReadToEndAsync();
-                    await proc.WaitForExitAsync();
-
-                    if (output.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
-                        output.Contains("azurefd", StringComparison.OrdinalIgnoreCase))
-                    {
-                        sb.AppendLine($"    Route: Azure Front Door");
-                    }
-                    else if (output.Contains("privatelink", StringComparison.OrdinalIgnoreCase))
-                    {
-                        sb.AppendLine($"    Route: Private Link");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"    Route: Direct");
-                    }
+                    sb.AppendLine($"    Route: Private Link");
                 }
-                catch
+                else
                 {
-                    sb.AppendLine($"    Route: (could not determine)");
+                    sb.AppendLine($"    Route: Azure Front Door");
                 }
 
                 // TLS cert subject for the specific gateway
