@@ -762,6 +762,9 @@ main {
 .map-card-detail { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.5; word-break: break-word; }
 .map-card-detail.mono { font-family: var(--mono); font-size: 10px; }
 .map-card-detail.warning-text { color: var(--yellow); }
+.map-card-detail.proximity-near { color: var(--green); }
+.map-card-detail.proximity-moderate { color: var(--yellow); }
+.map-card-detail.proximity-far { color: var(--red); }
 
 .map-card-badge {
     display: inline-flex;
