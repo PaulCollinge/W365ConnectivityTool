@@ -202,6 +202,41 @@ class Program
     // ── Shared helpers ──────────────────────────────────────────────
 
     /// <summary>
+    /// Determines the local IP the OS would use to reach a given target, then checks
+    /// whether that IP belongs to any of the supplied VPN adapter interfaces.
+    /// Returns (routedViaVpn, localIp, matchedAdapterName).
+    /// </summary>
+    static (bool routedViaVpn, string localIp, string? adapterName) CheckIfRoutedViaVpn(
+        IPAddress targetIp, IEnumerable<NetworkInterface> vpnAdapters)
+    {
+        try
+        {
+            // Connect a UDP socket (no data sent) — the OS binds the local interface it would route through
+            using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            sock.Connect(targetIp, 443);
+            var localIp = ((IPEndPoint)sock.LocalEndPoint!).Address;
+
+            // Collect all unicast IPs from VPN adapters
+            foreach (var vpn in vpnAdapters)
+            {
+                var vpnIps = vpn.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.Address);
+
+                if (vpnIps.Any(ip => ip.Equals(localIp)))
+                    return (true, localIp.ToString(), vpn.Name);
+            }
+
+            return (false, localIp.ToString(), null);
+        }
+        catch
+        {
+            // If routing check fails, we can't confirm split tunnel — stay conservative
+            return (true, "unknown", null);
+        }
+    }
+
+    /// <summary>
     /// Creates an HttpClient that forwards default proxy credentials (NTLM/Kerberos).
     /// Use this instead of bare "new HttpClient" so tests work behind authenticated proxies.
     /// </summary>
@@ -967,7 +1002,7 @@ class Program
                 }
             }
 
-            // VPN adapters
+            // VPN adapters — detect presence, then check if RDP traffic actually routes through them
             var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up &&
                            (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
@@ -977,12 +1012,49 @@ class Program
                             n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
                             n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
                             n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("OpenVPN", StringComparison.OrdinalIgnoreCase)));
+                            n.Description.Contains("OpenVPN", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
 
-            foreach (var vpn in vpnAdapters)
+            if (vpnAdapters.Count > 0)
             {
-                issues.Add($"VPN adapter: {vpn.Description}");
-                sb.AppendLine($"\u26A0 VPN adapter: {vpn.Name} ({vpn.Description})");
+                // Resolve gateway IP and check if OS routes through the VPN adapter
+                try
+                {
+                    var gwIps = Dns.GetHostAddresses("rdweb.wvd.microsoft.com");
+                    var gwIp = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                    if (gwIp != null)
+                    {
+                        var (routedViaVpn, localIp, adapterName) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
+                        if (routedViaVpn)
+                        {
+                            foreach (var vpn in vpnAdapters)
+                            {
+                                issues.Add($"VPN adapter carrying RDP traffic: {vpn.Description}");
+                                sb.AppendLine($"\u26A0 VPN adapter: {vpn.Name} ({vpn.Description}) — RDP traffic routes through VPN (local IP {localIp})");
+                            }
+                        }
+                        else
+                        {
+                            foreach (var vpn in vpnAdapters)
+                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, RDP traffic bypasses VPN (routed via {localIp})");
+                        }
+                    }
+                    else
+                    {
+                        // Can't resolve gateway — report VPN presence as info only
+                        foreach (var vpn in vpnAdapters)
+                            sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify routing (DNS failed)");
+                    }
+                }
+                catch
+                {
+                    foreach (var vpn in vpnAdapters)
+                        sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify routing");
+                }
+            }
+            else
+            {
+                sb.AppendLine("\u2714 No VPN adapters detected");
             }
 
             // SWG / security processes
@@ -1168,7 +1240,7 @@ class Program
             var sb = new StringBuilder();
             var issues = new List<string>();
 
-            // Check for VPN adapters that might force-tunnel UDP
+            // Check for VPN adapters — then verify if TURN traffic actually routes through them
             var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up &&
                            (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
@@ -1176,12 +1248,43 @@ class Program
                             n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
                             n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
                             n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase)));
+                            n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
 
-            foreach (var vpn in vpnAdapters)
+            if (vpnAdapters.Count > 0)
             {
-                issues.Add(vpn.Description);
-                sb.AppendLine($"\u26A0 VPN adapter may block/tunnel UDP: {vpn.Name} ({vpn.Description})");
+                try
+                {
+                    var turnIps = Dns.GetHostAddresses("world.relay.avd.microsoft.com");
+                    var turnIp = turnIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                    if (turnIp != null)
+                    {
+                        var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(turnIp, vpnAdapters);
+                        if (routedViaVpn)
+                        {
+                            foreach (var vpn in vpnAdapters)
+                            {
+                                issues.Add(vpn.Description);
+                                sb.AppendLine($"\u26A0 VPN adapter may block/tunnel UDP: {vpn.Name} ({vpn.Description}) — TURN traffic routes through VPN (local IP {localIp})");
+                            }
+                        }
+                        else
+                        {
+                            foreach (var vpn in vpnAdapters)
+                                sb.AppendLine($"\u2714 VPN adapter present: {vpn.Name} ({vpn.Description}) — split-tunnelled, TURN traffic bypasses VPN (routed via {localIp})");
+                        }
+                    }
+                    else
+                    {
+                        foreach (var vpn in vpnAdapters)
+                            sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify TURN routing (DNS failed)");
+                    }
+                }
+                catch
+                {
+                    foreach (var vpn in vpnAdapters)
+                        sb.AppendLine($"\u2139 VPN adapter present: {vpn.Name} ({vpn.Description}) — could not verify TURN routing");
+                }
             }
 
             // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall

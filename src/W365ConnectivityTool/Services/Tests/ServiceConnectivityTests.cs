@@ -1950,7 +1950,7 @@ public class ProxyVpnDetectionTest : BaseTest
             }
         }
 
-        // 3. Check for VPN adapters
+        // 3. Check for VPN adapters — then verify if RDP traffic actually routes through them
         var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => n.OperationalStatus == OperationalStatus.Up &&
                         (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
@@ -1965,10 +1965,39 @@ public class ProxyVpnDetectionTest : BaseTest
 
         if (vpnAdapters.Count > 0)
         {
-            foreach (var adapter in vpnAdapters)
+            // Resolve gateway IP and check if OS routes through the VPN adapter
+            try
             {
-                issues.Add($"VPN adapter: {adapter.Description}");
-                details.Add($"⚠ VPN adapter active: {adapter.Name} ({adapter.Description})");
+                var gateway = EndpointConfiguration.GetBestGatewayEndpoint();
+                var gwIps = await Dns.GetHostAddressesAsync(gateway, ct);
+                var gwIp = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (gwIp != null)
+                {
+                    var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
+                    if (routedViaVpn)
+                    {
+                        foreach (var adapter in vpnAdapters)
+                        {
+                            issues.Add($"VPN adapter carrying RDP traffic: {adapter.Description}");
+                            details.Add($"⚠ VPN adapter: {adapter.Name} ({adapter.Description}) — RDP traffic routes through VPN (local IP {localIp})");
+                        }
+                    }
+                    else
+                    {
+                        foreach (var adapter in vpnAdapters)
+                            details.Add($"✓ VPN adapter present: {adapter.Name} ({adapter.Description}) — split-tunnelled, RDP traffic bypasses VPN (routed via {localIp})");
+                    }
+                }
+                else
+                {
+                    foreach (var adapter in vpnAdapters)
+                        details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify routing (DNS failed)");
+                }
+            }
+            catch
+            {
+                foreach (var adapter in vpnAdapters)
+                    details.Add($"ℹ VPN adapter present: {adapter.Name} ({adapter.Description}) — could not verify routing");
             }
         }
         else
@@ -2028,6 +2057,37 @@ public class ProxyVpnDetectionTest : BaseTest
         }
 
         result.RemediationUrl = EndpointConfiguration.Docs.ProxyConfig;
+    }
+
+    /// <summary>
+    /// Determines the local IP the OS would use to reach a given target, then checks
+    /// whether that IP belongs to any of the supplied VPN adapter interfaces.
+    /// </summary>
+    private static (bool routedViaVpn, string localIp, string? adapterName) CheckIfRoutedViaVpn(
+        IPAddress targetIp, IEnumerable<NetworkInterface> vpnAdapters)
+    {
+        try
+        {
+            using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            sock.Connect(targetIp, 443);
+            var localIp = ((IPEndPoint)sock.LocalEndPoint!).Address;
+
+            foreach (var vpn in vpnAdapters)
+            {
+                var vpnIps = vpn.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.Address);
+
+                if (vpnIps.Any(ip => ip.Equals(localIp)))
+                    return (true, localIp.ToString(), vpn.Name);
+            }
+
+            return (false, localIp.ToString(), null);
+        }
+        catch
+        {
+            return (true, "unknown", null);
+        }
     }
 
     private static async Task CheckTraceRouteAsync(List<string> details, CancellationToken ct)
