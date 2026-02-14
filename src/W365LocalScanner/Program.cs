@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Eventing.Reader;
 using System.IO.Compression;
 using System.Net;
 using System.Net.NetworkInformation;
@@ -1569,62 +1570,1035 @@ class Program
     }
 
     // ═══════════════════════════════════════════
-    //  LIVE CONNECTION DIAGNOSTICS (stubs — require active Cloud PC session)
+    //  LIVE CONNECTION DIAGNOSTICS
     // ═══════════════════════════════════════════
 
-    static Task<TestResult> RunActiveSession() => Task.FromResult(new TestResult
-    {
-        Id = "17", Name = "Active RDP Session Detection", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+    // ── P/Invoke for remote session detection ──
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int nIndex);
+    const int SM_REMOTESESSION = 0x1000;
 
-    static Task<TestResult> RunTransportProtocol() => Task.FromResult(new TestResult
+    static bool IsRemoteSession()
     {
-        Id = "17b", Name = "RDP Transport Protocol", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+        try { return GetSystemMetrics(SM_REMOTESESSION) != 0; }
+        catch { return false; }
+    }
 
-    static Task<TestResult> RunUdpReadiness() => Task.FromResult(new TestResult
+    static bool IsInW365Range(IPAddress ip)
     {
-        Id = "17c", Name = "UDP Shortpath Readiness", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+        if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+        var b = ip.GetAddressBytes();
+        uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+        // 40.64.144.0/20 → mask 0xFFFFF000
+        uint net1 = (uint)(40 << 24 | 64 << 16 | 144 << 8);
+        if ((addr & 0xFFFFF000) == net1) return true;
+        // 51.5.0.0/16 → mask 0xFFFF0000
+        uint net2 = (uint)(51 << 24 | 5 << 16);
+        if ((addr & 0xFFFF0000) == net2) return true;
+        return false;
+    }
 
-    static Task<TestResult> RunSessionLatency() => Task.FromResult(new TestResult
+    static async Task<(string hostname, int port, IPAddress ip)?> GetValidatedGateway()
     {
-        Id = "18", Name = "Session Round-Trip Latency", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+        var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+        foreach (var gw in gateways)
+        {
+            try
+            {
+                var ips = await Dns.GetHostAddressesAsync(gw);
+                var ip = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (ip != null && IsInW365Range(ip))
+                    return (gw, 443, ip);
+            }
+            catch { }
+        }
+        return null;
+    }
 
-    static Task<TestResult> RunFrameRate() => Task.FromResult(new TestResult
+    // ── Test 17: Active RDP Session Detection ──
+    static Task<TestResult> RunActiveSession()
     {
-        Id = "19", Name = "Session Frame Rate & Bandwidth", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+        var result = new TestResult { Id = "17", Name = "Active RDP Session Detection", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            bool isRemote = IsRemoteSession();
 
-    static Task<TestResult> RunJitter() => Task.FromResult(new TestResult
-    {
-        Id = "20", Name = "Connection Jitter", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+            sb.AppendLine($"Running inside Remote Desktop session: {(isRemote ? "Yes" : "No")}");
 
-    static Task<TestResult> RunPacketLoss() => Task.FromResult(new TestResult
-    {
-        Id = "21", Name = "Frame Drops & Packet Loss", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+            if (isRemote)
+            {
+                sb.AppendLine();
+                sb.AppendLine("This tool is running INSIDE a remote session (Cloud PC / Session Host).");
+                sb.AppendLine("RemoteFX performance counters are available for live session metrics.");
+                sb.AppendLine($"Machine: {Environment.MachineName}");
+                sb.AppendLine($"Session ID: {Process.GetCurrentProcess().SessionId}");
 
-    static Task<TestResult> RunCloudTeamsOptimization() => Task.FromResult(new TestResult
-    {
-        Id = "22", Name = "Cloud PC Teams Optimization", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+                result.Status = "Passed";
+                result.ResultValue = "Running inside remote session";
+            }
+            else
+            {
+                // Check for RDP client processes
+                var clientNames = new (string name, string label)[]
+                {
+                    ("msrdc", "Windows App (MSRDC)"),
+                    ("mstsc", "Remote Desktop Client (mstsc)"),
+                    ("DesktopClient", "AVD Desktop Client"),
+                };
+                var clients = new List<string>();
+                foreach (var (name, label) in clientNames)
+                {
+                    try
+                    {
+                        foreach (var p in Process.GetProcessesByName(name))
+                        {
+                            string title = "";
+                            try { title = p.MainWindowTitle ?? ""; } catch { }
+                            DateTime? started = null;
+                            try { started = p.StartTime; } catch { }
+                            clients.Add($"  {label} — PID {p.Id}{(started.HasValue ? $", started {started:HH:mm:ss}" : "")}{(string.IsNullOrEmpty(title) ? "" : $", window: {title}")}");
+                        }
+                    }
+                    catch { }
+                }
 
-    static Task<TestResult> RunCloudVpnPerformance() => Task.FromResult(new TestResult
+                if (clients.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine($"Found {clients.Count} active RDP client process(es):");
+                    foreach (var c in clients)
+                        sb.AppendLine(c);
+                    sb.AppendLine();
+                    sb.AppendLine("Active RDP client detected on this machine.");
+                    sb.AppendLine("Session metrics are gathered from event logs and TCP probes.");
+                    sb.AppendLine("For full RemoteFX counters, run this tool inside the Cloud PC.");
+
+                    result.Status = "Passed";
+                    result.ResultValue = $"{clients.Count} active client(s)";
+                }
+                else
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("No active RDP client processes found (msrdc.exe, mstsc.exe).");
+                    sb.AppendLine();
+                    sb.AppendLine("To analyze an active session:");
+                    sb.AppendLine("  1. Connect to your Cloud PC using Windows App or Remote Desktop");
+                    sb.AppendLine("  2. Re-run these tests while connected");
+
+                    result.Status = "Warning";
+                    result.ResultValue = "No active RDP session detected";
+                    result.RemediationText = "Connect to your Cloud PC and re-run to get live session metrics.";
+                }
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ── Test 17b: RDP Transport Protocol ──
+    static Task<TestResult> RunTransportProtocol()
     {
-        Id = "24", Name = "VPN Connection Performance", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
-    });
+        var result = new TestResult { Id = "17b", Name = "RDP Transport Protocol", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            bool udpConnected = false, udpFailed = false, shortpathConnected = false, hasConnection = false;
+            string protocol = "";
+
+            // 1. Try RdpCoreTS (inside remote session)
+            try
+            {
+                const string logName = "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational";
+                var query = new EventLogQuery(logName, PathType.LogName,
+                    "*[System[(EventID=131 or EventID=140 or EventID=141 or EventID=142 or EventID=143) and TimeCreated[timediff(@SystemTime) <= 86400000]]]");
+                using var reader = new EventLogReader(query);
+                EventRecord? record;
+                int count = 0;
+                sb.AppendLine("RdpCoreTS Events (last 24h):");
+                while ((record = reader.ReadEvent()) != null && count < 15)
+                {
+                    using (record)
+                    {
+                        count++;
+                        int eid = record.Id;
+                        string msg = "";
+                        try { msg = record.FormatDescription() ?? ""; } catch { }
+                        string label = eid switch
+                        {
+                            131 => "Connection Accepted",
+                            140 => "Transport Negotiated",
+                            141 => "UDP Connected",
+                            142 => "UDP Failed (TCP Fallback)",
+                            143 => "RDP Shortpath Connected",
+                            _ => $"Event {eid}"
+                        };
+                        sb.AppendLine($"  [{record.TimeCreated:HH:mm:ss}] {label}");
+                        if (msg.Length is > 0 and < 200)
+                            sb.AppendLine($"    {msg}");
+                        if (eid == 131) hasConnection = true;
+                        if (eid == 141) { udpConnected = true; protocol = "UDP (RDP Shortpath)"; }
+                        if (eid == 142) { udpFailed = true; protocol = "TCP (Reverse Connect)"; }
+                        if (eid == 143) { shortpathConnected = true; protocol = "UDP (RDP Shortpath)"; }
+                    }
+                }
+                if (count == 0) sb.AppendLine("  (no events)");
+            }
+            catch { sb.AppendLine("RdpCoreTS log: not available (expected on client machines)"); }
+
+            sb.AppendLine();
+
+            // 2. Try TerminalServices-RDPClient (client machine)
+            try
+            {
+                const string logName = "Microsoft-Windows-TerminalServices-RDPClient/Operational";
+                var query = new EventLogQuery(logName, PathType.LogName,
+                    "*[System[TimeCreated[timediff(@SystemTime) <= 86400000]]]");
+                using var reader = new EventLogReader(query);
+                EventRecord? record;
+                int count = 0;
+                sb.AppendLine("RDP Client Events (last 24h):");
+                while ((record = reader.ReadEvent()) != null && count < 200)
+                {
+                    using (record)
+                    {
+                        int eid = record.Id;
+                        if (eid is 1024 or 1025 or 1026 or 1027 or 1029)
+                        {
+                            count++;
+                            string msg = "";
+                            try { msg = record.FormatDescription() ?? ""; } catch { }
+                            string label = eid switch
+                            {
+                                1024 => "Connection Started",
+                                1025 => "Connection Ended",
+                                1026 => "Disconnected",
+                                1027 => "Transport Connected",
+                                1029 => "Base Transport Type",
+                                _ => $"Event {eid}"
+                            };
+                            if (count <= 10) sb.AppendLine($"  [{record.TimeCreated:HH:mm:ss}] {label}");
+                            if (eid == 1024) hasConnection = true;
+                            if (msg.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (msg.Contains("success", StringComparison.OrdinalIgnoreCase) ||
+                                    msg.Contains("connected", StringComparison.OrdinalIgnoreCase))
+                                { udpConnected = true; protocol = "UDP (RDP Shortpath)"; }
+                                else if (msg.Contains("fail", StringComparison.OrdinalIgnoreCase))
+                                { udpFailed = true; if (string.IsNullOrEmpty(protocol)) protocol = "TCP (Reverse Connect)"; }
+                            }
+                        }
+                    }
+                }
+                if (count == 0) sb.AppendLine("  (no events)");
+            }
+            catch { sb.AppendLine("RDP Client log: not available"); }
+
+            // Also check RemoteFX UDP bandwidth if inside remote session
+            if (IsRemoteSession())
+            {
+                try
+                {
+                    if (PerformanceCounterCategory.Exists("RemoteFX Network"))
+                    {
+                        var cat = new PerformanceCounterCategory("RemoteFX Network");
+                        var instances = cat.GetInstanceNames();
+                        if (instances.Length > 0)
+                        {
+                            using var pc = new PerformanceCounter("RemoteFX Network", "Current UDP Bandwidth", instances[0], true);
+                            pc.NextValue(); Thread.Sleep(100);
+                            var bw = pc.NextValue();
+                            if (bw > 0) { udpConnected = true; sb.AppendLine($"\nRemoteFX UDP Bandwidth: {bw:F0} KB/s (active)"); }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            sb.AppendLine();
+
+            // Determine result
+            if (udpConnected || shortpathConnected)
+            {
+                result.Status = "Passed";
+                result.ResultValue = "UDP (RDP Shortpath) ⚡";
+                sb.AppendLine("✓ Session is using UDP transport (RDP Shortpath).");
+            }
+            else if (udpFailed)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "TCP (UDP failed)";
+                sb.AppendLine("⚠ UDP connection failed — session fell back to TCP.");
+                result.RemediationText = "UDP-based RDP Shortpath failed. Check that UDP 3478 is allowed outbound.";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+            }
+            else if (hasConnection && !string.IsNullOrEmpty(protocol))
+            {
+                result.Status = protocol.Contains("UDP") ? "Passed" : "Warning";
+                result.ResultValue = protocol;
+            }
+            else if (!hasConnection)
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "No recent connection detected";
+                sb.AppendLine("No RDP connection events found in the last 24 hours.");
+                sb.AppendLine("Connect to your Cloud PC and re-run to detect transport.");
+            }
+            else
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Unable to determine transport";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ── Test 17c: UDP Shortpath Readiness ──
+    static async Task<TestResult> RunUdpReadiness()
+    {
+        var result = new TestResult { Id = "17c", Name = "UDP Shortpath Readiness", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            var host = "world.relay.avd.microsoft.com";
+            int port = 3478;
+            sb.AppendLine($"STUN/TURN Relay: {host}:{port}");
+            sb.AppendLine("Expected W365 IP ranges: 40.64.144.0/20, 51.5.0.0/16");
+            sb.AppendLine();
+
+            var addresses = await Dns.GetHostAddressesAsync(host);
+            var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+            if (ip == null) { result.Status = "Failed"; result.ResultValue = "DNS resolution failed"; return result; }
+
+            bool inRange = IsInW365Range(ip);
+            sb.AppendLine($"Resolved: {ip} ({(inRange ? "✓ W365 range" : "⚠ outside W365 range")})");
+
+            using var udp = new UdpClient();
+            udp.Client.ReceiveTimeout = 3000;
+            var ep = new IPEndPoint(ip, port);
+            var stunReq = BuildStunRequest();
+
+            var sw = Stopwatch.StartNew();
+            await udp.SendAsync(stunReq, stunReq.Length, ep);
+            var recvTask = udp.ReceiveAsync();
+            var completed = await Task.WhenAny(recvTask, Task.Delay(3000));
+
+            if (completed == recvTask)
+            {
+                sw.Stop();
+                var resp = await recvTask;
+                bool validStun = resp.Buffer.Length >= 20 && ((resp.Buffer[0] << 8) | resp.Buffer[1]) == 0x0101;
+
+                sb.AppendLine($"✓ {(validStun ? "STUN response" : "UDP response")} in {sw.Elapsed.TotalMilliseconds:F0}ms");
+                sb.AppendLine();
+                sb.AppendLine("✓ UDP connectivity confirmed. RDP Shortpath should be available.");
+                sb.AppendLine();
+                sb.AppendLine("RDP Shortpath modes:");
+                sb.AppendLine("  • STUN (direct): Client ↔ Cloud PC via UDP hole-punching");
+                sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC");
+
+                result.Status = "Passed";
+                result.ResultValue = $"UDP ready ({sw.Elapsed.TotalMilliseconds:F0}ms)";
+            }
+            else
+            {
+                sb.AppendLine("✗ UDP connectivity to STUN server timed out (3s).");
+                sb.AppendLine("  RDP Shortpath will NOT be available — connections will use TCP.");
+                sb.AppendLine();
+                sb.AppendLine("Common causes:");
+                sb.AppendLine("  • Firewall blocking outbound UDP 3478");
+                sb.AppendLine("  • VPN tunneling all traffic (no UDP passthrough)");
+                sb.AppendLine("  • Corporate SWG blocking non-HTTP traffic");
+
+                result.Status = "Warning";
+                result.ResultValue = "UDP blocked — RDP Shortpath unavailable";
+                result.RemediationText = "UDP 3478 outbound is blocked. Allow UDP 3478 outbound to Microsoft TURN relay servers.";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Test 18: Session Round-Trip Latency ──
+    static async Task<TestResult> RunSessionLatency()
+    {
+        var result = new TestResult { Id = "18", Name = "Session Round-Trip Latency", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+
+            if (IsRemoteSession())
+            {
+                sb.AppendLine("Source: RemoteFX Network performance counters (inside remote session)");
+                sb.AppendLine();
+
+                var tcpSamples = new List<float>();
+                var udpSamples = new List<float>();
+
+                for (int i = 0; i < 3; i++)
+                {
+                    try
+                    {
+                        if (PerformanceCounterCategory.Exists("RemoteFX Network"))
+                        {
+                            var cat = new PerformanceCounterCategory("RemoteFX Network");
+                            var instances = cat.GetInstanceNames();
+                            if (instances.Length > 0)
+                            {
+                                var inst = instances[0];
+                                var tcp = TryReadPerfCounter("RemoteFX Network", "Current TCP RTT", inst);
+                                var udpVal = TryReadPerfCounter("RemoteFX Network", "Current UDP RTT", inst);
+                                if (tcp.HasValue) tcpSamples.Add(tcp.Value);
+                                if (udpVal.HasValue) udpSamples.Add(udpVal.Value);
+                            }
+                        }
+                    }
+                    catch { }
+                    if (i < 2) await Task.Delay(700);
+                }
+
+                if (tcpSamples.Count > 0)
+                    sb.AppendLine($"TCP RTT: {tcpSamples.Average():F0}ms (avg of {tcpSamples.Count} samples)");
+                if (udpSamples.Count > 0)
+                    sb.AppendLine($"UDP RTT: {udpSamples.Average():F0}ms (avg of {udpSamples.Count} samples)");
+
+                if (tcpSamples.Count == 0 && udpSamples.Count == 0)
+                {
+                    sb.AppendLine("⚠ RemoteFX Network counters not available.");
+                    result.Status = "Warning";
+                    result.ResultValue = "Counters unavailable";
+                }
+                else
+                {
+                    var primaryRtt = udpSamples.Count > 0 ? udpSamples.Average() : tcpSamples.Average();
+                    var transport = udpSamples.Count > 0 ? "UDP" : "TCP";
+                    result.ResultValue = $"{primaryRtt:F0}ms ({transport})";
+                    result.Status = primaryRtt < 100 ? "Passed" : primaryRtt < 200 ? "Warning" : "Failed";
+                    if (primaryRtt >= 100)
+                        result.RemediationText = $"Latency is {primaryRtt:F0}ms. Check network egress path, proxy/VPN overhead.";
+                }
+            }
+            else
+            {
+                // TCP probe to validated gateway
+                var gw = await GetValidatedGateway();
+                if (gw == null)
+                {
+                    sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+                    sb.AppendLine("Expected ranges: 40.64.144.0/20, 51.5.0.0/16");
+                    result.Status = "Skipped";
+                    result.ResultValue = "No W365 gateway endpoint available";
+                }
+                else
+                {
+                    var (hostname, port, ip) = gw.Value;
+                    sb.AppendLine("Source: TCP connect probes to RD Gateway");
+                    sb.AppendLine($"Endpoint: {hostname}:{port}");
+                    sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
+                    sb.AppendLine("Samples: 10");
+                    sb.AppendLine();
+
+                    var rtts = new List<double>();
+                    for (int i = 0; i < 10; i++)
+                    {
+                        try
+                        {
+                            var sw = Stopwatch.StartNew();
+                            using var tcp = new TcpClient();
+                            using var cts = new CancellationTokenSource(5000);
+                            await tcp.ConnectAsync(hostname, port, cts.Token);
+                            sw.Stop();
+                            rtts.Add(sw.Elapsed.TotalMilliseconds);
+                        }
+                        catch { }
+                        if (i < 9) await Task.Delay(200);
+                    }
+
+                    if (rtts.Count == 0)
+                    {
+                        result.Status = "Failed";
+                        result.ResultValue = "Gateway unreachable";
+                        sb.AppendLine("✗ All TCP connection attempts failed.");
+                    }
+                    else
+                    {
+                        var avg = rtts.Average();
+                        sb.AppendLine($"Successful: {rtts.Count}/10");
+                        sb.AppendLine($"Min: {rtts.Min():F0}ms | Avg: {avg:F0}ms | Max: {rtts.Max():F0}ms");
+                        sb.AppendLine($"Values: {string.Join(", ", rtts.Select(r => $"{r:F0}ms"))}");
+
+                        result.ResultValue = $"{avg:F0}ms (TCP)";
+                        result.Status = avg < 100 ? "Passed" : avg < 200 ? "Warning" : "Failed";
+                        if (avg >= 100)
+                            result.RemediationText = $"Latency is {avg:F0}ms. Check for proxy/VPN adding latency.";
+                    }
+                }
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Test 19: Session Frame Rate & Bandwidth ──
+    static async Task<TestResult> RunFrameRate()
+    {
+        var result = new TestResult { Id = "19", Name = "Session Frame Rate & Bandwidth", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+
+            if (!IsRemoteSession())
+            {
+                sb.AppendLine("RemoteFX Graphics counters are only available inside a remote session.");
+                sb.AppendLine();
+                sb.AppendLine("To get frame rate and bandwidth data:");
+                sb.AppendLine("  1. Connect to your Cloud PC");
+                sb.AppendLine("  2. Run this tool inside the Cloud PC");
+                sb.AppendLine();
+                sb.AppendLine("Available metrics inside remote session:");
+                sb.AppendLine("  • Input/Output Frames per Second");
+                sb.AppendLine("  • Frames Skipped (Network / Client / Server)");
+                sb.AppendLine("  • Average Encoding Time, Frame Quality");
+                sb.AppendLine("  • UDP Bandwidth");
+
+                result.Status = "Skipped";
+                result.ResultValue = "Run inside Cloud PC for live data";
+                result.DetailedInfo = sb.ToString().Trim();
+                return result;
+            }
+
+            sb.AppendLine("Source: RemoteFX Graphics performance counters");
+            sb.AppendLine();
+
+            float? outputFps = null, inputFps = null, encTime = null, quality = null, udpBw = null;
+            float? skipNet = null, skipClient = null, skipServer = null;
+
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    if (PerformanceCounterCategory.Exists("RemoteFX Graphics"))
+                    {
+                        var cat = new PerformanceCounterCategory("RemoteFX Graphics");
+                        var instances = cat.GetInstanceNames();
+                        if (instances.Length > 0)
+                        {
+                            var inst = instances[0];
+                            inputFps = TryReadPerfCounter("RemoteFX Graphics", "Input Frames/Second", inst) ?? inputFps;
+                            outputFps = TryReadPerfCounter("RemoteFX Graphics", "Output Frames/Second", inst) ?? outputFps;
+                            skipNet = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Network Resources", inst) ?? skipNet;
+                            skipClient = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Client Resources", inst) ?? skipClient;
+                            skipServer = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Server Resources", inst) ?? skipServer;
+                            encTime = TryReadPerfCounter("RemoteFX Graphics", "Average Encoding Time", inst) ?? encTime;
+                            quality = TryReadPerfCounter("RemoteFX Graphics", "Frame Quality", inst) ?? quality;
+                        }
+                    }
+                    if (PerformanceCounterCategory.Exists("RemoteFX Network"))
+                    {
+                        var cat = new PerformanceCounterCategory("RemoteFX Network");
+                        var instances = cat.GetInstanceNames();
+                        if (instances.Length > 0)
+                            udpBw = TryReadPerfCounter("RemoteFX Network", "Current UDP Bandwidth", instances[0]) ?? udpBw;
+                    }
+                }
+                catch { }
+                if (i < 2) await Task.Delay(700);
+            }
+
+            if (outputFps == null && inputFps == null)
+            {
+                sb.AppendLine("⚠ RemoteFX Graphics counters not available.");
+                sb.AppendLine("  Session may be idle or counters may be disabled.");
+                result.Status = "Warning";
+                result.ResultValue = "Counters unavailable";
+            }
+            else
+            {
+                if (inputFps.HasValue) sb.AppendLine($"Input Frames/sec:  {inputFps:F1}");
+                if (outputFps.HasValue) sb.AppendLine($"Output Frames/sec: {outputFps:F1}");
+                if (encTime.HasValue) sb.AppendLine($"Avg Encoding Time: {encTime:F1}ms {(encTime < 33 ? "✓ Good" : "⚠ High")}");
+                if (quality.HasValue) sb.AppendLine($"Frame Quality:     {quality:F0}%");
+                if (udpBw.HasValue) sb.AppendLine($"UDP Bandwidth:     {udpBw:F0} KB/s");
+                sb.AppendLine();
+                sb.AppendLine("Frame Drop Analysis:");
+                if (skipNet.HasValue) sb.AppendLine($"  Skipped (Network): {skipNet:F1}/sec");
+                if (skipClient.HasValue) sb.AppendLine($"  Skipped (Client):  {skipClient:F1}/sec");
+                if (skipServer.HasValue) sb.AppendLine($"  Skipped (Server):  {skipServer:F1}/sec");
+
+                float totalSkip = (skipNet ?? 0) + (skipClient ?? 0) + (skipServer ?? 0);
+                float fps = outputFps ?? 30;
+                float dropPct = fps > 0 ? totalSkip / (fps + totalSkip) * 100 : 0;
+
+                if (encTime is > 33)
+                {
+                    result.Status = "Warning";
+                    result.ResultValue = $"{outputFps:F0} fps, encoding slow ({encTime:F0}ms)";
+                }
+                else if (dropPct > 15)
+                {
+                    result.Status = "Warning";
+                    result.ResultValue = $"{outputFps:F0} fps, {dropPct:F0}% frames dropped";
+                }
+                else
+                {
+                    result.Status = "Passed";
+                    result.ResultValue = $"{outputFps:F0} fps{(quality.HasValue ? $", {quality:F0}% quality" : "")}";
+                }
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Test 20: Connection Jitter ──
+    static async Task<TestResult> RunJitter()
+    {
+        var result = new TestResult { Id = "20", Name = "Connection Jitter", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            var gw = await GetValidatedGateway();
+
+            if (gw == null)
+            {
+                sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+                sb.AppendLine("Expected ranges: 40.64.144.0/20, 51.5.0.0/16");
+                sb.AppendLine("Connect to your Cloud PC at least once so gateway can be discovered.");
+                result.Status = "Skipped";
+                result.ResultValue = "No W365 gateway endpoint available";
+                result.DetailedInfo = sb.ToString().Trim();
+                return result;
+            }
+
+            var (hostname, port, ip) = gw.Value;
+            sb.AppendLine($"Endpoint: {hostname}:{port}");
+            sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
+            sb.AppendLine("Samples: 20 TCP connect probes at 250ms intervals");
+            sb.AppendLine();
+
+            var rtts = new List<double>();
+            for (int i = 0; i < 20; i++)
+            {
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    using var tcp = new TcpClient();
+                    using var cts = new CancellationTokenSource(5000);
+                    await tcp.ConnectAsync(hostname, port, cts.Token);
+                    sw.Stop();
+                    rtts.Add(sw.Elapsed.TotalMilliseconds);
+                }
+                catch { }
+                if (i < 19) await Task.Delay(250);
+            }
+
+            if (rtts.Count < 2)
+            {
+                result.Status = "Failed";
+                result.ResultValue = "Measurement failed";
+                sb.AppendLine(rtts.Count == 0 ? "✗ All connection attempts failed" : "✗ Insufficient samples for jitter calculation");
+                result.DetailedInfo = sb.ToString().Trim();
+                return result;
+            }
+
+            var mean = rtts.Average();
+            var min = rtts.Min();
+            var max = rtts.Max();
+            var stdDev = Math.Sqrt(rtts.Select(x => Math.Pow(x - mean, 2)).Average());
+
+            var diffs = new List<double>();
+            for (int i = 1; i < rtts.Count; i++)
+                diffs.Add(Math.Abs(rtts[i] - rtts[i - 1]));
+            var jitter = diffs.Average();
+
+            sb.AppendLine($"Successful samples: {rtts.Count}/20");
+            sb.AppendLine();
+            sb.AppendLine("Latency Statistics:");
+            sb.AppendLine($"  Mean RTT: {mean:F1}ms | Min: {min:F1}ms | Max: {max:F1}ms");
+            sb.AppendLine();
+            sb.AppendLine("Jitter Analysis:");
+            sb.AppendLine($"  Jitter (mean abs diff): {jitter:F1}ms");
+            sb.AppendLine($"  Std Deviation:          {stdDev:F1}ms");
+            sb.AppendLine($"  RTT Spread (max-min):   {max - min:F1}ms");
+            sb.AppendLine();
+            sb.AppendLine($"RTT Samples: {string.Join(", ", rtts.Select(r => $"{r:F0}"))} (ms)");
+
+            sb.AppendLine();
+            if (jitter < 10)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"{jitter:F1}ms jitter (excellent)";
+                sb.AppendLine("✓ Jitter is excellent (<10ms). Ideal for remote desktop and Teams.");
+            }
+            else if (jitter < 30)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"{jitter:F1}ms jitter (good)";
+                sb.AppendLine("✓ Jitter is acceptable (<30ms). Good enough for remote desktop.");
+            }
+            else if (jitter < 60)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"{jitter:F1}ms jitter (elevated)";
+                sb.AppendLine("⚠ Jitter is elevated (30-60ms). May cause occasional stutter.");
+                result.RemediationText = "Network jitter is elevated. Common causes: Wi-Fi interference, VPN overhead, or proxy-based TLS inspection.";
+            }
+            else
+            {
+                result.Status = "Failed";
+                result.ResultValue = $"{jitter:F1}ms jitter (poor)";
+                sb.AppendLine("✗ Jitter is very high (>60ms). This will significantly impact user experience.");
+                result.RemediationText = "Network jitter is very high. Try: wired ethernet, disable VPN for RDP, check for bandwidth contention.";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Test 21: Frame Drops & Packet Loss ──
+    static async Task<TestResult> RunPacketLoss()
+    {
+        var result = new TestResult { Id = "21", Name = "Frame Drops & Packet Loss", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+
+            if (IsRemoteSession())
+            {
+                sb.AppendLine("Source: RemoteFX Graphics performance counters (inside remote session)");
+                sb.AppendLine();
+
+                float? outFps = null, skipNet = null, skipClient = null, skipServer = null, inFps = null;
+                for (int i = 0; i < 3; i++)
+                {
+                    try
+                    {
+                        if (PerformanceCounterCategory.Exists("RemoteFX Graphics"))
+                        {
+                            var cat = new PerformanceCounterCategory("RemoteFX Graphics");
+                            var instances = cat.GetInstanceNames();
+                            if (instances.Length > 0)
+                            {
+                                var inst = instances[0];
+                                inFps = TryReadPerfCounter("RemoteFX Graphics", "Input Frames/Second", inst) ?? inFps;
+                                outFps = TryReadPerfCounter("RemoteFX Graphics", "Output Frames/Second", inst) ?? outFps;
+                                skipNet = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Network Resources", inst) ?? skipNet;
+                                skipClient = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Client Resources", inst) ?? skipClient;
+                                skipServer = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Server Resources", inst) ?? skipServer;
+                            }
+                        }
+                    }
+                    catch { }
+                    if (i < 2) await Task.Delay(700);
+                }
+
+                if (outFps == null)
+                {
+                    sb.AppendLine("⚠ RemoteFX Graphics counters not available.");
+                    result.Status = "Warning";
+                    result.ResultValue = "Counters unavailable";
+                }
+                else
+                {
+                    float totalDrop = (skipNet ?? 0) + (skipClient ?? 0) + (skipServer ?? 0);
+                    float fps = outFps ?? 0;
+                    float dropPct = (fps + totalDrop) > 0 ? totalDrop / (fps + totalDrop) * 100 : 0;
+
+                    sb.AppendLine($"Input Frames/sec:  {inFps:F1}");
+                    sb.AppendLine($"Output Frames/sec: {fps:F1}");
+                    sb.AppendLine($"Skipped (Network): {skipNet:F1}/sec");
+                    sb.AppendLine($"Skipped (Client):  {skipClient:F1}/sec");
+                    sb.AppendLine($"Skipped (Server):  {skipServer:F1}/sec");
+                    sb.AppendLine($"Drop rate: {dropPct:F1}%");
+
+                    if (dropPct < 10) { result.Status = "Passed"; result.ResultValue = $"{dropPct:F0}% frame drops (good)"; }
+                    else if (dropPct < 20) { result.Status = "Warning"; result.ResultValue = $"{dropPct:F0}% frame drops (okay)"; }
+                    else { result.Status = "Failed"; result.ResultValue = $"{dropPct:F0}% frame drops (poor)"; }
+                }
+            }
+            else
+            {
+                // TCP probe reliability from physical device
+                sb.AppendLine("Source: TCP connect probe reliability (from physical device)");
+                sb.AppendLine("For per-frame drop analysis, run this tool inside the Cloud PC.");
+                sb.AppendLine();
+
+                var gw = await GetValidatedGateway();
+                if (gw == null)
+                {
+                    sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+                    result.Status = "Skipped";
+                    result.ResultValue = "No W365 gateway endpoint available";
+                }
+                else
+                {
+                    var (hostname, port, ip) = gw.Value;
+                    sb.AppendLine($"Endpoint: {hostname}:{port}");
+                    sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
+                    sb.AppendLine("Probes: 15 TCP connection attempts");
+                    sb.AppendLine();
+
+                    int success = 0, failure = 0;
+                    for (int i = 0; i < 15; i++)
+                    {
+                        try
+                        {
+                            using var tcp = new TcpClient();
+                            using var cts = new CancellationTokenSource(3000);
+                            await tcp.ConnectAsync(hostname, port, cts.Token);
+                            success++;
+                        }
+                        catch { failure++; }
+                        if (i < 14) await Task.Delay(200);
+                    }
+
+                    var lossRate = failure > 0 ? (double)failure / (success + failure) * 100 : 0;
+                    sb.AppendLine($"Successful: {success}/15");
+                    sb.AppendLine($"Failed:     {failure}/15");
+                    sb.AppendLine($"Loss rate:  {lossRate:F0}%");
+
+                    if (failure == 0) { result.Status = "Passed"; result.ResultValue = "0% loss (15/15 successful)"; }
+                    else if (lossRate < 5) { result.Status = "Passed"; result.ResultValue = $"{lossRate:F0}% loss"; }
+                    else if (lossRate < 15) { result.Status = "Warning"; result.ResultValue = $"{lossRate:F0}% loss"; result.RemediationText = "Some connection attempts failed. Check network stability."; }
+                    else { result.Status = "Failed"; result.ResultValue = $"{lossRate:F0}% loss (significant)"; result.RemediationText = "High connection failure rate detected."; }
+                }
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Test 22: Cloud PC Teams Optimization ──
+    static Task<TestResult> RunCloudTeamsOptimization()
+    {
+        var result = new TestResult { Id = "22", Name = "Cloud PC Teams Optimization", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            bool isRemote = IsRemoteSession();
+            bool teamsOptFound = false;
+
+            sb.AppendLine($"Running inside remote session: {(isRemote ? "Yes" : "No")}");
+            sb.AppendLine();
+
+            // Check IsWVDEnvironment registry
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Teams");
+                if (key != null)
+                {
+                    var isWvd = key.GetValue("IsWVDEnvironment");
+                    if (isWvd != null)
+                    {
+                        sb.AppendLine($"IsWVDEnvironment: {isWvd}");
+                        teamsOptFound = true;
+                    }
+                }
+            }
+            catch { }
+
+            // Check Teams Media Optimization
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Teams\MediaOptimization");
+                if (key != null) { sb.AppendLine("Teams Media Optimization registry key found"); teamsOptFound = true; }
+            }
+            catch { }
+
+            // Check WebRTC Redirector Service
+            var webrtcSvc = Process.GetProcessesByName("MsRdcWebRTCSvc");
+            if (webrtcSvc.Length > 0)
+            {
+                sb.AppendLine($"WebRTC Redirector Service running (PID: {webrtcSvc[0].Id})");
+                teamsOptFound = true;
+            }
+            else
+            {
+                sb.AppendLine("WebRTC Redirector Service (MsRdcWebRTCSvc) not running");
+            }
+
+            // Check for Teams/Slimcore
+            var teamsProcs = Process.GetProcessesByName("ms-teams");
+            if (teamsProcs.Length > 0)
+                sb.AppendLine($"Teams (new) running (PID: {teamsProcs[0].Id})");
+            var teamsOld = Process.GetProcessesByName("Teams");
+            if (teamsOld.Length > 0)
+                sb.AppendLine($"Teams (classic) running (PID: {teamsOld[0].Id})");
+
+            // Check for RDP clients (to see if AV redirect is possible)
+            foreach (var name in new[] { "msrdc", "mstsc" })
+            {
+                var procs = Process.GetProcessesByName(name);
+                if (procs.Length > 0)
+                    sb.AppendLine($"{name} running (PID: {procs[0].Id})");
+            }
+
+            if (isRemote && teamsOptFound)
+            {
+                result.Status = "Passed";
+                result.ResultValue = "Teams AV optimization active";
+            }
+            else if (teamsOptFound)
+            {
+                result.Status = "Passed";
+                result.ResultValue = "Teams optimization components detected";
+            }
+            else if (isRemote)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "No Teams optimization found";
+                result.RemediationText = "Running inside a remote session but Teams media optimization is not configured. Install the WebRTC Redirector Service.";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = "Not in remote session — teams optimization checked locally";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/teams-on-avd";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ── Test 24: VPN Connection Performance ──
+    static async Task<TestResult> RunCloudVpnPerformance()
+    {
+        var result = new TestResult { Id = "24", Name = "VPN Connection Performance", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+
+            // Detect VPN adapters
+            var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                    (n.NetworkInterfaceType == NetworkInterfaceType.Ppp ||
+                     n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Cisco", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Juniper", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("GlobalProtect", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("OpenVPN", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Zscaler", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Netskope", StringComparison.OrdinalIgnoreCase) ||
+                     n.Name.Contains("VPN", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            if (vpnAdapters.Count == 0)
+            {
+                sb.AppendLine("No VPN adapters detected.");
+                sb.AppendLine();
+                sb.AppendLine("✓ Direct network connection — no VPN overhead on RDP traffic.");
+                result.Status = "Passed";
+                result.ResultValue = "No VPN — direct connection";
+                result.DetailedInfo = sb.ToString().Trim();
+                return result;
+            }
+
+            sb.AppendLine($"VPN adapter(s) detected ({vpnAdapters.Count}):");
+            foreach (var vpn in vpnAdapters)
+            {
+                var vpnIps = vpn.GetIPProperties().UnicastAddresses
+                    .Select(a => a.Address.ToString()).ToList();
+                sb.AppendLine($"  {vpn.Name} ({vpn.Description}) — IPs: {string.Join(", ", vpnIps)}");
+            }
+            sb.AppendLine();
+
+            // Check if W365 traffic routes via VPN
+            var vpnIfIps = new HashSet<string>();
+            foreach (var vpn in vpnAdapters)
+                foreach (var addr in vpn.GetIPProperties().UnicastAddresses)
+                    if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
+                        vpnIfIps.Add(addr.Address.ToString());
+
+            var vpnRanges = ProbeAvdServiceRanges(vpnAdapters, sb);
+
+            if (vpnRanges.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"⚠ W365/AVD traffic routes via VPN for: {string.Join(", ", vpnRanges)}");
+                sb.AppendLine("  This adds latency and may affect UDP transport (RDP Shortpath).");
+                sb.AppendLine();
+                sb.AppendLine("Recommended: Configure split-tunnel VPN to exclude these ranges:");
+                sb.AppendLine("  40.64.144.0/20 (W365 Gateway)");
+                sb.AppendLine("  51.5.0.0/16   (W365 Gateway)");
+                sb.AppendLine("  world.relay.avd.microsoft.com:3478/UDP (TURN relay)");
+
+                // Measure latency via VPN to quantify impact
+                var gw = await GetValidatedGateway();
+                if (gw != null)
+                {
+                    var (hostname, port, _) = gw.Value;
+                    var rtts = new List<double>();
+                    for (int i = 0; i < 5; i++)
+                    {
+                        try
+                        {
+                            var sw = Stopwatch.StartNew();
+                            using var tcp = new TcpClient();
+                            using var cts = new CancellationTokenSource(5000);
+                            await tcp.ConnectAsync(hostname, port, cts.Token);
+                            sw.Stop();
+                            rtts.Add(sw.Elapsed.TotalMilliseconds);
+                        }
+                        catch { }
+                        if (i < 4) await Task.Delay(200);
+                    }
+                    if (rtts.Count > 0)
+                    {
+                        sb.AppendLine();
+                        sb.AppendLine($"Gateway latency via VPN: {rtts.Average():F0}ms avg ({string.Join(", ", rtts.Select(r => $"{r:F0}ms"))})");
+                    }
+                }
+
+                result.Status = "Warning";
+                result.ResultValue = $"VPN active — {vpnRanges.Count} range(s) routed via VPN";
+                result.RemediationText = "W365 Gateway traffic is routed through VPN. Consider split-tunnel VPN to exclude AVD/W365 ranges for better performance.";
+            }
+            else
+            {
+                sb.AppendLine();
+                sb.AppendLine("✓ VPN detected but W365/AVD ranges appear to be split-tunneled (direct routing).");
+                result.Status = "Passed";
+                result.ResultValue = "VPN active — split-tunneled (good)";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static float? TryReadPerfCounter(string category, string counter, string instance)
+    {
+        try
+        {
+            using var pc = new PerformanceCounter(category, counter, instance, readOnly: true);
+            pc.NextValue();
+            Thread.Sleep(100);
+            return pc.NextValue();
+        }
+        catch { return null; }
+    }
 
     // ═══════════════════════════════════════════
     //  HELPERS
@@ -2151,6 +3125,9 @@ class TestResult
 
     [JsonPropertyName("remediationUrl")]
     public string RemediationUrl { get; set; } = string.Empty;
+
+    [JsonPropertyName("remediationText")]
+    public string RemediationText { get; set; } = string.Empty;
 
     [JsonPropertyName("duration")]
     public int Duration { get; set; }
