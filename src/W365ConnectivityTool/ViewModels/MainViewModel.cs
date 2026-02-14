@@ -180,6 +180,7 @@ public class MainViewModel : ViewModelBase
     }
 
     public ObservableCollection<TestCategoryGroup> Categories { get; } = [];
+    public TestCategoryGroup LiveSessionCategory { get; private set; } = null!;
     public List<TestResult> TestResults { get; } = [];
 
     public AsyncRelayCommand RunAllTestsCommand { get; }
@@ -235,7 +236,6 @@ public class MainViewModel : ViewModelBase
             (TestCategory.LocalEnvironment, "Local Environment", "💻"),
             (TestCategory.TcpTransport, "TCP Based RDP Connectivity", "🔗"),
             (TestCategory.UdpShortpath, "RDP Shortpath (UDP)", "⚡"),
-            (TestCategory.CloudSession, "Cloud Session (requires connection)", "☁")
         };
 
         foreach (var (cat, name, icon) in groups)
@@ -249,6 +249,18 @@ public class MainViewModel : ViewModelBase
             }
 
             Categories.Add(group);
+        }
+
+        // Live Connection Diagnostics — separate section
+        LiveSessionCategory = new TestCategoryGroup
+        {
+            Name = "Live Connection Diagnostics",
+            Icon = "📡",
+            Category = TestCategory.CloudSession
+        };
+        foreach (var test in _testRunner.Tests.Where(t => t.Category == TestCategory.CloudSession))
+        {
+            LiveSessionCategory.Tests.Add(TestResultViewModel.FromTest(test));
         }
     }
 
@@ -273,6 +285,17 @@ public class MainViewModel : ViewModelBase
             }
             category.RefreshSummary();
         }
+
+        // Reset live session tests
+        foreach (var test in LiveSessionCategory.Tests)
+        {
+            test.Status = TestStatus.NotRun;
+            test.ResultValue = "Pending...";
+            test.DetailedInfo = string.Empty;
+            test.RemediationText = string.Empty;
+            test.Duration = string.Empty;
+        }
+        LiveSessionCategory.RefreshSummary();
 
         _cts = new CancellationTokenSource();
 
@@ -324,7 +347,8 @@ public class MainViewModel : ViewModelBase
                 StatusText = $"Running: {result.Name}...";
             }
 
-            var category = Categories.FirstOrDefault(c => c.Tests.Any(t => t.Id == result.Id));
+            var category = Categories.FirstOrDefault(c => c.Tests.Any(t => t.Id == result.Id))
+                ?? (LiveSessionCategory.Tests.Any(t => t.Id == result.Id) ? LiveSessionCategory : null);
             category?.RefreshSummary();
 
             // Update connectivity map
@@ -345,7 +369,8 @@ public class MainViewModel : ViewModelBase
                 vm.IsExpanded = true;
             }
 
-            var category = Categories.FirstOrDefault(c => c.Tests.Any(t => t.Id == result.Id));
+            var category = Categories.FirstOrDefault(c => c.Tests.Any(t => t.Id == result.Id))
+                ?? (LiveSessionCategory.Tests.Any(t => t.Id == result.Id) ? LiveSessionCategory : null);
             category?.RefreshSummary();
 
             // Update connectivity map
@@ -367,6 +392,7 @@ public class MainViewModel : ViewModelBase
     {
         return Categories
             .SelectMany(c => c.Tests)
+            .Concat(LiveSessionCategory.Tests)
             .FirstOrDefault(t => t.Id == testId);
     }
 
@@ -401,7 +427,7 @@ public class MainViewModel : ViewModelBase
         sb.AppendLine($"  OS:       {Environment.OSVersion}");
         sb.AppendLine();
 
-        foreach (var cat in Categories)
+        foreach (var cat in Categories.Append(LiveSessionCategory))
         {
             sb.AppendLine($"── {cat.Name} ──────────────────────────────────");
             sb.AppendLine();
@@ -454,7 +480,7 @@ public class MainViewModel : ViewModelBase
         sb.AppendLine($"Date: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine();
 
-        foreach (var cat in Categories)
+        foreach (var cat in Categories.Append(LiveSessionCategory))
         {
             sb.AppendLine($"[{cat.Name}]");
             foreach (var test in cat.Tests)
