@@ -113,6 +113,7 @@ function updateTestUI(testId, result) {
             ${result.resultValue ? `<div class="test-result-value">${escapeHtml(result.resultValue)}</div>` : ''}
             ${result.detailedInfo ? `<div class="test-details" id="details-${testId}">${escapeHtml(result.detailedInfo)}</div>` : ''}
             ${result.remediationUrl ? `<div class="test-remediation"><a href="${result.remediationUrl}" target="_blank">📖 View documentation</a></div>` : ''}
+            ${result.remediationText ? `<div class="test-remediation-text">${escapeHtml(result.remediationText)}</div>` : ''}
         </div>
         <div class="test-meta">
             ${result.duration > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${result.duration}ms</span>` : ''}

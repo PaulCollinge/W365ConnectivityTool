@@ -312,40 +312,45 @@ function processImportedData(data) {
     // Map local scanner IDs to our test list
     let importedCount = 0;
     for (const lr of localResults) {
-        // Remove any existing result with this ID
-        allResults = allResults.filter(r => r.id !== lr.id);
+        try {
+            // Remove any existing result with this ID
+            allResults = allResults.filter(r => r.id !== lr.id);
 
-        const mapped = {
-            id: lr.id,
-            name: lr.name || lr.id,
-            description: lr.description || '',
-            category: lr.category || mapCategoryFromId(lr.id),
-            source: 'local',
-            status: lr.status || 'Passed',
-            resultValue: lr.resultValue || lr.result || '',
-            detailedInfo: lr.detailedInfo || lr.details || '',
-            duration: lr.duration || 0,
-            remediationUrl: lr.remediationUrl || ''
-        };
+            const mapped = {
+                id: lr.id,
+                name: lr.name || lr.id,
+                description: lr.description || '',
+                category: lr.category || mapCategoryFromId(lr.id),
+                source: 'local',
+                status: lr.status || 'Passed',
+                resultValue: lr.resultValue || lr.result || '',
+                detailedInfo: lr.detailedInfo || lr.details || '',
+                duration: lr.duration || 0,
+                remediationUrl: lr.remediationUrl || '',
+                remediationText: lr.remediationText || ''
+            };
 
-        allResults.push(mapped);
+            allResults.push(mapped);
 
-        // Update UI - find matching test definition or create inline
-        const testDef = ALL_TESTS.find(t => t.id === lr.id);
-        if (testDef) {
-            updateTestUI(lr.id, mapped);
-        } else {
-            // Scanner version is newer than page — dynamically create a card
-            console.warn(`Import: No test definition for ${lr.id}, creating card dynamically`);
-            const dynDef = { id: lr.id, name: lr.name || lr.id, description: lr.description || '', source: 'local', category: mapped.category };
-            const container = document.getElementById(`tests-${mapped.category}`);
-            if (container) {
-                const el = createTestElement(dynDef, mapped);
-                container.appendChild(el);
+            // Update UI - find matching test definition or create inline
+            const testDef = ALL_TESTS.find(t => t.id === lr.id);
+            if (testDef) {
+                updateTestUI(lr.id, mapped);
+            } else {
+                // Scanner version is newer than page — dynamically create a card
+                console.warn(`Import: No test definition for ${lr.id}, creating card dynamically`);
+                const dynDef = { id: lr.id, name: lr.name || lr.id, description: lr.description || '', source: 'local', category: mapped.category };
+                const container = document.getElementById(`tests-${mapped.category}`);
+                if (container) {
+                    const el = createTestElement(dynDef, mapped);
+                    container.appendChild(el);
+                }
             }
-        }
 
-        importedCount++;
+            importedCount++;
+        } catch (itemErr) {
+            console.error(`Import: Error processing result ${lr?.id}:`, itemErr);
+        }
     }
 
     // Update summary and badges
