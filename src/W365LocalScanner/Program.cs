@@ -1698,7 +1698,7 @@ class Program
     }
 
     // ── Test 17b: RDP Transport Protocol ──
-    static Task<TestResult> RunTransportProtocol()
+    static async Task<TestResult> RunTransportProtocol()
     {
         var result = new TestResult { Id = "17b", Name = "RDP Transport Protocol", Category = "cloud" };
         try
@@ -1818,7 +1818,7 @@ class Program
 
             sb.AppendLine();
 
-            // Determine result
+            // Determine result from event logs / counters
             if (udpConnected || shortpathConnected)
             {
                 result.Status = "Passed";
@@ -1838,23 +1838,87 @@ class Program
                 result.Status = protocol.Contains("UDP") ? "Passed" : "Warning";
                 result.ResultValue = protocol;
             }
-            else if (!hasConnection)
-            {
-                result.Status = "Skipped";
-                result.ResultValue = "No recent connection detected";
-                sb.AppendLine("No RDP connection events found in the last 24 hours.");
-                sb.AppendLine("Connect to your Cloud PC and re-run to detect transport.");
-            }
             else
             {
-                result.Status = "Warning";
-                result.ResultValue = "Unable to determine transport";
+                // 3. Fallback: determine transport from gateway IP range
+                //    40.64.144.0/20 = TCP (Reverse Connect via AFD Gateway)
+                //    51.5.0.0/16    = UDP (RDP Shortpath via TURN relay)
+                var rangeResult = await DetectTransportFromGatewayRange(sb);
+                if (rangeResult != null)
+                {
+                    result.Status = rangeResult.Value.isUdp ? "Passed" : "Warning";
+                    result.ResultValue = rangeResult.Value.isUdp
+                        ? "UDP (RDP Shortpath via TURN) ⚡"
+                        : "TCP (Reverse Connect via AFD)";
+                    if (!rangeResult.Value.isUdp)
+                    {
+                        result.RemediationText = "Gateway resolved to 40.64.144.0/20 (TCP reverse connect range). Enable RDP Shortpath for lower latency.";
+                        result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                    }
+                }
+                else if (!hasConnection)
+                {
+                    result.Status = "Skipped";
+                    result.ResultValue = "No recent connection detected";
+                    sb.AppendLine("No RDP connection events found in the last 24 hours.");
+                    sb.AppendLine("Connect to your Cloud PC and re-run to detect transport.");
+                }
+                else
+                {
+                    result.Status = "Warning";
+                    result.ResultValue = "Unable to determine transport";
+                }
             }
 
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
-        return Task.FromResult(result);
+        return result;
+    }
+
+    /// <summary>
+    /// Determines transport protocol by resolving gateway hostnames and checking which W365 IP range they fall in.
+    /// 40.64.144.0/20 = TCP (Reverse Connect via Azure Front Door gateway)
+    /// 51.5.0.0/16    = UDP (RDP Shortpath via TURN relay infrastructure)
+    /// </summary>
+    static async Task<(bool isUdp, string ip, string hostname)?> DetectTransportFromGatewayRange(StringBuilder sb)
+    {
+        var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+        sb.AppendLine("Gateway IP Range Analysis:");
+
+        foreach (var gw in gateways)
+        {
+            try
+            {
+                var ips = await Dns.GetHostAddressesAsync(gw);
+                var ip = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (ip == null) continue;
+
+                var b = ip.GetAddressBytes();
+                uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+
+                // 40.64.144.0/20 → TCP (AFD Gateway / Reverse Connect)
+                uint net1 = (uint)(40 << 24 | 64 << 16 | 144 << 8);
+                if ((addr & 0xFFFFF000) == net1)
+                {
+                    sb.AppendLine($"  {gw} → {ip} (40.64.144.0/20 = TCP Reverse Connect)");
+                    return (isUdp: false, ip: ip.ToString(), hostname: gw);
+                }
+
+                // 51.5.0.0/16 → UDP (TURN Relay / RDP Shortpath)
+                uint net2 = (uint)(51 << 24 | 5 << 16);
+                if ((addr & 0xFFFF0000) == net2)
+                {
+                    sb.AppendLine($"  {gw} → {ip} (51.5.0.0/16 = UDP via TURN)");
+                    return (isUdp: true, ip: ip.ToString(), hostname: gw);
+                }
+
+                sb.AppendLine($"  {gw} → {ip} (outside W365 ranges)");
+            }
+            catch { sb.AppendLine($"  {gw} → DNS resolution failed"); }
+        }
+
+        return null;
     }
 
     // ── Test 17c: UDP Shortpath Readiness ──

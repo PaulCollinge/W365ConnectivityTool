@@ -55,6 +55,33 @@ public static class EndpointConfiguration
     public static string W365RangesDisplay => "40.64.144.0/20, 51.5.0.0/16";
 
     /// <summary>
+    /// Determines the expected RDP transport protocol based on which W365 gateway IP range the address belongs to.
+    /// 40.64.144.0/20 = TCP (Reverse Connect via Azure Front Door gateway)
+    /// 51.5.0.0/16    = UDP (RDP Shortpath via TURN relay infrastructure)
+    /// Returns null if the IP is not in any W365 range.
+    /// </summary>
+    public static TransportFromRange? GetTransportFromRange(IPAddress ip)
+    {
+        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return null;
+        var b = ip.GetAddressBytes();
+        uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+
+        // 40.64.144.0/20 → TCP (AFD Gateway / Reverse Connect)
+        uint net1 = (uint)(40 << 24 | 64 << 16 | 144 << 8);
+        if ((addr & 0xFFFFF000) == net1)
+            return new TransportFromRange(false, "TCP (Reverse Connect via AFD)", "40.64.144.0/20");
+
+        // 51.5.0.0/16 → UDP (TURN Relay / RDP Shortpath)
+        uint net2 = (uint)(51 << 24 | 5 << 16);
+        if ((addr & 0xFFFF0000) == net2)
+            return new TransportFromRange(true, "UDP (RDP Shortpath via TURN)", "51.5.0.0/16");
+
+        return null;
+    }
+
+    public record TransportFromRange(bool IsUdp, string Protocol, string Range);
+
+    /// <summary>
     /// Resolves and validates a gateway endpoint for Cloud Session probes.
     /// Only returns endpoints whose resolved IPs fall within W365 gateway ranges.
     /// Tries each discovered RDP connection's GatewayHostname and AfdHostname.

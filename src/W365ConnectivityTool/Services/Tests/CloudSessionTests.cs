@@ -94,7 +94,7 @@ public class TransportProtocolTest : BaseTest
     public override string Description => "Detects whether the active RDP session is using UDP (RDP Shortpath) or TCP (Reverse Connect). UDP provides lower latency and better resilience.";
     public override TestCategory Category => TestCategory.CloudSession;
 
-    protected override Task ExecuteAsync(TestResult result, CancellationToken ct)
+    protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
         var sb = new StringBuilder();
         var transport = RdpSessionMonitor.GetTransportInfo();
@@ -211,22 +211,101 @@ public class TransportProtocolTest : BaseTest
         }
         else if (!transport.HasConnection)
         {
-            result.Status = TestStatus.Skipped;
-            result.ResultValue = "No recent connection detected";
-            sb.AppendLine();
-            sb.AppendLine("ℹ No RDP connection events found in the last 24 hours.");
-            sb.AppendLine("  Connect to your Cloud PC and re-run to detect transport.");
+            // Try gateway IP range detection before giving up
+            var rangeResult = await DetectTransportFromGatewayRangeAsync(sb, ct);
+            if (rangeResult != null)
+            {
+                result.Status = rangeResult.IsUdp ? TestStatus.Passed : TestStatus.Warning;
+                result.ResultValue = rangeResult.IsUdp
+                    ? "UDP (RDP Shortpath via TURN) ⚡"
+                    : "TCP (Reverse Connect via AFD)";
+                if (!rangeResult.IsUdp)
+                {
+                    result.RemediationText = $"Gateway resolved to {rangeResult.Range} (TCP reverse connect range). Enable RDP Shortpath for lower latency.";
+                    result.RemediationUrl = EndpointConfiguration.Docs.TurnRelay;
+                }
+            }
+            else
+            {
+                result.Status = TestStatus.Skipped;
+                result.ResultValue = "No recent connection detected";
+                sb.AppendLine();
+                sb.AppendLine("ℹ No RDP connection events found in the last 24 hours.");
+                sb.AppendLine("  Connect to your Cloud PC and re-run to detect transport.");
+            }
         }
         else
         {
-            result.Status = TestStatus.Warning;
-            result.ResultValue = "Unable to determine transport";
-            sb.AppendLine();
-            sb.AppendLine("ℹ Connection detected but transport type could not be determined.");
+            // Try gateway IP range detection before giving up
+            var rangeResult = await DetectTransportFromGatewayRangeAsync(sb, ct);
+            if (rangeResult != null)
+            {
+                result.Status = rangeResult.IsUdp ? TestStatus.Passed : TestStatus.Warning;
+                result.ResultValue = rangeResult.IsUdp
+                    ? "UDP (RDP Shortpath via TURN) ⚡"
+                    : "TCP (Reverse Connect via AFD)";
+                if (!rangeResult.IsUdp)
+                {
+                    result.RemediationText = $"Gateway resolved to {rangeResult.Range} (TCP reverse connect range). Enable RDP Shortpath for lower latency.";
+                    result.RemediationUrl = EndpointConfiguration.Docs.TurnRelay;
+                }
+            }
+            else
+            {
+                result.Status = TestStatus.Warning;
+                result.ResultValue = "Unable to determine transport";
+                sb.AppendLine();
+                sb.AppendLine("ℹ Connection detected but transport type could not be determined.");
+            }
         }
 
         result.DetailedInfo = sb.ToString().TrimEnd();
-        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Resolves gateway hostnames and checks which W365 IP range they belong to in order
+    /// to determine the transport protocol without relying on event logs.
+    /// </summary>
+    private static async Task<EndpointConfiguration.TransportFromRange?> DetectTransportFromGatewayRangeAsync(
+        StringBuilder sb, CancellationToken ct)
+    {
+        sb.AppendLine();
+        sb.AppendLine("Gateway IP Range Analysis:");
+
+        // Try validated gateway from RDP files first
+        var validated = await EndpointConfiguration.GetValidatedGatewayForProbes(ct);
+        if (validated != null)
+        {
+            var rangeResult = EndpointConfiguration.GetTransportFromRange(validated.ResolvedIp);
+            if (rangeResult != null)
+            {
+                sb.AppendLine($"  {validated.Hostname} → {validated.ResolvedIp} ({rangeResult.Range} = {rangeResult.Protocol})");
+                return rangeResult;
+            }
+        }
+
+        // Fallback: try well-known gateways
+        foreach (var gw in EndpointConfiguration.FallbackGatewayEndpoints)
+        {
+            try
+            {
+                var ips = await System.Net.Dns.GetHostAddressesAsync(gw, ct);
+                var ip = ips.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                if (ip == null) continue;
+
+                var rangeResult = EndpointConfiguration.GetTransportFromRange(ip);
+                if (rangeResult != null)
+                {
+                    sb.AppendLine($"  {gw} → {ip} ({rangeResult.Range} = {rangeResult.Protocol})");
+                    return rangeResult;
+                }
+
+                sb.AppendLine($"  {gw} → {ip} (outside W365 ranges)");
+            }
+            catch { sb.AppendLine($"  {gw} → DNS resolution failed"); }
+        }
+
+        return null;
     }
 }
 
