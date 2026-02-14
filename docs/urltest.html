@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><title>URL Test</title></head>
+<body>
+<h1>URL Parameter Test</h1>
+<pre id="output">Loading...</pre>
+<script>
+var out = document.getElementById('output');
+var search = location.search;
+var hash = location.hash;
+var params = new URLSearchParams(search);
+var zr = params.get('zresults');
+out.textContent = 
+    'search length: ' + search.length + '\n' +
+    'hash length: ' + hash.length + '\n' +
+    'has zresults: ' + params.has('zresults') + '\n' +
+    'zresults length: ' + (zr ? zr.length : 'null') + '\n' +
+    'full URL length: ' + location.href.length + '\n' +
+    'search preview: ' + search.substring(0, 200) + '...\n';
+document.title = 'URL Test: search=' + search.length + ' zresults=' + (zr ? zr.length : 'null');
+</script>
+</body>
+</html>
