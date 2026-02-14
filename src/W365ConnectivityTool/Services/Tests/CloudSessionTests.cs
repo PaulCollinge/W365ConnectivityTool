@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using W365ConnectivityTool.Models;
@@ -245,7 +246,8 @@ public class UdpReadinessTest : BaseTest
         var sb = new StringBuilder();
         var stunResult = await RdpSessionMonitor.TestStunReadiness(ct);
 
-        sb.AppendLine("STUN Server Reachability (UDP 3478):");
+        sb.AppendLine("STUN/TURN Relay Reachability (UDP 3478):");
+        sb.AppendLine($"Expected W365 IP ranges: {EndpointConfiguration.W365RangesDisplay}");
         sb.AppendLine("────────────────────────────────────");
 
         foreach (var s in stunResult.StunResults)
@@ -253,11 +255,12 @@ public class UdpReadinessTest : BaseTest
             if (s.Reachable)
             {
                 var stunLabel = s.IsValidStun ? "STUN response" : "UDP response";
-                sb.AppendLine($"  ✓ {s.Server} ({s.Ip}) — {stunLabel} in {s.RttMs:F0}ms");
+                var rangeLabel = s.InW365Range ? "✓ W365 range" : "⚠ outside W365 range";
+                sb.AppendLine($"  ✓ {s.Server} ({s.Ip}) — {stunLabel} in {s.RttMs:F0}ms [{rangeLabel}]");
             }
             else
             {
-                sb.AppendLine($"  ✗ {s.Server} — {s.Error}");
+                sb.AppendLine($"  ✗ {s.Server}{(string.IsNullOrEmpty(s.Ip) ? "" : $" ({s.Ip})")} — {s.Error}");
             }
         }
 
@@ -383,8 +386,14 @@ public class SessionLatencyTest : BaseTest
     private static async Task MeasureTcpLatency(TestResult result, StringBuilder sb, CancellationToken ct)
     {
         var endpoint = EndpointConfiguration.GetBestGatewayEndpoint();
+        var resolvedIps = await Dns.GetHostAddressesAsync(endpoint, ct);
+        var ip = resolvedIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+        bool inRange = ip != null && EndpointConfiguration.IsInW365Range(ip);
+
         sb.AppendLine("Source: TCP connect probes to RD Gateway");
         sb.AppendLine($"Endpoint: {endpoint}:{EndpointConfiguration.GatewayPort}");
+        if (ip != null)
+            sb.AppendLine($"Resolved IP: {ip} ({(inRange ? $"✓ within W365 range" : $"⚠ outside expected W365 ranges ({EndpointConfiguration.W365RangesDisplay})")})");
         sb.AppendLine("Samples: 10 (extended for accuracy)");
         sb.AppendLine();
 
@@ -624,8 +633,13 @@ public class ConnectionJitterTest : BaseTest
     {
         var sb = new StringBuilder();
         var endpoint = EndpointConfiguration.GetBestGatewayEndpoint();
+        var resolvedIps = await Dns.GetHostAddressesAsync(endpoint, ct);
+        var ip = resolvedIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+        bool inRange = ip != null && EndpointConfiguration.IsInW365Range(ip);
 
         sb.AppendLine($"Endpoint: {endpoint}:{EndpointConfiguration.GatewayPort}");
+        if (ip != null)
+            sb.AppendLine($"Resolved IP: {ip} ({(inRange ? $"✓ within W365 range" : $"⚠ outside expected W365 ranges ({EndpointConfiguration.W365RangesDisplay})")})");
         sb.AppendLine("Samples: 20 TCP connect probes at 250ms intervals");
         sb.AppendLine();
 
@@ -864,7 +878,13 @@ public class FrameDropTest : BaseTest
         sb.AppendLine();
 
         var endpoint = EndpointConfiguration.GetBestGatewayEndpoint();
+        var resolvedIps = await Dns.GetHostAddressesAsync(endpoint, ct);
+        var ip = resolvedIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+        bool inRange = ip != null && EndpointConfiguration.IsInW365Range(ip);
+
         sb.AppendLine($"Endpoint: {endpoint}:{EndpointConfiguration.GatewayPort}");
+        if (ip != null)
+            sb.AppendLine($"Resolved IP: {ip} ({(inRange ? $"✓ within W365 range" : $"⚠ outside expected W365 ranges ({EndpointConfiguration.W365RangesDisplay})")})");
         sb.AppendLine("Probes: 15 TCP connection attempts");
         sb.AppendLine();
 

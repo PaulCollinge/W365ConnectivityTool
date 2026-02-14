@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net;
 using System.Net.Http;
 
 namespace W365ConnectivityTool.Services;
@@ -9,6 +10,50 @@ namespace W365ConnectivityTool.Services;
 /// </summary>
 public static class EndpointConfiguration
 {
+    // ── Windows 365 Gateway IP Ranges ──
+    // All RDP connections from Windows 365 clients are destined for these ranges ONLY.
+    // 40.64.144.0/20  = Windows 365 / AVD Gateway infrastructure
+    // 51.5.0.0/16     = Windows 365 / AVD Gateway infrastructure (newer range)
+    public static readonly (IPAddress Network, int PrefixLength)[] W365GatewayRanges =
+    [
+        (IPAddress.Parse("40.64.144.0"), 20),   // 40.64.144.0 – 40.64.159.255
+        (IPAddress.Parse("51.5.0.0"), 16),      // 51.5.0.0 – 51.5.255.255
+    ];
+
+    /// <summary>
+    /// Tests whether an IP address is within the documented Windows 365 gateway IP ranges.
+    /// </summary>
+    public static bool IsInW365Range(IPAddress ip)
+    {
+        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+        var ipBytes = ip.GetAddressBytes();
+
+        foreach (var (network, prefixLength) in W365GatewayRanges)
+        {
+            var netBytes = network.GetAddressBytes();
+            int fullBytes = prefixLength / 8;
+            int remainBits = prefixLength % 8;
+
+            bool match = true;
+            for (int i = 0; i < fullBytes && match; i++)
+                match = ipBytes[i] == netBytes[i];
+
+            if (match && remainBits > 0)
+            {
+                byte mask = (byte)(0xFF << (8 - remainBits));
+                match = (ipBytes[fullBytes] & mask) == (netBytes[fullBytes] & mask);
+            }
+
+            if (match) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns a human-readable string of the W365 gateway IP ranges.
+    /// </summary>
+    public static string W365RangesDisplay => "40.64.144.0/20, 51.5.0.0/16";
+
     // ── Authentication ──
     public static readonly string[] AuthEndpoints =
     [

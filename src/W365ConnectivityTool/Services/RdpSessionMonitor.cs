@@ -396,12 +396,14 @@ public static class RdpSessionMonitor
     {
         var result = new StunReadinessResult();
 
-        foreach (var server in new[] { "worldaz.relay.skype.com", "world.relay.avd.microsoft.com" })
+        // Windows 365 TURN relay only — connections must resolve to 40.64.144.0/20 or 51.5.0.0/16
+        foreach (var server in new[] { "world.relay.avd.microsoft.com" })
         {
             try
             {
                 var addresses = await System.Net.Dns.GetHostAddressesAsync(server, ct);
                 var ip = addresses.First(a => a.AddressFamily == AddressFamily.InterNetwork);
+                bool inRange = EndpointConfiguration.IsInW365Range(ip);
 
                 using var udp = new UdpClient();
                 udp.Client.ReceiveTimeout = 3000;
@@ -427,7 +429,8 @@ public static class RdpSessionMonitor
                         Ip = ip.ToString(),
                         Reachable = true,
                         RttMs = sw.Elapsed.TotalMilliseconds,
-                        IsValidStun = IsValidStunResponse(response.Buffer)
+                        IsValidStun = IsValidStunResponse(response.Buffer),
+                        InW365Range = inRange
                     });
                 }
                 else
@@ -437,7 +440,8 @@ public static class RdpSessionMonitor
                         Server = server,
                         Ip = ip.ToString(),
                         Reachable = false,
-                        Error = "Timeout (3s)"
+                        Error = "Timeout (3s)",
+                        InW365Range = inRange
                     });
                 }
             }
@@ -561,4 +565,5 @@ public class StunServerResult
     public bool IsValidStun { get; set; }
     public double RttMs { get; set; }
     public string Error { get; set; } = string.Empty;
+    public bool InW365Range { get; set; }
 }
