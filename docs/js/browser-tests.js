@@ -141,30 +141,50 @@ const ALL_TESTS = [
         category: 'udp', source: 'local'
     },
 
-    // ── Cloud Session ──
+    // ── Live Connection Diagnostics (requires desktop tool + active Cloud PC session) ──
     {
-        id: 'L-CS-01', name: 'Cloud PC Location',
-        description: 'Identifies the Azure region hosting the Cloud PC (requires Local Scanner)',
+        id: '17', name: 'Active RDP Session Detection',
+        description: 'Detects whether you are in a remote session or have RDP clients running',
         category: 'cloud', source: 'local'
     },
     {
-        id: 'L-CS-02', name: 'Cloud PC Latency',
-        description: 'Measures round-trip latency to the Cloud PC (requires Local Scanner)',
+        id: '17b', name: 'RDP Transport Protocol',
+        description: 'Identifies TCP vs UDP transport from RDP event logs and RemoteFX counters',
         category: 'cloud', source: 'local'
     },
     {
-        id: 'L-CS-03', name: 'Session Throughput',
-        description: 'Estimates available throughput to the Cloud PC (requires Local Scanner)',
+        id: '17c', name: 'UDP Shortpath Readiness',
+        description: 'STUN binding test to TURN relay for UDP shortpath availability',
         category: 'cloud', source: 'local'
     },
     {
-        id: 'L-CS-04', name: 'Jitter Measurement',
-        description: 'Measures network jitter to the Cloud PC (requires Local Scanner)',
+        id: '18', name: 'Session Round-Trip Latency',
+        description: 'Measures RTT via RemoteFX counters (in-session) or validated W365 gateway probes',
         category: 'cloud', source: 'local'
     },
     {
-        id: 'L-CS-05', name: 'Packet Loss',
-        description: 'Detects packet loss on the path to the Cloud PC (requires Local Scanner)',
+        id: '19', name: 'Session Frame Rate & Bandwidth',
+        description: 'Reads RemoteFX Graphics counters for FPS, encoding quality, and bandwidth',
+        category: 'cloud', source: 'local'
+    },
+    {
+        id: '20', name: 'Connection Jitter',
+        description: 'Measures network jitter via 20-sample TCP probes to validated W365 gateways',
+        category: 'cloud', source: 'local'
+    },
+    {
+        id: '21', name: 'Frame Drops & Packet Loss',
+        description: 'Detects dropped frames from RemoteFX counters or TCP loss to W365 gateways',
+        category: 'cloud', source: 'local'
+    },
+    {
+        id: '22', name: 'Cloud PC Teams Optimization',
+        description: 'Checks Teams media optimization and AV redirection status',
+        category: 'cloud', source: 'local'
+    },
+    {
+        id: '24', name: 'VPN Connection Performance',
+        description: 'Detects VPN impact on Cloud PC connection quality',
         category: 'cloud', source: 'local'
     }
 ];

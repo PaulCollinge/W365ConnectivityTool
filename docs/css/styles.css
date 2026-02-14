@@ -960,3 +960,58 @@ footer {
     .header-inner { padding: 12px 16px; }
     main { padding: 12px 16px 24px; }
 }
+
+/* ═══════════════════════════════════════════════════════ */
+/* Live Connection Diagnostics Section                     */
+/* ═══════════════════════════════════════════════════════ */
+.live-diagnostics-section {
+    margin-top: 2rem;
+    border: 1.5px solid #3f6ead;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(88,166,255,0.04) 0%, rgba(30,40,60,0.6) 100%);
+    overflow: hidden;
+}
+.live-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    background: linear-gradient(90deg, rgba(88,166,255,0.12) 0%, rgba(88,166,255,0.04) 100%);
+    border-bottom: 1px solid rgba(88,166,255,0.15);
+}
+.live-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.live-icon {
+    font-size: 1.5rem;
+}
+.live-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #58a6ff;
+    margin: 0;
+}
+.live-subtitle {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 2px 0 0;
+}
+.live-info-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    background: rgba(240,136,62,0.08);
+    border-bottom: 1px solid rgba(240,136,62,0.15);
+    font-size: 0.8rem;
+    color: #f0883e;
+}
+.live-info-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+.live-diagnostics-section .test-list {
+    padding: 12px 16px;
+}

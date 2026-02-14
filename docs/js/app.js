@@ -375,6 +375,10 @@ function mapCategoryFromId(id) {
     if (id.includes('-TCP-')) return 'tcp';
     if (id.includes('-UDP-')) return 'udp';
     if (id.includes('-CS-')) return 'cloud';
+    // WPF Cloud Session test IDs (17, 17b, 17c, 18-24)
+    const num = parseInt(id);
+    if (num >= 17 && num <= 24) return 'cloud';
+    if (id === '17b' || id === '17c') return 'cloud';
     return 'local';
 }
 
@@ -409,7 +413,7 @@ function exportTextReport() {
         endpoint: 'Required Endpoints',
         tcp: 'TCP / Transport',
         udp: 'UDP / TURN / STUN',
-        cloud: 'Cloud PC'
+        cloud: 'Live Connection Diagnostics'
     };
     const categories = ['local', 'endpoint', 'tcp', 'udp', 'cloud'];
 

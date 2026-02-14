@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=35">
+    <link rel="stylesheet" href="css/styles.css?v=36">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -282,15 +282,28 @@
                 <div class="test-list" id="tests-udp"></div>
             </section>
 
-            <section class="category" id="cat-cloud">
-                <div class="category-header">
-                    <span class="category-icon">☁️</span>
-                    <h2>Cloud Session</h2>
-                    <span class="category-badge" id="badge-cloud"></span>
-                    <span class="source-tag local-only">Requires Local Scanner</span>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- Live Connection Diagnostics — separate visual section     -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <div id="live-diagnostics-section" class="live-diagnostics-section">
+            <div class="live-header">
+                <div class="live-header-left">
+                    <span class="live-icon">📡</span>
+                    <div>
+                        <h2 class="live-title">Live Connection Diagnostics</h2>
+                        <p class="live-subtitle">Real-time analysis of your active Cloud PC session</p>
+                    </div>
                 </div>
-                <div class="test-list" id="tests-cloud"></div>
-            </section>
+                <span class="category-badge" id="badge-cloud"></span>
+            </div>
+            <div class="live-info-bar">
+                <span class="live-info-icon">ℹ️</span>
+                <span>Run the desktop tool while connected to your Cloud PC, or from within the Cloud PC session itself.</span>
+            </div>
+            <div class="test-list" id="tests-cloud"></div>
+        </div>
         </div>
     </main>
 
@@ -313,11 +326,11 @@
         </div>
     </footer>
 
-    <!-- deploy: v29 -->
-    <script src="js/config.js?v=35"></script>
-    <script src="js/browser-tests.js?v=35"></script>
-    <script src="js/ui.js?v=35"></script>
-    <script src="js/map.js?v=35"></script>
-    <script src="js/app.js?v=35"></script>
+    <!-- deploy: v30 -->
+    <script src="js/config.js?v=36"></script>
+    <script src="js/browser-tests.js?v=36"></script>
+    <script src="js/ui.js?v=36"></script>
+    <script src="js/map.js?v=36"></script>
+    <script src="js/app.js?v=36"></script>
 </body>
 </html>

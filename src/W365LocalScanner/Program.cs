@@ -549,12 +549,16 @@ class Program
             new("L-UDP-06", "TURN TLS Inspection", "Checks TLS on TURN relay", "udp", RunTurnTlsInspection),
             new("L-UDP-07", "TURN Proxy/VPN Detection", "Detects UDP-blocking proxy/VPN", "udp", RunTurnProxyVpn),
 
-            // ── Cloud Session ──
-            new("L-CS-01", "Cloud PC Location", "Identifies Cloud PC Azure region", "cloud", RunCloudPcLocation),
-            new("L-CS-02", "Cloud PC Latency", "Measures latency to Cloud PC", "cloud", RunCloudPcLatency),
-            new("L-CS-03", "Session Throughput", "Estimates throughput", "cloud", RunSessionThroughput),
-            new("L-CS-04", "Jitter Measurement", "Measures network jitter", "cloud", RunJitter),
-            new("L-CS-05", "Packet Loss", "Detects packet loss", "cloud", RunPacketLoss),
+            // ── Live Connection Diagnostics ──
+            new("17", "Active RDP Session Detection", "Detects remote session or RDP clients", "cloud", RunActiveSession),
+            new("17b", "RDP Transport Protocol", "TCP vs UDP from event logs", "cloud", RunTransportProtocol),
+            new("17c", "UDP Shortpath Readiness", "STUN test to TURN relay", "cloud", RunUdpReadiness),
+            new("18", "Session Round-Trip Latency", "Measures RTT to Cloud PC", "cloud", RunSessionLatency),
+            new("19", "Session Frame Rate & Bandwidth", "RemoteFX Graphics counters", "cloud", RunFrameRate),
+            new("20", "Connection Jitter", "Measures network jitter", "cloud", RunJitter),
+            new("21", "Frame Drops & Packet Loss", "Detects dropped frames and packet loss", "cloud", RunPacketLoss),
+            new("22", "Cloud PC Teams Optimization", "Checks Teams AV redirection", "cloud", RunCloudTeamsOptimization),
+            new("24", "VPN Connection Performance", "Detects VPN impact", "cloud", RunCloudVpnPerformance),
         ];
     }
 
@@ -1565,37 +1569,61 @@ class Program
     }
 
     // ═══════════════════════════════════════════
-    //  CLOUD SESSION TESTS (stubs)
+    //  LIVE CONNECTION DIAGNOSTICS (stubs — require active Cloud PC session)
     // ═══════════════════════════════════════════
 
-    static Task<TestResult> RunCloudPcLocation() => Task.FromResult(new TestResult
+    static Task<TestResult> RunActiveSession() => Task.FromResult(new TestResult
     {
-        Id = "L-CS-01", Name = "Cloud PC Location", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+        Id = "17", Name = "Active RDP Session Detection", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
     });
 
-    static Task<TestResult> RunCloudPcLatency() => Task.FromResult(new TestResult
+    static Task<TestResult> RunTransportProtocol() => Task.FromResult(new TestResult
     {
-        Id = "L-CS-02", Name = "Cloud PC Latency", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+        Id = "17b", Name = "RDP Transport Protocol", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
     });
 
-    static Task<TestResult> RunSessionThroughput() => Task.FromResult(new TestResult
+    static Task<TestResult> RunUdpReadiness() => Task.FromResult(new TestResult
     {
-        Id = "L-CS-03", Name = "Session Throughput", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+        Id = "17c", Name = "UDP Shortpath Readiness", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
+    });
+
+    static Task<TestResult> RunSessionLatency() => Task.FromResult(new TestResult
+    {
+        Id = "18", Name = "Session Round-Trip Latency", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
+    });
+
+    static Task<TestResult> RunFrameRate() => Task.FromResult(new TestResult
+    {
+        Id = "19", Name = "Session Frame Rate & Bandwidth", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
     });
 
     static Task<TestResult> RunJitter() => Task.FromResult(new TestResult
     {
-        Id = "L-CS-04", Name = "Jitter Measurement", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+        Id = "20", Name = "Connection Jitter", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
     });
 
     static Task<TestResult> RunPacketLoss() => Task.FromResult(new TestResult
     {
-        Id = "L-CS-05", Name = "Packet Loss", Category = "cloud",
-        Status = "Skipped", ResultValue = "Requires active Cloud PC session"
+        Id = "21", Name = "Frame Drops & Packet Loss", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
+    });
+
+    static Task<TestResult> RunCloudTeamsOptimization() => Task.FromResult(new TestResult
+    {
+        Id = "22", Name = "Cloud PC Teams Optimization", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
+    });
+
+    static Task<TestResult> RunCloudVpnPerformance() => Task.FromResult(new TestResult
+    {
+        Id = "24", Name = "VPN Connection Performance", Category = "cloud",
+        Status = "Skipped", ResultValue = "Requires active Cloud PC session — run the desktop tool"
     });
 
     // ═══════════════════════════════════════════
