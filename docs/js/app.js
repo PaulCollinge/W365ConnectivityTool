@@ -2,6 +2,26 @@
  * Main application logic: orchestrates browser tests, import, and result merging.
  */
 
+// Global error handler — show JS errors visibly so import issues are not silent
+window.onerror = function(msg, url, line, col, error) {
+    console.error('Global error:', msg, url, line, col, error);
+    const info = document.getElementById('info-banner');
+    if (info) {
+        info.classList.remove('hidden');
+        info.querySelector('.info-text').innerHTML =
+            `<strong>JavaScript error:</strong> ${msg} (${url}:${line})`;
+    }
+};
+window.addEventListener('unhandledrejection', function(event) {
+    console.error('Unhandled promise rejection:', event.reason);
+    const info = document.getElementById('info-banner');
+    if (info) {
+        info.classList.remove('hidden');
+        info.querySelector('.info-text').innerHTML =
+            `<strong>Async error:</strong> ${event.reason?.message || event.reason}`;
+    }
+});
+
 // All collected results (browser + imported)
 let allResults = [];
 let isRunning = false;
@@ -193,24 +213,47 @@ async function checkForAutoImport() {
     let data = null;
     let source = '';
 
+    // Show immediate feedback that import is starting
+    const info = document.getElementById('info-banner');
+    const hasZResults = params.has('zresults');
+    const hasHashZ = hash.startsWith('#zresults=');
+    const hasHashR = hash.startsWith('#results=');
+
+    if (!hasZResults && !hasHashZ && !hasHashR) return;
+
+    // Show importing status
+    if (info) {
+        info.classList.remove('hidden');
+        info.querySelector('.info-text').innerHTML =
+            '<strong>Importing scanner results...</strong> Decompressing data.';
+    }
+
     try {
-        if (params.has('zresults')) {
-            // Query-param compressed format (preferred — works with ShellExecute)
+        if (hasZResults) {
             const raw = params.get('zresults');
-            data = await decodeCompressedHash(raw);
-            source = 'query';
-        } else if (hash.startsWith('#zresults=')) {
-            // Hash compressed format (legacy)
+            console.log(`Auto-import: zresults param found, ${raw.length} chars`);
+            try {
+                data = await decodeCompressedHash(raw);
+                source = 'query-compressed';
+            } catch (compressErr) {
+                console.warn('Compressed import failed, trying uncompressed hash fallback:', compressErr);
+                // Fallback: try uncompressed #results= hash (scanner sends both)
+                if (hash.startsWith('#results=')) {
+                    const hashRaw = hash.substring('#results='.length);
+                    data = decodeUncompressedHash(hashRaw);
+                    source = 'hash-fallback';
+                } else {
+                    throw compressErr; // No fallback available, re-throw
+                }
+            }
+        } else if (hasHashZ) {
             const raw = hash.substring('#zresults='.length);
             data = await decodeCompressedHash(raw);
-            source = 'hash';
-        } else if (hash.startsWith('#results=')) {
-            // Hash uncompressed format (legacy)
+            source = 'hash-compressed';
+        } else if (hasHashR) {
             const raw = hash.substring('#results='.length);
             data = decodeUncompressedHash(raw);
-            source = 'hash';
-        } else {
-            return;
+            source = 'hash-uncompressed';
         }
 
         // Clear the URL so it doesn't re-import on refresh / bookmarking
@@ -241,12 +284,13 @@ async function checkForAutoImport() {
     } catch (e) {
         console.error('Auto-import from URL failed:', e);
         // Show a helpful message to the user instead of failing silently
-        const info = document.getElementById('info-banner');
-        info.classList.remove('hidden');
-        info.querySelector('.info-text').innerHTML =
-            `<strong>Auto-import failed.</strong> The scanner results could not be loaded from the URL. ` +
-            `Please drag and drop the <strong>W365ScanResults.json</strong> file onto this page, ` +
-            `or open the file manually from the folder where you ran the scanner.`;
+        if (info) {
+            info.classList.remove('hidden');
+            info.querySelector('.info-text').innerHTML =
+                `<strong>Auto-import failed:</strong> ${e.message || e}. ` +
+                `Please drag and drop the <strong>W365ScanResults.json</strong> file onto this page, ` +
+                `or open the file manually from the folder where you ran the scanner.`;
+        }
         // Clear the hash
         history.replaceState(null, '', window.location.pathname + window.location.search);
     }
@@ -262,26 +306,35 @@ async function decodeCompressedHash(raw) {
     const bytes = new Uint8Array(binaryStr.length);
     for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-    const ds = new DecompressionStream('deflate-raw');
-    const writer = ds.writable.getWriter();
-    writer.write(bytes);
-    writer.close();
+    // Use DecompressionStream with a timeout to detect hangs
+    const decompressPromise = (async () => {
+        const ds = new DecompressionStream('deflate-raw');
+        const writer = ds.writable.getWriter();
+        writer.write(bytes);
+        writer.close();
 
-    const reader = ds.readable.getReader();
-    const chunks = [];
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-    }
-    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-    const decompressed = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-        decompressed.set(chunk, offset);
-        offset += chunk.length;
-    }
-    const json = new TextDecoder().decode(decompressed);
+        const reader = ds.readable.getReader();
+        const chunks = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+        }
+        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+        const decompressed = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+            decompressed.set(chunk, offset);
+            offset += chunk.length;
+        }
+        return new TextDecoder().decode(decompressed);
+    })();
+
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('DecompressionStream timed out after 10s')), 10000)
+    );
+
+    const json = await Promise.race([decompressPromise, timeoutPromise]);
     console.log(`Auto-import (compressed): decompressed ${bytes.length} → ${json.length} bytes`);
     return JSON.parse(json);
 }
