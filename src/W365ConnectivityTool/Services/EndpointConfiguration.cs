@@ -54,6 +54,58 @@ public static class EndpointConfiguration
     /// </summary>
     public static string W365RangesDisplay => "40.64.144.0/20, 51.5.0.0/16";
 
+    /// <summary>
+    /// Resolves and validates a gateway endpoint for Cloud Session probes.
+    /// Only returns endpoints whose resolved IPs fall within W365 gateway ranges.
+    /// Tries each discovered RDP connection's GatewayHostname and AfdHostname.
+    /// Returns null if no valid endpoint is found — callers must NOT probe non-W365 IPs.
+    /// </summary>
+    public static async Task<ValidatedEndpoint?> GetValidatedGatewayForProbes(CancellationToken ct)
+    {
+        var connections = Tests.RdpFileParser.DiscoverConnections();
+
+        foreach (var conn in connections)
+        {
+            // Try the full address (actual RD Gateway) first — resolves to W365 IP ranges
+            var validated = await ValidateEndpointInRange(conn.GatewayHostname, GatewayPort, ct);
+            if (validated != null) return validated;
+
+            // Try the AFD hostname (Azure Front Door → gateway backend)
+            if (conn.AfdHostname != null)
+            {
+                validated = await ValidateEndpointInRange(conn.AfdHostname, conn.AfdPort, ct);
+                if (validated != null) return validated;
+            }
+        }
+
+        return null; // No endpoint found within W365 ranges
+    }
+
+    private static async Task<ValidatedEndpoint?> ValidateEndpointInRange(string hostname, int port, CancellationToken ct)
+    {
+        try
+        {
+            var ips = await System.Net.Dns.GetHostAddressesAsync(hostname, ct);
+            var ip = ips.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+            if (ip != null && IsInW365Range(ip))
+                return new ValidatedEndpoint(hostname, port, ip);
+        }
+        catch { /* DNS failure — skip this endpoint */ }
+        return null;
+    }
+
+    /// <summary>
+    /// A resolved gateway endpoint validated as being within W365 IP ranges.
+    /// </summary>
+    public record ValidatedEndpoint(string Hostname, int Port, IPAddress ResolvedIp);
+
+    /// <summary>
+    /// Returns the TURN relay endpoint for UDP/STUN/RDP Shortpath probes.
+    /// This is the only valid UDP endpoint for measuring RDP transport readiness.
+    /// </summary>
+    public const string TurnRelayProbeEndpoint = "world.relay.avd.microsoft.com";
+    public const int TurnRelayProbePort = 3478;
+
     // ── Authentication ──
     public static readonly string[] AuthEndpoints =
     [

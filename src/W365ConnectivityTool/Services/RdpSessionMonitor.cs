@@ -396,64 +396,63 @@ public static class RdpSessionMonitor
     {
         var result = new StunReadinessResult();
 
-        // Windows 365 TURN relay only — connections must resolve to 40.64.144.0/20 or 51.5.0.0/16
-        foreach (var server in new[] { "world.relay.avd.microsoft.com" })
+        // Windows 365 TURN relay only — the sole valid UDP endpoint for RDP Shortpath transport
+        var server = EndpointConfiguration.TurnRelayProbeEndpoint;
+        var port = EndpointConfiguration.TurnRelayProbePort;
+        try
         {
-            try
+            var addresses = await System.Net.Dns.GetHostAddressesAsync(server, ct);
+            var ip = addresses.First(a => a.AddressFamily == AddressFamily.InterNetwork);
+            bool inRange = EndpointConfiguration.IsInW365Range(ip);
+
+            using var udp = new UdpClient();
+            udp.Client.ReceiveTimeout = 3000;
+            var serverEp = new System.Net.IPEndPoint(ip, port);
+
+            // Build STUN Binding Request (RFC 5389)
+            var stunRequest = BuildStunRequest();
+
+            var sw = Stopwatch.StartNew();
+            await udp.SendAsync(stunRequest, stunRequest.Length, serverEp);
+
+            var receiveTask = udp.ReceiveAsync(ct);
+            var completed = await Task.WhenAny(receiveTask.AsTask(), Task.Delay(3000, ct));
+
+            if (completed == receiveTask.AsTask())
             {
-                var addresses = await System.Net.Dns.GetHostAddressesAsync(server, ct);
-                var ip = addresses.First(a => a.AddressFamily == AddressFamily.InterNetwork);
-                bool inRange = EndpointConfiguration.IsInW365Range(ip);
+                sw.Stop();
+                var response = await receiveTask;
 
-                using var udp = new UdpClient();
-                udp.Client.ReceiveTimeout = 3000;
-                var serverEp = new System.Net.IPEndPoint(ip, 3478);
-
-                // Build STUN Binding Request (RFC 5389)
-                var stunRequest = BuildStunRequest();
-
-                var sw = Stopwatch.StartNew();
-                await udp.SendAsync(stunRequest, stunRequest.Length, serverEp);
-
-                var receiveTask = udp.ReceiveAsync(ct);
-                var completed = await Task.WhenAny(receiveTask.AsTask(), Task.Delay(3000, ct));
-
-                if (completed == receiveTask.AsTask())
+                result.StunResults.Add(new StunServerResult
                 {
-                    sw.Stop();
-                    var response = await receiveTask;
-
-                    result.StunResults.Add(new StunServerResult
-                    {
-                        Server = server,
-                        Ip = ip.ToString(),
-                        Reachable = true,
-                        RttMs = sw.Elapsed.TotalMilliseconds,
-                        IsValidStun = IsValidStunResponse(response.Buffer),
-                        InW365Range = inRange
-                    });
-                }
-                else
-                {
-                    result.StunResults.Add(new StunServerResult
-                    {
-                        Server = server,
-                        Ip = ip.ToString(),
-                        Reachable = false,
-                        Error = "Timeout (3s)",
-                        InW365Range = inRange
-                    });
-                }
+                    Server = server,
+                    Ip = ip.ToString(),
+                    Reachable = true,
+                    RttMs = sw.Elapsed.TotalMilliseconds,
+                    IsValidStun = IsValidStunResponse(response.Buffer),
+                    InW365Range = inRange
+                });
             }
-            catch (Exception ex)
+            else
             {
                 result.StunResults.Add(new StunServerResult
                 {
                     Server = server,
+                    Ip = ip.ToString(),
                     Reachable = false,
-                    Error = ex.Message
+                    Error = "Timeout (3s)",
+                    InW365Range = inRange
                 });
             }
+        }
+        catch (Exception ex)
+        {
+            result.StunResults.Add(new StunServerResult
+            {
+                Server = server,
+                Reachable = false,
+                Error = ex.Message
+            });
         }
 
         result.UdpReady = result.StunResults.Any(s => s.Reachable);

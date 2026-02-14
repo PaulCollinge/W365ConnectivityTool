@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using W365ConnectivityTool.Models;
@@ -385,15 +384,30 @@ public class SessionLatencyTest : BaseTest
 
     private static async Task MeasureTcpLatency(TestResult result, StringBuilder sb, CancellationToken ct)
     {
-        var endpoint = EndpointConfiguration.GetBestGatewayEndpoint();
-        var resolvedIps = await Dns.GetHostAddressesAsync(endpoint, ct);
-        var ip = resolvedIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-        bool inRange = ip != null && EndpointConfiguration.IsInW365Range(ip);
+        // Only probe endpoints that resolve to W365 gateway IP ranges (40.64.144.0/20, 51.5.0.0/16)
+        var gw = await EndpointConfiguration.GetValidatedGatewayForProbes(ct);
+
+        if (gw == null)
+        {
+            sb.AppendLine("Source: TCP connect probes to RD Gateway");
+            sb.AppendLine();
+            sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+            sb.AppendLine($"  Expected ranges: {EndpointConfiguration.W365RangesDisplay}");
+            sb.AppendLine();
+            sb.AppendLine("This test only probes actual RDP transport infrastructure.");
+            sb.AppendLine("To obtain a valid gateway endpoint:");
+            sb.AppendLine("  1. Connect to your Cloud PC using Windows App or mstsc");
+            sb.AppendLine("  2. The client will cache RDP files with gateway hostnames");
+            sb.AppendLine("  3. Re-run this test after connecting at least once");
+            result.Status = TestStatus.Skipped;
+            result.ResultValue = "No W365 gateway endpoint available";
+            result.RemediationText = "Connect to your Cloud PC at least once so the tool can discover the actual RD Gateway hostname from cached RDP files.";
+            return;
+        }
 
         sb.AppendLine("Source: TCP connect probes to RD Gateway");
-        sb.AppendLine($"Endpoint: {endpoint}:{EndpointConfiguration.GatewayPort}");
-        if (ip != null)
-            sb.AppendLine($"Resolved IP: {ip} ({(inRange ? $"✓ within W365 range" : $"⚠ outside expected W365 ranges ({EndpointConfiguration.W365RangesDisplay})")})");
+        sb.AppendLine($"Endpoint: {gw.Hostname}:{gw.Port}");
+        sb.AppendLine($"Resolved IP: {gw.ResolvedIp} (✓ within W365 range {EndpointConfiguration.W365RangesDisplay})");
         sb.AppendLine("Samples: 10 (extended for accuracy)");
         sb.AppendLine();
 
@@ -407,7 +421,7 @@ public class SessionLatencyTest : BaseTest
                 using var tcp = new TcpClient();
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(5000);
-                await tcp.ConnectAsync(endpoint, EndpointConfiguration.GatewayPort, cts.Token);
+                await tcp.ConnectAsync(gw.Hostname, gw.Port, cts.Token);
                 sw.Stop();
                 rtts.Add(sw.Elapsed.TotalMilliseconds);
             }
@@ -632,19 +646,30 @@ public class ConnectionJitterTest : BaseTest
     protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
         var sb = new StringBuilder();
-        var endpoint = EndpointConfiguration.GetBestGatewayEndpoint();
-        var resolvedIps = await Dns.GetHostAddressesAsync(endpoint, ct);
-        var ip = resolvedIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-        bool inRange = ip != null && EndpointConfiguration.IsInW365Range(ip);
 
-        sb.AppendLine($"Endpoint: {endpoint}:{EndpointConfiguration.GatewayPort}");
-        if (ip != null)
-            sb.AppendLine($"Resolved IP: {ip} ({(inRange ? $"✓ within W365 range" : $"⚠ outside expected W365 ranges ({EndpointConfiguration.W365RangesDisplay})")})");
+        // Only probe endpoints that resolve to W365 gateway IP ranges
+        var gw = await EndpointConfiguration.GetValidatedGatewayForProbes(ct);
+
+        if (gw == null)
+        {
+            sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+            sb.AppendLine($"  Expected ranges: {EndpointConfiguration.W365RangesDisplay}");
+            sb.AppendLine();
+            sb.AppendLine("Connect to your Cloud PC at least once so the tool can discover");
+            sb.AppendLine("the actual RD Gateway hostname from cached RDP files.");
+            result.Status = TestStatus.Skipped;
+            result.ResultValue = "No W365 gateway endpoint available";
+            result.DetailedInfo = sb.ToString().TrimEnd();
+            return;
+        }
+
+        sb.AppendLine($"Endpoint: {gw.Hostname}:{gw.Port}");
+        sb.AppendLine($"Resolved IP: {gw.ResolvedIp} (✓ within W365 range {EndpointConfiguration.W365RangesDisplay})");
         sb.AppendLine("Samples: 20 TCP connect probes at 250ms intervals");
         sb.AppendLine();
 
         var jitterResult = await RdpSessionMonitor.MeasureJitter(
-            endpoint, EndpointConfiguration.GatewayPort, 20, ct);
+            gw.Hostname, gw.Port, 20, ct);
 
         if (!jitterResult.Success)
         {
@@ -877,14 +902,23 @@ public class FrameDropTest : BaseTest
         sb.AppendLine("ℹ For per-frame drop analysis, run this tool inside the Cloud PC.");
         sb.AppendLine();
 
-        var endpoint = EndpointConfiguration.GetBestGatewayEndpoint();
-        var resolvedIps = await Dns.GetHostAddressesAsync(endpoint, ct);
-        var ip = resolvedIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-        bool inRange = ip != null && EndpointConfiguration.IsInW365Range(ip);
+        // Only probe endpoints that resolve to W365 gateway IP ranges
+        var gw = await EndpointConfiguration.GetValidatedGatewayForProbes(ct);
 
-        sb.AppendLine($"Endpoint: {endpoint}:{EndpointConfiguration.GatewayPort}");
-        if (ip != null)
-            sb.AppendLine($"Resolved IP: {ip} ({(inRange ? $"✓ within W365 range" : $"⚠ outside expected W365 ranges ({EndpointConfiguration.W365RangesDisplay})")})");
+        if (gw == null)
+        {
+            sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+            sb.AppendLine($"  Expected ranges: {EndpointConfiguration.W365RangesDisplay}");
+            sb.AppendLine();
+            sb.AppendLine("Connect to your Cloud PC at least once so the tool can discover");
+            sb.AppendLine("the actual RD Gateway hostname from cached RDP files.");
+            result.Status = TestStatus.Skipped;
+            result.ResultValue = "No W365 gateway endpoint available";
+            return;
+        }
+
+        sb.AppendLine($"Endpoint: {gw.Hostname}:{gw.Port}");
+        sb.AppendLine($"Resolved IP: {gw.ResolvedIp} (✓ within W365 range {EndpointConfiguration.W365RangesDisplay})");
         sb.AppendLine("Probes: 15 TCP connection attempts");
         sb.AppendLine();
 
@@ -899,7 +933,7 @@ public class FrameDropTest : BaseTest
                 using var tcp = new TcpClient();
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(3000);
-                await tcp.ConnectAsync(endpoint, EndpointConfiguration.GatewayPort, cts.Token);
+                await tcp.ConnectAsync(gw.Hostname, gw.Port, cts.Token);
                 success++;
             }
             catch
