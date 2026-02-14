@@ -120,12 +120,14 @@ public class TestRunner
             new TurnTlsInspectionTest(),
             new TurnProxyVpnDetectionTest(),
 
-            // Cloud Session Tests — stubs (IDs 17-22, 24)
-            new CloudPcLocationTest(),
-            new CloudPcLatencyTest(),
-            new CloudPcThroughputTest(),
-            new JitterTest(),
-            new PacketLossTest(),
+            // Cloud Session Tests — live session analysis (IDs 17-22, 24)
+            new ActiveSessionDetectionTest(),
+            new TransportProtocolTest(),
+            new UdpReadinessTest(),
+            new SessionLatencyTest(),
+            new SessionFrameRateTest(),
+            new ConnectionJitterTest(),
+            new FrameDropTest(),
             new CloudTeamsOptimizationTest(),
             new VpnPerformanceTest()
         ];
