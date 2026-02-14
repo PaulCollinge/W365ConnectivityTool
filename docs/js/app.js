@@ -370,6 +370,13 @@ function processImportedData(data) {
 
     // Hide download banner if we have local results
     if (importedCount > 0) hideDownloadBanner();
+
+    // Hide the cloud info bar if we imported any cloud results
+    const hasCloudResults = allResults.some(r => r.category === 'cloud' && r.source === 'local');
+    if (hasCloudResults) {
+        const cloudInfoBar = document.getElementById('cloud-info-bar');
+        if (cloudInfoBar) cloudInfoBar.style.display = 'none';
+    }
 }
 
 // ── Helpers ──
