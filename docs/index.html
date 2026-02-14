@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=39">
+    <link rel="stylesheet" href="css/styles.css?v=40">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -326,10 +326,24 @@
     </footer>
 
     <!-- deploy: v30 -->
-    <script src="js/config.js?v=39"></script>
-    <script src="js/browser-tests.js?v=39"></script>
-    <script src="js/ui.js?v=39"></script>
-    <script src="js/map.js?v=39"></script>
-    <script src="js/app.js?v=39"></script>
+    <script>
+    // Inline diagnostic: immediately detect import params before external JS loads
+    (function() {
+        var s = location.search, h = location.hash;
+        if (s.indexOf('zresults') > -1 || h.indexOf('results') > -1) {
+            document.title = '[IMPORTING] search=' + s.length + ' hash=' + h.length;
+            var d = document.getElementById('info-banner');
+            if (d) {
+                d.classList.remove('hidden');
+                d.querySelector('.info-text').innerHTML = '<strong>Import detected:</strong> query=' + s.length + ' chars, hash=' + h.length + ' chars. Loading scripts...';
+            }
+        }
+    })();
+    </script>
+    <script src="js/config.js?v=40"></script>
+    <script src="js/browser-tests.js?v=40"></script>
+    <script src="js/ui.js?v=40"></script>
+    <script src="js/map.js?v=40"></script>
+    <script src="js/app.js?v=40"></script>
 </body>
 </html>

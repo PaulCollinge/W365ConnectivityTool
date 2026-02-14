@@ -149,37 +149,45 @@ class Program
                 .Replace('/', '_')
                 .TrimEnd('=');
 
-            // Also create uncompressed URL-safe base64 for legacy #results= hash format
-            var uncompressedBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
-                .Replace('+', '-')
-                .Replace('/', '_')
-                .TrimEnd('=');
-
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var pageUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&zresults={compressedBase64}#results={uncompressedBase64}";
+            // Build query-only URL (no #hash needed — ShellExecute preserves ?query params)
+            var directUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&zresults={compressedBase64}";
 
             Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
 
-            if (pageUrl.Length > 2_000_000) // Browser URL limit ~2MB
+            if (directUrl.Length > 32_000) // Conservative URL length limit
             {
-                Console.WriteLine($"  Results too large for URL auto-import ({pageUrl.Length} chars).");
+                Console.WriteLine($"  Results too large for URL auto-import ({directUrl.Length} chars).");
                 Console.WriteLine($"  Drag and drop {Path.GetFullPath(outputPath)} onto the web page.");
-                pageUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
+                directUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
             }
 
-            // Create a temporary HTML file that redirects via JavaScript
-            // (JavaScript redirect preserves hash fragments unlike ShellExecute)
-            var redirectHtml = $@"<!DOCTYPE html>
+            Console.WriteLine($"  Opening browser with results...");
+
+            // Method 1: Open the HTTPS URL directly via ShellExecute
+            // This avoids local file:// redirect issues (Edge blocking JS in local HTML, etc.)
+            try
+            {
+                Process.Start(new ProcessStartInfo { FileName = directUrl, UseShellExecute = true });
+            }
+            catch
+            {
+                // Method 2 fallback: Use a local HTML redirect file
+                // (in case ShellExecute can't handle the URL directly)
+                var uncompressedBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                    .Replace('+', '-')
+                    .Replace('/', '_')
+                    .TrimEnd('=');
+                var fullUrl = $"{directUrl}#results={uncompressedBase64}";
+                var redirectHtml = $@"<!DOCTYPE html>
 <html><head><title>Opening W365 Diagnostics...</title></head>
 <body><p>Redirecting to results page...</p>
-<script>window.location.replace({EscapeJsString(pageUrl)});</script>
+<script>window.location.replace({EscapeJsString(fullUrl)});</script>
 </body></html>";
-
-            var redirectPath = Path.Combine(Path.GetTempPath(), "W365ScanRedirect.html");
-            await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
-
-            Console.WriteLine($"  Opening browser with results...");
-            Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
+                var redirectPath = Path.Combine(Path.GetTempPath(), "W365ScanRedirect.html");
+                await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
+                Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
+            }
         }
         catch (Exception ex)
         {
