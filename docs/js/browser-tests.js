@@ -79,8 +79,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
     {
-        id: 'B-TCP-02', name: 'AFD Edge Location',
-        description: 'Tests connectivity to Azure Front Door and identifies which AFD edge node is serving your traffic',
+        id: 'B-TCP-02', name: 'AFD Connectivity',
+        description: 'Tests connectivity to Azure Front Door and measures latency to the AFD edge',
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
@@ -492,7 +492,7 @@ async function testConnectionSpeed(test) {
     return makeResult(test, status, verdict, lines.join('\n'), duration,
         best.mbps < 10 ? EndpointConfig.docs.bandwidth : '');
 }
-// ── AFD Edge Location ──
+// ── AFD Connectivity ──
 // Azure Front Door PoP codes → city names
 const AFD_POP_MAP = {
     // UK & Ireland
@@ -539,7 +539,8 @@ async function testGatewayLatency(test) {
     let serviceRegion = '';
     let edgeRef = '';
     let latencyMs = 0;
-    let headersAvailable = false;
+    let cnameChain = [];
+    let edgeIp = '';
 
     // Step 1: Try regular fetch (CORS) to read AFD response headers
     try {
@@ -555,10 +556,7 @@ async function testGatewayLatency(test) {
         edgeRef = resp.headers.get('X-MSEdge-Ref') || resp.headers.get('x-azure-ref') || '';
         serviceRegion = resp.headers.get('x-ms-wvd-service-region') || '';
 
-        if (edgeRef || serviceRegion) headersAvailable = true;
-
         // Parse 3-letter PoP code from X-MSEdge-Ref
-        // Format: "Ref A: XXXX Ref B: LHREdgeXXXX Ref C: XXXX"
         if (edgeRef) {
             const popMatch = edgeRef.match(/Ref\s+B:\s*([A-Z]{3})/i);
             if (popMatch) {
@@ -567,7 +565,7 @@ async function testGatewayLatency(test) {
             }
         }
     } catch (e) {
-        // CORS blocked or network error — fall back to no-cors
+        // CORS blocked — fall back to no-cors
     }
 
     // Step 2: If CORS fetch failed, try no-cors for connectivity only
@@ -585,8 +583,25 @@ async function testGatewayLatency(test) {
         }
     }
 
+    // Step 3: Resolve CNAME chain via DoH to show routing path
+    try {
+        const dnsResp = await fetch(`https://dns.google/resolve?name=${ep}&type=A`, {
+            signal: AbortSignal.timeout(5000)
+        });
+        const dnsData = await dnsResp.json();
+        if (dnsData.Answer) {
+            for (const rec of dnsData.Answer) {
+                if (rec.type === 5) { // CNAME
+                    cnameChain.push(rec.data.replace(/\.$/, ''));
+                } else if (rec.type === 1) { // A record
+                    edgeIp = rec.data;
+                }
+            }
+        }
+    } catch (e) { /* DoH unavailable */ }
+
     // Build detail output
-    if (connected && afdPopCity) {
+    if (afdPopCity) {
         lines.push(`╔══════════════════════════════════════════════════╗`);
         lines.push(`║  AFD Edge: ${afdPopCity} (${afdPop})`.padEnd(49) + `║`);
         lines.push(`╚══════════════════════════════════════════════════╝`);
@@ -600,16 +615,27 @@ async function testGatewayLatency(test) {
     } else if (afdPop) {
         lines.push(`AFD PoP: ${afdPop}`);
     }
-
     if (serviceRegion) lines.push(`Service Region: ${serviceRegion}`);
     if (edgeRef) lines.push(`Edge Ref: ${edgeRef}`);
 
-    if (connected && !headersAvailable) {
-        lines.push(`PoP Location: Not available (CORS prevented reading AFD response headers)`);
-        lines.push(`  ↳ Run the Local Scanner for full edge location details`);
+    // Show DNS resolution chain
+    if (cnameChain.length > 0 || edgeIp) {
+        lines.push('');
+        lines.push(`DNS Resolution Chain:`);
+        lines.push(`  ${ep}`);
+        for (const cname of cnameChain) {
+            lines.push(`  → ${cname}`);
+        }
+        if (edgeIp) lines.push(`  → ${edgeIp} (anycast)`);
     }
 
-    // Step 3: Resource Timing info
+    // Note about edge location if we couldn't get it from headers
+    if (connected && !afdPop) {
+        lines.push('');
+        lines.push(`Edge location: see Local Scanner results (L-TCP-09 Gateway Used)`);
+    }
+
+    // Step 4: Resource Timing info
     if (connected && typeof performance !== 'undefined' && performance.getEntriesByType) {
         const entries = performance.getEntriesByType('resource')
             .filter(e => e.name.includes(ep))
@@ -622,7 +648,7 @@ async function testGatewayLatency(test) {
         }
     }
 
-    // Step 4: Additional latency samples
+    // Step 5: Additional latency samples
     if (connected) {
         const times = [latencyMs];
         for (let i = 0; i < 2; i++) {
@@ -654,7 +680,7 @@ async function testGatewayLatency(test) {
     } else if (afdPop) {
         value = `✓ PoP: ${afdPop} — ${latencyMs}ms`;
     } else {
-        value = `✓ Connected (${latencyMs}ms)`;
+        value = `✓ Connected — ${latencyMs}ms`;
     }
     return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }
