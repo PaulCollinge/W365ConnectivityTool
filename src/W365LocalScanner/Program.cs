@@ -854,7 +854,7 @@ class Program
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
 
             // ── TCP Based RDP Connectivity ──
-            new("L-TCP-04", "RDWeb Service Check", "Tests DNS, TCP, TLS, HTTP to AFD, discovered gateway, and service endpoints", "tcp", RunGatewayConnectivity),
+            new("L-TCP-04", "RDWeb Service Check", "Tests RDWeb feed discovery, AFD gateway discovery, and authentication endpoints", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
             new("L-TCP-08", "DNS Hijacking Check", "Verifies gateway DNS resolves to legitimate Microsoft IPs", "tcp", RunDnsHijackingCheck),
             new("L-TCP-09", "Gateway Used", "Shows which gateway edge node and IP are being used", "tcp", RunGatewayUsed),
@@ -1293,8 +1293,7 @@ class Program
             // AFD discovers the nearest regional RDP gateway (e.g. rdgateway-c221-UKS-r1.wvd.microsoft.com).
             // The actual gateway hostname is revealed in AFD's Set-Cookie Domain= header.
             var serviceEndpoints = new (string host, int port, string role)[] {
-                ("rdweb.wvd.microsoft.com", 443, "Feed Discovery"),
-                ("client.wvd.microsoft.com", 443, "Client Service"),
+                ("rdweb.wvd.microsoft.com", 443, "RDWeb Feed Discovery"),
                 ("login.microsoftonline.com", 443, "Authentication")
             };
 

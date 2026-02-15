@@ -16,11 +16,10 @@ const EndpointConfig = {
         'rdbroker.wvd.microsoft.com'
     ],
 
-    // RD Gateway
+    // RD Gateway (AFD discovery endpoint)
     gatewayEndpoints: [
         'afdfp-rdgateway-r1.wvd.microsoft.com',
-        'rdweb.wvd.microsoft.com',
-        'client.wvd.microsoft.com'
+        'rdweb.wvd.microsoft.com'
     ],
 
     // TURN Relay

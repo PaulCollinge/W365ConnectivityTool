@@ -75,7 +75,7 @@ const ALL_TESTS = [
     },
     {
         id: 'L-TCP-04', name: 'RDWeb Service Check',
-        description: 'Tests AFD gateway discovery, actual RDP gateway, and service endpoints via DNS/TCP/TLS/HTTPS (requires Local Scanner)',
+        description: 'Tests RDWeb feed discovery, AFD gateway discovery, and authentication endpoints (requires Local Scanner)',
         category: 'tcp', source: 'local'
     },
     {
