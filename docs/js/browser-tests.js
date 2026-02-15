@@ -79,8 +79,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
     {
-        id: 'B-TCP-02', name: 'AFD Gateway Discovery',
-        description: 'Tests connectivity to Azure Front Door and identifies which AFD edge location is used',
+        id: 'B-TCP-02', name: 'AFD Edge Location',
+        description: 'Tests connectivity to Azure Front Door and identifies which AFD edge node is serving your traffic',
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
@@ -492,7 +492,7 @@ async function testConnectionSpeed(test) {
     return makeResult(test, status, verdict, lines.join('\n'), duration,
         best.mbps < 10 ? EndpointConfig.docs.bandwidth : '');
 }
-// ── AFD Gateway Discovery ──
+// ── AFD Edge Location ──
 async function testGatewayLatency(test) {
     const t0 = performance.now();
     const ep = EndpointConfig.gatewayEndpoints[0];
@@ -519,24 +519,33 @@ async function testGatewayLatency(test) {
         lines.push(`Endpoint: ${ep}`);
     }
 
-    // Step 2: Resolve AFD edge IP via DoH
-    try {
-        const dnsResp = await fetch(`https://dns.google/resolve?name=${ep}&type=A`, {
-            signal: AbortSignal.timeout(5000)
-        });
-        const dnsData = await dnsResp.json();
-        if (dnsData.Answer) {
-            const aRecords = dnsData.Answer.filter(a => a.type === 1);
-            if (aRecords.length > 0) {
-                afdIp = aRecords.map(a => a.data).join(', ');
-            }
-        }
-    } catch (e) { /* DoH unavailable */ }
-
-    // Step 3: Geolocate AFD edge IP to find the PoP location
-    if (afdIp) {
+    // Step 2: Resolve AFD edge IP via DoH (try Google, then Cloudflare)
+    const dohProviders = [
+        `https://dns.google/resolve?name=${ep}&type=A`,
+        `https://cloudflare-dns.com/dns-query?name=${ep}&type=A`
+    ];
+    for (const dohUrl of dohProviders) {
+        if (afdIp) break;
         try {
-            const firstIp = afdIp.split(',')[0].trim();
+            const dnsResp = await fetch(dohUrl, {
+                headers: { 'Accept': 'application/dns-json' },
+                signal: AbortSignal.timeout(5000)
+            });
+            const dnsData = await dnsResp.json();
+            if (dnsData.Answer) {
+                const aRecords = dnsData.Answer.filter(a => a.type === 1);
+                if (aRecords.length > 0) {
+                    afdIp = aRecords[aRecords.length - 1].data;
+                }
+            }
+        } catch (e) { /* try next provider */ }
+    }
+
+    // Step 3: Geolocate AFD edge IP (try ipinfo.io, then ip-api.com)
+    if (afdIp) {
+        const firstIp = afdIp.split(',')[0].trim();
+        // Try ipinfo.io first
+        try {
             const geoResp = await fetch(`https://ipinfo.io/${firstIp}/json`, {
                 signal: AbortSignal.timeout(5000)
             });
@@ -545,20 +554,40 @@ async function testGatewayLatency(test) {
             afdCountry = geoData.country || '';
             afdOrg = geoData.org || '';
             afdLocation = [geoData.city, geoData.region, geoData.country].filter(Boolean).join(', ');
-        } catch (e) { /* geo lookup optional */ }
+        } catch (e) { /* try fallback */ }
+
+        // Fallback to ip-api.com if ipinfo.io failed
+        if (!afdLocation) {
+            try {
+                const geoResp = await fetch(`http://ip-api.com/json/${firstIp}?fields=city,regionName,country,countryCode,isp`, {
+                    signal: AbortSignal.timeout(5000)
+                });
+                const geoData = await geoResp.json();
+                afdCity = geoData.city || '';
+                afdCountry = geoData.countryCode || '';
+                afdOrg = geoData.isp || '';
+                afdLocation = [geoData.city, geoData.regionName, geoData.country].filter(Boolean).join(', ');
+            } catch (e) { /* geo unavailable */ }
+        }
     }
 
     // Build detail output — location prominently at top
     if (afdLocation) {
-        lines.unshift(`╔══════════════════════════════════════════╗`);
-        lines.push(`║  AFD Edge Location: ${afdLocation.padEnd(20)} ║`);
-        lines.push(`╚══════════════════════════════════════════╝`);
+        lines.unshift(`╔══════════════════════════════════════════════════╗`);
+        lines.push(`║  AFD Edge: ${afdCity}${afdCountry ? ', ' + afdCountry : ''}`.padEnd(49) + `║`);
+        lines.push(`╚══════════════════════════════════════════════════╝`);
     }
     lines.push('');
     lines.push(`Endpoint: ${ep}`);
     if (connected) lines.push(`Status: ✓ Connected (${latencyMs}ms)`);
     if (afdIp) lines.push(`AFD Edge IP: ${afdIp}`);
-    if (afdLocation) lines.push(`AFD Edge Location: ${afdLocation}`);
+    if (afdLocation) {
+        lines.push(`Location: ${afdLocation}`);
+    } else if (connected) {
+        lines.push(`Location: Could not determine — DNS-over-HTTPS or IP geolocation may be blocked`);
+        if (!afdIp) lines.push(`  ↳ DNS resolution via DoH failed (dns.google and cloudflare-dns.com both unreachable)`);
+        else lines.push(`  ↳ IP geolocation failed for ${afdIp} (ipinfo.io and ip-api.com both unreachable)`);
+    }
     if (afdOrg) lines.push(`Network: ${afdOrg}`);
 
     // Step 4: Resource Timing info
@@ -596,7 +625,7 @@ async function testGatewayLatency(test) {
     const duration = Math.round(performance.now() - t0);
 
     if (!connected) {
-        return makeResult(test, 'Failed', 'AFD unreachable — cannot discover gateway',
+        return makeResult(test, 'Failed', 'AFD unreachable',
             lines.join('\n'), duration, EndpointConfig.docs.networkRequirements);
     }
 
