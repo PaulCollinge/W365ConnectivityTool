@@ -48,8 +48,45 @@ class Program
         Console.WriteLine("╚══════════════════════════════════════════════════════╝");
         Console.WriteLine();
 
+        // Determine whether to run Live Connection Diagnostics (cloud tests).
+        // These take ~60s each to sample performance data.
+        // Can be controlled via --include-cloud / --skip-cloud flags, or interactive prompt.
+        bool includeCloud;
+        if (args.Any(a => a.Equals("--include-cloud", StringComparison.OrdinalIgnoreCase)))
+        {
+            includeCloud = true;
+        }
+        else if (args.Any(a => a.Equals("--skip-cloud", StringComparison.OrdinalIgnoreCase)))
+        {
+            includeCloud = false;
+        }
+        else
+        {
+            Console.WriteLine("  Live Connection Diagnostics (latency, jitter, frame rate, packet loss,");
+            Console.WriteLine("  TLS inspection, traffic routing, local egress) sample for ~60 seconds");
+            Console.WriteLine("  each and take several minutes to complete.");
+            Console.WriteLine();
+            Console.Write("  Include Live Connection Diagnostics? [Y/n]: ");
+            var key = Console.ReadLine()?.Trim();
+            includeCloud = string.IsNullOrEmpty(key) || key.StartsWith("y", StringComparison.OrdinalIgnoreCase);
+            Console.WriteLine();
+        }
+
         var results = new List<TestResult>();
-        var tests = GetAllTests();
+        var allTests = GetAllTests();
+        var tests = includeCloud ? allTests : allTests.Where(t => t.Category != "cloud").ToList();
+
+        if (!includeCloud)
+        {
+            Console.WriteLine($"  Skipping {allTests.Count - tests.Count} Live Connection Diagnostics tests.");
+            Console.WriteLine("  Run with --include-cloud to include them, or re-run and press Y.");
+            Console.WriteLine();
+        }
+        else
+        {
+            Console.WriteLine($"  Running all {tests.Count} tests (including Live Connection Diagnostics).");
+            Console.WriteLine();
+        }
 
         for (int i = 0; i < tests.Count; i++)
         {
