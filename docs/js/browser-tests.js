@@ -79,8 +79,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
     {
-        id: 'B-TCP-02', name: 'Gateway Latency',
-        description: 'Measures round-trip time to AFD gateway discovery endpoint via fetch timing',
+        id: 'B-TCP-02', name: 'AFD Gateway Discovery Latency',
+        description: 'Measures round-trip time to AFD gateway discovery endpoint (discovers your regional RDP gateway)',
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {

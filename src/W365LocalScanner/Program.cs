@@ -1289,12 +1289,10 @@ class Program
         var result = new TestResult { Id = "L-TCP-04", Name = "Gateway Connectivity", Category = "tcp" };
         try
         {
-            // afdfp-rdgateway-r1.wvd.microsoft.com is the AFD (Azure Front Door) endpoint
-            // used for gateway DISCOVERY — it is NOT the actual RDP gateway.
-            // AFD routes to the nearest regional RDP gateway (IPs in 40.64.144.0/20).
-            // We test AFD reachability and extract routing headers to show which PoP/backend is used.
-            var targets = new (string host, int port, string role)[] {
-                ("afdfp-rdgateway-r1.wvd.microsoft.com", 443, "Gateway Discovery (AFD)"),
+            // afdfp-rdgateway-r1.wvd.microsoft.com is Azure Front Door — NOT the RDP gateway.
+            // AFD discovers the nearest regional RDP gateway (e.g. rdgateway-c221-UKS-r1.wvd.microsoft.com).
+            // The actual gateway hostname is revealed in AFD's Set-Cookie Domain= header.
+            var serviceEndpoints = new (string host, int port, string role)[] {
                 ("rdweb.wvd.microsoft.com", 443, "Feed Discovery"),
                 ("client.wvd.microsoft.com", 443, "Client Service"),
                 ("login.microsoftonline.com", 443, "Authentication")
@@ -1302,37 +1300,140 @@ class Program
 
             var sb = new StringBuilder();
             int passed = 0;
-            int afdOk = 0;
+            bool afdOk = false;
+            bool gatewayOk = false;
+            string discoveredGateway = "";
+            string serviceRegion = "";
+            string afdPop = "";
             var issues = new List<string>();
-            string afdPopInfo = "";
 
+            var cookieContainer = new System.Net.CookieContainer();
             using var httpHandler = new HttpClientHandler
             {
                 ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
-                AllowAutoRedirect = false
+                AllowAutoRedirect = false,
+                CookieContainer = cookieContainer,
+                UseCookies = true
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
-            foreach (var (host, port, role) in targets)
+            // ── Step 1: Query AFD to discover the actual RDP gateway ──
+            var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
+            sb.AppendLine($"  {afdHost}:443  [Gateway Discovery (AFD)]");
+            try
             {
-                sb.AppendLine($"  {host}:{port}  [{role}]");
+                var afdIps = await Dns.GetHostAddressesAsync(afdHost);
+                sb.AppendLine($"    ✓ DNS → {string.Join(", ", afdIps.Select(a => a.ToString()))}");
+                sb.AppendLine($"    → AFD edge IP (routes to nearest regional gateway)");
 
-                // Layer 1: DNS
-                System.Net.IPAddress[] addresses;
+                var sw = Stopwatch.StartNew();
+                var afdResp = await http.GetAsync($"https://{afdHost}/");
+                sw.Stop();
+                sb.AppendLine($"    ✓ HTTPS {(int)afdResp.StatusCode} in {sw.ElapsedMilliseconds}ms");
+                afdOk = true;
+                passed++;
+
+                // Extract the actual gateway from Set-Cookie Domain= header
+                if (afdResp.Headers.TryGetValues("Set-Cookie", out var cookies))
+                {
+                    foreach (var cookie in cookies)
+                    {
+                        var domainMatch = System.Text.RegularExpressions.Regex.Match(
+                            cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        if (domainMatch.Success)
+                        {
+                            discoveredGateway = domainMatch.Groups[1].Value;
+                            break;
+                        }
+                    }
+                }
+
+                // Extract service region header
+                if (afdResp.Headers.TryGetValues("x-ms-wvd-service-region", out var regionVals))
+                    serviceRegion = regionVals.FirstOrDefault() ?? "";
+
+                // Extract AFD PoP from X-MSEdge-Ref
+                if (afdResp.Headers.TryGetValues("X-MSEdge-Ref", out var edgeRefs))
+                {
+                    var edgeRef = edgeRefs.FirstOrDefault() ?? "";
+                    sb.AppendLine($"    → X-MSEdge-Ref: {edgeRef}");
+                    // Parse PoP: "Ref B: LON04EDGE0816" → LON04EDGE0816
+                    var popMatch = System.Text.RegularExpressions.Regex.Match(edgeRef, @"Ref B:\s*(\S+)");
+                    if (popMatch.Success) afdPop = popMatch.Groups[1].Value;
+                }
+
+                if (!string.IsNullOrEmpty(discoveredGateway))
+                {
+                    sb.AppendLine($"    → Discovered gateway: {discoveredGateway}");
+                    if (!string.IsNullOrEmpty(serviceRegion))
+                        sb.AppendLine($"    → Service region: {serviceRegion}");
+                    if (!string.IsNullOrEmpty(afdPop))
+                        sb.AppendLine($"    → AFD PoP: {afdPop}");
+                }
+                else
+                {
+                    sb.AppendLine($"    → Could not extract gateway from AFD response");
+                }
+            }
+            catch (Exception ex)
+            {
+                var msg = ex.InnerException?.Message ?? ex.Message;
+                sb.AppendLine($"    ✗ Failed: {msg}");
+                issues.Add($"{afdHost} (AFD): {msg}");
+            }
+            sb.AppendLine();
+
+            // ── Step 2: Test the actual discovered gateway directly ──
+            if (!string.IsNullOrEmpty(discoveredGateway))
+            {
+                sb.AppendLine($"  {discoveredGateway}:443  [RDP Gateway]");
                 try
                 {
-                    addresses = await System.Net.Dns.GetHostAddressesAsync(host);
-                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addresses.Select(a => a.ToString()))}");
+                    var gwIps = await Dns.GetHostAddressesAsync(discoveredGateway);
+                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", gwIps.Select(a => a.ToString()))}");
 
-                    // For AFD endpoint, note these are AFD edge IPs, not backend gateway IPs
-                    if (role.Contains("AFD"))
-                    {
-                        bool anyInGatewayRange = addresses.Any(ip => IsInW365Range(ip));
-                        if (anyInGatewayRange)
-                            sb.AppendLine($"    → IP in W365 gateway range (direct, not AFD-fronted)");
-                        else
-                            sb.AppendLine($"    → AFD edge IP (backend gateway determined by AFD routing)");
-                    }
+                    bool inRange = gwIps.Any(ip => IsInW365Range(ip));
+                    sb.AppendLine(inRange
+                        ? $"    → IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) ✓"
+                        : $"    → IP NOT in expected W365 ranges");
+
+                    using var tcp = new TcpClient();
+                    var sw = Stopwatch.StartNew();
+                    using var cts = new CancellationTokenSource(5000);
+                    await tcp.ConnectAsync(discoveredGateway, 443, cts.Token);
+                    sw.Stop();
+                    sb.AppendLine($"    ✓ TCP connected in {sw.ElapsedMilliseconds}ms");
+
+                    var sw2 = Stopwatch.StartNew();
+                    var gwResp = await http.GetAsync($"https://{discoveredGateway}/");
+                    sw2.Stop();
+                    sb.AppendLine($"    ✓ HTTPS {(int)gwResp.StatusCode} in {sw2.ElapsedMilliseconds}ms");
+                    gatewayOk = true;
+                    passed++;
+                }
+                catch (OperationCanceledException)
+                {
+                    sb.AppendLine($"    ✗ TCP timed out (5s)");
+                    issues.Add($"{discoveredGateway} (RDP Gateway): TCP blocked or timed out");
+                }
+                catch (Exception ex)
+                {
+                    var msg = ex.InnerException?.Message ?? ex.Message;
+                    sb.AppendLine($"    ✗ Failed: {msg}");
+                    issues.Add($"{discoveredGateway} (RDP Gateway): {msg}");
+                }
+                sb.AppendLine();
+            }
+
+            // ── Step 3: Test service endpoints ──
+            foreach (var (host, port, role) in serviceEndpoints)
+            {
+                sb.AppendLine($"  {host}:{port}  [{role}]");
+                try
+                {
+                    var addresses = await Dns.GetHostAddressesAsync(host);
+                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addresses.Select(a => a.ToString()))}");
                 }
                 catch (Exception ex)
                 {
@@ -1342,7 +1443,6 @@ class Program
                     continue;
                 }
 
-                // Layer 2: TCP
                 try
                 {
                     using var tcp = new TcpClient();
@@ -1354,74 +1454,38 @@ class Program
                 }
                 catch (OperationCanceledException)
                 {
-                    sb.AppendLine($"    ✗ TCP connection timed out (5s)");
-                    issues.Add($"{host} ({role}): TCP port {port} blocked or timed out — check firewall rules");
+                    sb.AppendLine($"    ✗ TCP timed out (5s)");
+                    issues.Add($"{host} ({role}): TCP port {port} blocked");
                     sb.AppendLine();
                     continue;
                 }
                 catch (Exception ex)
                 {
                     sb.AppendLine($"    ✗ TCP failed: {ex.InnerException?.Message ?? ex.Message}");
-                    issues.Add($"{host} ({role}): TCP port {port} refused — firewall or port blocked");
+                    issues.Add($"{host} ({role}): TCP port {port} refused");
                     sb.AppendLine();
                     continue;
                 }
 
-                // Layer 3: TLS + HTTP
                 try
                 {
                     var sw2 = Stopwatch.StartNew();
                     var response = await http.GetAsync($"https://{host}/");
                     sw2.Stop();
-                    var code = (int)response.StatusCode;
-                    sb.AppendLine($"    ✓ HTTPS {code} in {sw2.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    ✓ HTTPS {(int)response.StatusCode} in {sw2.ElapsedMilliseconds}ms");
                     passed++;
-
-                    // For AFD endpoint, extract routing headers to discover gateway info
-                    if (role.Contains("AFD"))
-                    {
-                        afdOk = 1;
-
-                        // X-Azure-Ref contains the AFD PoP ID and request routing info
-                        if (response.Headers.TryGetValues("X-Azure-Ref", out var azureRefs))
-                        {
-                            var azRef = azureRefs.FirstOrDefault() ?? "";
-                            sb.AppendLine($"    → X-Azure-Ref: {azRef}");
-                            // Parse PoP from X-Azure-Ref (format: TIMESTAMP-POPID-...)
-                            var refParts = azRef.Split('-');
-                            if (refParts.Length >= 2)
-                            {
-                                afdPopInfo = refParts[1]; // PoP identifier
-                                sb.AppendLine($"    → AFD PoP: {afdPopInfo}");
-                            }
-                        }
-
-                        // Check for other useful Azure routing headers
-                        foreach (var headerName in new[] { "X-Azure-SocketIP", "X-Azure-ExternalError",
-                            "X-MSEdge-Ref", "X-MS-Served-By", "X-Azure-FDID" })
-                        {
-                            if (response.Headers.TryGetValues(headerName, out var vals))
-                                sb.AppendLine($"    → {headerName}: {vals.FirstOrDefault()}");
-                        }
-                        // Also check content headers
-                        foreach (var headerName in new[] { "X-MS-Served-By" })
-                        {
-                            if (response.Content.Headers.TryGetValues(headerName, out var vals))
-                                sb.AppendLine($"    → {headerName}: {vals.FirstOrDefault()}");
-                        }
-                    }
                 }
                 catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
                 {
                     sb.AppendLine($"    ✗ TLS handshake failed: {ex.InnerException.Message}");
-                    issues.Add($"{host} ({role}): TLS handshake failed — possible TLS inspection or certificate issue");
+                    issues.Add($"{host} ({role}): TLS handshake failed — possible TLS inspection");
                     sb.AppendLine();
                     continue;
                 }
                 catch (TaskCanceledException)
                 {
-                    sb.AppendLine($"    ✗ HTTPS request timed out (10s)");
-                    issues.Add($"{host} ({role}): TCP connected but HTTPS timed out — possible proxy or DPI blocking");
+                    sb.AppendLine($"    ✗ HTTPS timed out (10s)");
+                    issues.Add($"{host} ({role}): HTTPS timed out — possible proxy blocking");
                     sb.AppendLine();
                     continue;
                 }
@@ -1429,11 +1493,10 @@ class Program
                 {
                     var inner = ex.InnerException?.Message ?? ex.Message;
                     sb.AppendLine($"    ✗ HTTPS failed: {inner}");
-                    issues.Add($"{host} ({role}): TCP connected but HTTPS failed — {inner}");
+                    issues.Add($"{host} ({role}): {inner}");
                     sb.AppendLine();
                     continue;
                 }
-
                 sb.AppendLine();
             }
 
@@ -1444,17 +1507,28 @@ class Program
                     sb.AppendLine($"  ⚠ {issue}");
             }
 
-            // AFD is the gateway discovery mechanism — if it's reachable, the client
-            // can discover and connect to the actual regional RDP gateway.
-            var popNote = !string.IsNullOrEmpty(afdPopInfo) ? $" (AFD PoP: {afdPopInfo})" : "";
-            result.ResultValue = passed == targets.Length
-                ? $"AFD gateway discovery + {passed - 1} service endpoints reachable{popNote}"
-                : afdOk > 0
-                    ? $"AFD reachable{popNote}, {passed}/{targets.Length} endpoints OK"
-                    : $"AFD gateway discovery UNREACHABLE — {passed}/{targets.Length} endpoints reachable";
+            // Total endpoints: AFD + discovered gateway (if found) + 3 service endpoints
+            int totalExpected = serviceEndpoints.Length + 1 + (string.IsNullOrEmpty(discoveredGateway) ? 0 : 1);
+            var gwNote = !string.IsNullOrEmpty(discoveredGateway)
+                ? $" → {discoveredGateway}"
+                : "";
+            var regionNote = !string.IsNullOrEmpty(serviceRegion) ? $" ({serviceRegion})" : "";
+
+            if (gatewayOk && passed == totalExpected)
+                result.ResultValue = $"Gateway {discoveredGateway}{regionNote} + {serviceEndpoints.Length} service endpoints OK";
+            else if (afdOk && !string.IsNullOrEmpty(discoveredGateway) && !gatewayOk)
+                result.ResultValue = $"AFD OK but gateway {discoveredGateway} UNREACHABLE{regionNote}";
+            else if (afdOk && string.IsNullOrEmpty(discoveredGateway))
+                result.ResultValue = $"AFD reachable but could not discover gateway — {passed}/{totalExpected} OK";
+            else if (afdOk)
+                result.ResultValue = $"Gateway discovered{gwNote}{regionNote} — {passed}/{totalExpected} endpoints OK";
+            else
+                result.ResultValue = $"AFD UNREACHABLE — cannot discover gateway — {passed}/{totalExpected} OK";
+
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = afdOk > 0 && passed == targets.Length ? "Passed"
-                          : afdOk > 0 ? "Warning"
+            result.Status = gatewayOk && passed == totalExpected ? "Passed"
+                          : afdOk && gatewayOk ? "Warning"
+                          : afdOk ? "Warning"
                           : "Failed";
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
@@ -2137,6 +2211,36 @@ class Program
 
     static async Task<(string hostname, int port, IPAddress ip)?> GetValidatedGateway()
     {
+        // First, try to discover the actual regional gateway from AFD's Set-Cookie header
+        try
+        {
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                AllowAutoRedirect = false
+            };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(8), handler);
+            var resp = await http.GetAsync("https://afdfp-rdgateway-r1.wvd.microsoft.com/");
+            if (resp.Headers.TryGetValues("Set-Cookie", out var cookies))
+            {
+                foreach (var cookie in cookies)
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (m.Success)
+                    {
+                        var gwHost = m.Groups[1].Value;
+                        var ips = await Dns.GetHostAddressesAsync(gwHost);
+                        var ip = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                        if (ip != null) return (gwHost, 443, ip);
+                    }
+                }
+            }
+        }
+        catch { /* Fall through to static list */ }
+
+        // Fallback: try well-known endpoints (IPs may be in W365 range behind some network configs)
         var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
         foreach (var gw in gateways)
         {
