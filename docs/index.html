@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=40">
+    <link rel="stylesheet" href="css/styles.css?v=41">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -330,20 +330,31 @@
     // Inline diagnostic: immediately detect import params before external JS loads
     (function() {
         var s = location.search, h = location.hash;
-        if (s.indexOf('zresults') > -1 || h.indexOf('results') > -1) {
+        var hasData = s.indexOf('zresults') > -1 || h.indexOf('results') > -1;
+        // Create a persistent debug bar at the very top of the page
+        var dbg = document.createElement('div');
+        dbg.id = 'debug-bar';
+        dbg.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:8px 16px;font:13px monospace;color:#fff;background:' + (hasData ? '#1a7f37' : '#333') + ';';
+        if (hasData) {
             document.title = '[IMPORTING] search=' + s.length + ' hash=' + h.length;
+            dbg.textContent = 'IMPORT DETECTED: query=' + s.length + ' chars, hash=' + h.length + ' chars. zresults=' + (s.indexOf('zresults') > -1 ? 'YES' : 'NO') + '. Loading scripts...';
             var d = document.getElementById('info-banner');
             if (d) {
                 d.classList.remove('hidden');
                 d.querySelector('.info-text').innerHTML = '<strong>Import detected:</strong> query=' + s.length + ' chars, hash=' + h.length + ' chars. Loading scripts...';
             }
+        } else {
+            dbg.textContent = 'No import params. search="' + s.substring(0, 80) + '" hash.len=' + h.length + ' href.len=' + location.href.length;
         }
+        document.body.insertBefore(dbg, document.body.firstChild);
+        // Auto-hide after 30 seconds
+        setTimeout(function() { dbg.style.display = 'none'; }, 30000);
     })();
     </script>
-    <script src="js/config.js?v=40"></script>
-    <script src="js/browser-tests.js?v=40"></script>
-    <script src="js/ui.js?v=40"></script>
-    <script src="js/map.js?v=40"></script>
-    <script src="js/app.js?v=40"></script>
+    <script src="js/config.js?v=41"></script>
+    <script src="js/browser-tests.js?v=41"></script>
+    <script src="js/ui.js?v=41"></script>
+    <script src="js/map.js?v=41"></script>
+    <script src="js/app.js?v=41"></script>
 </body>
 </html>
