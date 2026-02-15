@@ -430,6 +430,17 @@ function processImportedData(data) {
         const cloudInfoBar = document.getElementById('cloud-info-bar');
         if (cloudInfoBar) cloudInfoBar.style.display = 'none';
     }
+
+    // Hide stale "Requires Local Scanner" cards whose IDs weren't in the import.
+    // This handles scanner versions that use different IDs (e.g. L-CS-01 vs 17).
+    const importedIds = new Set(localResults.map(r => r.id));
+    for (const test of ALL_TESTS) {
+        if (test.source !== 'local') continue;
+        if (importedIds.has(test.id)) continue;
+        // This test was NOT in the scanner output — hide the placeholder card
+        const el = document.getElementById(`test-${test.id}`);
+        if (el) el.style.display = 'none';
+    }
 }
 
 // ── Helpers ──
