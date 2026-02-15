@@ -32,9 +32,9 @@ const ALL_TESTS = [
         category: 'local', source: 'browser', run: testIspDetection
     },
     {
-        id: 'B-LE-03', name: 'Connection Type',
-        description: 'Detects network connection type and effective bandwidth via Network Information API',
-        category: 'local', source: 'browser', run: testConnectionType
+        id: 'B-LE-03', name: 'Connection Speed',
+        description: 'Measures actual download throughput via multi-sample speed test',
+        category: 'local', source: 'browser', run: testConnectionSpeed
     },
     {
         id: 'L-LE-04', name: 'WiFi Signal Strength',
@@ -416,29 +416,81 @@ async function testIspDetection(test) {
     return makeResult(test, 'Passed', value, detail, duration);
 }
 
-// ── Connection Type ──
-async function testConnectionType(test) {
+// ── Connection Speed (download-based) ──
+async function testConnectionSpeed(test) {
     const t0 = performance.now();
-    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    const lines = [];
 
-    if (!conn) {
-        return makeResult(test, 'Warning', 'Network Information API not available',
-            'Your browser does not support the Network Information API. Use Chrome/Edge for this test.',
-            Math.round(performance.now() - t0));
+    // Use multiple CDN-hosted files of increasing size to gauge throughput.
+    // These are public, cache-busted fetches to well-known CDN endpoints.
+    const probes = [
+        { label: 'Small (100 KB)',  url: 'https://speed.cloudflare.com/__down?bytes=102400',   bytes: 102400 },
+        { label: 'Medium (1 MB)',   url: 'https://speed.cloudflare.com/__down?bytes=1048576',  bytes: 1048576 },
+        { label: 'Large (5 MB)',    url: 'https://speed.cloudflare.com/__down?bytes=5242880',  bytes: 5242880 },
+    ];
+
+    const samples = [];
+
+    for (const probe of probes) {
+        try {
+            const cacheBust = `&_cb=${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            const fetchUrl = probe.url + cacheBust;
+            const start = performance.now();
+            const resp = await fetch(fetchUrl, { cache: 'no-store', mode: 'cors' });
+            if (!resp.ok) { lines.push(`${probe.label}: HTTP ${resp.status}`); continue; }
+
+            // Read the full response body to ensure we measure complete download
+            const blob = await resp.blob();
+            const elapsed = (performance.now() - start) / 1000; // seconds
+            const actualBytes = blob.size || probe.bytes;
+            const mbps = ((actualBytes * 8) / elapsed) / 1e6;
+
+            samples.push({ label: probe.label, mbps, elapsed, bytes: actualBytes });
+            lines.push(`${probe.label}: ${mbps.toFixed(2)} Mbps (${actualBytes.toLocaleString()} bytes in ${elapsed.toFixed(2)}s)`);
+        } catch (e) {
+            lines.push(`${probe.label}: failed — ${e.message}`);
+        }
     }
 
-    const type = conn.effectiveType || 'unknown';
-    const downlink = conn.downlink ? `${conn.downlink} Mbps` : 'unknown';
-    const rtt = conn.rtt ? `${conn.rtt}ms` : 'unknown';
-    const saveData = conn.saveData ? 'Yes' : 'No';
     const duration = Math.round(performance.now() - t0);
 
-    const value = `${type.toUpperCase()} - ${downlink} downlink, ${rtt} RTT`;
-    const detail = `Effective Type: ${type}\nDownlink: ${downlink}\nRTT: ${rtt}\nData Saver: ${saveData}`;
+    // Use the largest successful sample as the best estimate (most reliable at higher speeds)
+    const best = samples.length > 0 ? samples[samples.length - 1] : null;
 
-    const slow = type === 'slow-2g' || type === '2g' || (conn.rtt && conn.rtt > 300);
-    return makeResult(test, slow ? 'Warning' : 'Passed', value, detail, duration,
-        slow ? EndpointConfig.docs.bandwidth : '');
+    // Network Information API as supplementary context
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn) {
+        lines.push('');
+        lines.push('— Browser Network Info API (indicative only, capped ~10 Mbps) —');
+        lines.push(`Effective Type: ${conn.effectiveType || 'unknown'}`);
+        if (conn.downlink) lines.push(`API Downlink: ${conn.downlink} Mbps`);
+        if (conn.rtt) lines.push(`API RTT: ${conn.rtt}ms`);
+        if (conn.saveData) lines.push('Data Saver: enabled');
+    }
+
+    if (!best) {
+        return makeResult(test, 'Warning', 'Speed test failed — could not download test files',
+            lines.join('\n'), duration, EndpointConfig.docs.bandwidth);
+    }
+
+    // W365 bandwidth guidance: minimum 1.5 Mbps, recommended ≥10 Mbps for good experience
+    let status, verdict;
+    if (best.mbps >= 20) {
+        status = 'Passed';
+        verdict = `${best.mbps.toFixed(1)} Mbps — excellent for Cloud PC`;
+    } else if (best.mbps >= 10) {
+        status = 'Passed';
+        verdict = `${best.mbps.toFixed(1)} Mbps — good for Cloud PC`;
+    } else if (best.mbps >= 1.5) {
+        status = 'Warning';
+        verdict = `${best.mbps.toFixed(1)} Mbps — may limit Cloud PC experience`;
+    } else {
+        status = 'Warning';
+        verdict = `${best.mbps.toFixed(1)} Mbps — below minimum for Cloud PC (1.5 Mbps)`;
+    }
+
+    return makeResult(test, status, verdict, lines.join('\n'), duration,
+        best.mbps < 10 ? EndpointConfig.docs.bandwidth : '');
 }
 // ── Gateway Latency ──
 async function testGatewayLatency(test) {
