@@ -1,0 +1,143 @@
+﻿diff --git a/src/W365LocalScanner/Program.cs b/src/W365LocalScanner/Program.cs
+index e974552..6d45b34 100644
+--- a/src/W365LocalScanner/Program.cs
++++ b/src/W365LocalScanner/Program.cs
+@@ -150,10 +150,11 @@ class Program
+                 .TrimEnd('=');
+ 
+             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+-            // Build query-only URL (no #hash needed ÔÇö ShellExecute preserves ?query params)
++            // Build query-only URL with compressed data
+             var directUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&zresults={compressedBase64}";
+ 
+             Console.WriteLine($"  Compressed: {json.Length} ÔåÆ {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
++            Console.WriteLine($"  URL length: {directUrl.Length} chars");
+ 
+             if (directUrl.Length > 32_000) // Conservative URL length limit
+             {
+@@ -162,31 +163,69 @@ class Program
+                 directUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
+             }
+ 
+-            Console.WriteLine($"  Opening browser with results...");
++            // Also build uncompressed base64 for fallback hash
++            var uncompressedBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
++                .Replace('+', '-')
++                .Replace('/', '_')
++                .TrimEnd('=');
+ 
+-            // Method 1: Open the HTTPS URL directly via ShellExecute
+-            // This avoids local file:// redirect issues (Edge blocking JS in local HTML, etc.)
+-            try
++            // Try multiple methods to open the browser ÔÇö ShellExecute truncates long URLs
++            bool opened = false;
++
++            // Method 1: Find default browser exe via registry, launch directly
++            // This bypasses ShellExecute's URL length limits
++            if (!opened)
+             {
+-                Process.Start(new ProcessStartInfo { FileName = directUrl, UseShellExecute = true });
++                try
++                {
++                    var browserPath = GetDefaultBrowserPath();
++                    if (!string.IsNullOrEmpty(browserPath) && File.Exists(browserPath))
++                    {
++                        Console.WriteLine($"  Opening via browser: {Path.GetFileName(browserPath)}");
++                        Process.Start(new ProcessStartInfo
++                        {
++                            FileName = browserPath,
++                            Arguments = directUrl,
++                            UseShellExecute = false
++                        });
++                        opened = true;
++                    }
++                }
++                catch (Exception ex)
++                {
++                    Console.WriteLine($"  Browser direct launch failed: {ex.Message}");
++                }
+             }
+-            catch
++
++            // Method 2: Use a local HTML redirect file with both compressed + uncompressed
++            if (!opened)
+             {
+-                // Method 2 fallback: Use a local HTML redirect file
+-                // (in case ShellExecute can't handle the URL directly)
+-                var uncompressedBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+-                    .Replace('+', '-')
+-                    .Replace('/', '_')
+-                    .TrimEnd('=');
+-                var fullUrl = $"{directUrl}#results={uncompressedBase64}";
+-                var redirectHtml = $@"<!DOCTYPE html>
++                try
++                {
++                    Console.WriteLine($"  Opening via redirect file...");
++                    var fullUrl = $"{directUrl}#results={uncompressedBase64}";
++                    var redirectHtml = $@"<!DOCTYPE html>
+ <html><head><title>Opening W365 Diagnostics...</title></head>
+ <body><p>Redirecting to results page...</p>
+ <script>window.location.replace({EscapeJsString(fullUrl)});</script>
++<p><a href=""{System.Security.SecurityElement.Escape(fullUrl)}"">Click here if not redirected automatically</a></p>
+ </body></html>";
+-                var redirectPath = Path.Combine(Path.GetTempPath(), "W365ScanRedirect.html");
+-                await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
+-                Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
++                    var redirectPath = Path.Combine(Path.GetTempPath(), "W365ScanRedirect.html");
++                    await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
++                    Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
++                    opened = true;
++                }
++                catch (Exception ex)
++                {
++                    Console.WriteLine($"  Redirect file failed: {ex.Message}");
++                }
++            }
++
++            // Method 3: ShellExecute with URL directly (last resort, may truncate)
++            if (!opened)
++            {
++                Console.WriteLine($"  Opening via ShellExecute...");
++                Process.Start(new ProcessStartInfo { FileName = directUrl, UseShellExecute = true });
+             }
+         }
+         catch (Exception ex)
+@@ -3166,6 +3205,38 @@ class Program
+         sb.Append('\'');
+         return sb.ToString();
+     }
++
++    /// <summary>Find the default browser executable path from the Windows registry.</summary>
++    static string? GetDefaultBrowserPath()
++    {
++        try
++        {
++            // Read the ProgId for HTTPS URLs from user choice
++            using var userChoice = Registry.CurrentUser.OpenSubKey(
++                @"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice");
++            var progId = userChoice?.GetValue("ProgId") as string;
++            if (string.IsNullOrEmpty(progId)) return null;
++
++            // Get the shell\open\command for this ProgId
++            using var cmdKey = Registry.ClassesRoot.OpenSubKey($@"{progId}\shell\open\command");
++            var cmd = cmdKey?.GetValue(null) as string;
++            if (string.IsNullOrEmpty(cmd)) return null;
++
++            // Parse exe path from command like:
++            //   "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1
++            if (cmd.StartsWith('"'))
++            {
++                var end = cmd.IndexOf('"', 1);
++                return end > 0 ? cmd[1..end] : null;
++            }
++            var space = cmd.IndexOf(' ');
++            return space > 0 ? cmd[..space] : cmd;
++        }
++        catch
++        {
++            return null;
++        }
++    }
+ }
+ 
+ // ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ

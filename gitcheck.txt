@@ -1,0 +1,5 @@
+﻿fe46bed (HEAD -> main) Add import fallback, timeout, global error handler, bump cache v39
+df38457 (origin/main, origin/HEAD) Hide cloud info bar when scanner results imported, bump cache v38
+90c63d6 Fix web dashboard: bump cache busters v37, fix extra div, add remediationText display, add try-catch per result
+ffb4176 Detect transport protocol from gateway IP range (40.64.144.0/20=TCP, 51.5.0.0/16=UDP)
+d8bf0c9 Implement real Live Connection Diagnostics in Local Scanner

@@ -1,0 +1,4 @@
+{
+    "ExitCode":  128,
+    "Output":  "remote: No anonymous write access.\nfatal: Authentication failed for \u0027https://github.com/PaulCollinge/W365ConnectivityTool.git/\u0027"
+}

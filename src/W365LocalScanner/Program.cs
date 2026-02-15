@@ -2052,7 +2052,10 @@ class Program
                 var tcpSamples = new List<float>();
                 var udpSamples = new List<float>();
 
-                for (int i = 0; i < 3; i++)
+                // Sample for ~60 seconds (20 samples × 3s interval)
+                const int rttSampleCount = 20;
+                const int rttIntervalMs = 3000;
+                for (int i = 0; i < rttSampleCount; i++)
                 {
                     try
                     {
@@ -2071,13 +2074,19 @@ class Program
                         }
                     }
                     catch { }
-                    if (i < 2) await Task.Delay(700);
+                    if (i < rttSampleCount - 1) await Task.Delay(rttIntervalMs);
                 }
 
                 if (tcpSamples.Count > 0)
-                    sb.AppendLine($"TCP RTT: {tcpSamples.Average():F0}ms (avg of {tcpSamples.Count} samples)");
+                {
+                    sb.AppendLine($"TCP RTT: avg {tcpSamples.Average():F0}ms, min {tcpSamples.Min():F0}ms, max {tcpSamples.Max():F0}ms ({tcpSamples.Count} samples over ~60s)");
+                    sb.AppendLine($"  Values: {string.Join(", ", tcpSamples.Select(s => $"{s:F0}ms"))}");
+                }
                 if (udpSamples.Count > 0)
-                    sb.AppendLine($"UDP RTT: {udpSamples.Average():F0}ms (avg of {udpSamples.Count} samples)");
+                {
+                    sb.AppendLine($"UDP RTT: avg {udpSamples.Average():F0}ms, min {udpSamples.Min():F0}ms, max {udpSamples.Max():F0}ms ({udpSamples.Count} samples over ~60s)");
+                    sb.AppendLine($"  Values: {string.Join(", ", udpSamples.Select(s => $"{s:F0}ms"))}");
+                }
 
                 if (tcpSamples.Count == 0 && udpSamples.Count == 0)
                 {
@@ -2112,11 +2121,12 @@ class Program
                     sb.AppendLine("Source: TCP connect probes to RD Gateway");
                     sb.AppendLine($"Endpoint: {hostname}:{port}");
                     sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
-                    sb.AppendLine("Samples: 10");
+                    sb.AppendLine("Samples: 30 TCP probes over ~60s");
                     sb.AppendLine();
 
+                    // 30 probes × 2s interval = ~60 seconds of data
                     var rtts = new List<double>();
-                    for (int i = 0; i < 10; i++)
+                    for (int i = 0; i < 30; i++)
                     {
                         try
                         {
@@ -2128,7 +2138,7 @@ class Program
                             rtts.Add(sw.Elapsed.TotalMilliseconds);
                         }
                         catch { }
-                        if (i < 9) await Task.Delay(200);
+                        if (i < 29) await Task.Delay(2000);
                     }
 
                     if (rtts.Count == 0)
@@ -2140,7 +2150,7 @@ class Program
                     else
                     {
                         var avg = rtts.Average();
-                        sb.AppendLine($"Successful: {rtts.Count}/10");
+                        sb.AppendLine($"Successful: {rtts.Count}/30");
                         sb.AppendLine($"Min: {rtts.Min():F0}ms | Avg: {avg:F0}ms | Max: {rtts.Max():F0}ms");
                         sb.AppendLine($"Values: {string.Join(", ", rtts.Select(r => $"{r:F0}ms"))}");
 
@@ -2190,10 +2200,19 @@ class Program
             sb.AppendLine("Source: RemoteFX Graphics performance counters");
             sb.AppendLine();
 
-            float? outputFps = null, inputFps = null, encTime = null, quality = null, udpBw = null;
-            float? skipNet = null, skipClient = null, skipServer = null;
+            // Collect samples over ~60 seconds for more representative data
+            var outputFpsList = new List<float>();
+            var inputFpsList = new List<float>();
+            var encTimeList = new List<float>();
+            var qualityList = new List<float>();
+            var udpBwList = new List<float>();
+            var skipNetList = new List<float>();
+            var skipClientList = new List<float>();
+            var skipServerList = new List<float>();
 
-            for (int i = 0; i < 3; i++)
+            const int fpsSampleCount = 20;
+            const int fpsIntervalMs = 3000;
+            for (int i = 0; i < fpsSampleCount; i++)
             {
                 try
                 {
@@ -2204,13 +2223,13 @@ class Program
                         if (instances.Length > 0)
                         {
                             var inst = instances[0];
-                            inputFps = TryReadPerfCounter("RemoteFX Graphics", "Input Frames/Second", inst) ?? inputFps;
-                            outputFps = TryReadPerfCounter("RemoteFX Graphics", "Output Frames/Second", inst) ?? outputFps;
-                            skipNet = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Network Resources", inst) ?? skipNet;
-                            skipClient = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Client Resources", inst) ?? skipClient;
-                            skipServer = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Server Resources", inst) ?? skipServer;
-                            encTime = TryReadPerfCounter("RemoteFX Graphics", "Average Encoding Time", inst) ?? encTime;
-                            quality = TryReadPerfCounter("RemoteFX Graphics", "Frame Quality", inst) ?? quality;
+                            var v = TryReadPerfCounter("RemoteFX Graphics", "Input Frames/Second", inst); if (v.HasValue) inputFpsList.Add(v.Value);
+                            v = TryReadPerfCounter("RemoteFX Graphics", "Output Frames/Second", inst); if (v.HasValue) outputFpsList.Add(v.Value);
+                            v = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Network Resources", inst); if (v.HasValue) skipNetList.Add(v.Value);
+                            v = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Client Resources", inst); if (v.HasValue) skipClientList.Add(v.Value);
+                            v = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Server Resources", inst); if (v.HasValue) skipServerList.Add(v.Value);
+                            v = TryReadPerfCounter("RemoteFX Graphics", "Average Encoding Time", inst); if (v.HasValue) encTimeList.Add(v.Value);
+                            v = TryReadPerfCounter("RemoteFX Graphics", "Frame Quality", inst); if (v.HasValue) qualityList.Add(v.Value);
                         }
                     }
                     if (PerformanceCounterCategory.Exists("RemoteFX Network"))
@@ -2218,12 +2237,23 @@ class Program
                         var cat = new PerformanceCounterCategory("RemoteFX Network");
                         var instances = cat.GetInstanceNames();
                         if (instances.Length > 0)
-                            udpBw = TryReadPerfCounter("RemoteFX Network", "Current UDP Bandwidth", instances[0]) ?? udpBw;
+                        {
+                            var v = TryReadPerfCounter("RemoteFX Network", "Current UDP Bandwidth", instances[0]); if (v.HasValue) udpBwList.Add(v.Value);
+                        }
                     }
                 }
                 catch { }
-                if (i < 2) await Task.Delay(700);
+                if (i < fpsSampleCount - 1) await Task.Delay(fpsIntervalMs);
             }
+
+            float? outputFps = outputFpsList.Count > 0 ? outputFpsList.Average() : null;
+            float? inputFps = inputFpsList.Count > 0 ? inputFpsList.Average() : null;
+            float? encTime = encTimeList.Count > 0 ? encTimeList.Average() : null;
+            float? quality = qualityList.Count > 0 ? qualityList.Average() : null;
+            float? udpBw = udpBwList.Count > 0 ? udpBwList.Average() : null;
+            float? skipNet = skipNetList.Count > 0 ? skipNetList.Average() : null;
+            float? skipClient = skipClientList.Count > 0 ? skipClientList.Average() : null;
+            float? skipServer = skipServerList.Count > 0 ? skipServerList.Average() : null;
 
             if (outputFps == null && inputFps == null)
             {
@@ -2234,13 +2264,15 @@ class Program
             }
             else
             {
-                if (inputFps.HasValue) sb.AppendLine($"Input Frames/sec:  {inputFps:F1}");
-                if (outputFps.HasValue) sb.AppendLine($"Output Frames/sec: {outputFps:F1}");
-                if (encTime.HasValue) sb.AppendLine($"Avg Encoding Time: {encTime:F1}ms {(encTime < 33 ? "✓ Good" : "⚠ High")}");
-                if (quality.HasValue) sb.AppendLine($"Frame Quality:     {quality:F0}%");
-                if (udpBw.HasValue) sb.AppendLine($"UDP Bandwidth:     {udpBw:F0} KB/s");
+                sb.AppendLine($"Sampled {fpsSampleCount} readings over ~{fpsSampleCount * fpsIntervalMs / 1000}s");
                 sb.AppendLine();
-                sb.AppendLine("Frame Drop Analysis:");
+                if (inputFps.HasValue) sb.AppendLine($"Input Frames/sec:  avg {inputFps:F1}, min {inputFpsList.Min():F1}, max {inputFpsList.Max():F1}");
+                if (outputFps.HasValue) sb.AppendLine($"Output Frames/sec: avg {outputFps:F1}, min {outputFpsList.Min():F1}, max {outputFpsList.Max():F1}");
+                if (encTime.HasValue) sb.AppendLine($"Avg Encoding Time: {encTime:F1}ms {(encTime < 33 ? "✓ Good" : "⚠ High")} (range {encTimeList.Min():F1}-{encTimeList.Max():F1}ms)");
+                if (quality.HasValue) sb.AppendLine($"Frame Quality:     avg {quality:F0}% (range {qualityList.Min():F0}-{qualityList.Max():F0}%)");
+                if (udpBw.HasValue) sb.AppendLine($"UDP Bandwidth:     avg {udpBw:F0} KB/s (range {udpBwList.Min():F0}-{udpBwList.Max():F0})");
+                sb.AppendLine();
+                sb.AppendLine("Frame Drop Analysis (averages over sample period):");
                 if (skipNet.HasValue) sb.AppendLine($"  Skipped (Network): {skipNet:F1}/sec");
                 if (skipClient.HasValue) sb.AppendLine($"  Skipped (Client):  {skipClient:F1}/sec");
                 if (skipServer.HasValue) sb.AppendLine($"  Skipped (Server):  {skipServer:F1}/sec");
@@ -2294,11 +2326,12 @@ class Program
             var (hostname, port, ip) = gw.Value;
             sb.AppendLine($"Endpoint: {hostname}:{port}");
             sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
-            sb.AppendLine("Samples: 20 TCP connect probes at 250ms intervals");
+            sb.AppendLine("Samples: 60 TCP connect probes at 1s intervals (~60s)");
             sb.AppendLine();
 
+            // 60 probes × 1s interval = ~60 seconds of jitter data
             var rtts = new List<double>();
-            for (int i = 0; i < 20; i++)
+            for (int i = 0; i < 60; i++)
             {
                 try
                 {
@@ -2310,7 +2343,7 @@ class Program
                     rtts.Add(sw.Elapsed.TotalMilliseconds);
                 }
                 catch { }
-                if (i < 19) await Task.Delay(250);
+                if (i < 59) await Task.Delay(1000);
             }
 
             if (rtts.Count < 2)
@@ -2332,7 +2365,7 @@ class Program
                 diffs.Add(Math.Abs(rtts[i] - rtts[i - 1]));
             var jitter = diffs.Average();
 
-            sb.AppendLine($"Successful samples: {rtts.Count}/20");
+            sb.AppendLine($"Successful samples: {rtts.Count}/60");
             sb.AppendLine();
             sb.AppendLine("Latency Statistics:");
             sb.AppendLine($"  Mean RTT: {mean:F1}ms | Min: {min:F1}ms | Max: {max:F1}ms");
@@ -2392,8 +2425,16 @@ class Program
                 sb.AppendLine("Source: RemoteFX Graphics performance counters (inside remote session)");
                 sb.AppendLine();
 
-                float? outFps = null, skipNet = null, skipClient = null, skipServer = null, inFps = null;
-                for (int i = 0; i < 3; i++)
+                // Sample over ~60 seconds for reliable frame drop statistics
+                var outFpsList21 = new List<float>();
+                var inFpsList21 = new List<float>();
+                var skipNetList21 = new List<float>();
+                var skipClientList21 = new List<float>();
+                var skipServerList21 = new List<float>();
+
+                const int dropSampleCount = 20;
+                const int dropIntervalMs = 3000;
+                for (int i = 0; i < dropSampleCount; i++)
                 {
                     try
                     {
@@ -2404,19 +2445,19 @@ class Program
                             if (instances.Length > 0)
                             {
                                 var inst = instances[0];
-                                inFps = TryReadPerfCounter("RemoteFX Graphics", "Input Frames/Second", inst) ?? inFps;
-                                outFps = TryReadPerfCounter("RemoteFX Graphics", "Output Frames/Second", inst) ?? outFps;
-                                skipNet = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Network Resources", inst) ?? skipNet;
-                                skipClient = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Client Resources", inst) ?? skipClient;
-                                skipServer = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Server Resources", inst) ?? skipServer;
+                                var v = TryReadPerfCounter("RemoteFX Graphics", "Input Frames/Second", inst); if (v.HasValue) inFpsList21.Add(v.Value);
+                                v = TryReadPerfCounter("RemoteFX Graphics", "Output Frames/Second", inst); if (v.HasValue) outFpsList21.Add(v.Value);
+                                v = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Network Resources", inst); if (v.HasValue) skipNetList21.Add(v.Value);
+                                v = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Client Resources", inst); if (v.HasValue) skipClientList21.Add(v.Value);
+                                v = TryReadPerfCounter("RemoteFX Graphics", "Frames Skipped/Second - Insufficient Server Resources", inst); if (v.HasValue) skipServerList21.Add(v.Value);
                             }
                         }
                     }
                     catch { }
-                    if (i < 2) await Task.Delay(700);
+                    if (i < dropSampleCount - 1) await Task.Delay(dropIntervalMs);
                 }
 
-                if (outFps == null)
+                if (outFpsList21.Count == 0)
                 {
                     sb.AppendLine("⚠ RemoteFX Graphics counters not available.");
                     result.Status = "Warning";
@@ -2424,16 +2465,23 @@ class Program
                 }
                 else
                 {
-                    float totalDrop = (skipNet ?? 0) + (skipClient ?? 0) + (skipServer ?? 0);
-                    float fps = outFps ?? 0;
+                    float outFps = outFpsList21.Average();
+                    float inFps = inFpsList21.Count > 0 ? inFpsList21.Average() : 0;
+                    float skipNet = skipNetList21.Count > 0 ? skipNetList21.Average() : 0;
+                    float skipClient = skipClientList21.Count > 0 ? skipClientList21.Average() : 0;
+                    float skipServer = skipServerList21.Count > 0 ? skipServerList21.Average() : 0;
+                    float totalDrop = skipNet + skipClient + skipServer;
+                    float fps = outFps;
                     float dropPct = (fps + totalDrop) > 0 ? totalDrop / (fps + totalDrop) * 100 : 0;
 
-                    sb.AppendLine($"Input Frames/sec:  {inFps:F1}");
-                    sb.AppendLine($"Output Frames/sec: {fps:F1}");
-                    sb.AppendLine($"Skipped (Network): {skipNet:F1}/sec");
-                    sb.AppendLine($"Skipped (Client):  {skipClient:F1}/sec");
-                    sb.AppendLine($"Skipped (Server):  {skipServer:F1}/sec");
-                    sb.AppendLine($"Drop rate: {dropPct:F1}%");
+                    sb.AppendLine($"Sampled {outFpsList21.Count} readings over ~{dropSampleCount * dropIntervalMs / 1000}s");
+                    sb.AppendLine();
+                    sb.AppendLine($"Input Frames/sec:  avg {inFps:F1} (range {(inFpsList21.Count > 0 ? $"{inFpsList21.Min():F1}-{inFpsList21.Max():F1}" : "N/A")})");
+                    sb.AppendLine($"Output Frames/sec: avg {fps:F1} (range {outFpsList21.Min():F1}-{outFpsList21.Max():F1})");
+                    sb.AppendLine($"Skipped (Network): avg {skipNet:F1}/sec");
+                    sb.AppendLine($"Skipped (Client):  avg {skipClient:F1}/sec");
+                    sb.AppendLine($"Skipped (Server):  avg {skipServer:F1}/sec");
+                    sb.AppendLine($"Drop rate: {dropPct:F1}% (averaged over sample period)");
 
                     if (dropPct < 10) { result.Status = "Passed"; result.ResultValue = $"{dropPct:F0}% frame drops (good)"; }
                     else if (dropPct < 20) { result.Status = "Warning"; result.ResultValue = $"{dropPct:F0}% frame drops (okay)"; }
@@ -2459,11 +2507,12 @@ class Program
                     var (hostname, port, ip) = gw.Value;
                     sb.AppendLine($"Endpoint: {hostname}:{port}");
                     sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
-                    sb.AppendLine("Probes: 15 TCP connection attempts");
+                    sb.AppendLine("Probes: 60 TCP connection attempts over ~60s");
                     sb.AppendLine();
 
+                    // 60 probes × 1s interval = ~60 seconds of loss data
                     int success = 0, failure = 0;
-                    for (int i = 0; i < 15; i++)
+                    for (int i = 0; i < 60; i++)
                     {
                         try
                         {
@@ -2473,16 +2522,16 @@ class Program
                             success++;
                         }
                         catch { failure++; }
-                        if (i < 14) await Task.Delay(200);
+                        if (i < 59) await Task.Delay(1000);
                     }
 
                     var lossRate = failure > 0 ? (double)failure / (success + failure) * 100 : 0;
-                    sb.AppendLine($"Successful: {success}/15");
-                    sb.AppendLine($"Failed:     {failure}/15");
-                    sb.AppendLine($"Loss rate:  {lossRate:F0}%");
+                    sb.AppendLine($"Successful: {success}/60");
+                    sb.AppendLine($"Failed:     {failure}/60");
+                    sb.AppendLine($"Loss rate:  {lossRate:F1}%");
 
-                    if (failure == 0) { result.Status = "Passed"; result.ResultValue = "0% loss (15/15 successful)"; }
-                    else if (lossRate < 5) { result.Status = "Passed"; result.ResultValue = $"{lossRate:F0}% loss"; }
+                    if (failure == 0) { result.Status = "Passed"; result.ResultValue = "0% loss (60/60 successful)"; }
+                    else if (lossRate < 5) { result.Status = "Passed"; result.ResultValue = $"{lossRate:F1}% loss"; }
                     else if (lossRate < 15) { result.Status = "Warning"; result.ResultValue = $"{lossRate:F0}% loss"; result.RemediationText = "Some connection attempts failed. Check network stability."; }
                     else { result.Status = "Failed"; result.ResultValue = $"{lossRate:F0}% loss (significant)"; result.RemediationText = "High connection failure rate detected."; }
                 }
@@ -2659,8 +2708,9 @@ class Program
                 if (gw != null)
                 {
                     var (hostname, port, _) = gw.Value;
+                    // 30 probes × 2s interval = ~60 seconds of VPN latency data
                     var rtts = new List<double>();
-                    for (int i = 0; i < 5; i++)
+                    for (int i = 0; i < 30; i++)
                     {
                         try
                         {
@@ -2672,12 +2722,14 @@ class Program
                             rtts.Add(sw.Elapsed.TotalMilliseconds);
                         }
                         catch { }
-                        if (i < 4) await Task.Delay(200);
+                        if (i < 29) await Task.Delay(2000);
                     }
                     if (rtts.Count > 0)
                     {
                         sb.AppendLine();
-                        sb.AppendLine($"Gateway latency via VPN: {rtts.Average():F0}ms avg ({string.Join(", ", rtts.Select(r => $"{r:F0}ms"))})");
+                        sb.AppendLine($"Gateway latency via VPN ({rtts.Count} samples over ~60s):");
+                        sb.AppendLine($"  Min: {rtts.Min():F0}ms | Avg: {rtts.Average():F0}ms | Max: {rtts.Max():F0}ms");
+                        sb.AppendLine($"  Values: {string.Join(", ", rtts.Select(r => $"{r:F0}ms"))}");
                     }
                 }
 
