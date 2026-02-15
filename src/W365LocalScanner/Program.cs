@@ -150,6 +150,9 @@ class Program
             }
         }
 
+        // Print executive summary report
+        PrintSummaryReport(results, includeCloud);
+
         // Write JSON output
         var output = new ScanOutput
         {
@@ -276,14 +279,242 @@ class Program
         }
         Console.WriteLine();
 
-        // Summary
+        var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
+        return failed > 0 ? 1 : 0;
+    }
+
+    // ── Summary Report ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Prints a structured executive summary after all tests, highlighting
+    /// key findings, location pairings, and concerns.
+    /// </summary>
+    static void PrintSummaryReport(List<TestResult> results, bool includeCloud)
+    {
+        Console.WriteLine();
+        Console.WriteLine("  ╔══════════════════════════════════════════════════════╗");
+        Console.WriteLine("  ║                   SCAN SUMMARY                      ║");
+        Console.WriteLine("  ╚══════════════════════════════════════════════════════╝");
+        Console.WriteLine();
+
+        // ── Test counts ──
         var passed = results.Count(r => r.Status == "Passed");
         var warned = results.Count(r => r.Status == "Warning");
         var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
-        Console.WriteLine($"  Summary: {passed} passed, {warned} warnings, {failed} failed");
+        Console.WriteLine($"  Tests run: {results.Count}   \u2714 {passed} passed   \u26A0 {warned} warnings   \u2718 {failed} failed");
         Console.WriteLine();
 
-        return failed > 0 ? 1 : 0;
+        // ── Key Findings ──
+        Console.WriteLine("  ── Key Findings ─────────────────────────────────────");
+
+        // Extract location info from Test 27 (Local Egress) if available
+        var egressResult = results.FirstOrDefault(r => r.Id == "27");
+        string? userLocation = null, gwLocation = null, turnLocation = null;
+        string? gwDistance = null, turnDistance = null;
+
+        if (egressResult != null && !string.IsNullOrEmpty(egressResult.DetailedInfo))
+        {
+            var lines = egressResult.DetailedInfo.Split('\n');
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith("Your egress location:"))
+                    userLocation = trimmed.Replace("Your egress location:", "").Trim();
+                else if (trimmed.StartsWith("Location:") && gwLocation == null && !trimmed.Contains("TURN"))
+                    gwLocation = trimmed.Replace("Location:", "").Trim();
+                else if (trimmed.StartsWith("Distance from you:") && gwDistance == null)
+                    gwDistance = trimmed.Replace("Distance from you:", "").Trim();
+            }
+
+            // Parse TURN section separately
+            bool inTurn = false;
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Contains("TURN Relay"))
+                    inTurn = true;
+                if (inTurn && trimmed.StartsWith("Location:"))
+                    turnLocation = trimmed.Replace("Location:", "").Trim();
+                if (inTurn && trimmed.StartsWith("Distance from you:"))
+                    turnDistance = trimmed.Replace("Distance from you:", "").Trim();
+            }
+        }
+
+        if (userLocation != null)
+            Console.WriteLine($"  User location:     {userLocation}");
+        if (gwLocation != null)
+            Console.WriteLine($"  RDP Gateway:       {gwLocation} ({gwDistance ?? "distance unknown"})");
+        if (turnLocation != null)
+            Console.WriteLine($"  TURN Relay:        {turnLocation} ({turnDistance ?? "distance unknown"})");
+
+        if (userLocation == null && includeCloud)
+            Console.WriteLine("  Location:          Could not determine (geo-IP unavailable)");
+        if (!includeCloud && userLocation == null)
+            Console.WriteLine("  Location:          Skipped (Live Connection Diagnostics not run)");
+
+        // Location pairing assessment — continent-aware, avoids false alarms
+        if (userLocation != null && (gwLocation != null || turnLocation != null))
+        {
+            Console.WriteLine();
+            var userCountry = ExtractCountryCode(userLocation);
+            var gwCountry = gwLocation != null ? ExtractCountryCode(gwLocation) : null;
+            var turnCountry = turnLocation != null ? ExtractCountryCode(turnLocation) : null;
+
+            bool gwConcern = gwCountry != null && !IsReasonablePairing(userCountry, gwCountry);
+            bool turnConcern = turnCountry != null && !IsReasonablePairing(userCountry, turnCountry);
+
+            if (gwConcern || turnConcern)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("  \u26A0 Location pairing may not be optimal:");
+                if (gwConcern)
+                    Console.WriteLine($"    Gateway in {gwLocation} — consider checking VPN/proxy routing");
+                if (turnConcern)
+                    Console.WriteLine($"    TURN relay in {turnLocation} — may indicate non-local egress");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.WriteLine("  \u2714 Location pairing looks reasonable for your region");
+            }
+        }
+
+        // Transport protocol
+        var transportResult = results.FirstOrDefault(r => r.Id == "17b");
+        if (transportResult != null && !string.IsNullOrEmpty(transportResult.ResultValue))
+            Console.WriteLine($"  Transport:         {transportResult.ResultValue}");
+
+        // Session latency
+        var latencyResult = results.FirstOrDefault(r => r.Id == "18");
+        if (latencyResult != null && !string.IsNullOrEmpty(latencyResult.ResultValue) && latencyResult.Status != "NotRun")
+            Console.WriteLine($"  Session latency:   {latencyResult.ResultValue}");
+
+        // Bandwidth
+        var bwResult = results.FirstOrDefault(r => r.Id == "L-LE-08");
+        if (bwResult != null && !string.IsNullOrEmpty(bwResult.ResultValue))
+            Console.WriteLine($"  Bandwidth:         {bwResult.ResultValue}");
+
+        // WiFi signal
+        var wifiResult = results.FirstOrDefault(r => r.Id == "L-LE-04");
+        if (wifiResult != null && wifiResult.Status == "Warning" && !string.IsNullOrEmpty(wifiResult.ResultValue))
+            Console.WriteLine($"  WiFi:              {wifiResult.ResultValue}");
+
+        Console.WriteLine();
+
+        // ── Highlights & Concerns ──
+        var concerns = results.Where(r => r.Status == "Failed" || r.Status == "Error").ToList();
+        var warnings = results.Where(r => r.Status == "Warning").ToList();
+
+        if (concerns.Count > 0 || warnings.Count > 0)
+        {
+            Console.WriteLine("  ── Highlights & Concerns ────────────────────────────");
+
+            if (concerns.Count > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"  \u2718 Failed ({concerns.Count}):");
+                foreach (var c in concerns)
+                    Console.WriteLine($"    - {c.Name}: {Truncate(c.ResultValue, 70)}");
+                Console.ResetColor();
+            }
+
+            if (warnings.Count > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  \u26A0 Warnings ({warnings.Count}):");
+                foreach (var w in warnings)
+                    Console.WriteLine($"    - {w.Name}: {Truncate(w.ResultValue, 70)}");
+                Console.ResetColor();
+            }
+
+            // TLS inspection concern
+            var tlsResult = results.FirstOrDefault(r => r.Id == "25");
+            if (tlsResult?.Status == "Warning" || tlsResult?.Status == "Failed")
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine();
+                Console.WriteLine("  \u26A0 TLS inspection detected on RDP gateway — this can degrade");
+                Console.WriteLine("    performance and cause connection instability.");
+                Console.ResetColor();
+            }
+
+            // VPN routing concern
+            var vpnResult = results.FirstOrDefault(r => r.Id == "26");
+            if (vpnResult?.Status == "Warning" || vpnResult?.Status == "Failed")
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine();
+                Console.WriteLine("  \u26A0 W365 traffic may be routing through VPN/SWG.");
+                Console.WriteLine("    Microsoft recommends bypassing proxy/VPN for 40.64.144.0/20 & 51.5.0.0/16.");
+                Console.ResetColor();
+            }
+
+            Console.WriteLine();
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("  \u2714 No concerns — all tests passed.");
+            Console.ResetColor();
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Extracts the last comma-separated token as a country code from a location string
+    /// like "London, England, GB" → "GB".
+    /// </summary>
+    static string ExtractCountryCode(string location)
+    {
+        var parts = location.Split(',');
+        return parts[^1].Trim().ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// Determines if a user↔service country pairing is reasonable.
+    /// Uses broad groupings to avoid false alarms — e.g. UK user hitting
+    /// Netherlands or Ireland gateways is normal.
+    /// </summary>
+    static bool IsReasonablePairing(string userCountry, string serviceCountry)
+    {
+        if (userCountry == serviceCountry) return true;
+
+        // Define broad geographic regions where cross-country routing is expected
+        var regions = new List<HashSet<string>>
+        {
+            // Western Europe — Azure regions in NL, IE, UK, FR, DE, CH, AT etc.
+            new(StringComparer.OrdinalIgnoreCase) { "GB", "UK", "IE", "NL", "DE", "FR", "BE", "LU", "CH", "AT", "DK", "NO", "SE", "FI", "IS", "PT", "ES", "IT" },
+            // Eastern Europe
+            new(StringComparer.OrdinalIgnoreCase) { "PL", "CZ", "SK", "HU", "RO", "BG", "HR", "SI", "RS", "BA", "ME", "MK", "AL", "EE", "LV", "LT", "UA" },
+            // North America
+            new(StringComparer.OrdinalIgnoreCase) { "US", "CA", "MX" },
+            // Asia Pacific — East
+            new(StringComparer.OrdinalIgnoreCase) { "JP", "KR", "TW", "HK", "SG", "MY", "TH", "PH", "ID", "VN" },
+            // Asia Pacific — South
+            new(StringComparer.OrdinalIgnoreCase) { "IN", "LK", "BD", "PK" },
+            // Middle East
+            new(StringComparer.OrdinalIgnoreCase) { "AE", "SA", "QA", "BH", "KW", "OM", "IL", "JO" },
+            // Oceania
+            new(StringComparer.OrdinalIgnoreCase) { "AU", "NZ" },
+            // South America
+            new(StringComparer.OrdinalIgnoreCase) { "BR", "AR", "CL", "CO", "PE", "UY", "PY", "EC", "VE" },
+            // Africa
+            new(StringComparer.OrdinalIgnoreCase) { "ZA", "NG", "KE", "EG", "MA", "TN", "GH" }
+        };
+
+        foreach (var region in regions)
+        {
+            if (region.Contains(userCountry) && region.Contains(serviceCountry))
+                return true;
+        }
+
+        return false;
+    }
+
+    static string Truncate(string s, int maxLength)
+    {
+        if (string.IsNullOrEmpty(s)) return "(no details)";
+        return s.Length <= maxLength ? s : s[..(maxLength - 3)] + "...";
     }
 
     // ── Shared helpers ──────────────────────────────────────────────
