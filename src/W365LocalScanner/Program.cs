@@ -4106,7 +4106,7 @@ class Program
         var result = new TestResult { Id = "L-TCP-09", Name = "Gateway Used", Category = "tcp" };
         try
         {
-            var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+            var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com" };
             var sb = new StringBuilder();
 
             using var httpHandler = new HttpClientHandler
@@ -4175,78 +4175,79 @@ class Program
                     sb.AppendLine($"    Edge: (no reverse DNS)");
                 }
 
-                // GeoIP the gateway IP to show location
-                string gwCity = null, gwCountry = null;
-                try
-                {
-                    var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
-                    if (gwGeo.TryGetProperty("city", out var gwCityProp))
-                    {
-                        gwCity = gwCityProp.GetString();
-                        gwCountry = gwGeo.TryGetProperty("country", out var gwCProp) ? gwCProp.GetString() : "";
-                        double gwLat = 0, gwLon = 0;
-                        if (gwGeo.TryGetProperty("loc", out var gwLocProp))
-                        {
-                            var parts = gwLocProp.GetString()?.Split(',');
-                            if (parts?.Length == 2)
-                            {
-                                double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out gwLat);
-                                double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out gwLon);
-                            }
-                        }
-
-                        var locationStr = $"{gwCity}, {gwCountry}";
-                        gatewayLocations.Add(locationStr);
-
-                        // Compare with user location
-                        if (userLat != 0 && userLon != 0)
-                        {
-                            var distKm = HaversineDistanceKm(userLat, userLon, gwLat, gwLon);
-                            if (distKm < 300)
-                                locationStr += $" \u2714 Near you ({userCity}, {userCountry}) — {distKm:0} km";
-                            else if (distKm < 1000)
-                                locationStr += $" \u2248 Moderate distance from you ({userCity}) — {distKm:0} km";
-                            else
-                                locationStr += $" \u26A0 Far from you ({userCity}, {userCountry}) — {distKm:0} km";
-                        }
-
-                        sb.AppendLine($"    Location: {locationStr}");
-                    }
-                }
-                catch { /* GeoIP is best-effort */ }
-
-                // Determine route based on resolved IP — "privatelink-global" in CNAME
-                // is a standard Microsoft DNS zone, NOT actual Private Link.
+                // Determine route based on resolved IP.
                 // True Private Link resolves to a private RFC-1918 IP.
                 if (IsPrivateIp(ip))
                 {
                     sb.AppendLine($"    Route: Private Link");
+
+                    // GeoIP is meaningful for Private Link (not anycast)
+                    try
+                    {
+                        var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
+                        if (gwGeo.TryGetProperty("city", out var gwCityProp))
+                        {
+                            var gwCity = gwCityProp.GetString();
+                            var gwCountry = gwGeo.TryGetProperty("country", out var gwCProp) ? gwCProp.GetString() : "";
+                            var locationStr = $"{gwCity}, {gwCountry}";
+                            gatewayLocations.Add(locationStr);
+                            sb.AppendLine($"    Location: {locationStr}");
+                        }
+                    }
+                    catch { /* GeoIP is best-effort */ }
                 }
                 else
                 {
-                    sb.AppendLine($"    Route: Azure Front Door");
+                    sb.AppendLine($"    Route: Azure Front Door (anycast)");
 
-                    // For AFD endpoints, the resolved IP is anycast so GeoIP shows the
-                    // registration address (Redmond) rather than the actual edge node.
-                    // The X-MSEdge-Ref response header contains the real PoP code.
+                    // For AFD endpoints, the resolved IP is anycast — GeoIP would show
+                    // Microsoft's registration address, not the actual edge node.
+                    // Instead, read the X-MSEdge-Ref header which contains the real PoP code.
                     try
                     {
                         var edgeResponse = await http.GetAsync($"https://{host}/");
+
+                        // Try X-MSEdge-Ref first, then x-azure-ref
+                        string edgeRef = "";
                         if (edgeResponse.Headers.TryGetValues("X-MSEdge-Ref", out var edgeRefs))
+                            edgeRef = edgeRefs.FirstOrDefault() ?? "";
+                        else if (edgeResponse.Headers.TryGetValues("x-azure-ref", out var azureRefs))
+                            edgeRef = azureRefs.FirstOrDefault() ?? "";
+
+                        if (!string.IsNullOrEmpty(edgeRef))
                         {
-                            var edgeRef = edgeRefs.FirstOrDefault() ?? "";
-                            var popMatch = System.Text.RegularExpressions.Regex.Match(edgeRef, @"Ref B:\s*([A-Z]{2,5})\d*EDGE");
+                            sb.AppendLine($"    Edge Ref: {edgeRef}");
+
+                            // Parse PoP code — format: "Ref A: xxx Ref B: LHREdge0512 Ref C: xxx"
+                            var popMatch = System.Text.RegularExpressions.Regex.Match(
+                                edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})Edge",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                             if (popMatch.Success)
                             {
-                                var popCode = popMatch.Groups[1].Value;
+                                var popCode = popMatch.Groups[1].Value.ToUpperInvariant();
                                 var popCity = GetAfdPopLocation(popCode);
-                                sb.AppendLine($"    AFD PoP: {popCode} — {popCity ?? "Unknown"}");
-                                // Replace the GeoIP location in gatewayLocations with the PoP city
-                                if (popCity != null && gatewayLocations.Count > 0)
+                                var popLabel = popCity != null ? $"{popCode} — {popCity}" : popCode;
+                                sb.AppendLine($"    AFD PoP: {popLabel}");
+                                gatewayLocations.Add(popCity ?? popCode);
+
+                                // Compare PoP location with user location
+                                if (popCity != null && userCity != null)
                                 {
-                                    gatewayLocations[gatewayLocations.Count - 1] = popCity;
+                                    sb.AppendLine($"    Your location: {userCity}, {userCountry}");
                                 }
                             }
+                            else
+                            {
+                                sb.AppendLine($"    AFD PoP: could not parse from Edge Ref");
+                            }
+                        }
+
+                        // Also check x-ms-wvd-service-region
+                        if (edgeResponse.Headers.TryGetValues("x-ms-wvd-service-region", out var regionVals))
+                        {
+                            var region = regionVals.FirstOrDefault();
+                            if (!string.IsNullOrEmpty(region))
+                                sb.AppendLine($"    Service Region: {region}");
                         }
                     }
                     catch { /* X-MSEdge-Ref is best-effort */ }
@@ -4274,10 +4275,10 @@ class Program
                 sb.AppendLine();
             }
 
-            // Build result summary from cached gateway locations
+            // Build result summary from PoP/location data
             var summary = gatewayLocations.Distinct().ToList();
             result.ResultValue = summary.Any()
-                ? $"Gateway edge: {string.Join(" / ", summary)}"
+                ? $"Edge: {string.Join(" / ", summary)}"
                 : string.Join(", ", gateways.Select(g => { try { return $"{g} → {Dns.GetHostAddresses(g).First()}"; } catch { return g; } }));
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = "Passed";
