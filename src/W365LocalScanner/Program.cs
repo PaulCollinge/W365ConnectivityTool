@@ -1757,7 +1757,11 @@ class Program
             sb.AppendLine("If they differ, NAT is symmetric (Shortpath unlikely).");
             sb.AppendLine();
 
-            // Server 1: stun.azure.com (Microsoft's primary STUN server)
+            // NOTE: This test uses external STUN servers purely for NAT type detection
+            // (STUN compatibility check). These are NOT the W365 RDP connectivity endpoints.
+            // W365 RDP uses 51.5.0.0/16 and world.relay.avd.microsoft.com for actual TURN relay.
+
+            // Server 1: stun.azure.com (Microsoft's public STUN server — for NAT testing only)
             var stunHost1 = "stun.azure.com";
             IPAddress? stunIp1 = null;
             try
@@ -1769,7 +1773,7 @@ class Program
 
             if (stunIp1 == null)
             {
-                // Fallback to known IP (same as Test-Shortpath.ps1)
+                // Fallback to known stun.azure.com IP for NAT testing
                 sb.AppendLine($"⚠ DNS resolution of {stunHost1} failed, using fallback IP 20.202.22.68");
                 stunIp1 = IPAddress.Parse("20.202.22.68");
             }
@@ -1778,7 +1782,7 @@ class Program
                 sb.AppendLine($"Server 1: {stunHost1} → {stunIp1}");
             }
 
-            // Server 2: secondary Microsoft STUN server (same IP used in Test-Shortpath.ps1)
+            // Server 2: secondary Microsoft STUN server (for NAT comparison only)
             var stunIp2 = IPAddress.Parse("13.107.17.41");
             sb.AppendLine($"Server 2: 13.107.17.41 (secondary Microsoft STUN)");
             sb.AppendLine();
@@ -2062,10 +2066,10 @@ class Program
         if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
         var b = ip.GetAddressBytes();
         uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
-        // 40.64.144.0/20 → mask 0xFFFFF000
+        // 40.64.144.0/20 → mask 0xFFFFF000 (AFD signaling / connection broker)
         uint net1 = (uint)(40 << 24 | 64 << 16 | 144 << 8);
         if ((addr & 0xFFFFF000) == net1) return true;
-        // 51.5.0.0/16 → mask 0xFFFF0000
+        // 51.5.0.0/16 → mask 0xFFFF0000 (TURN relay infrastructure)
         uint net2 = (uint)(51 << 24 | 5 << 16);
         if ((addr & 0xFFFF0000) == net2) return true;
         return false;
@@ -2378,7 +2382,7 @@ class Program
                         result.Status = "Passed";
                         result.ResultValue = "Connected via gateway";
                         sb.AppendLine();
-                        sb.AppendLine("ℹ Gateway resolves to AFD range (40.64.144.0/20).");
+                        sb.AppendLine("ℹ Gateway resolves to AFD signaling range (40.64.144.0/20).");
                         sb.AppendLine("  This is the signaling/connection broker path.");
                         sb.AppendLine("  Data transport may still use UDP (RDP Shortpath) once session is established.");
                         sb.AppendLine("  Run this test while connected to your Cloud PC for definitive transport detection.");
