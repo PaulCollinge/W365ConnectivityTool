@@ -79,8 +79,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
     {
-        id: 'B-TCP-02', name: 'AFD Gateway Discovery Latency',
-        description: 'Measures round-trip time to AFD gateway discovery endpoint (discovers your regional RDP gateway)',
+        id: 'B-TCP-02', name: 'AFD Gateway Discovery',
+        description: 'Tests connectivity to Azure Front Door and identifies which AFD edge location is used',
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
@@ -492,48 +492,121 @@ async function testConnectionSpeed(test) {
     return makeResult(test, status, verdict, lines.join('\n'), duration,
         best.mbps < 10 ? EndpointConfig.docs.bandwidth : '');
 }
-// ── Gateway Latency ──
+// ── AFD Gateway Discovery ──
 async function testGatewayLatency(test) {
     const t0 = performance.now();
     const ep = EndpointConfig.gatewayEndpoints[0];
-    const times = [];
+    const lines = [];
+    let connected = false;
+    let afdLocation = '';
+    let afdIp = '';
+    let latencyMs = 0;
 
-    // Run 5 fetch attempts and measure timing
-    for (let i = 0; i < 5; i++) {
-        try {
-            const start = performance.now();
-            await fetch(`https://${ep}/?_t=${Date.now()}`, {
-                method: 'HEAD', mode: 'no-cors', cache: 'no-store',
-                signal: AbortSignal.timeout(8000)
-            });
-            times.push(Math.round(performance.now() - start));
-        } catch (e) {
-            times.push(-1);
+    lines.push(`Endpoint: ${ep}`);
+    lines.push('');
+
+    // Step 1: DNS resolution to identify AFD edge IP
+    try {
+        // Use a fetch to warm DNS, then check Resource Timing for IP/server info
+        const dnsStart = performance.now();
+        await fetch(`https://${ep}/?_t=${Date.now()}`, {
+            method: 'HEAD', mode: 'no-cors', cache: 'no-store',
+            signal: AbortSignal.timeout(10000)
+        });
+        latencyMs = Math.round(performance.now() - dnsStart);
+        connected = true;
+        lines.push(`✓ AFD connectivity: OK (${latencyMs}ms)`);
+    } catch (e) {
+        lines.push(`✗ AFD connectivity: FAILED — ${e.message || 'connection error'}`);
+    }
+
+    // Step 2: Try to identify AFD edge location from Resource Timing
+    if (connected && typeof performance !== 'undefined' && performance.getEntriesByType) {
+        const entries = performance.getEntriesByType('resource')
+            .filter(e => e.name.includes(ep))
+            .sort((a, b) => b.startTime - a.startTime);
+        if (entries.length > 0) {
+            const entry = entries[0];
+            // serverTiming may contain AFD PoP info
+            if (entry.serverTiming && entry.serverTiming.length > 0) {
+                const stInfo = entry.serverTiming.map(s => `${s.name}=${s.description || s.duration}`).join(', ');
+                lines.push(`→ Server-Timing: ${stInfo}`);
+            }
+            // nextHopProtocol shows HTTP version (h2 = good)
+            if (entry.nextHopProtocol) {
+                lines.push(`→ Protocol: ${entry.nextHopProtocol}`);
+            }
         }
-        // Small delay between probes
-        await new Promise(r => setTimeout(r, 200));
+    }
+
+    // Step 3: Resolve DNS to show AFD edge IP
+    try {
+        const dnsResp = await fetch(`https://dns.google/resolve?name=${ep}&type=A`, {
+            signal: AbortSignal.timeout(5000)
+        });
+        const dnsData = await dnsResp.json();
+        if (dnsData.Answer) {
+            const aRecords = dnsData.Answer.filter(a => a.type === 1);
+            const cnames = dnsData.Answer.filter(a => a.type === 5);
+            if (cnames.length > 0) {
+                lines.push(`→ CNAME chain: ${cnames.map(c => c.data).join(' → ')}`);
+            }
+            if (aRecords.length > 0) {
+                afdIp = aRecords.map(a => a.data).join(', ');
+                lines.push(`→ AFD edge IP: ${afdIp}`);
+            }
+        }
+    } catch (e) {
+        lines.push(`→ DNS lookup via DoH: unavailable`);
+    }
+
+    // Step 4: Try to identify AFD PoP location from IP geolocation
+    if (afdIp) {
+        try {
+            const firstIp = afdIp.split(',')[0].trim();
+            const geoResp = await fetch(`https://ipinfo.io/${firstIp}/json`, {
+                signal: AbortSignal.timeout(5000)
+            });
+            const geoData = await geoResp.json();
+            if (geoData.city || geoData.region) {
+                afdLocation = [geoData.city, geoData.region, geoData.country].filter(Boolean).join(', ');
+                lines.push(`→ AFD edge location: ${afdLocation}`);
+                if (geoData.org) lines.push(`→ Network: ${geoData.org}`);
+            }
+        } catch (e) { /* geo lookup optional */ }
+    }
+
+    // Step 5: Additional connectivity probes for reliability
+    if (connected) {
+        const times = [latencyMs];
+        for (let i = 0; i < 2; i++) {
+            try {
+                const s = performance.now();
+                await fetch(`https://${ep}/?_t=${Date.now()}_${i}`, {
+                    method: 'HEAD', mode: 'no-cors', cache: 'no-store',
+                    signal: AbortSignal.timeout(8000)
+                });
+                times.push(Math.round(performance.now() - s));
+            } catch (e) { times.push(-1); }
+            await new Promise(r => setTimeout(r, 200));
+        }
+        const valid = times.filter(t => t > 0);
+        const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
+        lines.push('');
+        lines.push(`Latency: avg ${avg}ms over ${valid.length} samples (includes TLS overhead)`);
     }
 
     const duration = Math.round(performance.now() - t0);
-    const valid = times.filter(t => t > 0);
 
-    if (valid.length === 0) {
-        return makeResult(test, 'Failed', 'Could not measure gateway latency',
-            'All fetch attempts failed.', duration, EndpointConfig.docs.networkRequirements);
+    if (!connected) {
+        return makeResult(test, 'Failed', 'AFD gateway discovery unreachable',
+            lines.join('\n'), duration, EndpointConfig.docs.networkRequirements);
     }
 
-    const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
-    const min = Math.min(...valid);
-    const max = Math.max(...valid);
-    const detail = `Endpoint: ${ep} (AFD gateway discovery)\nSamples: ${valid.length}/5\nMin: ${min}ms | Avg: ${avg}ms | Max: ${max}ms\n\nNote: This measures latency to the AFD gateway discovery endpoint, not the actual RDP gateway. Browser fetch latency includes TLS overhead.`;
-
-    let status = 'Passed';
-    if (avg > 200) status = 'Failed';
-    else if (avg > 100) status = 'Warning';
-
-    const value = `Avg ${avg}ms (min ${min}ms, max ${max}ms)`;
-    return makeResult(test, status, value, detail, duration,
-        status !== 'Passed' ? EndpointConfig.docs.networkRequirements : '');
+    const value = afdLocation
+        ? `Connected — AFD edge: ${afdLocation} (${latencyMs}ms)`
+        : `Connected — ${latencyMs}ms`;
+    return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }
 
 // ── DNS Performance ──
