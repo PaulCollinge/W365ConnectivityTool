@@ -438,6 +438,9 @@ function processImportedData(data) {
             // Update UI - find matching test definition or create inline
             const testDef = ALL_TESTS.find(t => String(t.id) === lrId);
             if (testDef) {
+                if (mapped.category === 'cloud') {
+                    ilog('  Cloud test ' + lrId + ': status=' + mapped.status + ', val=' + (mapped.resultValue || '').substring(0,80));
+                }
                 updateTestUI(lrId, mapped);
                 if (mapped.category === 'cloud') cloudCount++;
             } else {

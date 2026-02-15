@@ -91,7 +91,11 @@ function createTestElement(test, result) {
  */
 function updateTestUI(testId, result) {
     const el = document.getElementById(`test-${testId}`);
-    if (!el) return;
+    if (!el) {
+        if (typeof ilog === 'function') ilog('updateTestUI: NO element found for test-' + testId);
+        return;
+    }
+    if (typeof ilog === 'function') ilog('updateTestUI: FOUND element test-' + testId + ', status=' + result.status + ', val=' + (result.resultValue || '').substring(0,60));
 
     const test = ALL_TESTS.find(t => t.id === testId) || { id: testId, name: result.name || testId, source: 'local', description: '' };
 
