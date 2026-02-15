@@ -493,104 +493,123 @@ async function testConnectionSpeed(test) {
         best.mbps < 10 ? EndpointConfig.docs.bandwidth : '');
 }
 // ── AFD Edge Location ──
+// Azure Front Door PoP codes → city names
+const AFD_POP_MAP = {
+    // UK & Ireland
+    'LHR': 'London', 'MAN': 'Manchester', 'DUB': 'Dublin',
+    // Europe
+    'AMS': 'Amsterdam', 'FRA': 'Frankfurt', 'PAR': 'Paris', 'MAD': 'Madrid',
+    'MIL': 'Milan', 'ZRH': 'Zurich', 'VIE': 'Vienna', 'CPH': 'Copenhagen',
+    'HEL': 'Helsinki', 'OSL': 'Oslo', 'STO': 'Stockholm', 'WAW': 'Warsaw',
+    'BUD': 'Budapest', 'PRG': 'Prague', 'BER': 'Berlin', 'MRS': 'Marseille',
+    'LIS': 'Lisbon', 'ATH': 'Athens', 'SOF': 'Sofia', 'BUH': 'Bucharest',
+    'ZAG': 'Zagreb', 'BEG': 'Belgrade', 'BTS': 'Bratislava',
+    // US
+    'IAD': 'Washington DC', 'JFK': 'New York', 'EWR': 'Newark',
+    'ATL': 'Atlanta', 'MIA': 'Miami', 'ORD': 'Chicago', 'DFW': 'Dallas',
+    'LAX': 'Los Angeles', 'SJC': 'San Jose', 'SEA': 'Seattle',
+    'DEN': 'Denver', 'PHX': 'Phoenix', 'SLC': 'Salt Lake City',
+    'MSP': 'Minneapolis', 'BOS': 'Boston', 'CLT': 'Charlotte',
+    'HOU': 'Houston', 'QRO': 'Querétaro',
+    // Canada
+    'YYZ': 'Toronto', 'YUL': 'Montreal', 'YVR': 'Vancouver',
+    // Asia Pacific
+    'SIN': 'Singapore', 'HKG': 'Hong Kong', 'NRT': 'Tokyo',
+    'KIX': 'Osaka', 'ICN': 'Seoul', 'BOM': 'Mumbai', 'MAA': 'Chennai',
+    'DEL': 'Delhi', 'BLR': 'Bangalore', 'HYD': 'Hyderabad',
+    'KUL': 'Kuala Lumpur', 'BKK': 'Bangkok', 'CGK': 'Jakarta',
+    'MNL': 'Manila', 'TPE': 'Taipei',
+    // Australia & NZ
+    'SYD': 'Sydney', 'MEL': 'Melbourne', 'PER': 'Perth', 'AKL': 'Auckland',
+    // Middle East & Africa
+    'DXB': 'Dubai', 'AUH': 'Abu Dhabi', 'DOH': 'Doha',
+    'JNB': 'Johannesburg', 'CPT': 'Cape Town', 'NBO': 'Nairobi',
+    // South America
+    'GRU': 'São Paulo', 'GIG': 'Rio de Janeiro', 'SCL': 'Santiago',
+    'BOG': 'Bogotá', 'EZE': 'Buenos Aires', 'LIM': 'Lima',
+};
+
 async function testGatewayLatency(test) {
     const t0 = performance.now();
     const ep = EndpointConfig.gatewayEndpoints[0];
     const lines = [];
     let connected = false;
-    let afdLocation = '';
-    let afdCity = '';
-    let afdCountry = '';
-    let afdOrg = '';
-    let afdIp = '';
+    let afdPop = '';
+    let afdPopCity = '';
+    let serviceRegion = '';
+    let edgeRef = '';
     let latencyMs = 0;
+    let headersAvailable = false;
 
-    // Step 1: Test AFD connectivity
+    // Step 1: Try regular fetch (CORS) to read AFD response headers
     try {
-        const dnsStart = performance.now();
-        await fetch(`https://${ep}/?_t=${Date.now()}`, {
-            method: 'HEAD', mode: 'no-cors', cache: 'no-store',
+        const start = performance.now();
+        const resp = await fetch(`https://${ep}/?_t=${Date.now()}`, {
+            cache: 'no-store',
             signal: AbortSignal.timeout(10000)
         });
-        latencyMs = Math.round(performance.now() - dnsStart);
+        latencyMs = Math.round(performance.now() - start);
         connected = true;
-    } catch (e) {
-        lines.push(`✗ AFD connectivity: FAILED — ${e.message || 'connection error'}`);
-        lines.push(`Endpoint: ${ep}`);
-    }
 
-    // Step 2: Resolve AFD edge IP via DoH (try Google, then Cloudflare)
-    const dohProviders = [
-        `https://dns.google/resolve?name=${ep}&type=A`,
-        `https://cloudflare-dns.com/dns-query?name=${ep}&type=A`
-    ];
-    for (const dohUrl of dohProviders) {
-        if (afdIp) break;
-        try {
-            const dnsResp = await fetch(dohUrl, {
-                headers: { 'Accept': 'application/dns-json' },
-                signal: AbortSignal.timeout(5000)
-            });
-            const dnsData = await dnsResp.json();
-            if (dnsData.Answer) {
-                const aRecords = dnsData.Answer.filter(a => a.type === 1);
-                if (aRecords.length > 0) {
-                    afdIp = aRecords[aRecords.length - 1].data;
-                }
+        // Read AFD headers — X-MSEdge-Ref contains the PoP code
+        edgeRef = resp.headers.get('X-MSEdge-Ref') || resp.headers.get('x-azure-ref') || '';
+        serviceRegion = resp.headers.get('x-ms-wvd-service-region') || '';
+
+        if (edgeRef || serviceRegion) headersAvailable = true;
+
+        // Parse 3-letter PoP code from X-MSEdge-Ref
+        // Format: "Ref A: XXXX Ref B: LHREdgeXXXX Ref C: XXXX"
+        if (edgeRef) {
+            const popMatch = edgeRef.match(/Ref\s+B:\s*([A-Z]{3})/i);
+            if (popMatch) {
+                afdPop = popMatch[1].toUpperCase();
+                afdPopCity = AFD_POP_MAP[afdPop] || '';
             }
-        } catch (e) { /* try next provider */ }
+        }
+    } catch (e) {
+        // CORS blocked or network error — fall back to no-cors
     }
 
-    // Step 3: Geolocate AFD edge IP (try ipinfo.io, then ip-api.com)
-    if (afdIp) {
-        const firstIp = afdIp.split(',')[0].trim();
-        // Try ipinfo.io first
+    // Step 2: If CORS fetch failed, try no-cors for connectivity only
+    if (!connected) {
         try {
-            const geoResp = await fetch(`https://ipinfo.io/${firstIp}/json`, {
-                signal: AbortSignal.timeout(5000)
+            const start = performance.now();
+            await fetch(`https://${ep}/?_t=${Date.now()}`, {
+                method: 'HEAD', mode: 'no-cors', cache: 'no-store',
+                signal: AbortSignal.timeout(10000)
             });
-            const geoData = await geoResp.json();
-            afdCity = geoData.city || '';
-            afdCountry = geoData.country || '';
-            afdOrg = geoData.org || '';
-            afdLocation = [geoData.city, geoData.region, geoData.country].filter(Boolean).join(', ');
-        } catch (e) { /* try fallback */ }
-
-        // Fallback to ip-api.com if ipinfo.io failed
-        if (!afdLocation) {
-            try {
-                const geoResp = await fetch(`http://ip-api.com/json/${firstIp}?fields=city,regionName,country,countryCode,isp`, {
-                    signal: AbortSignal.timeout(5000)
-                });
-                const geoData = await geoResp.json();
-                afdCity = geoData.city || '';
-                afdCountry = geoData.countryCode || '';
-                afdOrg = geoData.isp || '';
-                afdLocation = [geoData.city, geoData.regionName, geoData.country].filter(Boolean).join(', ');
-            } catch (e) { /* geo unavailable */ }
+            latencyMs = Math.round(performance.now() - start);
+            connected = true;
+        } catch (e) {
+            lines.push(`✗ AFD connectivity: FAILED — ${e.message || 'connection error'}`);
         }
     }
 
-    // Build detail output — location prominently at top
-    if (afdLocation) {
-        lines.unshift(`╔══════════════════════════════════════════════════╗`);
-        lines.push(`║  AFD Edge: ${afdCity}${afdCountry ? ', ' + afdCountry : ''}`.padEnd(49) + `║`);
+    // Build detail output
+    if (connected && afdPopCity) {
+        lines.push(`╔══════════════════════════════════════════════════╗`);
+        lines.push(`║  AFD Edge: ${afdPopCity} (${afdPop})`.padEnd(49) + `║`);
         lines.push(`╚══════════════════════════════════════════════════╝`);
     }
-    lines.push('');
+
     lines.push(`Endpoint: ${ep}`);
     if (connected) lines.push(`Status: ✓ Connected (${latencyMs}ms)`);
-    if (afdIp) lines.push(`AFD Edge IP: ${afdIp}`);
-    if (afdLocation) {
-        lines.push(`Location: ${afdLocation}`);
-    } else if (connected) {
-        lines.push(`Location: Could not determine — DNS-over-HTTPS or IP geolocation may be blocked`);
-        if (!afdIp) lines.push(`  ↳ DNS resolution via DoH failed (dns.google and cloudflare-dns.com both unreachable)`);
-        else lines.push(`  ↳ IP geolocation failed for ${afdIp} (ipinfo.io and ip-api.com both unreachable)`);
-    }
-    if (afdOrg) lines.push(`Network: ${afdOrg}`);
 
-    // Step 4: Resource Timing info
+    if (afdPopCity) {
+        lines.push(`AFD PoP: ${afdPopCity} (${afdPop})`);
+    } else if (afdPop) {
+        lines.push(`AFD PoP: ${afdPop}`);
+    }
+
+    if (serviceRegion) lines.push(`Service Region: ${serviceRegion}`);
+    if (edgeRef) lines.push(`Edge Ref: ${edgeRef}`);
+
+    if (connected && !headersAvailable) {
+        lines.push(`PoP Location: Not available (CORS prevented reading AFD response headers)`);
+        lines.push(`  ↳ Run the Local Scanner for full edge location details`);
+    }
+
+    // Step 3: Resource Timing info
     if (connected && typeof performance !== 'undefined' && performance.getEntriesByType) {
         const entries = performance.getEntriesByType('resource')
             .filter(e => e.name.includes(ep))
@@ -603,7 +622,7 @@ async function testGatewayLatency(test) {
         }
     }
 
-    // Step 5: Additional latency samples
+    // Step 4: Additional latency samples
     if (connected) {
         const times = [latencyMs];
         for (let i = 0; i < 2; i++) {
@@ -629,10 +648,14 @@ async function testGatewayLatency(test) {
             lines.join('\n'), duration, EndpointConfig.docs.networkRequirements);
     }
 
-    // Result value: location is the star, latency is secondary
-    const value = afdLocation
-        ? `✓ AFD node: ${afdCity || afdLocation}${afdCountry ? ', ' + afdCountry : ''} (${latencyMs}ms)`
-        : `✓ Connected (${latencyMs}ms) — location unknown`;
+    let value;
+    if (afdPopCity) {
+        value = `✓ ${afdPopCity} (${afdPop}) — ${latencyMs}ms`;
+    } else if (afdPop) {
+        value = `✓ PoP: ${afdPop} — ${latencyMs}ms`;
+    } else {
+        value = `✓ Connected (${latencyMs}ms)`;
+    }
     return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }
 
