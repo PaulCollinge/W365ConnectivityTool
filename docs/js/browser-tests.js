@@ -75,12 +75,12 @@ const ALL_TESTS = [
     },
     {
         id: 'L-TCP-04', name: 'Gateway Connectivity',
-        description: 'Tests DNS → TCP → TLS → HTTPS layers to RD Gateway endpoints, pinpoints failures (requires Local Scanner)',
+        description: 'Tests DNS → TCP → TLS → HTTPS layers to AFD gateway discovery and service endpoints (requires Local Scanner)',
         category: 'tcp', source: 'local'
     },
     {
         id: 'B-TCP-02', name: 'Gateway Latency',
-        description: 'Measures round-trip time to RD Gateway via fetch timing',
+        description: 'Measures round-trip time to AFD gateway discovery endpoint via fetch timing',
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
@@ -525,7 +525,7 @@ async function testGatewayLatency(test) {
     const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
     const min = Math.min(...valid);
     const max = Math.max(...valid);
-    const detail = `Endpoint: ${ep}\nSamples: ${valid.length}/5\nMin: ${min}ms | Avg: ${avg}ms | Max: ${max}ms\n\nNote: Browser fetch latency includes TLS overhead; actual RDP latency will differ.`;
+    const detail = `Endpoint: ${ep} (AFD gateway discovery)\nSamples: ${valid.length}/5\nMin: ${min}ms | Avg: ${avg}ms | Max: ${max}ms\n\nNote: This measures latency to the AFD gateway discovery endpoint, not the actual RDP gateway. Browser fetch latency includes TLS overhead.`;
 
     let status = 'Passed';
     if (avg > 200) status = 'Failed';

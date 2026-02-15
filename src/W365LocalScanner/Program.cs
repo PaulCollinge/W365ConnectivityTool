@@ -1289,11 +1289,12 @@ class Program
         var result = new TestResult { Id = "L-TCP-04", Name = "Gateway Connectivity", Category = "tcp" };
         try
         {
-            // The actual RDP gateway is afdfp-rdgateway-r1.wvd.microsoft.com (Azure Front Door).
-            // AFD auto-routes to the nearest regional edge — no need for region-specific FQDNs.
-            // rdweb/client/login are service/broker endpoints tested separately.
+            // afdfp-rdgateway-r1.wvd.microsoft.com is the AFD (Azure Front Door) endpoint
+            // used for gateway DISCOVERY — it is NOT the actual RDP gateway.
+            // AFD routes to the nearest regional RDP gateway (IPs in 40.64.144.0/20).
+            // We test AFD reachability and extract routing headers to show which PoP/backend is used.
             var targets = new (string host, int port, string role)[] {
-                ("afdfp-rdgateway-r1.wvd.microsoft.com", 443, "RDP Gateway (AFD)"),
+                ("afdfp-rdgateway-r1.wvd.microsoft.com", 443, "Gateway Discovery (AFD)"),
                 ("rdweb.wvd.microsoft.com", 443, "Feed Discovery"),
                 ("client.wvd.microsoft.com", 443, "Client Service"),
                 ("login.microsoftonline.com", 443, "Authentication")
@@ -1301,8 +1302,9 @@ class Program
 
             var sb = new StringBuilder();
             int passed = 0;
-            int gatewayOk = 0;
+            int afdOk = 0;
             var issues = new List<string>();
+            string afdPopInfo = "";
 
             using var httpHandler = new HttpClientHandler
             {
@@ -1321,6 +1323,16 @@ class Program
                 {
                     addresses = await System.Net.Dns.GetHostAddressesAsync(host);
                     sb.AppendLine($"    ✓ DNS → {string.Join(", ", addresses.Select(a => a.ToString()))}");
+
+                    // For AFD endpoint, note these are AFD edge IPs, not backend gateway IPs
+                    if (role.Contains("AFD"))
+                    {
+                        bool anyInGatewayRange = addresses.Any(ip => IsInW365Range(ip));
+                        if (anyInGatewayRange)
+                            sb.AppendLine($"    → IP in W365 gateway range (direct, not AFD-fronted)");
+                        else
+                            sb.AppendLine($"    → AFD edge IP (backend gateway determined by AFD routing)");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1364,7 +1376,40 @@ class Program
                     var code = (int)response.StatusCode;
                     sb.AppendLine($"    ✓ HTTPS {code} in {sw2.ElapsedMilliseconds}ms");
                     passed++;
-                    if (role.StartsWith("RDP Gateway")) gatewayOk++;
+
+                    // For AFD endpoint, extract routing headers to discover gateway info
+                    if (role.Contains("AFD"))
+                    {
+                        afdOk = 1;
+
+                        // X-Azure-Ref contains the AFD PoP ID and request routing info
+                        if (response.Headers.TryGetValues("X-Azure-Ref", out var azureRefs))
+                        {
+                            var azRef = azureRefs.FirstOrDefault() ?? "";
+                            sb.AppendLine($"    → X-Azure-Ref: {azRef}");
+                            // Parse PoP from X-Azure-Ref (format: TIMESTAMP-POPID-...)
+                            var refParts = azRef.Split('-');
+                            if (refParts.Length >= 2)
+                            {
+                                afdPopInfo = refParts[1]; // PoP identifier
+                                sb.AppendLine($"    → AFD PoP: {afdPopInfo}");
+                            }
+                        }
+
+                        // Check for other useful Azure routing headers
+                        foreach (var headerName in new[] { "X-Azure-SocketIP", "X-Azure-ExternalError",
+                            "X-MSEdge-Ref", "X-MS-Served-By", "X-Azure-FDID" })
+                        {
+                            if (response.Headers.TryGetValues(headerName, out var vals))
+                                sb.AppendLine($"    → {headerName}: {vals.FirstOrDefault()}");
+                        }
+                        // Also check content headers
+                        foreach (var headerName in new[] { "X-MS-Served-By" })
+                        {
+                            if (response.Content.Headers.TryGetValues(headerName, out var vals))
+                                sb.AppendLine($"    → {headerName}: {vals.FirstOrDefault()}");
+                        }
+                    }
                 }
                 catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
                 {
@@ -1399,14 +1444,17 @@ class Program
                     sb.AppendLine($"  ⚠ {issue}");
             }
 
+            // AFD is the gateway discovery mechanism — if it's reachable, the client
+            // can discover and connect to the actual regional RDP gateway.
+            var popNote = !string.IsNullOrEmpty(afdPopInfo) ? $" (AFD PoP: {afdPopInfo})" : "";
             result.ResultValue = passed == targets.Length
-                ? $"RDP gateway + {passed - 1} service endpoints reachable (DNS+TCP+HTTPS)"
-                : gatewayOk > 0
-                    ? $"RDP gateway OK, {passed}/{targets.Length} endpoints reachable"
-                    : $"RDP gateway UNREACHABLE — {passed}/{targets.Length} endpoints reachable";
+                ? $"AFD gateway discovery + {passed - 1} service endpoints reachable{popNote}"
+                : afdOk > 0
+                    ? $"AFD reachable{popNote}, {passed}/{targets.Length} endpoints OK"
+                    : $"AFD gateway discovery UNREACHABLE — {passed}/{targets.Length} endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = gatewayOk > 0 && passed == targets.Length ? "Passed"
-                          : gatewayOk > 0 ? "Warning"
+            result.Status = afdOk > 0 && passed == targets.Length ? "Passed"
+                          : afdOk > 0 ? "Warning"
                           : "Failed";
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
@@ -1420,6 +1468,8 @@ class Program
         var result = new TestResult { Id = "L-TCP-05", Name = "DNS CNAME Chain Analysis", Category = "tcp" };
         try
         {
+            // AFD endpoint used for gateway discovery (NOT the RDP gateway itself).
+            // CNAME chain reveals whether traffic goes via AFD, Private Link, etc.
             var host = "afdfp-rdgateway-r1.wvd.microsoft.com";
             var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
             {
