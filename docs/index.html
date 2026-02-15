@@ -325,17 +325,17 @@
         </div>
     </footer>
 
-    <!-- deploy: v43 -->
+    <!-- deploy: v44 -->
     <script>
     // Inline diagnostic: immediately detect import params before external JS loads
     // Also provides a global importLog() function the other scripts can call
     (function() {
         var s = location.search, h = location.hash;
         var hasData = s.indexOf('zresults') > -1 || h.indexOf('results') > -1;
-        // Create a persistent debug log panel at the very top of the page
+        // Create a hidden debug log panel at the bottom of the page
         var dbg = document.createElement('div');
         dbg.id = 'debug-bar';
-        dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:8px 16px;font:12px/1.4 monospace;color:#e6edf3;background:#161b22;border-top:2px solid ' + (hasData ? '#1a7f37' : '#444') + ';max-height:200px;overflow-y:auto;';
+        dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:8px 16px;font:12px/1.4 monospace;color:#e6edf3;background:#161b22;border-top:2px solid ' + (hasData ? '#1a7f37' : '#444') + ';max-height:200px;overflow-y:auto;display:none;';
         var lines = [];
         function addLine(msg) {
             var t = new Date().toLocaleTimeString();
@@ -343,6 +343,8 @@
             dbg.textContent = lines.join('\n');
             dbg.scrollTop = dbg.scrollHeight;
             console.log('[W365 Import] ' + msg);
+            // Re-add toggle button after textContent wipe
+            dbg.appendChild(toggleBtn);
         }
         window._importLog = addLine;
         if (hasData) {
@@ -361,12 +363,21 @@
             addLine('Full URL length: ' + location.href.length);
         }
         document.body.appendChild(dbg);
-        // Add a small close button instead of click-to-dismiss
-        var closeBtn = document.createElement('span');
-        closeBtn.textContent = ' ✕';
-        closeBtn.style.cssText = 'cursor:pointer;float:right;padding:0 8px;color:#f85149;font-weight:bold;';
-        closeBtn.onclick = function() { dbg.style.display = 'none'; };
-        dbg.insertBefore(closeBtn, dbg.firstChild);
+
+        // Toggle button in the footer to show/hide the debug panel
+        var toggleBtn = document.createElement('button');
+        toggleBtn.textContent = 'Show Debug Log';
+        toggleBtn.style.cssText = 'position:fixed;bottom:8px;right:16px;z-index:100000;padding:4px 12px;font:11px/1.4 monospace;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:4px;cursor:pointer;opacity:0.6;transition:opacity 0.2s;';
+        toggleBtn.onmouseenter = function() { toggleBtn.style.opacity = '1'; };
+        toggleBtn.onmouseleave = function() { toggleBtn.style.opacity = '0.6'; };
+        toggleBtn.onclick = function() {
+            var visible = dbg.style.display !== 'none';
+            dbg.style.display = visible ? 'none' : 'block';
+            toggleBtn.textContent = visible ? 'Show Debug Log' : 'Hide Debug Log';
+            if (!visible) toggleBtn.style.bottom = '208px';
+            else toggleBtn.style.bottom = '8px';
+        };
+        document.body.appendChild(toggleBtn);
     })();
     </script>
     <script src="js/config.js?v=46"></script>
