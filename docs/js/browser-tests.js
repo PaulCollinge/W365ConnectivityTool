@@ -562,6 +562,9 @@ async function testWebRtcStun(test) {
 }
 
 // ── NAT Type Detection ──
+// Uses two different STUN servers in separate PeerConnections to compare
+// reflexive IP:port mappings. Same mapping = Cone NAT; different = Symmetric.
+// A single STUN server cannot distinguish symmetric from port-restricted cone.
 async function testNatType(test) {
     const t0 = performance.now();
 
@@ -571,45 +574,86 @@ async function testNatType(test) {
     }
 
     try {
-        const candidates = await gatherIceCandidates({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-        }, 5000);
+        // Gather candidates from two independent STUN servers
+        const stunServers = [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302'
+        ];
+
+        const [candidates1, candidates2] = await Promise.all([
+            gatherIceCandidates({ iceServers: [{ urls: stunServers[0] }] }, 5000),
+            gatherIceCandidates({ iceServers: [{ urls: stunServers[1] }] }, 5000)
+        ]);
 
         const duration = Math.round(performance.now() - t0);
-        const srflx = candidates.filter(c => c.type === 'srflx');
-        const host = candidates.filter(c => c.type === 'host');
-        const relay = candidates.filter(c => c.type === 'relay');
+
+        // Filter to IPv4 server-reflexive only (ignore host, relay, and IPv6)
+        const isIPv4 = (addr) => addr && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(addr);
+        const srflx1 = candidates1.filter(c => c.type === 'srflx' && isIPv4(c.address));
+        const srflx2 = candidates2.filter(c => c.type === 'srflx' && isIPv4(c.address));
+        const allHost = candidates1.filter(c => c.type === 'host');
+        const allCandidates = [...candidates1, ...candidates2.filter(c2 =>
+            !candidates1.some(c1 => c1.type === c2.type && c1.address === c2.address && c1.port === c2.port))];
 
         let natType = 'Unknown';
         let status = 'Warning';
         let detail = '';
 
-        if (srflx.length === 0 && host.length === 0) {
-            natType = 'Blocked / Symmetric';
+        if (srflx1.length === 0 && srflx2.length === 0 && allHost.length === 0) {
+            natType = 'Blocked';
             status = 'Failed';
-            detail = 'No candidates gathered. UDP is likely fully blocked.';
-        } else if (srflx.length === 0) {
-            natType = 'Symmetric / UDP Blocked';
+            detail = 'No candidates gathered from either STUN server. UDP is likely fully blocked.';
+        } else if (srflx1.length === 0 && srflx2.length === 0) {
+            natType = 'STUN Blocked';
             status = 'Warning';
-            detail = 'Only host candidates available. STUN is blocked \u2014 RDP Shortpath may not work.\n' +
-                'Host candidates:\n' + host.map(c => `  ${c.address}:${c.port}`).join('\n');
+            detail = 'Only host candidates available. STUN is blocked \u2014 RDP Shortpath may require TURN relay.\n' +
+                'Host candidates:\n' + allHost.map(c => `  ${c.address}:${c.port}`).join('\n');
+        } else if (srflx1.length === 0 || srflx2.length === 0) {
+            // Only one server returned reflexive — can't compare, but STUN partially works
+            const working = srflx1.length > 0 ? srflx1 : srflx2;
+            natType = 'Cone NAT (partial STUN)';
+            status = 'Passed';
+            detail = `Reflexive IP: ${working[0].address}:${working[0].port}\n` +
+                'One STUN server returned reflexive candidates. NAT allows STUN \u2014 RDP Shortpath should work.';
         } else {
-            // Check if multiple srflx candidates have different IPs (indicates symmetric NAT)
-            const uniqueIps = new Set(srflx.map(c => c.address));
-            if (uniqueIps.size > 1) {
-                natType = 'Possible Symmetric NAT';
+            // Compare reflexive mappings from both servers
+            // Sort by port to get consistent comparison
+            const ref1 = srflx1.sort((a, b) => a.port - b.port)[0];
+            const ref2 = srflx2.sort((a, b) => a.port - b.port)[0];
+
+            detail += `STUN Server 1 (${stunServers[0]}):\n`;
+            detail += `  Reflexive: ${ref1.address}:${ref1.port}\n`;
+            detail += `STUN Server 2 (${stunServers[1]}):\n`;
+            detail += `  Reflexive: ${ref2.address}:${ref2.port}\n\n`;
+
+            if (ref1.address !== ref2.address) {
+                // Different IPs — likely symmetric NAT or multi-homed
+                natType = 'Symmetric NAT';
                 status = 'Warning';
-                detail = `Multiple reflexive IPs detected: ${[...uniqueIps].join(', ')}\n` +
-                    'Symmetric NAT may limit STUN connectivity for RDP Shortpath.';
+                detail += `Different reflexive IPs: ${ref1.address} vs ${ref2.address}\n` +
+                    'Symmetric NAT detected \u2014 direct STUN P2P may not work.\n' +
+                    'RDP Shortpath will use TURN relay instead (still UDP, still good).';
+            } else if (ref1.port !== ref2.port) {
+                // Same IP, different ports — symmetric NAT (endpoint-dependent mapping)
+                natType = 'Symmetric NAT';
+                status = 'Warning';
+                detail += `Same reflexive IP but different ports: ${ref1.address}:${ref1.port} vs :${ref2.port}\n` +
+                    'Endpoint-dependent port mapping detected (Symmetric NAT).\n' +
+                    'RDP Shortpath will use TURN relay instead (still UDP, still good).';
             } else {
-                natType = 'Cone NAT — NAT SUPPORTS STUN connectivity';
+                // Same IP and port — Cone NAT (full, restricted, or port-restricted)
+                // All cone types support STUN-based connectivity for RDP Shortpath
+                natType = 'Cone NAT \u2014 STUN connectivity supported';
                 status = 'Passed';
-                detail = `Reflexive IP: ${srflx[0].address}\n` +
-                    'NAT type is compatible with STUN — RDP Shortpath (UDP) should work.';
+                detail += `Consistent reflexive mapping: ${ref1.address}:${ref1.port}\n` +
+                    'NAT preserves the same external IP:port for different destinations.\n' +
+                    'This is compatible with STUN \u2014 RDP Shortpath (UDP) should work well.\n\n' +
+                    'NAT sub-type: Full Cone, Restricted Cone, or Port-Restricted Cone\n' +
+                    '(all are compatible with RDP Shortpath via STUN/TURN).';
             }
         }
 
-        detail += '\n\nAll candidates:\n' + candidates.map(c =>
+        detail += '\n\nAll unique candidates:\n' + allCandidates.map(c =>
             `  ${c.type}: ${c.address}:${c.port} (${c.protocol})`
         ).join('\n');
 
