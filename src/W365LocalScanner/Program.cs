@@ -609,6 +609,9 @@ class Program
             new("21", "Frame Drops & Packet Loss", "Detects dropped frames and packet loss", "cloud", RunPacketLoss),
             new("22", "Cloud PC Teams Optimization", "Checks Teams AV redirection", "cloud", RunCloudTeamsOptimization),
             new("24", "VPN Connection Performance", "Detects VPN impact", "cloud", RunCloudVpnPerformance),
+            new("25", "RDP TLS Inspection", "Checks for TLS interception on RDP gateway", "cloud", RunCloudTlsInspection),
+            new("26", "RDP Traffic Routing", "Validates VPN/SWG bypass for RDP endpoints", "cloud", RunCloudTrafficRouting),
+            new("27", "RDP Local Egress", "Checks traffic egresses locally to nearest gateway", "cloud", RunCloudLocalEgress),
         ];
     }
 
@@ -1919,8 +1922,15 @@ class Program
                 result.Status = "Warning";
                 result.ResultValue = "TCP (UDP failed)";
                 sb.AppendLine("⚠ UDP connection failed — session fell back to TCP.");
-                result.RemediationText = "UDP-based RDP Shortpath failed. Check that UDP 3478 is allowed outbound.";
-                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                sb.AppendLine();
+                sb.AppendLine("W365 supports three RDP connectivity methods:");
+                sb.AppendLine("  1. TCP Reverse Connect (443) — always used initially");
+                sb.AppendLine("  2. Relayed UDP via TURN (3478) — higher reliability, works on any NAT");
+                sb.AppendLine("  3. Direct UDP via STUN — best-effort, may fail on symmetric NAT");
+                sb.AppendLine();
+                sb.AppendLine("Ensure UDP 3478 to 51.5.0.0/16 is allowed outbound and bypasses VPN/SWG.");
+                result.RemediationText = "UDP-based RDP Shortpath failed. Ensure UDP 3478 outbound to 51.5.0.0/16 is allowed and bypasses VPN/SWG.";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic";
             }
             else if (hasConnection && !string.IsNullOrEmpty(protocol))
             {
@@ -2801,6 +2811,484 @@ class Program
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    // ── Test 25: RDP TLS Inspection Detection ──
+    // Per https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp
+    // TLS inspection of RDP traffic is not supported and must be disabled.
+    // RDP uses nested encryption (TLS 1.3 transport + encrypted RDP session inside).
+    // Inspection adds jitter, latency, reduces throughput, and provides no security benefit.
+    static async Task<TestResult> RunCloudTlsInspection()
+    {
+        var result = new TestResult { Id = "25", Name = "RDP TLS Inspection", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Checking TLS certificate chains on W365 RDP endpoints for signs of interception.");
+            sb.AppendLine("Per Microsoft: \"Inspection of RDP traffic is not supported. Disable TLS inspection");
+            sb.AppendLine("for all required endpoints.\" RDP uses nested encryption — inspecting the outer");
+            sb.AppendLine("TLS layer provides no security benefit but degrades performance.");
+            sb.AppendLine();
+
+            var endpoints = new (string host, int port, string desc)[]
+            {
+                ("afdfp-rdgateway-r1.wvd.microsoft.com", 443, "RDP Gateway (TCP Reverse Connect, 40.64.144.0/20)"),
+                ("rdweb.wvd.microsoft.com", 443, "RDP Web (Connection Broker)"),
+            };
+
+            bool anyIntercepted = false;
+            int checked_ = 0;
+
+            foreach (var (host, port, desc) in endpoints)
+            {
+                sb.AppendLine($"── {desc} ──");
+                sb.AppendLine($"Host: {host}:{port}");
+                try
+                {
+                    bool intercepted = false;
+                    string issuerInfo = "";
+                    string subjectInfo = "";
+
+                    using var tcp = new TcpClient();
+                    using var cts = new CancellationTokenSource(10000);
+                    await tcp.ConnectAsync(host, port, cts.Token);
+
+                    using var ssl = new SslStream(tcp.GetStream(), false, (sender, cert, chain, errors) =>
+                    {
+                        if (cert is X509Certificate2 x509)
+                        {
+                            subjectInfo = x509.Subject;
+                            issuerInfo = x509.Issuer;
+                            sb.AppendLine($"  Subject: {x509.Subject}");
+                            sb.AppendLine($"  Issuer:  {x509.Issuer}");
+                            sb.AppendLine($"  Valid:   {x509.NotBefore:d} - {x509.NotAfter:d}");
+                            sb.AppendLine($"  Errors:  {errors}");
+
+                            var expectedIssuers = new[] { "Microsoft", "DigiCert", "Microsoft Azure RSA TLS", "Microsoft Azure TLS", "Microsoft RSA TLS CA" };
+                            bool isExpected = expectedIssuers.Any(e => issuerInfo.Contains(e, StringComparison.OrdinalIgnoreCase));
+                            bool isPrivateLink = x509.Subject.Contains("privatelink", StringComparison.OrdinalIgnoreCase);
+
+                            if (!isExpected && !isPrivateLink)
+                            {
+                                intercepted = true;
+                                anyIntercepted = true;
+                            }
+                        }
+                        return true;
+                    });
+
+                    using var tlsCts = new CancellationTokenSource(10000);
+                    await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, tlsCts.Token);
+                    sb.AppendLine($"  TLS:     {ssl.SslProtocol}");
+                    checked_++;
+
+                    if (intercepted)
+                    {
+                        sb.AppendLine($"  ✗ TLS INSPECTION DETECTED — certificate is NOT from Microsoft/DigiCert.");
+                        sb.AppendLine($"    A proxy, firewall, or SWG is intercepting RDP traffic.");
+                        sb.AppendLine($"    This adds latency, jitter, and reduces throughput with no security benefit.");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  ✓ Certificate chain is valid — no TLS inspection detected.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  ✗ Connection failed: {ex.Message}");
+                }
+                sb.AppendLine();
+            }
+
+            if (anyIntercepted)
+            {
+                result.Status = "Failed";
+                result.ResultValue = "TLS inspection detected on RDP gateway";
+                result.RemediationText = "TLS inspection of RDP traffic is not supported by Microsoft. " +
+                    "Disable TLS inspection for 40.64.144.0/20 (TCP/443) and 51.5.0.0/16 (UDP/3478). " +
+                    "RDP uses nested encryption — the inner session is already TLS 1.3 encrypted.";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#1-disabling-tls-inspection";
+            }
+            else if (checked_ == 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not check — endpoints unreachable";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"No TLS inspection — {checked_} endpoint(s) verified";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Test 26: RDP Traffic Routing (VPN/SWG Bypass) ──
+    // Per https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp
+    // RDP traffic must bypass VPN and SWG tunnels. Key endpoints:
+    //   40.64.144.0/20 TCP/443  — TCP-based RDP (Reverse Connect)
+    //   51.5.0.0/16    UDP/3478 — UDP-based RDP (TURN relay / Shortpath)
+    static Task<TestResult> RunCloudTrafficRouting()
+    {
+        var result = new TestResult { Id = "26", Name = "RDP Traffic Routing", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Validates that RDP traffic bypasses VPN, proxy, and SWG tunnels.");
+            sb.AppendLine("Per Microsoft: \"Forced tunnel exceptions for RDP traffic are essential.\"");
+            sb.AppendLine();
+            sb.AppendLine("Required RDP endpoints (bypass these from VPN/SWG):");
+            sb.AppendLine("  Row 1: 40.64.144.0/20  TCP/443  — TCP RDP (Reverse Connect via AFD)");
+            sb.AppendLine("  Row 2: 51.5.0.0/16     UDP/3478 — UDP RDP (TURN relay / Shortpath)");
+            sb.AppendLine();
+
+            var issues = new List<string>();
+
+            // ── 1. Check for VPN adapters and route analysis ──
+            var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                    (n.NetworkInterfaceType == NetworkInterfaceType.Ppp ||
+                     n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Cisco", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Juniper", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("GlobalProtect", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("OpenVPN", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Zscaler", StringComparison.OrdinalIgnoreCase) ||
+                     n.Description.Contains("Netskope", StringComparison.OrdinalIgnoreCase) ||
+                     n.Name.Contains("VPN", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            if (vpnAdapters.Count > 0)
+            {
+                sb.AppendLine("VPN/SWG adapters detected:");
+                foreach (var vpn in vpnAdapters)
+                    sb.AppendLine($"  {vpn.Name} ({vpn.Description})");
+                sb.AppendLine();
+
+                // Check routing table for both W365 subnets
+                var caught = ProbeAvdServiceRanges(vpnAdapters, sb);
+                if (caught.Count > 0)
+                {
+                    foreach (var range in caught)
+                        issues.Add($"RDP range {range} routes through VPN/SWG tunnel");
+
+                    sb.AppendLine();
+                    sb.AppendLine("⚠ The following RDP subnet(s) are routed via VPN/SWG:");
+                    foreach (var range in caught)
+                        sb.AppendLine($"  ✗ {range}");
+                    sb.AppendLine();
+                    sb.AppendLine("Impact: Increased latency, jitter, reduced throughput, and potential");
+                    sb.AppendLine("disconnects during initial logon when user-based tunnels activate.");
+                    sb.AppendLine();
+                    sb.AppendLine("Solution: Configure bypass/split-tunnel exceptions for:");
+                    sb.AppendLine("  40.64.144.0/20  TCP/443");
+                    sb.AppendLine("  51.5.0.0/16     UDP/3478");
+                }
+                else
+                {
+                    sb.AppendLine("✓ VPN/SWG detected but W365 RDP ranges are split-tunneled (bypassed).");
+                }
+            }
+            else
+            {
+                sb.AppendLine("✓ No VPN/SWG adapters detected — traffic routes directly.");
+            }
+
+            // ── 2. Check system proxy for RDP endpoints ──
+            sb.AppendLine();
+            sb.AppendLine("── Proxy Check ──");
+            try
+            {
+                var proxy = WebRequest.GetSystemWebProxy();
+                var rdpEndpoints = new[]
+                {
+                    new Uri("https://afdfp-rdgateway-r1.wvd.microsoft.com"),
+                    new Uri("https://rdweb.wvd.microsoft.com"),
+                    new Uri("https://client.wvd.microsoft.com"),
+                };
+                foreach (var uri in rdpEndpoints)
+                {
+                    var proxyUri = proxy.GetProxy(uri);
+                    if (proxyUri != null && proxyUri != uri)
+                    {
+                        issues.Add($"Proxy routes {uri.Host} via {proxyUri}");
+                        sb.AppendLine($"  ✗ {uri.Host} → proxy {proxyUri}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  ✓ {uri.Host} → direct (no proxy)");
+                    }
+                }
+            }
+            catch { sb.AppendLine("  Could not check proxy settings."); }
+
+            // ── 3. Check for SWG agent processes ──
+            sb.AppendLine();
+            sb.AppendLine("── SWG / Security Agent Check ──");
+            var swgProcesses = new (string name, string label)[]
+            {
+                ("ZscalerService", "Zscaler"),
+                ("ZSATunnel", "Zscaler Tunnel"),
+                ("netskope", "Netskope"),
+                ("npa_service", "Netskope Private Access"),
+                ("iboss", "iboss"),
+                ("forcepoint", "Forcepoint"),
+                ("PanGPS", "Palo Alto GlobalProtect"),
+                ("PanGPA", "Palo Alto GlobalProtect"),
+            };
+            bool anySWG = false;
+            foreach (var (name, label) in swgProcesses)
+            {
+                try
+                {
+                    var procs = Process.GetProcessesByName(name);
+                    if (procs.Length > 0)
+                    {
+                        anySWG = true;
+                        sb.AppendLine($"  ⚠ {label} running (PID {procs[0].Id})");
+                        sb.AppendLine($"    Ensure RDP bypass is configured for 40.64.144.0/20 and 51.5.0.0/16");
+                    }
+                }
+                catch { }
+            }
+            if (!anySWG)
+                sb.AppendLine("  ✓ No SWG agents detected.");
+
+            // ── 4. Check environment proxy vars ──
+            var envVars = new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY" };
+            foreach (var v in envVars)
+            {
+                var val = Environment.GetEnvironmentVariable(v);
+                if (!string.IsNullOrEmpty(val))
+                {
+                    issues.Add($"Environment {v}={val}");
+                    sb.AppendLine($"\n  ⚠ Environment variable {v}={val}");
+                }
+            }
+
+            if (issues.Count == 0)
+            {
+                result.Status = "Passed";
+                result.ResultValue = "RDP traffic routes directly — no VPN/SWG interception";
+            }
+            else
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"{issues.Count} routing issue(s) — RDP traffic may not be optimized";
+                result.RemediationText = "RDP traffic should bypass VPN and SWG tunnels. " +
+                    "Configure split-tunnel exceptions for 40.64.144.0/20 (TCP/443) and 51.5.0.0/16 (UDP/3478). " +
+                    "Microsoft owns and manages both subnets — they are dedicated to W365/AVD.";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#2-bypass-vpn-and-secure-web-gateway-tunnels";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ── Test 27: RDP Local Egress Validation ──
+    // Per https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp
+    // Traffic should egress locally to reach the nearest gateway/TURN relay.
+    // Backhauling through a corporate network or distant proxy adds latency.
+    static async Task<TestResult> RunCloudLocalEgress()
+    {
+        var result = new TestResult { Id = "27", Name = "RDP Local Egress", Category = "cloud" };
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Validates that RDP traffic egresses locally to the nearest W365 gateway.");
+            sb.AppendLine("Per Microsoft: \"Local breakout to the internet as close as possible to the");
+            sb.AppendLine("user prevents traffic from backhauling through corporate networks, VPNs, SWGs.\"");
+            sb.AppendLine();
+
+            // Get user's public IP and location
+            string userCity = "", userRegion = "", userCountry = "", userOrg = "";
+            double userLat = 0, userLon = 0;
+            bool hasUserGeo = false;
+
+            try
+            {
+                var userGeo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
+                userCity = userGeo.TryGetProperty("city", out var c) ? c.GetString() ?? "" : "";
+                userRegion = userGeo.TryGetProperty("region", out var r) ? r.GetString() ?? "" : "";
+                userCountry = userGeo.TryGetProperty("country", out var co) ? co.GetString() ?? "" : "";
+                userOrg = userGeo.TryGetProperty("org", out var o) ? o.GetString() ?? "" : "";
+                if (userGeo.TryGetProperty("loc", out var loc))
+                {
+                    var parts = loc.GetString()?.Split(',');
+                    if (parts?.Length == 2 && double.TryParse(parts[0], out userLat) && double.TryParse(parts[1], out userLon))
+                        hasUserGeo = true;
+                }
+                sb.AppendLine($"Your egress location: {userCity}, {userRegion}, {userCountry}");
+                sb.AppendLine($"Your ISP/org: {userOrg}");
+                sb.AppendLine();
+            }
+            catch
+            {
+                sb.AppendLine("⚠ Could not determine your public IP location.");
+                sb.AppendLine();
+            }
+
+            // Check gateway location
+            var gw = await GetValidatedGateway();
+            if (gw != null)
+            {
+                var (hostname, port, ip) = gw.Value;
+                sb.AppendLine($"── RDP Gateway (TCP Reverse Connect) ──");
+                sb.AppendLine($"Host: {hostname}");
+                sb.AppendLine($"IP:   {ip}");
+
+                try
+                {
+                    var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
+                    string gwCity = gwGeo.TryGetProperty("city", out var gc) ? gc.GetString() ?? "" : "";
+                    string gwRegion = gwGeo.TryGetProperty("region", out var gr) ? gr.GetString() ?? "" : "";
+                    string gwCountry = gwGeo.TryGetProperty("country", out var gco) ? gco.GetString() ?? "" : "";
+                    sb.AppendLine($"Location: {gwCity}, {gwRegion}, {gwCountry}");
+
+                    if (hasUserGeo && gwGeo.TryGetProperty("loc", out var gloc))
+                    {
+                        var parts = gloc.GetString()?.Split(',');
+                        if (parts?.Length == 2 && double.TryParse(parts[0], out var gwLat) && double.TryParse(parts[1], out var gwLon))
+                        {
+                            var distKm = HaversineDistance(userLat, userLon, gwLat, gwLon);
+                            sb.AppendLine($"Distance from you: ~{distKm:F0} km");
+
+                            if (distKm > 1500)
+                            {
+                                sb.AppendLine("⚠ Gateway is far from your location — possible traffic backhauling.");
+                                sb.AppendLine("  RDP traffic may be exiting through a remote corporate network or VPN.");
+                            }
+                            else
+                            {
+                                sb.AppendLine("✓ Gateway is near your location — traffic appears to egress locally.");
+                            }
+                        }
+                    }
+                }
+                catch { sb.AppendLine("Could not geolocate gateway."); }
+                sb.AppendLine();
+
+                // Measure latency to gateway as a practical check
+                var rtts = new List<double>();
+                for (int i = 0; i < 5; i++)
+                {
+                    try
+                    {
+                        var sw = Stopwatch.StartNew();
+                        using var tcp = new TcpClient();
+                        using var cts = new CancellationTokenSource(5000);
+                        await tcp.ConnectAsync(hostname, port, cts.Token);
+                        sw.Stop();
+                        rtts.Add(sw.Elapsed.TotalMilliseconds);
+                    }
+                    catch { }
+                    if (i < 4) await Task.Delay(500);
+                }
+                if (rtts.Count > 0)
+                {
+                    var avgRtt = rtts.Average();
+                    sb.AppendLine($"Gateway latency: {avgRtt:F0}ms avg (min {rtts.Min():F0}ms, max {rtts.Max():F0}ms)");
+                    if (avgRtt > 100)
+                        sb.AppendLine("⚠ High latency — may indicate traffic is not egressing locally.");
+                    else
+                        sb.AppendLine("✓ Low latency — consistent with local egress.");
+                }
+            }
+            else
+            {
+                sb.AppendLine("⚠ Could not resolve a validated W365 gateway.");
+            }
+
+            // Check TURN relay location
+            sb.AppendLine();
+            sb.AppendLine("── TURN Relay (UDP RDP Shortpath) ──");
+            try
+            {
+                var turnHost = "world.relay.avd.microsoft.com";
+                var turnIps = await Dns.GetHostAddressesAsync(turnHost);
+                var turnIp = turnIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (turnIp != null)
+                {
+                    sb.AppendLine($"Host: {turnHost}");
+                    sb.AppendLine($"IP:   {turnIp}");
+                    try
+                    {
+                        var turnGeo = await FetchGeoIpAsync($"https://ipinfo.io/{turnIp}/json", TimeSpan.FromSeconds(5));
+                        string tCity = turnGeo.TryGetProperty("city", out var tc) ? tc.GetString() ?? "" : "";
+                        string tRegion = turnGeo.TryGetProperty("region", out var tr) ? tr.GetString() ?? "" : "";
+                        string tCountry = turnGeo.TryGetProperty("country", out var tco) ? tco.GetString() ?? "" : "";
+                        sb.AppendLine($"Location: {tCity}, {tRegion}, {tCountry}");
+
+                        if (hasUserGeo && turnGeo.TryGetProperty("loc", out var tloc))
+                        {
+                            var parts = tloc.GetString()?.Split(',');
+                            if (parts?.Length == 2 && double.TryParse(parts[0], out var tLat) && double.TryParse(parts[1], out var tLon))
+                            {
+                                var distKm = HaversineDistance(userLat, userLon, tLat, tLon);
+                                sb.AppendLine($"Distance from you: ~{distKm:F0} km");
+
+                                if (distKm > 1500)
+                                    sb.AppendLine("⚠ TURN relay is far — possible backhauling or non-local egress.");
+                                else
+                                    sb.AppendLine("✓ TURN relay is near — local egress confirmed.");
+                            }
+                        }
+                    }
+                    catch { sb.AppendLine("Could not geolocate TURN relay."); }
+                }
+                else
+                {
+                    sb.AppendLine("⚠ Could not resolve TURN relay address.");
+                }
+            }
+            catch (Exception ex) { sb.AppendLine($"TURN check failed: {ex.Message}"); }
+
+            // Determine overall result
+            var text = sb.ToString();
+            if (text.Contains("⚠ Gateway is far") || text.Contains("⚠ TURN relay is far") || text.Contains("⚠ High latency"))
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Traffic may not be egressing locally";
+                result.RemediationText = "RDP traffic appears to be backhauling through a remote network. " +
+                    "Ensure local internet breakout for 40.64.144.0/20 and 51.5.0.0/16. " +
+                    "This allows the nearest RDP Gateway or TURN relay to be selected.";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#3-local-network-egress";
+            }
+            else if (gw == null)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not validate egress path";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = "Traffic egresses locally — nearest gateway/relay in use";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>Haversine distance in km between two lat/lon points.</summary>
+    static double HaversineDistance(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double R = 6371; // Earth radius in km
+        var dLat = (lat2 - lat1) * Math.PI / 180;
+        var dLon = (lon2 - lon1) * Math.PI / 180;
+        var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                Math.Cos(lat1 * Math.PI / 180) * Math.Cos(lat2 * Math.PI / 180) *
+                Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
     }
 
     static float? TryReadPerfCounter(string category, string counter, string instance)

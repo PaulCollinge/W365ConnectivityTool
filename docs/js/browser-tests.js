@@ -186,6 +186,21 @@ const ALL_TESTS = [
         id: '24', name: 'VPN Connection Performance',
         description: 'Detects VPN impact on Cloud PC connection quality',
         category: 'cloud', source: 'local'
+    },
+    {
+        id: '25', name: 'RDP TLS Inspection',
+        description: 'Checks for TLS interception on RDP gateway — inspection is not supported and degrades performance',
+        category: 'cloud', source: 'local'
+    },
+    {
+        id: '26', name: 'RDP Traffic Routing',
+        description: 'Validates that RDP traffic bypasses VPN, proxy, and SWG tunnels for optimal performance',
+        category: 'cloud', source: 'local'
+    },
+    {
+        id: '27', name: 'RDP Local Egress',
+        description: 'Checks that traffic egresses locally to the nearest W365 gateway and TURN relay',
+        category: 'cloud', source: 'local'
     }
 ];
 
