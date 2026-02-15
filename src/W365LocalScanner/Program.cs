@@ -60,7 +60,9 @@ class Program
             {
                 var sw = Stopwatch.StartNew();
                 var testTask = test.Run();
-                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
+                // Cloud tests sample for ~60s, so allow 90s for them plus overhead
+                var testTimeout = test.Category == "cloud" ? 90 : 60;
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(testTimeout));
 
                 if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
                 {
@@ -72,11 +74,11 @@ class Program
                         Description = test.Description,
                         Category = test.Category,
                         Status = "Warning",
-                        ResultValue = $"Timed out after 60s",
-                        DetailedInfo = "The test did not complete within 60 seconds. This may indicate a network issue (hanging TLS handshake, unresponsive proxy, etc.).",
+                        ResultValue = $"Timed out after {testTimeout}s",
+                        DetailedInfo = $"The test did not complete within {testTimeout} seconds. This may indicate a network issue (hanging TLS handshake, unresponsive proxy, etc.).",
                         Duration = (int)sw.ElapsedMilliseconds
                     });
-                    Console.WriteLine($"\u26A0 Timed out (60s)");
+                    Console.WriteLine($"\u26A0 Timed out ({testTimeout}s)");
                     continue;
                 }
 
@@ -1759,12 +1761,12 @@ class Program
             {
                 const string logName = "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational";
                 var query = new EventLogQuery(logName, PathType.LogName,
-                    "*[System[(EventID=131 or EventID=140 or EventID=141 or EventID=142 or EventID=143) and TimeCreated[timediff(@SystemTime) <= 86400000]]]");
+                    "*[System[(EventID=131 or EventID=135 or EventID=137 or EventID=138 or EventID=140 or EventID=141 or EventID=142 or EventID=143) and TimeCreated[timediff(@SystemTime) <= 86400000]]]");
                 using var reader = new EventLogReader(query);
                 EventRecord? record;
                 int count = 0;
                 sb.AppendLine("RdpCoreTS Events (last 24h):");
-                while ((record = reader.ReadEvent()) != null && count < 15)
+                while ((record = reader.ReadEvent()) != null && count < 20)
                 {
                     using (record)
                     {
@@ -1775,6 +1777,9 @@ class Program
                         string label = eid switch
                         {
                             131 => "Connection Accepted",
+                            135 => "Shortpath Connection Closing",
+                            137 => "Shortpath Connecting",
+                            138 => "Shortpath Connected",
                             140 => "Transport Negotiated",
                             141 => "UDP Connected",
                             142 => "UDP Failed (TCP Fallback)",
@@ -1785,6 +1790,7 @@ class Program
                         if (msg.Length is > 0 and < 200)
                             sb.AppendLine($"    {msg}");
                         if (eid == 131) hasConnection = true;
+                        if (eid is 137 or 138) { shortpathConnected = true; protocol = "UDP (RDP Shortpath)"; }
                         if (eid == 141) { udpConnected = true; protocol = "UDP (RDP Shortpath)"; }
                         if (eid == 142) { udpFailed = true; protocol = "TCP (Reverse Connect)"; }
                         if (eid == 143) { shortpathConnected = true; protocol = "UDP (RDP Shortpath)"; }
@@ -1811,7 +1817,7 @@ class Program
                     using (record)
                     {
                         int eid = record.Id;
-                        if (eid is 1024 or 1025 or 1026 or 1027 or 1029)
+                        if (eid is 1024 or 1025 or 1026 or 1027 or 1029 or 1102 or 1103 or 1105)
                         {
                             count++;
                             string msg = "";
@@ -1823,14 +1829,23 @@ class Program
                                 1026 => "Disconnected",
                                 1027 => "Transport Connected",
                                 1029 => "Base Transport Type",
+                                1102 => "Multi-transport Initiated",
+                                1103 => "Multi-transport Established",
+                                1105 => "Multi-transport Info",
                                 _ => $"Event {eid}"
                             };
-                            if (count <= 10) sb.AppendLine($"  [{record.TimeCreated:HH:mm:ss}] {label}");
+                            if (count <= 15) sb.AppendLine($"  [{record.TimeCreated:HH:mm:ss}] {label}");
+                            if (count <= 15 && msg.Length is > 0 and < 200)
+                                sb.AppendLine($"    {msg}");
                             if (eid == 1024) hasConnection = true;
-                            if (msg.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                            // Check for UDP transport indicators in message text
+                            if (msg.Contains("UDP", StringComparison.OrdinalIgnoreCase) ||
+                                msg.Contains("Shortpath", StringComparison.OrdinalIgnoreCase))
                             {
                                 if (msg.Contains("success", StringComparison.OrdinalIgnoreCase) ||
-                                    msg.Contains("connected", StringComparison.OrdinalIgnoreCase))
+                                    msg.Contains("connected", StringComparison.OrdinalIgnoreCase) ||
+                                    msg.Contains("established", StringComparison.OrdinalIgnoreCase) ||
+                                    eid is 1103 or 1105)
                                 { udpConnected = true; protocol = "UDP (RDP Shortpath)"; }
                                 else if (msg.Contains("fail", StringComparison.OrdinalIgnoreCase))
                                 { udpFailed = true; if (string.IsNullOrEmpty(protocol)) protocol = "TCP (Reverse Connect)"; }
@@ -1842,7 +1857,34 @@ class Program
             }
             catch { sb.AppendLine("RDP Client log: not available"); }
 
-            // Also check RemoteFX UDP bandwidth if inside remote session
+            // 3. Check for active UDP connections to TURN relay (port 3478)
+            // This is the most reliable indicator of Shortpath in use
+            try
+            {
+                var udpListeners = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+                    .GetActiveUdpListeners();
+                var udpConns = udpListeners.Where(ep => ep.Port == 3478 || ep.Port >= 49152).ToList();
+
+                // Also check for established TCP connections to known TURN/gateway endpoints
+                var tcpConns = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+                    .GetActiveTcpConnections()
+                    .Where(c => c.State == TcpState.Established)
+                    .ToList();
+
+                // Look for connections to TURN relay port 3478
+                var turnConns = tcpConns.Where(c => c.RemoteEndPoint.Port == 3478).ToList();
+                if (turnConns.Count > 0)
+                {
+                    sb.AppendLine($"\nActive TURN connections (port 3478): {turnConns.Count}");
+                    foreach (var tc in turnConns.Take(3))
+                        sb.AppendLine($"  → {tc.RemoteEndPoint}");
+                    udpConnected = true;
+                    protocol = "UDP (RDP Shortpath via TURN)";
+                }
+            }
+            catch { /* netstat-like checks may require elevation */ }
+
+            // 4. Check RemoteFX UDP bandwidth if inside remote session
             if (IsRemoteSession())
             {
                 try
@@ -1865,7 +1907,7 @@ class Program
 
             sb.AppendLine();
 
-            // Determine result from event logs / counters
+            // Determine result from event logs / counters / active connections
             if (udpConnected || shortpathConnected)
             {
                 result.Status = "Passed";
@@ -1887,20 +1929,28 @@ class Program
             }
             else
             {
-                // 3. Fallback: determine transport from gateway IP range
-                //    40.64.144.0/20 = TCP (Reverse Connect via AFD Gateway)
-                //    51.5.0.0/16    = UDP (RDP Shortpath via TURN relay)
+                // 5. Fallback: check gateway IP range (informational only)
+                // NOTE: The AFD gateway range (40.64.144.0/20) is used for signaling/connection broker.
+                // Even when RDP Shortpath is active, signaling still routes through AFD.
+                // So this range does NOT mean Shortpath is disabled.
                 var rangeResult = await DetectTransportFromGatewayRange(sb);
                 if (rangeResult != null)
                 {
-                    result.Status = rangeResult.Value.isUdp ? "Passed" : "Warning";
-                    result.ResultValue = rangeResult.Value.isUdp
-                        ? "UDP (RDP Shortpath via TURN) ⚡"
-                        : "TCP (Reverse Connect via AFD)";
-                    if (!rangeResult.Value.isUdp)
+                    if (rangeResult.Value.isUdp)
                     {
-                        result.RemediationText = "Gateway resolved to 40.64.144.0/20 (TCP reverse connect range). Enable RDP Shortpath for lower latency.";
-                        result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                        result.Status = "Passed";
+                        result.ResultValue = "UDP (RDP Shortpath via TURN) ⚡";
+                    }
+                    else
+                    {
+                        // AFD gateway range is just signaling — don't warn about Shortpath
+                        result.Status = "Passed";
+                        result.ResultValue = "Connected via gateway";
+                        sb.AppendLine();
+                        sb.AppendLine("ℹ Gateway resolves to AFD range (40.64.144.0/20).");
+                        sb.AppendLine("  This is the signaling/connection broker path.");
+                        sb.AppendLine("  Data transport may still use UDP (RDP Shortpath) once session is established.");
+                        sb.AppendLine("  Run this test while connected to your Cloud PC for definitive transport detection.");
                     }
                 }
                 else if (!hasConnection)
@@ -1912,8 +1962,10 @@ class Program
                 }
                 else
                 {
-                    result.Status = "Warning";
-                    result.ResultValue = "Unable to determine transport";
+                    result.Status = "Passed";
+                    result.ResultValue = "Connection detected — transport undetermined";
+                    sb.AppendLine("ℹ RDP connection found but transport type could not be determined.");
+                    sb.AppendLine("  Re-run while actively connected for more detailed results.");
                 }
             }
 
