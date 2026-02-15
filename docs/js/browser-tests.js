@@ -499,15 +499,14 @@ async function testGatewayLatency(test) {
     const lines = [];
     let connected = false;
     let afdLocation = '';
+    let afdCity = '';
+    let afdCountry = '';
+    let afdOrg = '';
     let afdIp = '';
     let latencyMs = 0;
 
-    lines.push(`Endpoint: ${ep}`);
-    lines.push('');
-
-    // Step 1: DNS resolution to identify AFD edge IP
+    // Step 1: Test AFD connectivity
     try {
-        // Use a fetch to warm DNS, then check Resource Timing for IP/server info
         const dnsStart = performance.now();
         await fetch(`https://${ep}/?_t=${Date.now()}`, {
             method: 'HEAD', mode: 'no-cors', cache: 'no-store',
@@ -515,31 +514,12 @@ async function testGatewayLatency(test) {
         });
         latencyMs = Math.round(performance.now() - dnsStart);
         connected = true;
-        lines.push(`✓ AFD connectivity: OK (${latencyMs}ms)`);
     } catch (e) {
         lines.push(`✗ AFD connectivity: FAILED — ${e.message || 'connection error'}`);
+        lines.push(`Endpoint: ${ep}`);
     }
 
-    // Step 2: Try to identify AFD edge location from Resource Timing
-    if (connected && typeof performance !== 'undefined' && performance.getEntriesByType) {
-        const entries = performance.getEntriesByType('resource')
-            .filter(e => e.name.includes(ep))
-            .sort((a, b) => b.startTime - a.startTime);
-        if (entries.length > 0) {
-            const entry = entries[0];
-            // serverTiming may contain AFD PoP info
-            if (entry.serverTiming && entry.serverTiming.length > 0) {
-                const stInfo = entry.serverTiming.map(s => `${s.name}=${s.description || s.duration}`).join(', ');
-                lines.push(`→ Server-Timing: ${stInfo}`);
-            }
-            // nextHopProtocol shows HTTP version (h2 = good)
-            if (entry.nextHopProtocol) {
-                lines.push(`→ Protocol: ${entry.nextHopProtocol}`);
-            }
-        }
-    }
-
-    // Step 3: Resolve DNS to show AFD edge IP
+    // Step 2: Resolve AFD edge IP via DoH
     try {
         const dnsResp = await fetch(`https://dns.google/resolve?name=${ep}&type=A`, {
             signal: AbortSignal.timeout(5000)
@@ -547,20 +527,13 @@ async function testGatewayLatency(test) {
         const dnsData = await dnsResp.json();
         if (dnsData.Answer) {
             const aRecords = dnsData.Answer.filter(a => a.type === 1);
-            const cnames = dnsData.Answer.filter(a => a.type === 5);
-            if (cnames.length > 0) {
-                lines.push(`→ CNAME chain: ${cnames.map(c => c.data).join(' → ')}`);
-            }
             if (aRecords.length > 0) {
                 afdIp = aRecords.map(a => a.data).join(', ');
-                lines.push(`→ AFD edge IP: ${afdIp}`);
             }
         }
-    } catch (e) {
-        lines.push(`→ DNS lookup via DoH: unavailable`);
-    }
+    } catch (e) { /* DoH unavailable */ }
 
-    // Step 4: Try to identify AFD PoP location from IP geolocation
+    // Step 3: Geolocate AFD edge IP to find the PoP location
     if (afdIp) {
         try {
             const firstIp = afdIp.split(',')[0].trim();
@@ -568,15 +541,40 @@ async function testGatewayLatency(test) {
                 signal: AbortSignal.timeout(5000)
             });
             const geoData = await geoResp.json();
-            if (geoData.city || geoData.region) {
-                afdLocation = [geoData.city, geoData.region, geoData.country].filter(Boolean).join(', ');
-                lines.push(`→ AFD edge location: ${afdLocation}`);
-                if (geoData.org) lines.push(`→ Network: ${geoData.org}`);
-            }
+            afdCity = geoData.city || '';
+            afdCountry = geoData.country || '';
+            afdOrg = geoData.org || '';
+            afdLocation = [geoData.city, geoData.region, geoData.country].filter(Boolean).join(', ');
         } catch (e) { /* geo lookup optional */ }
     }
 
-    // Step 5: Additional connectivity probes for reliability
+    // Build detail output — location prominently at top
+    if (afdLocation) {
+        lines.unshift(`╔══════════════════════════════════════════╗`);
+        lines.push(`║  AFD Edge Location: ${afdLocation.padEnd(20)} ║`);
+        lines.push(`╚══════════════════════════════════════════╝`);
+    }
+    lines.push('');
+    lines.push(`Endpoint: ${ep}`);
+    if (connected) lines.push(`Status: ✓ Connected (${latencyMs}ms)`);
+    if (afdIp) lines.push(`AFD Edge IP: ${afdIp}`);
+    if (afdLocation) lines.push(`AFD Edge Location: ${afdLocation}`);
+    if (afdOrg) lines.push(`Network: ${afdOrg}`);
+
+    // Step 4: Resource Timing info
+    if (connected && typeof performance !== 'undefined' && performance.getEntriesByType) {
+        const entries = performance.getEntriesByType('resource')
+            .filter(e => e.name.includes(ep))
+            .sort((a, b) => b.startTime - a.startTime);
+        if (entries.length > 0) {
+            const entry = entries[0];
+            if (entry.nextHopProtocol) {
+                lines.push(`Protocol: ${entry.nextHopProtocol}`);
+            }
+        }
+    }
+
+    // Step 5: Additional latency samples
     if (connected) {
         const times = [latencyMs];
         for (let i = 0; i < 2; i++) {
@@ -592,20 +590,20 @@ async function testGatewayLatency(test) {
         }
         const valid = times.filter(t => t > 0);
         const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
-        lines.push('');
-        lines.push(`Latency: avg ${avg}ms over ${valid.length} samples (includes TLS overhead)`);
+        lines.push(`Latency: avg ${avg}ms over ${valid.length} samples`);
     }
 
     const duration = Math.round(performance.now() - t0);
 
     if (!connected) {
-        return makeResult(test, 'Failed', 'AFD gateway discovery unreachable',
+        return makeResult(test, 'Failed', 'AFD unreachable — cannot discover gateway',
             lines.join('\n'), duration, EndpointConfig.docs.networkRequirements);
     }
 
+    // Result value: location is the star, latency is secondary
     const value = afdLocation
-        ? `Connected — AFD edge: ${afdLocation} (${latencyMs}ms)`
-        : `Connected — ${latencyMs}ms`;
+        ? `✓ AFD node: ${afdCity || afdLocation}${afdCountry ? ', ' + afdCountry : ''} (${latencyMs}ms)`
+        : `✓ Connected (${latencyMs}ms) — location unknown`;
     return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }
 
