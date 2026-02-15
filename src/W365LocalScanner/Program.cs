@@ -864,6 +864,7 @@ class Program
             // ── UDP Based RDP Connectivity ──
             new("L-UDP-03", "TURN Relay Reachability (UDP 3478)", "Tests UDP to TURN relay", "udp", RunTurnRelay),
             new("L-UDP-04", "TURN Relay Location", "Geolocates the TURN relay server", "udp", RunTurnRelayLocation),
+            new("L-UDP-05", "STUN NAT Type Detection", "Two-server STUN test for NAT type and Shortpath readiness", "udp", RunStunNatType),
             new("L-UDP-06", "TURN TLS Inspection", "Checks TLS on TURN relay", "udp", RunTurnTlsInspection),
             new("L-UDP-07", "TURN Proxy/VPN Detection", "Detects UDP-blocking proxy/VPN", "udp", RunTurnProxyVpn),
 
@@ -1736,6 +1737,158 @@ class Program
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    // ── L-UDP-05: STUN NAT Type Detection ──
+    // Replicates the methodology from Microsoft's Test-Shortpath.ps1 / avdnettest.exe:
+    // Uses a single UdpClient to send STUN binding requests to two different servers,
+    // compares the reflexive (XOR-MAPPED-ADDRESS) endpoints to determine NAT type.
+    // Same reflexive endpoint = Cone NAT (Shortpath likely)
+    // Different reflexive endpoints = Symmetric NAT (Shortpath unlikely)
+    static async Task<TestResult> RunStunNatType()
+    {
+        var result = new TestResult { Id = "L-UDP-05", Name = "STUN NAT Type Detection", Category = "udp" };
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Method: Two-server STUN comparison (same as avdnettest.exe / Test-Shortpath.ps1)");
+            sb.AppendLine("A single UDP socket sends STUN binding requests to two servers.");
+            sb.AppendLine("If both return the same reflexive IP:port, NAT is cone-shaped (Shortpath works).");
+            sb.AppendLine("If they differ, NAT is symmetric (Shortpath unlikely).");
+            sb.AppendLine();
+
+            // Server 1: stun.azure.com (Microsoft's primary STUN server)
+            var stunHost1 = "stun.azure.com";
+            IPAddress? stunIp1 = null;
+            try
+            {
+                var dns1 = await Dns.GetHostAddressesAsync(stunHost1);
+                stunIp1 = dns1.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+            }
+            catch { }
+
+            if (stunIp1 == null)
+            {
+                // Fallback to known IP (same as Test-Shortpath.ps1)
+                sb.AppendLine($"⚠ DNS resolution of {stunHost1} failed, using fallback IP 20.202.22.68");
+                stunIp1 = IPAddress.Parse("20.202.22.68");
+            }
+            else
+            {
+                sb.AppendLine($"Server 1: {stunHost1} → {stunIp1}");
+            }
+
+            // Server 2: secondary Microsoft STUN server (same IP used in Test-Shortpath.ps1)
+            var stunIp2 = IPAddress.Parse("13.107.17.41");
+            sb.AppendLine($"Server 2: 13.107.17.41 (secondary Microsoft STUN)");
+            sb.AppendLine();
+
+            using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+            udp.Client.ReceiveTimeout = 5000;
+            var localPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+            sb.AppendLine($"Local UDP port: {localPort}");
+
+            // Send STUN to server 1
+            var mapped1 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp1, 3478), sb, "Server 1");
+            // Send STUN to server 2
+            var mapped2 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp2, 3478), sb, "Server 2");
+
+            sb.AppendLine();
+
+            if (mapped1 == null && mapped2 == null)
+            {
+                sb.AppendLine("✗ Neither STUN server responded.");
+                sb.AppendLine("  UDP port 3478 is likely blocked by firewall, VPN, or SWG.");
+                sb.AppendLine("  RDP Shortpath for public networks will NOT work.");
+                result.Status = "Failed";
+                result.ResultValue = "STUN failed — UDP 3478 blocked";
+                result.RemediationText = "Allow outbound UDP 3478 to Microsoft STUN/TURN servers.";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+            }
+            else if (mapped1 == null || mapped2 == null)
+            {
+                var working = mapped1 ?? mapped2;
+                sb.AppendLine($"⚠ Only one STUN server responded (reflexive: {working}).");
+                sb.AppendLine("  NAT type could not be fully determined.");
+                sb.AppendLine("  STUN connectivity is partially available.");
+                result.Status = "Warning";
+                result.ResultValue = $"Partial STUN — reflexive {working}";
+            }
+            else if (mapped1 == mapped2)
+            {
+                sb.AppendLine($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
+                sb.AppendLine();
+                sb.AppendLine("NAT Type: Cone (Endpoint-Independent Mapping)");
+                sb.AppendLine("RDP Shortpath for public networks is LIKELY to work.");
+                sb.AppendLine();
+                sb.AppendLine("Shortpath modes available:");
+                sb.AppendLine("  • STUN (direct): Client ↔ Cloud PC via UDP hole-punching");
+                sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC (fallback)");
+                result.Status = "Passed";
+                result.ResultValue = $"Cone NAT — Shortpath ready ({mapped1})";
+            }
+            else
+            {
+                sb.AppendLine($"✗ Servers returned different reflexive endpoints:");
+                sb.AppendLine($"    Server 1: {mapped1}");
+                sb.AppendLine($"    Server 2: {mapped2}");
+                sb.AppendLine();
+                sb.AppendLine("NAT Type: Symmetric (Endpoint-Dependent Mapping)");
+                sb.AppendLine("RDP Shortpath via STUN (direct) is UNLIKELY to work.");
+                sb.AppendLine("TURN relay fallback will still be used if available.");
+                result.Status = "Warning";
+                result.ResultValue = $"Symmetric NAT — Shortpath via STUN unlikely";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>
+    /// Sends a STUN binding request and parses the XOR-MAPPED-ADDRESS from the response.
+    /// Retries up to 3 times (same retry logic as Test-Shortpath.ps1).
+    /// Returns the reflexive IP:port string, or null if no response.
+    /// </summary>
+    static async Task<string?> SendStunAndGetMapped(UdpClient udp, IPEndPoint server, StringBuilder sb, string label)
+    {
+        var stunReq = BuildStunRequest();
+        const int maxAttempts = 3;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                await udp.SendAsync(stunReq, stunReq.Length, server);
+                var recvTask = udp.ReceiveAsync();
+                if (await Task.WhenAny(recvTask, Task.Delay(3000)) == recvTask)
+                {
+                    var resp = await recvTask;
+                    // Validate STUN response: type should be 0x0101 (Binding Success)
+                    if (resp.Buffer.Length >= 20 && ((resp.Buffer[0] << 8) | resp.Buffer[1]) == 0x0101)
+                    {
+                        var mapped = ParseStunMappedAddress(resp.Buffer);
+                        if (mapped != null)
+                        {
+                            sb.AppendLine($"  {label} ({server.Address}): reflexive = {mapped}" + (attempt > 1 ? $" (attempt {attempt})" : ""));
+                            return mapped;
+                        }
+                    }
+                    sb.AppendLine($"  {label} ({server.Address}): invalid STUN response ({resp.Buffer.Length} bytes)");
+                    return null;
+                }
+                // Timeout — retry
+            }
+            catch
+            {
+                // Send/receive error — retry
+            }
+        }
+
+        sb.AppendLine($"  {label} ({server.Address}): no response after {maxAttempts} attempts");
+        return null;
     }
 
     static async Task<TestResult> RunTurnTlsInspection()

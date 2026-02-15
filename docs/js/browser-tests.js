@@ -131,6 +131,11 @@ const ALL_TESTS = [
         category: 'udp', source: 'local'
     },
     {
+        id: 'L-UDP-05', name: 'STUN NAT Type Detection',
+        description: 'Two-server STUN test for NAT type and Shortpath readiness (requires Local Scanner)',
+        category: 'udp', source: 'local'
+    },
+    {
         id: 'L-UDP-06', name: 'TURN TLS Inspection',
         description: 'Checks for TLS interception on TURN relay connections (requires Local Scanner)',
         category: 'udp', source: 'local'
