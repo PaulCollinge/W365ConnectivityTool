@@ -387,19 +387,23 @@ function processImportedData(data) {
     }
 
     // Map local scanner IDs to our test list
-    ilog('Processing ' + localResults.length + ' scanner results...');
+    const allIds = localResults.map(r => r.id);
+    const cloudIds = localResults.filter(r => (r.category||'').toLowerCase() === 'cloud').map(r => r.id);
+    ilog('Processing ' + localResults.length + ' results. IDs: ' + allIds.join(', '));
+    ilog('Cloud-category results: ' + (cloudIds.length > 0 ? cloudIds.join(', ') : 'NONE'));
     let importedCount = 0;
     let cloudCount = 0;
     for (const lr of localResults) {
         try {
-            // Remove any existing result with this ID
-            allResults = allResults.filter(r => r.id !== lr.id);
+            // Remove any existing result with this ID (coerce to string for safety)
+            const lrId = String(lr.id);
+            allResults = allResults.filter(r => String(r.id) !== lrId);
 
             const mapped = {
-                id: lr.id,
-                name: lr.name || lr.id,
+                id: lrId,
+                name: lr.name || lrId,
                 description: lr.description || '',
-                category: lr.category || mapCategoryFromId(lr.id),
+                category: lr.category || mapCategoryFromId(lrId),
                 source: 'local',
                 status: lr.status || 'Passed',
                 resultValue: lr.resultValue || lr.result || '',
@@ -412,14 +416,15 @@ function processImportedData(data) {
             allResults.push(mapped);
 
             // Update UI - find matching test definition or create inline
-            const testDef = ALL_TESTS.find(t => t.id === lr.id);
+            const testDef = ALL_TESTS.find(t => String(t.id) === lrId);
             if (testDef) {
-                updateTestUI(lr.id, mapped);
+                updateTestUI(lrId, mapped);
                 if (mapped.category === 'cloud') cloudCount++;
             } else {
+                ilog('  No ALL_TESTS match for id="' + lrId + '" (type=' + typeof lr.id + ', cat=' + mapped.category + ')');
                 // Scanner version is newer than page — dynamically create a card
-                console.warn(`Import: No test definition for ${lr.id}, creating card dynamically`);
-                const dynDef = { id: lr.id, name: lr.name || lr.id, description: lr.description || '', source: 'local', category: mapped.category };
+                console.warn(`Import: No test definition for ${lrId}, creating card dynamically`);
+                const dynDef = { id: lrId, name: lr.name || lrId, description: lr.description || '', source: 'local', category: mapped.category };
                 const container = document.getElementById(`tests-${mapped.category}`);
                 if (container) {
                     const el = createTestElement(dynDef, mapped);
@@ -461,10 +466,10 @@ function processImportedData(data) {
 
     // Hide stale "Requires Local Scanner" cards whose IDs weren't in the import.
     // This handles scanner versions that use different IDs (e.g. L-CS-01 vs 17).
-    const importedIds = new Set(localResults.map(r => r.id));
+    const importedIds = new Set(localResults.map(r => String(r.id)));
     for (const test of ALL_TESTS) {
         if (test.source !== 'local') continue;
-        if (importedIds.has(test.id)) continue;
+        if (importedIds.has(String(test.id))) continue;
         // This test was NOT in the scanner output — hide the placeholder card
         const el = document.getElementById(`test-${test.id}`);
         if (el) el.style.display = 'none';
