@@ -325,36 +325,51 @@
         </div>
     </footer>
 
-    <!-- deploy: v30 -->
+    <!-- deploy: v43 -->
     <script>
     // Inline diagnostic: immediately detect import params before external JS loads
+    // Also provides a global importLog() function the other scripts can call
     (function() {
         var s = location.search, h = location.hash;
         var hasData = s.indexOf('zresults') > -1 || h.indexOf('results') > -1;
-        // Create a persistent debug bar at the very top of the page
+        // Create a persistent debug log panel at the very top of the page
         var dbg = document.createElement('div');
         dbg.id = 'debug-bar';
-        dbg.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:8px 16px;font:13px monospace;color:#fff;background:' + (hasData ? '#1a7f37' : '#333') + ';';
+        dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:8px 16px;font:12px/1.4 monospace;color:#e6edf3;background:#161b22;border-top:2px solid ' + (hasData ? '#1a7f37' : '#444') + ';max-height:200px;overflow-y:auto;';
+        var lines = [];
+        function addLine(msg) {
+            var t = new Date().toLocaleTimeString();
+            lines.push('[' + t + '] ' + msg);
+            dbg.textContent = lines.join('\n');
+            dbg.scrollTop = dbg.scrollHeight;
+            console.log('[W365 Import] ' + msg);
+        }
+        window._importLog = addLine;
         if (hasData) {
-            document.title = '[IMPORTING] search=' + s.length + ' hash=' + h.length;
-            dbg.textContent = 'IMPORT DETECTED: query=' + s.length + ' chars, hash=' + h.length + ' chars. zresults=' + (s.indexOf('zresults') > -1 ? 'YES' : 'NO') + '. Loading scripts...';
+            document.title = '[IMPORTING] W365 Diagnostics';
+            addLine('IMPORT DETECTED: search=' + s.length + ' chars, hash=' + h.length + ' chars, href=' + location.href.length + ' chars');
+            addLine('zresults in query: ' + (s.indexOf('zresults') > -1 ? 'YES' : 'NO'));
+            addLine('zresults in hash: ' + (h.indexOf('zresults') > -1 ? 'YES' : 'NO'));
+            addLine('results in hash: ' + (h.indexOf('results') > -1 ? 'YES' : 'NO'));
             var d = document.getElementById('info-banner');
             if (d) {
                 d.classList.remove('hidden');
-                d.querySelector('.info-text').innerHTML = '<strong>Import detected:</strong> query=' + s.length + ' chars, hash=' + h.length + ' chars. Loading scripts...';
+                d.querySelector('.info-text').innerHTML = '<strong>Importing scanner results...</strong> Decompressing data from URL.';
             }
         } else {
-            dbg.textContent = 'No import params. search="' + s.substring(0, 80) + '" hash.len=' + h.length + ' href.len=' + location.href.length;
+            addLine('No import params found. search="' + s.substring(0, 80) + '" hash.len=' + h.length);
+            addLine('Full URL length: ' + location.href.length);
         }
-        document.body.insertBefore(dbg, document.body.firstChild);
-        // Auto-hide after 30 seconds
-        setTimeout(function() { dbg.style.display = 'none'; }, 30000);
+        document.body.appendChild(dbg);
+        // Auto-hide after 60 seconds (click to dismiss sooner)
+        dbg.addEventListener('click', function() { dbg.style.display = 'none'; });
+        setTimeout(function() { dbg.style.display = 'none'; }, 60000);
     })();
     </script>
-    <script src="js/config.js?v=42"></script>
-    <script src="js/browser-tests.js?v=42"></script>
-    <script src="js/ui.js?v=42"></script>
-    <script src="js/map.js?v=42"></script>
-    <script src="js/app.js?v=42"></script>
+    <script src="js/config.js?v=43"></script>
+    <script src="js/browser-tests.js?v=43"></script>
+    <script src="js/ui.js?v=43"></script>
+    <script src="js/map.js?v=43"></script>
+    <script src="js/app.js?v=43"></script>
 </body>
 </html>

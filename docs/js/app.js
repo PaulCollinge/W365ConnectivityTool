@@ -2,9 +2,13 @@
  * Main application logic: orchestrates browser tests, import, and result merging.
  */
 
+// Import diagnostic log (set up by inline script in index.html)
+function ilog(msg) { if (window._importLog) window._importLog(msg); else console.log('[W365]', msg); }
+
 // Global error handler — show JS errors visibly so import issues are not silent
 window.onerror = function(msg, url, line, col, error) {
     console.error('Global error:', msg, url, line, col, error);
+    ilog('JS ERROR: ' + msg + ' at ' + url + ':' + line);
     const info = document.getElementById('info-banner');
     if (info) {
         info.classList.remove('hidden');
@@ -14,6 +18,7 @@ window.onerror = function(msg, url, line, col, error) {
 };
 window.addEventListener('unhandledrejection', function(event) {
     console.error('Unhandled promise rejection:', event.reason);
+    ilog('ASYNC ERROR: ' + (event.reason?.message || event.reason));
     const info = document.getElementById('info-banner');
     if (info) {
         info.classList.remove('hidden');
@@ -94,9 +99,12 @@ window.addEventListener('storage', (event) => {
 
 // ── Initialize on page load ──
 document.addEventListener('DOMContentLoaded', () => {
+    ilog('DOMContentLoaded fired, initializing...');
     renderTestList();
+    ilog('renderTestList done, ' + ALL_TESTS.length + ' tests rendered');
     checkForAutoImport();
     setupDragDrop();
+    ilog('Init complete');
 });
 
 // ── Handle hash changes (e.g. browser reuses existing tab) ──
@@ -219,7 +227,13 @@ async function checkForAutoImport() {
     const hasHashZ = hash.startsWith('#zresults=');
     const hasHashR = hash.startsWith('#results=');
 
-    if (!hasZResults && !hasHashZ && !hasHashR) return;
+    ilog('checkForAutoImport: zresults=' + hasZResults + ' hashZ=' + hasHashZ + ' hashR=' + hasHashR);
+    ilog('  search.length=' + window.location.search.length + ' hash.length=' + hash.length);
+
+    if (!hasZResults && !hasHashZ && !hasHashR) {
+        ilog('No import data found in URL, skipping auto-import');
+        return;
+    }
 
     // Show importing status
     if (info) {
@@ -231,11 +245,13 @@ async function checkForAutoImport() {
     try {
         if (hasZResults) {
             const raw = params.get('zresults');
-            console.log(`Auto-import: zresults param found, ${raw.length} chars`);
+            ilog('zresults param: ' + raw.length + ' chars');
             try {
                 data = await decodeCompressedHash(raw);
                 source = 'query-compressed';
+                ilog('Decompression OK: ' + (data?.results?.length ?? 0) + ' results');
             } catch (compressErr) {
+                ilog('Compressed import FAILED: ' + compressErr.message);
                 console.warn('Compressed import failed, trying uncompressed hash fallback:', compressErr);
                 // Fallback: try uncompressed #results= hash (scanner sends both)
                 if (hash.startsWith('#results=')) {
@@ -259,13 +275,16 @@ async function checkForAutoImport() {
         // Clear the URL so it doesn't re-import on refresh / bookmarking
         history.replaceState(null, '', window.location.pathname);
 
+        ilog('Auto-import (' + source + '): parsed ' + (data.results?.length ?? 0) + ' results');
         console.log(`Auto-import (${source}): parsed ${data.results?.length ?? 0} results`);
 
         // Mark this as a scanner-opened tab so we accept browser-results replies
         isNewScannerTab = true;
 
         // Process scanner results immediately on THIS tab
+        ilog('Calling processImportedData...');
         processImportedData(data);
+        ilog('processImportedData complete');
 
         // Broadcast to any existing tabs so they also get the scanner results
         // (and can send back their browser results)
@@ -282,6 +301,7 @@ async function checkForAutoImport() {
         // (don't rely solely on cross-tab sync from an existing tab)
         runAllBrowserTests();
     } catch (e) {
+        ilog('AUTO-IMPORT FAILED: ' + (e.message || e));
         console.error('Auto-import from URL failed:', e);
         // Show a helpful message to the user instead of failing silently
         if (info) {
@@ -335,8 +355,11 @@ async function decodeCompressedHash(raw) {
     );
 
     const json = await Promise.race([decompressPromise, timeoutPromise]);
+    ilog('Decompressed: ' + bytes.length + ' → ' + json.length + ' chars');
     console.log(`Auto-import (compressed): decompressed ${bytes.length} → ${json.length} bytes`);
-    return JSON.parse(json);
+    const parsed = JSON.parse(json);
+    ilog('Parsed JSON: ' + (parsed.results?.length ?? 0) + ' results, machine=' + (parsed.machineName || 'unknown'));
+    return parsed;
 }
 
 // ── Decode uncompressed hash (plain base64 → JSON) ──
@@ -351,6 +374,7 @@ function decodeUncompressedHash(raw) {
 
 // ── Shared import logic ──
 function processImportedData(data) {
+    ilog('processImportedData called. data type=' + typeof data + ', has results=' + Array.isArray(data?.results) + ', count=' + (data?.results?.length ?? 'N/A'));
     // The local scanner outputs: { timestamp, machineName, results: [...] }
     let localResults = [];
     if (Array.isArray(data.results)) {
@@ -363,7 +387,9 @@ function processImportedData(data) {
     }
 
     // Map local scanner IDs to our test list
+    ilog('Processing ' + localResults.length + ' scanner results...');
     let importedCount = 0;
+    let cloudCount = 0;
     for (const lr of localResults) {
         try {
             // Remove any existing result with this ID
@@ -389,6 +415,7 @@ function processImportedData(data) {
             const testDef = ALL_TESTS.find(t => t.id === lr.id);
             if (testDef) {
                 updateTestUI(lr.id, mapped);
+                if (mapped.category === 'cloud') cloudCount++;
             } else {
                 // Scanner version is newer than page — dynamically create a card
                 console.warn(`Import: No test definition for ${lr.id}, creating card dynamically`);
@@ -406,6 +433,7 @@ function processImportedData(data) {
         }
     }
 
+    ilog('Import done: ' + importedCount + ' total, ' + cloudCount + ' cloud tests matched ALL_TESTS');
     // Update summary and badges
     updateSummary(allResults);
     updateCategoryBadges(allResults);
