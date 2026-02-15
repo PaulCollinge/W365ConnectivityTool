@@ -528,7 +528,7 @@ async function testWebRtcStun(test) {
 
     try {
         const candidates = await gatherIceCandidates({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [{ urls: 'stun:stun.azure.com:3478' }]
         }, 5000);
 
         const duration = Math.round(performance.now() - t0);
@@ -576,8 +576,8 @@ async function testNatType(test) {
     try {
         // Gather candidates from two independent STUN servers
         const stunServers = [
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302'
+            'stun:stun.azure.com:3478',
+            'stun:stun.l.google.com:19302'
         ];
 
         const [candidates1, candidates2] = await Promise.all([
