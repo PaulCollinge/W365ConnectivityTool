@@ -343,8 +343,6 @@
             dbg.textContent = lines.join('\n');
             dbg.scrollTop = dbg.scrollHeight;
             console.log('[W365 Import] ' + msg);
-            // Re-add toggle button after textContent wipe
-            dbg.appendChild(toggleBtn);
         }
         window._importLog = addLine;
         if (hasData) {
