@@ -386,6 +386,26 @@ function processImportedData(data) {
         return;
     }
 
+    // Legacy ID mapping: older scanner builds used L-CS-* IDs for cloud tests.
+    // Remap them to the current numeric IDs so they match ALL_TESTS.
+    const LEGACY_ID_MAP = {
+        'L-CS-01': '17',   // Active RDP Session Detection
+        'L-CS-02': '18',   // Session Round-Trip Latency
+        'L-CS-03': '19',   // Session Frame Rate & Bandwidth
+        'L-CS-04': '20',   // Connection Jitter
+        'L-CS-05': '21'    // Frame Drops & Packet Loss
+    };
+    let remappedCount = 0;
+    for (const lr of localResults) {
+        const sid = String(lr.id);
+        if (LEGACY_ID_MAP[sid]) {
+            ilog('Remapping legacy ID ' + sid + ' → ' + LEGACY_ID_MAP[sid]);
+            lr.id = LEGACY_ID_MAP[sid];
+            remappedCount++;
+        }
+    }
+    if (remappedCount > 0) ilog('Remapped ' + remappedCount + ' legacy L-CS-* IDs to numeric IDs');
+
     // Map local scanner IDs to our test list
     const allIds = localResults.map(r => r.id);
     const cloudIds = localResults.filter(r => (r.category||'').toLowerCase() === 'cloud').map(r => r.id);
