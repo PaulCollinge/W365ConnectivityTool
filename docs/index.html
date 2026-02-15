@@ -361,9 +361,12 @@
             addLine('Full URL length: ' + location.href.length);
         }
         document.body.appendChild(dbg);
-        // Auto-hide after 60 seconds (click to dismiss sooner)
-        dbg.addEventListener('click', function() { dbg.style.display = 'none'; });
-        setTimeout(function() { dbg.style.display = 'none'; }, 60000);
+        // Add a small close button instead of click-to-dismiss
+        var closeBtn = document.createElement('span');
+        closeBtn.textContent = ' ✕';
+        closeBtn.style.cssText = 'cursor:pointer;float:right;padding:0 8px;color:#f85149;font-weight:bold;';
+        closeBtn.onclick = function() { dbg.style.display = 'none'; };
+        dbg.insertBefore(closeBtn, dbg.firstChild);
     })();
     </script>
     <script src="js/config.js?v=43"></script>
