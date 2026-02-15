@@ -1289,14 +1289,19 @@ class Program
         var result = new TestResult { Id = "L-TCP-04", Name = "Gateway Connectivity", Category = "tcp" };
         try
         {
-            var targets = new[] {
-                ("rdweb.wvd.microsoft.com", 443),
-                ("client.wvd.microsoft.com", 443),
-                ("login.microsoftonline.com", 443)
+            // The actual RDP gateway is afdfp-rdgateway-r1.wvd.microsoft.com (Azure Front Door).
+            // AFD auto-routes to the nearest regional edge — no need for region-specific FQDNs.
+            // rdweb/client/login are service/broker endpoints tested separately.
+            var targets = new (string host, int port, string role)[] {
+                ("afdfp-rdgateway-r1.wvd.microsoft.com", 443, "RDP Gateway (AFD)"),
+                ("rdweb.wvd.microsoft.com", 443, "Feed Discovery"),
+                ("client.wvd.microsoft.com", 443, "Client Service"),
+                ("login.microsoftonline.com", 443, "Authentication")
             };
 
             var sb = new StringBuilder();
             int passed = 0;
+            int gatewayOk = 0;
             var issues = new List<string>();
 
             using var httpHandler = new HttpClientHandler
@@ -1306,9 +1311,9 @@ class Program
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
-            foreach (var (host, port) in targets)
+            foreach (var (host, port, role) in targets)
             {
-                sb.AppendLine($"  {host}:{port}");
+                sb.AppendLine($"  {host}:{port}  [{role}]");
 
                 // Layer 1: DNS
                 System.Net.IPAddress[] addresses;
@@ -1320,7 +1325,7 @@ class Program
                 catch (Exception ex)
                 {
                     sb.AppendLine($"    ✗ DNS failed: {ex.Message}");
-                    issues.Add($"{host}: DNS resolution failed");
+                    issues.Add($"{host} ({role}): DNS resolution failed");
                     sb.AppendLine();
                     continue;
                 }
@@ -1338,14 +1343,14 @@ class Program
                 catch (OperationCanceledException)
                 {
                     sb.AppendLine($"    ✗ TCP connection timed out (5s)");
-                    issues.Add($"{host}: TCP port {port} blocked or timed out — check firewall rules");
+                    issues.Add($"{host} ({role}): TCP port {port} blocked or timed out — check firewall rules");
                     sb.AppendLine();
                     continue;
                 }
                 catch (Exception ex)
                 {
                     sb.AppendLine($"    ✗ TCP failed: {ex.InnerException?.Message ?? ex.Message}");
-                    issues.Add($"{host}: TCP port {port} refused — firewall or port blocked");
+                    issues.Add($"{host} ({role}): TCP port {port} refused — firewall or port blocked");
                     sb.AppendLine();
                     continue;
                 }
@@ -1359,18 +1364,19 @@ class Program
                     var code = (int)response.StatusCode;
                     sb.AppendLine($"    ✓ HTTPS {code} in {sw2.ElapsedMilliseconds}ms");
                     passed++;
+                    if (role.StartsWith("RDP Gateway")) gatewayOk++;
                 }
                 catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
                 {
                     sb.AppendLine($"    ✗ TLS handshake failed: {ex.InnerException.Message}");
-                    issues.Add($"{host}: TLS handshake failed — possible TLS inspection or certificate issue");
+                    issues.Add($"{host} ({role}): TLS handshake failed — possible TLS inspection or certificate issue");
                     sb.AppendLine();
                     continue;
                 }
                 catch (TaskCanceledException)
                 {
                     sb.AppendLine($"    ✗ HTTPS request timed out (10s)");
-                    issues.Add($"{host}: TCP connected but HTTPS timed out — possible proxy or DPI blocking");
+                    issues.Add($"{host} ({role}): TCP connected but HTTPS timed out — possible proxy or DPI blocking");
                     sb.AppendLine();
                     continue;
                 }
@@ -1378,7 +1384,7 @@ class Program
                 {
                     var inner = ex.InnerException?.Message ?? ex.Message;
                     sb.AppendLine($"    ✗ HTTPS failed: {inner}");
-                    issues.Add($"{host}: TCP connected but HTTPS failed — {inner}");
+                    issues.Add($"{host} ({role}): TCP connected but HTTPS failed — {inner}");
                     sb.AppendLine();
                     continue;
                 }
@@ -1394,10 +1400,14 @@ class Program
             }
 
             result.ResultValue = passed == targets.Length
-                ? $"All {targets.Length} gateways fully reachable (DNS+TCP+HTTPS)"
-                : $"{passed}/{targets.Length} gateways fully reachable";
+                ? $"RDP gateway + {passed - 1} service endpoints reachable (DNS+TCP+HTTPS)"
+                : gatewayOk > 0
+                    ? $"RDP gateway OK, {passed}/{targets.Length} endpoints reachable"
+                    : $"RDP gateway UNREACHABLE — {passed}/{targets.Length} endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = passed == targets.Length ? "Passed" : passed > 0 ? "Warning" : "Failed";
+            result.Status = gatewayOk > 0 && passed == targets.Length ? "Passed"
+                          : gatewayOk > 0 ? "Warning"
+                          : "Failed";
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
         }
