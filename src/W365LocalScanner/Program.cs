@@ -1741,13 +1741,13 @@ class Program
             var gwHost = await DiscoverRdpGatewayFromAfd();
             if (!string.IsNullOrEmpty(gwHost))
             {
-                // Insert the real gateway right after the AFD entry
                 targets.Insert(1, (gwHost, "RDP Gateway (Regional)"));
             }
 
             int completed = 0;
-            int maxHops = 30;
-            int timeout = 2000; // ms per hop
+            int maxHops = 20;           // 20 hops is plenty for cloud endpoints
+            int probeTimeout = 1000;    // 1s per probe (down from 2s)
+            int maxConsecutiveTimeouts = 4; // stop trace after 4 consecutive * hops
 
             foreach (var (host, role) in targets)
             {
@@ -1766,6 +1766,7 @@ class Program
                         sb.AppendLine($"║  ✗ No IPv4 address resolved");
                         sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                         sb.AppendLine();
+                        Console.Write("✗");
                         continue;
                     }
                     sb.AppendLine($"║  Resolved:   {targetIp}");
@@ -1775,73 +1776,81 @@ class Program
                     sb.AppendLine($"║  ✗ DNS failed: {ex.Message}");
                     sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                     sb.AppendLine();
+                    Console.Write("✗");
                     continue;
                 }
 
                 sb.AppendLine($"╠──────────────────────────────────────────────────────────────");
-                sb.AppendLine($"║  {"Hop",-4} {"IP Address",-18} {"RTT1",-8} {"RTT2",-8} {"RTT3",-8} Hostname");
-                sb.AppendLine($"║  {"───",-4} {"──────────",-18} {"────",-8} {"────",-8} {"────",-8} ────────");
+                sb.AppendLine($"║  {"Hop",-4} {"IP Address",-18} {"RTT",-8} Hostname");
+                sb.AppendLine($"║  {"───",-4} {"──────────",-18} {"───",-8} ────────");
 
                 bool reached = false;
-                using var ping = new Ping();
                 var payload = new byte[32];
+                int consecutiveTimeouts = 0;
 
                 for (int ttl = 1; ttl <= maxHops; ttl++)
                 {
                     var options = new PingOptions(ttl, true);
-                    var rtts = new List<string>();
                     IPAddress? hopIp = null;
+                    long rttMs = -1;
 
-                    // Send 3 probes per hop for reliable RTT measurement
-                    for (int probe = 0; probe < 3; probe++)
+                    // Single probe per hop for speed (down from 3)
+                    try
                     {
-                        try
+                        using var ping = new Ping();
+                        var reply = await ping.SendPingAsync(targetIp, probeTimeout, payload, options);
+                        if (reply.Status == IPStatus.TtlExpired || reply.Status == IPStatus.Success)
                         {
-                            var reply = await ping.SendPingAsync(targetIp, timeout, payload, options);
-                            if (reply.Status == IPStatus.TtlExpired || reply.Status == IPStatus.Success)
-                            {
-                                hopIp ??= reply.Address;
-                                rtts.Add($"{reply.RoundtripTime}ms");
+                            hopIp = reply.Address;
+                            rttMs = reply.RoundtripTime;
+                            consecutiveTimeouts = 0;
 
-                                if (reply.Status == IPStatus.Success)
-                                    reached = true;
-                            }
-                            else
-                            {
-                                rtts.Add("*");
-                            }
+                            if (reply.Status == IPStatus.Success)
+                                reached = true;
                         }
-                        catch
+                        else
                         {
-                            rtts.Add("*");
+                            consecutiveTimeouts++;
                         }
                     }
-
-                    // Pad RTTs to 3 entries
-                    while (rtts.Count < 3) rtts.Add("*");
+                    catch
+                    {
+                        consecutiveTimeouts++;
+                    }
 
                     if (hopIp != null)
                     {
-                        // Attempt reverse DNS
+                        // Attempt reverse DNS with a short timeout
                         string hostName = "";
                         try
                         {
-                            var entry = await Dns.GetHostEntryAsync(hopIp);
-                            if (!string.IsNullOrEmpty(entry.HostName) && entry.HostName != hopIp.ToString())
-                                hostName = entry.HostName;
+                            var dnsTask = Dns.GetHostEntryAsync(hopIp);
+                            if (await Task.WhenAny(dnsTask, Task.Delay(500)) == dnsTask)
+                            {
+                                var entry = await dnsTask;
+                                if (!string.IsNullOrEmpty(entry.HostName) && entry.HostName != hopIp.ToString())
+                                    hostName = entry.HostName;
+                            }
                         }
                         catch { /* Reverse DNS not available */ }
 
-                        sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8} {hostName}");
+                        sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rttMs + "ms",-8} {hostName}");
                     }
                     else
                     {
-                        sb.AppendLine($"║  {ttl,-4} {"*",-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8}");
+                        sb.AppendLine($"║  {ttl,-4} {"*",-18} {"*",-8}");
                     }
 
                     if (reached)
                     {
                         sb.AppendLine($"║  → Target reached at hop {ttl}");
+                        break;
+                    }
+
+                    // Abort this trace if too many consecutive timeouts
+                    if (consecutiveTimeouts >= maxConsecutiveTimeouts)
+                    {
+                        sb.AppendLine($"║  → Stopped after {maxConsecutiveTimeouts} consecutive timeouts (ICMP likely blocked)");
                         break;
                     }
                 }
