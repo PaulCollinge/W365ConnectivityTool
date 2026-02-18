@@ -1723,6 +1723,102 @@ class Program
         return result;
     }
 
+    /// <summary>
+    /// Identifies known Microsoft/Azure backbone IPs when reverse DNS is unavailable.
+    /// </summary>
+    static string IdentifyMicrosoftHop(IPAddress ip)
+    {
+        var b = ip.GetAddressBytes();
+        if (b.Length != 4) return "";
+        uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+
+        // 104.44.0.0/16 — Microsoft WAN backbone (MSIT)
+        if (b[0] == 104 && b[1] == 44) return "[Microsoft backbone]";
+        // 104.40.0.0/13 — Azure compute
+        if (b[0] == 104 && b[1] >= 40 && b[1] <= 47) return "[Azure]";
+        // 40.64.0.0/10 — Azure / Microsoft
+        if (b[0] == 40 && (b[1] & 0xC0) == 64) return "[Azure]";
+        // 20.33.0.0/16 and similar — Azure networking
+        if (b[0] == 20) return "[Azure]";
+        // 13.64.0.0/11 — Azure
+        if (b[0] == 13 && (b[1] & 0xE0) == 64) return "[Azure]";
+        // 52.96.0.0/12 — Microsoft 365
+        if (b[0] == 52 && b[1] >= 96 && b[1] <= 111) return "[Microsoft 365]";
+        // 51.5.0.0/16 — AVD TURN relay
+        if (b[0] == 51 && b[1] == 5) return "[AVD TURN relay range]";
+        // 150.171.0.0/16 — Microsoft backbone
+        if (b[0] == 150 && b[1] == 171) return "[Microsoft backbone]";
+        // 4.0.0.0/8 parts — Microsoft (Level3/Microsoft)
+        if (b[0] == 4 && b[1] >= 150) return "[Microsoft]";
+
+        return "";
+    }
+
+    /// <summary>
+    /// Resolves DNS CNAME chain for a hostname using system DNS, returning the chain and routing flags.
+    /// </summary>
+    static async Task<(List<string> chain, string? gsaIndicator)> ResolveDnsCnameChainAsync(string host)
+    {
+        var chain = new List<string>();
+        string? gsaIndicator = null;
+
+        try
+        {
+            // Use nslookup to get CNAME chain (system DNS doesn't expose CNAMEs in .NET)
+            var psi = new ProcessStartInfo("nslookup", $"-type=any {host}")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            if (proc != null)
+            {
+                var outputTask = proc.StandardOutput.ReadToEndAsync();
+                if (await Task.WhenAny(outputTask, Task.Delay(3000)) == outputTask)
+                {
+                    var output = await outputTask;
+                    // Parse "canonical name = xxx" lines
+                    foreach (var line in output.Split('\n'))
+                    {
+                        var trimmed = line.Trim();
+                        if (trimmed.Contains("canonical name", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var parts = trimmed.Split('=');
+                            if (parts.Length > 1)
+                            {
+                                var cname = parts[1].Trim().TrimEnd('.');
+                                chain.Add(cname);
+                            }
+                        }
+                    }
+                }
+                try { proc.Kill(); } catch { }
+            }
+        }
+        catch { /* nslookup not available */ }
+
+        // Check chain for GSA/Entra Private Access / SASE indicators
+        var chainStr = string.Join(" ", chain).ToLowerInvariant();
+        if (chainStr.Contains("globalsecureaccess") || chainStr.Contains("sse.microsoft") ||
+            chainStr.Contains("edge.security.microsoft"))
+        {
+            gsaIndicator = "Microsoft Global Secure Access (Entra Private Access)";
+        }
+        else if (chainStr.Contains("zscaler") || chainStr.Contains("netskope") ||
+                 chainStr.Contains("cloudflare-gateway") || chainStr.Contains("swg"))
+        {
+            gsaIndicator = "Third-party Secure Web Gateway";
+        }
+        else if (chainStr.Contains("proxy") || chainStr.Contains("forward"))
+        {
+            gsaIndicator = "Proxy/forward routing";
+        }
+
+        return (chain, gsaIndicator);
+    }
+
     static async Task<TestResult> RunNetworkPathTrace()
     {
         var result = new TestResult { Id = "L-TCP-10", Name = "Network Path Trace", Category = "tcp" };
@@ -1745,9 +1841,9 @@ class Program
             }
 
             int completed = 0;
-            int maxHops = 20;           // 20 hops is plenty for cloud endpoints
-            int probeTimeout = 1000;    // 1s per probe (down from 2s)
-            int maxConsecutiveTimeouts = 4; // stop trace after 4 consecutive * hops
+            int maxHops = 20;
+            int probeTimeout = 1000;
+            int maxConsecutiveTimeouts = 4;
 
             foreach (var (host, role) in targets)
             {
@@ -1755,6 +1851,20 @@ class Program
                 sb.AppendLine($"╔══════════════════════════════════════════════════════════════");
                 sb.AppendLine($"║  Traceroute: {role}");
                 sb.AppendLine($"║  Target:     {host}");
+
+                // DNS CNAME chain analysis — detect GSA/SASE routing
+                var (cnameChain, gsaIndicator) = await ResolveDnsCnameChainAsync(host);
+                if (cnameChain.Count > 0)
+                {
+                    sb.AppendLine($"║  DNS Chain:  {host}");
+                    foreach (var cname in cnameChain)
+                        sb.AppendLine($"║              → {cname}");
+                }
+                if (gsaIndicator != null)
+                {
+                    sb.AppendLine($"║  ⚠ Routed via: {gsaIndicator}");
+                    sb.AppendLine($"║    Traffic is NOT going direct — routed through a security proxy");
+                }
 
                 IPAddress? targetIp;
                 try
@@ -1794,7 +1904,6 @@ class Program
                     IPAddress? hopIp = null;
                     long rttMs = -1;
 
-                    // Single probe per hop for speed (down from 3)
                     try
                     {
                         using var ping = new Ping();
@@ -1834,6 +1943,10 @@ class Program
                         }
                         catch { /* Reverse DNS not available */ }
 
+                        // If no reverse DNS, try to identify known Microsoft/Azure backbone IPs
+                        if (string.IsNullOrEmpty(hostName))
+                            hostName = IdentifyMicrosoftHop(hopIp);
+
                         sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rttMs + "ms",-8} {hostName}");
                     }
                     else
@@ -1847,7 +1960,6 @@ class Program
                         break;
                     }
 
-                    // Abort this trace if too many consecutive timeouts
                     if (consecutiveTimeouts >= maxConsecutiveTimeouts)
                     {
                         sb.AppendLine($"║  → Stopped after {maxConsecutiveTimeouts} consecutive timeouts (ICMP likely blocked)");

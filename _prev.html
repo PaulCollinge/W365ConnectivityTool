@@ -1,0 +1,387 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Windows 365 Connectivity Diagnostics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <link rel="stylesheet" href="css/styles.css?v=42">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>­ƒöì</text></svg>">
+</head>
+<body>
+    <!-- Background decoration -->
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-1" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-2" aria-hidden="true"></div>
+
+    <header>
+        <div class="header-inner">
+            <div class="logo">
+                <div class="logo-mark">
+                    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                        <rect x="1" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.9"/>
+                        <rect x="20" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.55"/>
+                        <rect x="1" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.55"/>
+                        <rect x="20" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.3"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h1>Windows 365 Connectivity Diagnostics</h1>
+                    <p class="logo-subtitle">Network readiness assessment for Cloud PC and AVD</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
+                    Run Browser Tests
+                </button>
+                <button id="btn-export-text" class="btn btn-secondary" onclick="exportTextReport()" disabled title="Run tests first">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3M5 7h4M5 9.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                    Export Text
+                </button>
+                <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+            </div>
+        </div>
+        <div class="header-border" aria-hidden="true"></div>
+    </header>
+
+    <main>
+        <!-- Summary Bar -->
+        <div id="summary-bar" class="summary-bar hidden">
+            <div class="summary-item">
+                <span class="summary-count" id="summary-total">0</span>
+                <span class="summary-label">Total</span>
+            </div>
+            <div class="summary-item passed">
+                <span class="summary-count" id="summary-passed">0</span>
+                <span class="summary-label">Passed</span>
+            </div>
+            <div class="summary-item warning">
+                <span class="summary-count" id="summary-warnings">0</span>
+                <span class="summary-label">Warnings</span>
+            </div>
+            <div class="summary-item failed">
+                <span class="summary-count" id="summary-failed">0</span>
+                <span class="summary-label">Failed</span>
+            </div>
+            <div class="summary-item pending">
+                <span class="summary-count" id="summary-pending">0</span>
+                <span class="summary-label">Needs Local Scan</span>
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div id="progress-container" class="progress-container hidden">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="progress-text" class="progress-text">0 / 0</span>
+        </div>
+
+        <!-- Info Banner -->
+        <div id="info-banner" class="info-banner">
+            <div class="info-icon">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="currentColor" stroke-width="1.5"/><path d="M9 8v5M9 5.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
+            <div class="info-text">
+                <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser
+                (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy,
+                registry), download and run the <strong>Local Scanner</strong> ÔÇö it will automatically open this page with results.
+            </div>
+        </div>
+
+        <!-- Connectivity Map -->
+        <div id="connectivity-map" class="connectivity-map">
+            <div class="map-header">
+                <span class="map-icon">­ƒöù</span>
+                <h2>Connectivity Path</h2>
+                <span class="map-subtitle">Network flow diagram</span>
+            </div>
+            <div class="map-diagram">
+                <div class="map-card map-g-client" id="map-client">
+                    <div class="map-card-accent" id="map-client-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">­ƒÆ╗</span> You (Client)</div>
+                        <div class="map-card-detail" id="map-client-location">Awaiting results...</div>
+                        <div class="map-card-detail mono" id="map-client-ip"></div>
+                    </div>
+                </div>
+
+                <div class="map-arrow-cell map-g-arrow1"><span class="map-hline"></span><span class="map-arrow">Ôû©</span></div>
+
+                <div class="map-card map-g-localgw" id="map-localgw">
+                    <div class="map-card-accent" id="map-localgw-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">­ƒÅá</span> Local Gateway</div>
+                        <div class="map-card-detail" id="map-localgw-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-localgw-detail2"></div>
+                    </div>
+                </div>
+
+                <div class="map-arrow-cell map-g-arrow2"><span class="map-hline"></span><span class="map-arrow">Ôû©</span></div>
+
+                <div class="map-card map-g-isp" id="map-isp">
+                    <div class="map-card-accent" id="map-isp-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">­ƒîÉ</span> ISP</div>
+                        <div class="map-card-detail" id="map-isp-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-isp-detail2"></div>
+                        <div class="map-card-detail" id="map-isp-detail3"></div>
+                    </div>
+                </div>
+
+                <div class="map-fanout map-g-fanout">
+                    <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
+                        <line x1="0" y1="100" x2="30" y2="100" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="100" x2="30" y2="33" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="100" x2="30" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
+                        <line x1="30" y1="33" x2="60" y2="33" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="100" x2="60" y2="100" stroke="#58a6ff" stroke-width="2"/>
+                        <line x1="30" y1="167" x2="60" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
+                    </svg>
+                </div>
+
+                <div class="map-card map-g-afd" id="map-afd">
+                    <div class="map-card-accent" id="map-afd-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">ÔÜí</span> AFD Edge</div>
+                        <div class="map-card-detail" id="map-afd-detail">Awaiting results...</div>
+                        <div class="map-card-badges">
+                            <div class="map-card-badge hidden" id="map-afd-route-badge"></div>
+                            <div class="map-card-badge hidden" id="map-afd-loc-badge"></div>
+                            <div class="map-card-badge hidden" id="map-afd-badge"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="map-card map-g-rdgw" id="map-rdgw">
+                    <div class="map-card-accent" id="map-rdgw-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">­ƒûÑ</span> RD Gateway</div>
+                        <div class="map-card-detail" id="map-rdgw-detail">Awaiting results...</div>
+                        <div class="map-card-badges">
+                            <div class="map-card-badge hidden" id="map-rdgw-loc-badge"></div>
+                            <div class="map-card-badge hidden" id="map-rdgw-prox-badge"></div>
+                            <div class="map-card-badge hidden" id="map-rdgw-badge"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="map-card map-g-turn" id="map-turn">
+                    <div class="map-card-accent" id="map-turn-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">­ƒöä</span> TURN Relay</div>
+                        <div class="map-card-detail" id="map-turn-detail">Awaiting results...</div>
+                        <div class="map-card-badges">
+                            <div class="map-card-badge hidden" id="map-turn-loc-badge"></div>
+                            <div class="map-card-badge hidden" id="map-turn-badge"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div></div>
+
+                <div class="map-card map-g-dns" id="map-dns">
+                    <div class="map-card-accent" id="map-dns-accent"></div>
+                    <div class="map-card-body">
+                        <div class="map-card-title"><span class="map-emoji">­ƒöì</span> DNS</div>
+                        <div class="map-card-detail" id="map-dns-detail">Awaiting results...</div>
+                        <div class="map-card-detail" id="map-dns-detail2"></div>
+                        <div class="map-card-badge hidden" id="map-dns-badge"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="map-security-bar" id="map-security-bar">
+                <div class="security-badge pending" id="sec-tls-badge">
+                    <span id="sec-tls-badge-icon">&middot;</span>
+                    <span id="sec-tls-badge-text">TLS Inspection</span>
+                </div>
+                <div class="security-badge pending" id="sec-dns-badge">
+                    <span id="sec-dns-badge-icon">&middot;</span>
+                    <span id="sec-dns-badge-text">DNS Hijacking</span>
+                </div>
+                <div class="security-badge pending" id="sec-proxy-badge">
+                    <span id="sec-proxy-badge-icon">&middot;</span>
+                    <span id="sec-proxy-badge-text">VPN / SWG / Proxy</span>
+                </div>
+                <div class="security-badge pending" id="sec-gw-badge">
+                    <span id="sec-gw-badge-icon">&middot;</span>
+                    <span id="sec-gw-badge-text">Gateway Proximity</span>
+                </div>
+            </div>
+            <div class="map-legend">
+                <div class="legend-lines">
+                    <div class="legend-item"><span class="legend-line solid"></span><span class="legend-label">TCP 443: You ÔåÆ Local GW ÔåÆ ISP ÔåÆ AFD Edge / RD Gateway</span></div>
+                    <div class="legend-item"><span class="legend-line dashed"></span><span class="legend-label">UDP 3478: You ÔåÆ Local GW ÔåÆ ISP ÔåÆ TURN Relay (shortpath)</span></div>
+                </div>
+                <div class="legend-badges">
+                    <span class="legend-badge ok">Ô£ô OK</span>
+                    <span class="legend-badge warn">ÔÜá Warning</span>
+                    <span class="legend-badge fail">Ô£ù Failed</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Download Banner -->
+        <div id="download-banner" class="download-banner hidden">
+            <div class="download-content">
+                <div class="download-icon">Ô¼ç´©Å</div>
+                <div class="download-text">
+                    <h3>Complete your diagnostics with the Local Scanner</h3>
+                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
+                    VPN detection). Download and run the scanner ÔÇö it will automatically open this page with results.</p>
+                </div>
+                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
+                   class="btn btn-download">
+                    <span class="btn-icon">Ô¼ç´©Å</span> Download Scanner (.exe)
+                </a>
+            </div>
+        </div>
+
+        <!-- Test Categories -->
+        <div id="test-results" class="test-categories">
+            <section class="category" id="cat-endpoint">
+                <div class="category-header">
+                    <span class="category-icon">­ƒîÉ</span>
+                    <h2>Required Endpoint Access</h2>
+                    <span class="category-badge" id="badge-endpoint"></span>
+                </div>
+                <div class="test-list" id="tests-endpoint"></div>
+            </section>
+
+            <section class="category" id="cat-local">
+                <div class="category-header">
+                    <span class="category-icon">­ƒÆ╗</span>
+                    <h2>Local Environment</h2>
+                    <span class="category-badge" id="badge-local"></span>
+                    <span class="source-tag local-only">Requires Local Scanner</span>
+                </div>
+                <div class="test-list" id="tests-local"></div>
+            </section>
+
+            <section class="category" id="cat-tcp">
+                <div class="category-header">
+                    <span class="category-icon">­ƒöù</span>
+                    <h2>TCP Based RDP Connectivity</h2>
+                    <span class="category-badge" id="badge-tcp"></span>
+                </div>
+                <div class="test-list" id="tests-tcp"></div>
+            </section>
+
+            <section class="category" id="cat-udp">
+                <div class="category-header">
+                    <span class="category-icon">ÔÜí</span>
+                    <h2>UDP Based RDP Connectivity</h2>
+                    <span class="category-badge" id="badge-udp"></span>
+                </div>
+                <div class="test-list" id="tests-udp"></div>
+            </section>
+
+        </div>
+
+        <!-- ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ -->
+        <!-- Live Connection Diagnostics ÔÇö separate visual section     -->
+        <!-- ÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉÔòÉ -->
+        <div id="live-diagnostics-section" class="live-diagnostics-section">
+            <div class="live-header">
+                <div class="live-header-left">
+                    <span class="live-icon">­ƒôí</span>
+                    <div>
+                        <h2 class="live-title">Live Connection Diagnostics</h2>
+                        <p class="live-subtitle">Real-time analysis of your active Cloud PC session</p>
+                    </div>
+                </div>
+                <span class="category-badge" id="badge-cloud"></span>
+            </div>
+            <div class="live-info-bar" id="cloud-info-bar">
+                <span class="live-info-icon">Ôä╣´©Å</span>
+                <span>Run the desktop tool while connected to your Cloud PC, or from within the Cloud PC session itself.</span>
+            </div>
+            <div class="test-list" id="tests-cloud"></div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <svg width="18" height="18" viewBox="0 0 36 36" fill="none">
+                    <rect x="1" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.6"/>
+                    <rect x="20" y="1" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.35"/>
+                    <rect x="1" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.35"/>
+                    <rect x="20" y="20" width="15" height="15" rx="3" fill="#58a6ff" opacity="0.15"/>
+                </svg>
+                <span>Windows 365 / Azure Virtual Desktop Connectivity Diagnostic Tool</span>
+            </div>
+            <div class="footer-links">
+                <a href="https://learn.microsoft.com/windows-365/enterprise/requirements-network" target="_blank">Network Requirements</a>
+                <span class="footer-sep">┬À</span>
+                <a href="https://github.com/PaulCollinge/W365ConnectivityTool" target="_blank">GitHub</a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- deploy: v44 -->
+    <script>
+    // Inline diagnostic: immediately detect import params before external JS loads
+    // Also provides a global importLog() function the other scripts can call
+    (function() {
+        var s = location.search, h = location.hash;
+        var hasData = s.indexOf('zresults') > -1 || h.indexOf('results') > -1;
+        // Create a hidden debug log panel at the bottom of the page
+        var dbg = document.createElement('div');
+        dbg.id = 'debug-bar';
+        dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:8px 16px;font:12px/1.4 monospace;color:#e6edf3;background:#161b22;border-top:2px solid ' + (hasData ? '#1a7f37' : '#444') + ';max-height:200px;overflow-y:auto;display:none;';
+        var lines = [];
+        function addLine(msg) {
+            var t = new Date().toLocaleTimeString();
+            lines.push('[' + t + '] ' + msg);
+            dbg.textContent = lines.join('\n');
+            dbg.scrollTop = dbg.scrollHeight;
+            console.log('[W365 Import] ' + msg);
+        }
+        window._importLog = addLine;
+        if (hasData) {
+            document.title = '[IMPORTING] W365 Diagnostics';
+            addLine('IMPORT DETECTED: search=' + s.length + ' chars, hash=' + h.length + ' chars, href=' + location.href.length + ' chars');
+            addLine('zresults in query: ' + (s.indexOf('zresults') > -1 ? 'YES' : 'NO'));
+            addLine('zresults in hash: ' + (h.indexOf('zresults') > -1 ? 'YES' : 'NO'));
+            addLine('results in hash: ' + (h.indexOf('results') > -1 ? 'YES' : 'NO'));
+            var d = document.getElementById('info-banner');
+            if (d) {
+                d.classList.remove('hidden');
+                d.querySelector('.info-text').innerHTML = '<strong>Importing scanner results...</strong> Decompressing data from URL.';
+            }
+        } else {
+            addLine('No import params found. search="' + s.substring(0, 80) + '" hash.len=' + h.length);
+            addLine('Full URL length: ' + location.href.length);
+        }
+        document.body.appendChild(dbg);
+
+        // Toggle button in the footer to show/hide the debug panel
+        var toggleBtn = document.createElement('button');
+        toggleBtn.textContent = 'Show Debug Log';
+        toggleBtn.style.cssText = 'position:fixed;bottom:8px;right:16px;z-index:100000;padding:4px 12px;font:11px/1.4 monospace;color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:4px;cursor:pointer;opacity:0.6;transition:opacity 0.2s;';
+        toggleBtn.onmouseenter = function() { toggleBtn.style.opacity = '1'; };
+        toggleBtn.onmouseleave = function() { toggleBtn.style.opacity = '0.6'; };
+        toggleBtn.onclick = function() {
+            var visible = dbg.style.display !== 'none';
+            dbg.style.display = visible ? 'none' : 'block';
+            toggleBtn.textContent = visible ? 'Show Debug Log' : 'Hide Debug Log';
+            if (!visible) toggleBtn.style.bottom = '208px';
+            else toggleBtn.style.bottom = '8px';
+        };
+        document.body.appendChild(toggleBtn);
+    })();
+    </script>
+    <script src="js/config.js?v=60"></script>
+    <script src="js/browser-tests.js?v=60"></script>
+    <script src="js/ui.js?v=60"></script>
+    <script src="js/map.js?v=60"></script>
+    <script src="js/app.js?v=60"></script>
+</body>
+</html>
