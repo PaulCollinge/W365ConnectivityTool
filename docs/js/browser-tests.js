@@ -99,8 +99,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
     {
-        id: 'B-TCP-04', name: 'Network Path Trace',
-        description: 'DNS chain resolution and timing to key RDP endpoints via DNS-over-HTTPS',
+        id: 'B-TCP-04', name: 'DNS & Routing Analysis',
+        description: 'DNS CNAME chain resolution and HTTPS timing to key RDP endpoints (for full ICMP traceroute, use Local Scanner)',
         category: 'tcp', source: 'browser', run: testNetworkPathTrace
     },
     {
@@ -884,14 +884,16 @@ async function testNatType(test) {
 }
 
 
-// ── Network Path Trace ──
+// ── DNS & Routing Analysis ──
 // Uses Google DNS-over-HTTPS to resolve full CNAME chains for key RDP endpoints,
-// then times HTTPS connectivity to each. This is the closest to a traceroute
-// that a browser can do — useful for diagnosing CDN routing, Private Link,
-// split-horizon DNS, and proxy intervention.
+// then times HTTPS connectivity to each. Shows how DNS routes traffic through
+// AFD, Traffic Manager, and Private Link. For full ICMP traceroute (hop-by-hop),
+// use the Local Scanner test L-TCP-10.
 async function testNetworkPathTrace(test) {
     const t0 = performance.now();
     const lines = [];
+    lines.push('ℹ For full hop-by-hop ICMP traceroute, run the Local Scanner (L-TCP-10)');
+    lines.push('');
 
     const targets = [
         { host: 'afdfp-rdgateway-r1.wvd.microsoft.com', label: 'RDP Gateway (AFD)' },
@@ -1013,7 +1015,7 @@ async function testNetworkPathTrace(test) {
     }
 
     const duration = Math.round(performance.now() - t0);
-    const value = `${ok}/${targets.length} endpoints traced`;
+    const value = `${ok}/${targets.length} endpoints analysed`;
     const status = warn > 0 ? 'Warning' : 'Passed';
 
     return makeResult(test, status, value, lines.join('\n'), duration);
