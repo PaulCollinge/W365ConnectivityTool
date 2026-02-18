@@ -216,6 +216,9 @@ const ALL_TESTS = [
 
 let _geoCache = null;
 
+/** Clear the GeoIP cache so the next fetchGeoIp() call fetches fresh data. */
+function resetGeoCache() { _geoCache = null; }
+
 async function fetchGeoIp() {
     if (_geoCache) return _geoCache;
     // Primary: ipinfo.io (most accurate city-level geo, HTTPS, CORS-friendly)

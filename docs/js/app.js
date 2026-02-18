@@ -149,6 +149,9 @@ async function runAllBrowserTests() {
     // Reset browser results (keep imported local results)
     allResults = allResults.filter(r => r.source === 'local');
 
+    // Clear GeoIP cache so location is re-fetched fresh
+    if (typeof resetGeoCache === 'function') resetGeoCache();
+
     // Show progress
     updateProgress(0, total);
 
