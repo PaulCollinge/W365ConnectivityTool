@@ -320,7 +320,7 @@ function updateMapTurnCard(lookup) {
         status = stunTest.status;
     }
 
-    // Location badge from L-UDP-04
+    // Location badge from L-UDP-04 (scanner)
     if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
         const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
         const city = locMatch ? locMatch[1] : '';
@@ -328,6 +328,9 @@ function updateMapTurnCard(lookup) {
             setFlaggedBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge', city);
         }
         status = worstStatus(status, turnLoc.status);
+    } else if (stunTest && stunTest.status === 'Passed') {
+        // No scanner data — do a browser-based relay geolocation via DoH + GeoIP
+        geolocateTurnRelay();
     }
 
     // Reachability badge
@@ -341,6 +344,41 @@ function updateMapTurnCard(lookup) {
 
     setText('map-turn-detail', detail1);
     setAccentStatus('map-turn-accent', status);
+}
+
+/**
+ * Browser-based TURN relay geolocation: resolves world.relay.avd.microsoft.com
+ * via DoH, then geolocates the IP with ipinfo.io and shows it on the map card.
+ * Only called when scanner L-UDP-04 data is not available.
+ */
+let _turnGeoRunning = false;
+async function geolocateTurnRelay() {
+    if (_turnGeoRunning) return;
+    _turnGeoRunning = true;
+    try {
+        // Step 1: Resolve TURN relay IP via Google DoH
+        const dnsResp = await fetch(
+            'https://dns.google/resolve?name=world.relay.avd.microsoft.com&type=A',
+            { signal: AbortSignal.timeout(5000), cache: 'no-store' }
+        );
+        if (!dnsResp.ok) return;
+        const dnsData = await dnsResp.json();
+        const aRecord = dnsData.Answer?.find(r => r.type === 1);
+        if (!aRecord) return;
+        const relayIp = aRecord.data;
+
+        // Step 2: Geolocate the relay IP
+        const geoResp = await fetch(
+            `https://ipinfo.io/${relayIp}/json`,
+            { signal: AbortSignal.timeout(5000), cache: 'no-store' }
+        );
+        if (!geoResp.ok) return;
+        const geo = await geoResp.json();
+        if (!geo.city) return;
+
+        const locStr = `${geo.city}, ${geo.region || ''}, ${geo.country || ''}`.replace(/, ,/g, ',');
+        setFlaggedBadge('map-turn-loc-badge', `📍 ${locStr}`, 'location-badge', locStr);
+    } catch { /* best-effort */ }
 }
 
 // ── DNS Card ──
