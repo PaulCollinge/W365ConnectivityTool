@@ -2,6 +2,28 @@
  * UI rendering and DOM manipulation for the connectivity diagnostics page.
  */
 
+/**
+ * Enrich a result value string with a country flag if a 2-letter ISO code is found.
+ * Looks for patterns like ", XX (" or ", XX" at end where XX is a country code.
+ * Returns an HTML string (safe — the text portion is escaped).
+ */
+function enrichResultWithFlag(text) {
+    if (!text) return '';
+    const escaped = escapeHtml(text);
+    // Match 2-letter country code before parenthetical or at end: ", FR (" or ", GB"
+    const m = text.match(/,\s*([A-Z]{2})\s*(?:\(|$)/);
+    if (m) {
+        const code = m[1].toLowerCase();
+        const flagHtml = `<img src="https://flagcdn.com/20x15/${code}.png" alt="${m[1]}" width="20" height="15" class="country-flag" onerror="this.style.display='none'">`;
+        // Insert flag before the country code
+        const insertPos = escaped.indexOf(m[0]);
+        if (insertPos >= 0) {
+            return escaped.substring(0, insertPos + 2) + flagHtml + ' ' + escaped.substring(insertPos + 2);
+        }
+    }
+    return escaped;
+}
+
 const STATUS_ICONS = {
     'Passed': '\u2714',
     'Warning': '\u26A0',
@@ -73,7 +95,7 @@ function createTestElement(test, result) {
                 ${sourceBadge}
             </div>
             <div class="test-description">${test.description}</div>
-            ${result.resultValue ? `<div class="test-result-value">${escapeHtml(result.resultValue)}</div>` : ''}
+            ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
             ${result.detailedInfo ? `<div class="test-details" id="details-${test.id}">${escapeHtml(result.detailedInfo)}</div>` : ''}
             ${result.remediationUrl ? `<div class="test-remediation"><a href="${result.remediationUrl}" target="_blank">📖 View documentation</a></div>` : ''}
         </div>
@@ -114,7 +136,7 @@ function updateTestUI(testId, result) {
                 ${sourceBadge}
             </div>
             <div class="test-description">${test.description}</div>
-            ${result.resultValue ? `<div class="test-result-value">${escapeHtml(result.resultValue)}</div>` : ''}
+            ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
             ${result.detailedInfo ? `<div class="test-details" id="details-${testId}">${escapeHtml(result.detailedInfo)}</div>` : ''}
             ${result.remediationUrl ? `<div class="test-remediation"><a href="${result.remediationUrl}" target="_blank">📖 View documentation</a></div>` : ''}
             ${result.remediationText ? `<div class="test-remediation-text">${escapeHtml(result.remediationText)}</div>` : ''}
