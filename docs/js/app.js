@@ -715,10 +715,26 @@ async function exportTextReport() {
     lines.push('');
 
     // 6. TCP (RDP) Security Report
+    // Browser-native proxy detection for the text report
+    let reportHttpIp = freshGeo?.query || '';
+    if (!reportHttpIp) {
+        const locR = r('B-LE-01');
+        if (locR?.detailedInfo) {
+            const m = locR.detailedInfo.match(/Public IP:\s*(\S+)/);
+            if (m) reportHttpIp = m[1];
+        }
+    }
+    let reportStunIp = '';
+    const stunR = r('B-UDP-01');
+    if (stunR?.detailedInfo) {
+        const m = stunR.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
+        if (m) reportStunIp = m[1];
+    }
+
     const tcpTls = r('L-TCP-06');
     const tcpDns = r('L-TCP-08');
     const tcpVpn = r('L-TCP-07');
-    if (tcpTls || tcpDns || tcpVpn) {
+    if (tcpTls || tcpDns || tcpVpn || (reportHttpIp && reportStunIp)) {
         lines.push(`  TCP-based RDP Path Optimisation:`);
         if (tcpTls) {
             const icon = tcpTls.status === 'Passed' ? '✓' : '⚠';
@@ -732,8 +748,15 @@ async function exportTextReport() {
             const icon = tcpVpn.status === 'Passed' ? '✓' : '⚠';
             lines.push(`    ${icon} Proxy/VPN/SWG:    ${tcpVpn.resultValue}`);
         }
+        if (reportHttpIp && reportStunIp) {
+            if (reportHttpIp === reportStunIp) {
+                lines.push(`    ✓ Split-path:         No proxy / split-path routing detected`);
+            } else {
+                lines.push(`    ⚠ Split-path:         Proxy / split-path routing detected (HTTP: ${reportHttpIp}, STUN: ${reportStunIp})`);
+            }
+        }
     } else {
-        lines.push(`  TCP-based RDP Path Optimisation:  (requires Local Scanner)`);
+        lines.push(`  TCP-based RDP Path Optimisation:  (requires Local Scanner or STUN test)`);
     }
 
     lines.push('');
@@ -751,6 +774,12 @@ async function exportTextReport() {
             const icon = turnVpn.status === 'Passed' ? '✓' : '⚠';
             lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
         }
+        if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
+            lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
+        }
+    } else if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
+        lines.push(`  UDP-based RDP Path Optimisation:`);
+        lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
     } else {
         lines.push(`  UDP-based RDP Path Optimisation:  (requires Local Scanner)`);
     }
@@ -971,18 +1000,46 @@ async function updateConnectivityOverview(results) {
     }
 
     // 6. TCP-based RDP Path Optimisation
+    // Browser-native proxy detection: compare HTTP egress IP vs STUN reflexive IP.
+    // HTTP fetch goes through the browser's proxy; STUN uses raw UDP.
+    // If the two public IPs differ, an HTTP proxy/SWG is in the path and
+    // TCP-based RDP will also traverse it.
+    let proxyCheckHtml = '';
+    let httpEgressIp = freshGeo?.query || '';
+    if (!httpEgressIp) {
+        const locResult = r('B-LE-01');
+        if (locResult?.detailedInfo) {
+            const m = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
+            if (m) httpEgressIp = m[1];
+        }
+    }
+    let stunReflexiveIp = '';
+    const stunResult = r('B-UDP-01');
+    if (stunResult?.detailedInfo) {
+        const m = stunResult.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
+        if (m) stunReflexiveIp = m[1];
+    }
+    if (httpEgressIp && stunReflexiveIp) {
+        if (httpEgressIp === stunReflexiveIp) {
+            proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected</div>`;
+        } else {
+            proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Proxy / split-path routing detected <span class="ov-dim">(HTTP: ${esc(httpEgressIp)}, STUN: ${esc(stunReflexiveIp)})</span></div>`;
+        }
+    }
+
     const tcpTls = r('L-TCP-06');
     const tcpDns = r('L-TCP-08');
     const tcpVpn = r('L-TCP-07');
-    if (tcpTls || tcpDns || tcpVpn) {
+    if (tcpTls || tcpDns || tcpVpn || proxyCheckHtml) {
         const items = [];
         if (tcpTls) items.push(buildCheckLine('TLS inspection', tcpTls));
         if (tcpDns) items.push(buildCheckLine('DNS hijacking', tcpDns));
         if (tcpVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', tcpVpn));
+        if (proxyCheckHtml) items.push(proxyCheckHtml);
         setVal('ov-tcp-path-val', items.join(''));
         hasContent = true;
     } else {
-        setVal('ov-tcp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
+        setVal('ov-tcp-path-val', '<span class="ov-dim">Requires Local Scanner or STUN test</span>');
     }
 
     // 7. UDP-based RDP Path Optimisation
@@ -992,7 +1049,16 @@ async function updateConnectivityOverview(results) {
         const items = [];
         if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
         if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
+        // If the proxy check showed matching IPs, note that UDP bypasses the proxy
+        if (proxyCheckHtml && httpEgressIp && stunReflexiveIp && httpEgressIp !== stunReflexiveIp) {
+            items.push(`<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
+        }
         setVal('ov-udp-path-val', items.join(''));
+        hasContent = true;
+    } else if (proxyCheckHtml && httpEgressIp && stunReflexiveIp && httpEgressIp !== stunReflexiveIp) {
+        // No scanner data, but we can show the UDP-bypasses-proxy finding
+        setVal('ov-udp-path-val',
+            `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
         hasContent = true;
     } else {
         setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
