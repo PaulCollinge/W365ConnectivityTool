@@ -1902,16 +1902,19 @@ class Program
                 {
                     var options = new PingOptions(ttl, true);
                     IPAddress? hopIp = null;
-                    long rttMs = -1;
+                    double rttMs = -1;
 
                     try
                     {
                         using var ping = new Ping();
+                        var sw = Stopwatch.StartNew();
                         var reply = await ping.SendPingAsync(targetIp, probeTimeout, payload, options);
+                        sw.Stop();
                         if (reply.Status == IPStatus.TtlExpired || reply.Status == IPStatus.Success)
                         {
                             hopIp = reply.Address;
-                            rttMs = reply.RoundtripTime;
+                            // Use Stopwatch for sub-ms precision (reply.RoundtripTime is integer ms, rounds to 0 for fast hops)
+                            rttMs = sw.Elapsed.TotalMilliseconds;
                             consecutiveTimeouts = 0;
 
                             if (reply.Status == IPStatus.Success)
@@ -1947,7 +1950,8 @@ class Program
                         if (string.IsNullOrEmpty(hostName))
                             hostName = IdentifyMicrosoftHop(hopIp);
 
-                        sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rttMs + "ms",-8} {hostName}");
+                        string rttStr = rttMs < 1 ? $"{rttMs:F1}ms" : $"{Math.Round(rttMs)}ms";
+                        sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rttStr,-8} {hostName}");
                     }
                     else
                     {
