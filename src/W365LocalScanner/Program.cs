@@ -854,7 +854,7 @@ class Program
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
 
             // ── TCP Based RDP Connectivity ──
-            new("L-TCP-04", "RDWeb Service Check", "Tests RDWeb feed discovery, AFD gateway discovery, and authentication endpoints", "tcp", RunGatewayConnectivity),
+            new("L-TCP-04", "Gateway & Service Connectivity", "Tests AFD gateway discovery, RDP gateway reachability, RDWeb feed, and authentication endpoints", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
             new("L-TCP-08", "DNS Hijacking Check", "Verifies gateway DNS resolves to legitimate Microsoft IPs", "tcp", RunDnsHijackingCheck),
             new("L-TCP-09", "Gateway Used", "Shows which gateway edge node and IP are being used", "tcp", RunGatewayUsed),
@@ -1286,7 +1286,7 @@ class Program
 
     static async Task<TestResult> RunGatewayConnectivity()
     {
-        var result = new TestResult { Id = "L-TCP-04", Name = "RDWeb Service Check", Category = "tcp" };
+        var result = new TestResult { Id = "L-TCP-04", Name = "Gateway & Service Connectivity", Category = "tcp" };
         try
         {
             // afdfp-rdgateway-r1.wvd.microsoft.com is Azure Front Door — NOT the RDP gateway.

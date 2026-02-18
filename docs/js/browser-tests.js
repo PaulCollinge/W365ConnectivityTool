@@ -74,8 +74,8 @@ const ALL_TESTS = [
         category: 'tcp', source: 'browser', run: testDnsPerformance
     },
     {
-        id: 'L-TCP-04', name: 'RDWeb Service Check',
-        description: 'Tests RDWeb feed discovery, AFD gateway discovery, and authentication endpoints (requires Local Scanner)',
+        id: 'L-TCP-04', name: 'Gateway & Service Connectivity',
+        description: 'Tests AFD gateway discovery, RDP gateway reachability, RDWeb feed, and authentication endpoints (requires Local Scanner)',
         category: 'tcp', source: 'local'
     },
     {
