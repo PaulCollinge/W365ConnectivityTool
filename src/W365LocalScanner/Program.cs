@@ -98,7 +98,8 @@ class Program
                 var sw = Stopwatch.StartNew();
                 var testTask = test.Run();
                 // Cloud tests sample for ~60s, so allow 90s for them plus overhead
-                var testTimeout = test.Category == "cloud" ? 90 : 60;
+                // Traceroute (L-TCP-10) can take up to 120s for multiple endpoints
+                var testTimeout = test.Category == "cloud" ? 90 : test.Id == "L-TCP-10" ? 120 : 60;
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(testTimeout));
 
                 if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
