@@ -696,7 +696,7 @@ async function exportTextReport() {
     const tcpDns = r('L-TCP-08');
     const tcpVpn = r('L-TCP-07');
     if (tcpTls || tcpDns || tcpVpn) {
-        lines.push(`  TCP (RDP) Path Security:`);
+        lines.push(`  TCP-based RDP Path Optimisation:`);
         if (tcpTls) {
             const icon = tcpTls.status === 'Passed' ? '✓' : '⚠';
             lines.push(`    ${icon} TLS Inspection:   ${tcpTls.resultValue}`);
@@ -710,7 +710,7 @@ async function exportTextReport() {
             lines.push(`    ${icon} Proxy/VPN/SWG:    ${tcpVpn.resultValue}`);
         }
     } else {
-        lines.push(`  TCP (RDP) Path Security:  (requires Local Scanner)`);
+        lines.push(`  TCP-based RDP Path Optimisation:  (requires Local Scanner)`);
     }
 
     lines.push('');
@@ -719,7 +719,7 @@ async function exportTextReport() {
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
     if (turnTls || turnVpn) {
-        lines.push(`  TURN (UDP) Path Security:`);
+        lines.push(`  UDP-based RDP Path Optimisation:`);
         if (turnTls) {
             const icon = turnTls.status === 'Passed' ? '✓' : '⚠';
             lines.push(`    ${icon} TLS Inspection:   ${turnTls.resultValue}`);
@@ -729,7 +729,7 @@ async function exportTextReport() {
             lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
         }
     } else {
-        lines.push(`  TURN (UDP) Path Security:  (requires Local Scanner)`);
+        lines.push(`  UDP-based RDP Path Optimisation:  (requires Local Scanner)`);
     }
 
     lines.push('');
