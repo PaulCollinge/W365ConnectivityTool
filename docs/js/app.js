@@ -69,6 +69,7 @@ scannerChannel.onmessage = (event) => {
         updateSummary(allResults);
         updateCategoryBadges(allResults);
         updateConnectivityMap(allResults);
+        updateConnectivityOverview(allResults);
         updateExportButton();
         // Show confirmation
         const info = document.getElementById('info-banner');
@@ -188,6 +189,7 @@ async function runAllBrowserTests() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
+    updateConnectivityOverview(allResults);
     updateExportButton();
 
     // Only show download banner if no scanner results have been imported
@@ -475,6 +477,7 @@ function processImportedData(data) {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
+    updateConnectivityOverview(allResults);
     updateExportButton();
     const info = document.getElementById('info-banner');
     info.classList.remove('hidden');
@@ -817,5 +820,174 @@ function updateExportButton() {
     if (btn) {
         btn.disabled = allResults.length === 0;
         btn.title = allResults.length === 0 ? 'Run tests first' : `Export ${allResults.length} results as text`;
+    }
+}
+
+// ── Connectivity Overview panel (quick-glance summary above the map) ──
+function updateConnectivityOverview(results) {
+    const panel = document.getElementById('connectivity-overview');
+    if (!panel || results.length === 0) return;
+
+    const r = id => results.find(x => x.id === id);
+    const setVal = (elId, html) => { const el = document.getElementById(elId); if (el) el.innerHTML = html; };
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    let hasContent = false;
+
+    // 1. User Location (B-LE-01)
+    const userLoc = r('B-LE-01');
+    if (userLoc && userLoc.status === 'Passed') {
+        const ip = extractLine(userLoc.detailedInfo, 'Public IP:');
+        setVal('ov-user-location-val', esc(userLoc.resultValue) + (ip ? `  <span class="ov-dim">(IP: ${esc(ip)})</span>` : ''));
+        hasContent = true;
+    }
+
+    // 2. RDP Egress (test 27, fallback to L-TCP-09 "Your location:")
+    const egress27 = r('27');
+    if (egress27 && egress27.detailedInfo) {
+        const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
+        setVal('ov-rdp-egress-val', esc(eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue));
+        hasContent = true;
+    } else {
+        const gw09f = r('L-TCP-09');
+        if (gw09f && gw09f.detailedInfo) {
+            const locLine = gw09f.detailedInfo.split('\n').find(l => l.trim().startsWith('Your location:'));
+            if (locLine) {
+                setVal('ov-rdp-egress-val', esc(locLine.replace(/.*Your location:\s*/i, '').trim()) + ' <span class="ov-dim">(scanner GeoIP)</span>');
+                hasContent = true;
+            } else {
+                setVal('ov-rdp-egress-val', '<span class="ov-dim">Requires Local Scanner</span>');
+            }
+        } else {
+            setVal('ov-rdp-egress-val', '<span class="ov-dim">Requires Local Scanner</span>');
+        }
+    }
+
+    // 3. AFD Edge PoP (L-TCP-09 or B-TCP-02)
+    const gw09 = r('L-TCP-09');
+    const afd02 = r('B-TCP-02');
+    if (gw09 && gw09.detailedInfo) {
+        const popLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('AFD PoP:'));
+        if (popLine) {
+            setVal('ov-afd-pop-val', esc(popLine.replace(/.*AFD PoP:\s*/i, '').trim()));
+            hasContent = true;
+        } else if (afd02) {
+            setVal('ov-afd-pop-val', esc(afd02.resultValue));
+            hasContent = true;
+        }
+    } else if (afd02 && afd02.status !== 'NotRun') {
+        setVal('ov-afd-pop-val', esc(afd02.resultValue));
+        hasContent = true;
+    }
+
+    // 4. RDP Gateway Location & Latency
+    if (gw09 && gw09.detailedInfo) {
+        const regionVal = extractLine(gw09.detailedInfo, 'Azure Region:');
+        const geoVal = extractLine(gw09.detailedInfo, 'GeoIP Location:');
+        const distVal = extractLine(gw09.detailedInfo, 'Distance from you:');
+        let gwHtml = esc(regionVal || geoVal || gw09.resultValue);
+        if (geoVal && regionVal) gwHtml = `${esc(regionVal)} <span class="ov-dim">(${esc(geoVal)})</span>`;
+        if (distVal) gwHtml += ` — ${esc(distVal)}`;
+
+        // TCP latency from L-TCP-04
+        const gw04 = r('L-TCP-04');
+        if (gw04 && gw04.detailedInfo) {
+            const tcpLine = gw04.detailedInfo.split('\n').find(l => l.includes('[RDP Gateway]'));
+            if (tcpLine) {
+                const latLine = gw04.detailedInfo.split('\n')
+                    .slice(gw04.detailedInfo.split('\n').indexOf(tcpLine))
+                    .find(l => l.trim().match(/TCP connected in \d+ms/));
+                if (latLine) {
+                    const ms = latLine.match(/(\d+)ms/);
+                    if (ms) gwHtml += ` <span class="ov-latency">TCP ${ms[1]}ms</span>`;
+                }
+            }
+        }
+        setVal('ov-rdp-gateway-val', gwHtml);
+        hasContent = true;
+    } else {
+        setVal('ov-rdp-gateway-val', '<span class="ov-dim">Requires Local Scanner</span>');
+    }
+
+    // 5. TURN Relay Location & Latency
+    const turn04 = r('L-UDP-04');
+    if (turn04 && turn04.status !== 'Skipped') {
+        let turnHtml = esc(turn04.resultValue || 'Unknown');
+        const turn03 = r('L-UDP-03');
+        if (turn03 && turn03.status === 'Passed') {
+            let latMs = '';
+            if (turn03.detailedInfo) {
+                const latLine = turn03.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+                if (latLine) latMs = latLine.replace(/.*Latency:\s*/i, '').trim();
+            }
+            if (!latMs) {
+                const rttMatch = (turn03.resultValue || '').match(/(\d+)\s*ms\s*RTT/i);
+                if (rttMatch) latMs = `${rttMatch[1]}ms`;
+            }
+            if (latMs) turnHtml += ` <span class="ov-latency">${esc(latMs)} RTT</span>`;
+        }
+        setVal('ov-turn-relay-val', turnHtml);
+        hasContent = true;
+    } else {
+        setVal('ov-turn-relay-val', '<span class="ov-dim">Requires Local Scanner</span>');
+    }
+
+    // 6. TCP-based RDP Path Optimisation
+    const tcpTls = r('L-TCP-06');
+    const tcpDns = r('L-TCP-08');
+    const tcpVpn = r('L-TCP-07');
+    if (tcpTls || tcpDns || tcpVpn) {
+        const items = [];
+        if (tcpTls) items.push(buildCheckItem('TLS', tcpTls));
+        if (tcpDns) items.push(buildCheckItem('DNS', tcpDns));
+        if (tcpVpn) items.push(buildCheckItem('Proxy/VPN', tcpVpn));
+        setVal('ov-tcp-path-val', items.join('&ensp;'));
+        hasContent = true;
+    } else {
+        setVal('ov-tcp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
+    }
+
+    // 7. UDP-based RDP Path Optimisation
+    const turnTls = r('L-UDP-06');
+    const turnVpn = r('L-UDP-07');
+    if (turnTls || turnVpn) {
+        const items = [];
+        if (turnTls) items.push(buildCheckItem('TLS', turnTls));
+        if (turnVpn) items.push(buildCheckItem('Proxy/VPN', turnVpn));
+        setVal('ov-udp-path-val', items.join('&ensp;'));
+        hasContent = true;
+    } else {
+        setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
+    }
+
+    // Overall verdict
+    if (hasContent) {
+        panel.classList.remove('hidden');
+        const failed = results.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+        const warnings = results.filter(r => r.status === 'Warning').length;
+        const verdictEl = document.getElementById('overview-verdict');
+        if (verdictEl) {
+            if (failed > 0) {
+                verdictEl.textContent = `${failed} issue${failed > 1 ? 's' : ''} found`;
+                verdictEl.className = 'overview-verdict verdict-fail';
+            } else if (warnings > 0) {
+                verdictEl.textContent = `${warnings} warning${warnings > 1 ? 's' : ''}`;
+                verdictEl.className = 'overview-verdict verdict-warn';
+            } else {
+                verdictEl.textContent = 'All checks passed';
+                verdictEl.className = 'overview-verdict verdict-good';
+            }
+        }
+    }
+}
+
+/** Build a small inline check-item like "✓ TLS" or "⚠ DNS" */
+function buildCheckItem(label, result) {
+    if (result.status === 'Passed') {
+        return `<span class="ov-status-icon ov-pass">✓</span>${label}`;
+    } else if (result.status === 'Warning') {
+        return `<span class="ov-status-icon ov-warn">⚠</span>${label}`;
+    } else {
+        return `<span class="ov-status-icon ov-fail">✗</span>${label}`;
     }
 }

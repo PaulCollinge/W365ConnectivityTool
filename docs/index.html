@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=42">
+    <link rel="stylesheet" href="css/styles.css?v=61">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -92,6 +92,45 @@
                 <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser
                 (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy,
                 registry), download and run the <strong>Local Scanner</strong> — it will automatically open this page with results.
+            </div>
+        </div>
+
+        <!-- Connectivity Overview (quick-glance summary — shown after tests run) -->
+        <div id="connectivity-overview" class="connectivity-overview hidden">
+            <div class="overview-header">
+                <span class="overview-icon">📊</span>
+                <h2>Connectivity Overview</h2>
+                <span class="overview-verdict" id="overview-verdict"></span>
+            </div>
+            <div class="overview-grid">
+                <div class="overview-row" id="ov-user-location">
+                    <span class="overview-label">User Location</span>
+                    <span class="overview-value" id="ov-user-location-val">—</span>
+                </div>
+                <div class="overview-row" id="ov-rdp-egress">
+                    <span class="overview-label">RDP Egress</span>
+                    <span class="overview-value" id="ov-rdp-egress-val">—</span>
+                </div>
+                <div class="overview-row" id="ov-afd-pop">
+                    <span class="overview-label">AFD Edge PoP</span>
+                    <span class="overview-value" id="ov-afd-pop-val">—</span>
+                </div>
+                <div class="overview-row" id="ov-rdp-gateway">
+                    <span class="overview-label">RDP Gateway</span>
+                    <span class="overview-value" id="ov-rdp-gateway-val">—</span>
+                </div>
+                <div class="overview-row" id="ov-turn-relay">
+                    <span class="overview-label">TURN Relay</span>
+                    <span class="overview-value" id="ov-turn-relay-val">—</span>
+                </div>
+                <div class="overview-row" id="ov-tcp-path">
+                    <span class="overview-label">TCP-based RDP Path</span>
+                    <span class="overview-value" id="ov-tcp-path-val">—</span>
+                </div>
+                <div class="overview-row" id="ov-udp-path">
+                    <span class="overview-label">UDP-based RDP Path</span>
+                    <span class="overview-value" id="ov-udp-path-val">—</span>
+                </div>
             </div>
         </div>
 
@@ -378,10 +417,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=60"></script>
-    <script src="js/browser-tests.js?v=60"></script>
-    <script src="js/ui.js?v=60"></script>
-    <script src="js/map.js?v=60"></script>
-    <script src="js/app.js?v=60"></script>
+    <script src="js/config.js?v=61"></script>
+    <script src="js/browser-tests.js?v=61"></script>
+    <script src="js/ui.js?v=61"></script>
+    <script src="js/map.js?v=61"></script>
+    <script src="js/app.js?v=61"></script>
 </body>
 </html>

@@ -680,6 +680,119 @@ main {
 }
 
 /* ════════════════════════════════════════
+   CONNECTIVITY OVERVIEW (quick-glance panel)
+   ════════════════════════════════════════ */
+.connectivity-overview {
+    background: var(--bg-card);
+    border-radius: var(--r-xl);
+    margin-bottom: var(--space-section);
+    overflow: hidden;
+    border: 1px solid var(--border-default);
+    box-shadow: var(--shadow-glow);
+}
+
+.overview-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 24px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
+}
+
+.overview-header h2 {
+    font-size: var(--text-lg);
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.overview-icon {
+    font-size: 1.2rem;
+}
+
+.overview-verdict {
+    margin-left: auto;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 999px;
+    line-height: 1.4;
+}
+
+.overview-verdict.verdict-good {
+    color: var(--green);
+    background: var(--green-bg);
+    border: 1px solid var(--green-border);
+}
+.overview-verdict.verdict-warn {
+    color: var(--yellow);
+    background: var(--yellow-bg);
+    border: 1px solid var(--yellow-border);
+}
+.overview-verdict.verdict-fail {
+    color: var(--red);
+    background: var(--red-bg);
+    border: 1px solid var(--red-border);
+}
+.overview-verdict.verdict-info {
+    color: var(--accent);
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+}
+
+.overview-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+}
+
+.overview-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border);
+    transition: background var(--transition);
+}
+.overview-row:hover {
+    background: var(--bg-hover);
+}
+.overview-row:last-child,
+.overview-row:nth-last-child(2):nth-child(odd) {
+    border-bottom: none;
+}
+
+.overview-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-muted);
+    min-width: 140px;
+    flex-shrink: 0;
+}
+
+.overview-value {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+
+.overview-value .ov-status-icon {
+    margin-right: 6px;
+    font-weight: 700;
+}
+.overview-value .ov-pass { color: var(--green); }
+.overview-value .ov-warn { color: var(--yellow); }
+.overview-value .ov-fail { color: var(--red); }
+.overview-value .ov-dim { color: var(--text-muted); font-style: italic; }
+.overview-value .ov-latency { color: var(--accent); font-family: var(--mono); font-size: var(--text-xs); }
+
+@media (max-width: 768px) {
+    .overview-grid { grid-template-columns: 1fr; }
+    .overview-label { min-width: 120px; }
+    .overview-row { padding: 10px 16px; }
+}
+
+/* ════════════════════════════════════════
    CONNECTIVITY MAP
    ════════════════════════════════════════ */
 .connectivity-map {
