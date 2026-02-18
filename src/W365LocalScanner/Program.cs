@@ -1541,45 +1541,100 @@ class Program
         var result = new TestResult { Id = "L-TCP-05", Name = "DNS CNAME Chain Analysis", Category = "tcp" };
         try
         {
-            // AFD endpoint used for gateway discovery (NOT the RDP gateway itself).
-            // CNAME chain reveals whether traffic goes via AFD, Private Link, etc.
-            var host = "afdfp-rdgateway-r1.wvd.microsoft.com";
-            var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
-            {
-                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi);
-            var output = await proc!.StandardOutput.ReadToEndAsync();
-            await proc.WaitForExitAsync();
-
-            // Also do a regular DNS lookup to get the final IP
-            var ips = await Dns.GetHostAddressesAsync(host);
-            var ipStr = string.Join(", ", ips.Select(i => i.ToString()));
-
             var sb = new StringBuilder();
-            sb.AppendLine($"Target: {host}");
-            sb.AppendLine($"Resolved IPs: {ipStr}");
-            sb.AppendLine();
-            sb.AppendLine("CNAME lookup output:");
-            sb.AppendLine(output.Trim());
+            var issues = new List<string>();
 
-            // Determine route by IP, not CNAME text — "privatelink-global" in the
-            // CNAME chain is a standard Microsoft DNS zone, NOT actual Private Link.
-            bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
-
-            if (isPrivateLink)
+            // ── Part 1: AFD endpoint (gateway discovery service) ──
+            var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
+            sb.AppendLine($"═══ AFD Gateway Discovery Endpoint ═══");
+            sb.AppendLine($"Target: {afdHost}");
+            try
             {
-                result.ResultValue = $"Private Link detected \u2014 resolves to private IP ({ipStr})";
-                result.Status = "Passed";
-                sb.AppendLine("\nPrivate Link endpoint detected. Traffic routes via private network.");
+                var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {afdHost}")
+                {
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi);
+                var output = await proc!.StandardOutput.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+
+                var ips = await Dns.GetHostAddressesAsync(afdHost);
+                var ipStr = string.Join(", ", ips.Select(i => i.ToString()));
+                sb.AppendLine($"Resolved IPs: {ipStr}");
+                sb.AppendLine($"CNAME chain:");
+                sb.AppendLine(output.Trim());
+
+                bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
+                sb.AppendLine(isPrivateLink
+                    ? "\n→ Private Link detected (private IP)"
+                    : "\n→ Azure Front Door routing (anycast) — normal");
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  ✗ Failed: {ex.Message}");
+                issues.Add($"AFD CNAME chain failed: {ex.Message}");
+            }
+
+            sb.AppendLine();
+
+            // ── Part 2: Actual RDP Gateway (discovered from AFD) ──
+            sb.AppendLine($"═══ Actual RDP Gateway ═══");
+            var gwHost = await DiscoverRdpGatewayFromAfd();
+            if (!string.IsNullOrEmpty(gwHost))
+            {
+                sb.AppendLine($"Target: {gwHost}");
+                try
+                {
+                    var gwPsi = new ProcessStartInfo("nslookup", $"-type=CNAME {gwHost}")
+                    {
+                        RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                    };
+                    using var gwProc = Process.Start(gwPsi);
+                    var gwOutput = await gwProc!.StandardOutput.ReadToEndAsync();
+                    await gwProc.WaitForExitAsync();
+
+                    var gwIps = await Dns.GetHostAddressesAsync(gwHost);
+                    var gwIpStr = string.Join(", ", gwIps.Select(i => i.ToString()));
+                    sb.AppendLine($"Resolved IPs: {gwIpStr}");
+                    sb.AppendLine($"CNAME chain:");
+                    sb.AppendLine(gwOutput.Trim());
+
+                    // Extract region from FQDN
+                    var regionCode = ExtractRegionFromGatewayFqdn(gwHost);
+                    var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
+                    if (regionName != null)
+                        sb.AppendLine($"\n→ Gateway region: {regionName} ({regionCode})");
+                    else if (regionCode != null)
+                        sb.AppendLine($"\n→ Gateway region code: {regionCode}");
+
+                    bool gwIsPrivate = gwIps.Any(ip => IsPrivateIp(ip));
+                    sb.AppendLine(gwIsPrivate
+                        ? "→ Routes via private network"
+                        : "→ Routes via public internet (unicast)");
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  ✗ Failed: {ex.Message}");
+                    issues.Add($"Gateway CNAME chain failed: {ex.Message}");
+                }
             }
             else
             {
-                result.ResultValue = $"Azure Front Door routing ({ipStr})";
-                result.Status = "Passed";
-                sb.AppendLine("\nPublic connection via Azure Front Door / Traffic Manager. This is normal.");
+                sb.AppendLine("  Could not discover RDP gateway from AFD");
+                issues.Add("Gateway discovery failed — cannot trace RDP gateway DNS chain");
             }
 
+            if (issues.Count > 0)
+            {
+                result.ResultValue = $"{issues.Count} issue(s) in DNS chain analysis";
+                result.Status = "Warning";
+            }
+            else
+            {
+                var gwLabel = !string.IsNullOrEmpty(gwHost) ? $" + gateway {gwHost}" : "";
+                result.ResultValue = $"AFD{gwLabel} — DNS chains verified";
+                result.Status = "Passed";
+            }
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
@@ -1591,10 +1646,26 @@ class Program
         var result = new TestResult { Id = "L-TCP-06", Name = "TLS Inspection Detection", Category = "tcp" };
         try
         {
-            var host = "rdweb.wvd.microsoft.com";
-            var port = 443;
             var sb = new StringBuilder();
             bool intercepted = false;
+
+            // Discover the actual RDP gateway — this is the critical connection that must NOT be TLS-inspected
+            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var host = gwHost ?? "rdweb.wvd.microsoft.com"; // fallback if discovery fails
+            var port = 443;
+
+            if (gwHost != null)
+            {
+                var regionCode = ExtractRegionFromGatewayFqdn(gwHost);
+                var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
+                var regionLabel = regionName != null ? $" ({regionName})" : "";
+                sb.AppendLine($"Discovered RDP Gateway: {gwHost}{regionLabel}");
+            }
+            else
+            {
+                sb.AppendLine($"⚠ Could not discover RDP gateway from AFD — falling back to rdweb.wvd.microsoft.com");
+            }
+            sb.AppendLine();
 
             using var tcp = new TcpClient();
             using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -1621,8 +1692,9 @@ class Program
                     if (!isExpected && !isPrivateLink)
                     {
                         intercepted = true;
-                        sb.AppendLine("\n\u26A0 Certificate issuer is NOT a known Microsoft/DigiCert CA.");
+                        sb.AppendLine("\n⚠ Certificate issuer is NOT a known Microsoft/DigiCert CA.");
                         sb.AppendLine("This suggests TLS inspection by a proxy, firewall, or SWG.");
+                        sb.AppendLine("W365 RDP gateway connections MUST NOT be TLS-inspected.");
                     }
                 }
                 return true; // Accept anyway for inspection
@@ -1633,8 +1705,8 @@ class Program
             sb.Insert(0, $"Host: {host}:{port}\n\n");
 
             result.ResultValue = intercepted
-                ? "TLS inspection detected \u2014 non-Microsoft certificate issuer"
-                : "No TLS inspection detected \u2014 certificate chain is valid";
+                ? $"TLS inspection detected on {host} — non-Microsoft certificate issuer"
+                : $"No TLS inspection detected on {host}";
             result.Status = intercepted ? "Warning" : "Passed";
             result.DetailedInfo = sb.ToString().Trim();
             if (intercepted)
@@ -1644,7 +1716,7 @@ class Program
         return result;
     }
 
-    static Task<TestResult> RunProxyVpnDetection()
+    static async Task<TestResult> RunProxyVpnDetection()
     {
         var result = new TestResult { Id = "L-TCP-07", Name = "Proxy / VPN / SWG Detection", Category = "tcp" };
         try
@@ -1652,18 +1724,26 @@ class Program
             var sb = new StringBuilder();
             var issues = new List<string>();
 
-            // System proxy
+            // Discover the actual RDP gateway for accurate probing
+            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var probeHost = gwHost ?? "rdweb.wvd.microsoft.com";
+            if (gwHost != null)
+                sb.AppendLine($"Probing discovered RDP gateway: {gwHost}\n");
+            else
+                sb.AppendLine("⚠ Could not discover RDP gateway — probing rdweb.wvd.microsoft.com as fallback\n");
+
+            // System proxy — check against the actual RDP gateway
             var proxy = WebRequest.GetSystemWebProxy();
-            var testUri = new Uri("https://rdweb.wvd.microsoft.com");
+            var testUri = new Uri($"https://{probeHost}");
             var proxyUri = proxy.GetProxy(testUri);
             if (proxyUri != null && proxyUri != testUri)
             {
                 issues.Add($"System proxy: {proxyUri}");
-                sb.AppendLine($"\u26A0 System proxy detected: {proxyUri}");
+                sb.AppendLine($"⚠ System proxy detected for {probeHost}: {proxyUri}");
             }
             else
             {
-                sb.AppendLine("\u2714 No system proxy configured for AVD endpoints");
+                sb.AppendLine($"✓ No system proxy configured for {probeHost}");
             }
 
             // WinHTTP proxy
@@ -1677,11 +1757,11 @@ class Program
                 var output = proc!.StandardOutput.ReadToEnd();
                 proc.WaitForExit();
                 if (output.Contains("Direct access"))
-                    sb.AppendLine("\u2714 WinHTTP: Direct access (no proxy)");
+                    sb.AppendLine("✓ WinHTTP: Direct access (no proxy)");
                 else
                 {
                     issues.Add("WinHTTP proxy configured");
-                    sb.AppendLine($"\u26A0 WinHTTP proxy configured:\n{output.Trim()}");
+                    sb.AppendLine($"⚠ WinHTTP proxy configured:\n{output.Trim()}");
                 }
             }
             catch { sb.AppendLine("Could not check WinHTTP proxy"); }
@@ -1694,7 +1774,7 @@ class Program
                 if (!string.IsNullOrEmpty(val))
                 {
                     issues.Add($"{v}={val}");
-                    sb.AppendLine($"\u26A0 Environment: {v}={val}");
+                    sb.AppendLine($"⚠ Environment: {v}={val}");
                 }
             }
 
@@ -1717,7 +1797,7 @@ class Program
                 foreach (var vpn in vpnAdapters)
                 {
                     var vpnIpList = GetAdapterIps(vpn);
-                    sb.AppendLine($"\u2139 VPN adapter detected: {vpn.Name} ({vpn.Description})");
+                    sb.AppendLine($"ℹ VPN adapter detected: {vpn.Name} ({vpn.Description})");
                     if (!string.IsNullOrEmpty(vpnIpList))
                         sb.AppendLine($"    Adapter IPs: {vpnIpList}");
                 }
@@ -1727,25 +1807,28 @@ class Program
                 foreach (var range in caught)
                     issues.Add($"W365/AVD range {range} routes through VPN tunnel");
 
-                // Also show single-IP probe as informational context
+                // Probe the actual discovered RDP gateway for VPN routing
                 try
                 {
-                    var gwIps = Dns.GetHostAddresses("rdweb.wvd.microsoft.com");
+                    var gwIps = Dns.GetHostAddresses(probeHost);
                     var gwIp = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                     if (gwIp != null)
                     {
                         var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
                         if (routedViaVpn)
-                            sb.AppendLine($"\n  \u26A0 Note: RDP gateway {gwIp} (rdweb.wvd.microsoft.com) routes via VPN interface {localIp}");
+                        {
+                            sb.AppendLine($"\n  ⚠ RDP gateway {gwIp} ({probeHost}) routes via VPN interface {localIp}");
+                            issues.Add($"RDP gateway {probeHost} routes through VPN");
+                        }
                         else
-                            sb.AppendLine($"\n  \u2714 RDP gateway {gwIp} (rdweb.wvd.microsoft.com) routes direct via {localIp}");
+                            sb.AppendLine($"\n  ✓ RDP gateway {gwIp} ({probeHost}) routes direct via {localIp}");
                     }
                 }
                 catch { /* DNS or probe failed — non-critical since routing table already checked */ }
             }
             else
             {
-                sb.AppendLine("\u2714 No VPN adapters detected");
+                sb.AppendLine("✓ No VPN adapters detected");
             }
 
             // SWG / security processes
@@ -1756,7 +1839,7 @@ class Program
                 if (procs.Length > 0)
                 {
                     issues.Add($"SWG process: {name}");
-                    sb.AppendLine($"\u26A0 SWG/Security process running: {name} (PID: {procs[0].Id})");
+                    sb.AppendLine($"⚠ SWG/Security process running: {name} (PID: {procs[0].Id})");
                 }
             }
 
@@ -1774,7 +1857,7 @@ class Program
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
-        return Task.FromResult(result);
+        return result;
     }
 
     // ═══════════════════════════════════════════
@@ -2208,6 +2291,89 @@ class Program
         return false;
     }
 
+    /// <summary>
+    /// Discovers the actual regional RDP gateway hostname from AFD's Set-Cookie Domain= header.
+    /// Returns null if discovery fails. Each caller invokes this independently.
+    /// </summary>
+    static async Task<string?> DiscoverRdpGatewayFromAfd()
+    {
+        try
+        {
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                AllowAutoRedirect = false
+            };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(8), handler);
+            var resp = await http.GetAsync("https://afdfp-rdgateway-r1.wvd.microsoft.com/");
+            if (resp.Headers.TryGetValues("Set-Cookie", out var cookies))
+            {
+                foreach (var cookie in cookies)
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (m.Success) return m.Groups[1].Value;
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Extracts the Azure region code from an RDP gateway FQDN.
+    /// e.g. "rdgateway-c221-UKS-r1.wvd.microsoft.com" → "UKS"
+    /// </summary>
+    static string? ExtractRegionFromGatewayFqdn(string fqdn)
+    {
+        // Pattern: rdgateway-XXXX-REGION-rN.wvd.microsoft.com
+        var m = System.Text.RegularExpressions.Regex.Match(
+            fqdn, @"rdgateway-[^-]+-([A-Za-z]+\d*)-r\d+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups[1].Value.ToUpperInvariant() : null;
+    }
+
+    /// <summary>
+    /// Maps Azure region codes (from gateway FQDNs) to friendly names.
+    /// </summary>
+    static string? GetAzureRegionName(string regionCode)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Europe
+            ["UKS"] = "UK South", ["UKW"] = "UK West",
+            ["NEU"] = "North Europe (Ireland)", ["WEU"] = "West Europe (Netherlands)",
+            ["FRC"] = "France Central", ["FRS"] = "France South",
+            ["GWC"] = "Germany West Central", ["GN"] = "Germany North",
+            ["NOE"] = "Norway East", ["NOW"] = "Norway West",
+            ["SEW"] = "Sweden Central", ["SES"] = "Sweden South",
+            ["CHN"] = "Switzerland North", ["CHW"] = "Switzerland West",
+            ["ITA"] = "Italy North", ["SPE"] = "Spain Central",
+            ["POC"] = "Poland Central",
+            // North America
+            ["EUS"] = "East US", ["EUS2"] = "East US 2",
+            ["CUS"] = "Central US", ["NCUS"] = "North Central US",
+            ["SCUS"] = "South Central US", ["WCUS"] = "West Central US",
+            ["WUS"] = "West US", ["WUS2"] = "West US 2", ["WUS3"] = "West US 3",
+            ["CC"] = "Canada Central", ["CE"] = "Canada East",
+            // Asia Pacific
+            ["SEA"] = "Southeast Asia (Singapore)", ["EA"] = "East Asia (Hong Kong)",
+            ["JE"] = "Japan East", ["JW"] = "Japan West",
+            ["KRC"] = "Korea Central", ["KRS"] = "Korea South",
+            ["CIN"] = "Central India", ["SIN"] = "South India", ["WIN"] = "West India",
+            ["AUE"] = "Australia East", ["AUSE"] = "Australia Southeast",
+            ["AUC"] = "Australia Central",
+            // Middle East & Africa
+            ["SAE"] = "South Africa North", ["SAW"] = "South Africa West",
+            ["UAE"] = "UAE North", ["UAW"] = "UAE Central",
+            ["ILC"] = "Israel Central", ["QAC"] = "Qatar Central",
+            // South America
+            ["BRS"] = "Brazil South", ["BRSE"] = "Brazil Southeast"
+        };
+        return map.TryGetValue(regionCode, out var name) ? name : null;
+    }
+
     static async Task<(string hostname, int port, IPAddress ip)?> GetValidatedGateway()
     {
         // First, try to discover the actual regional gateway from AFD's Set-Cookie header
@@ -2240,7 +2406,7 @@ class Program
         catch { /* Fall through to static list */ }
 
         // Fallback: try well-known endpoints (IPs may be in W365 range behind some network configs)
-        var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+        var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com" };
         foreach (var gw in gateways)
         {
             try
@@ -3950,16 +4116,25 @@ class Program
         var result = new TestResult { Id = "L-TCP-08", Name = "DNS Hijacking Check", Category = "tcp" };
         try
         {
-            var gateways = new[] { "rdweb.wvd.microsoft.com", "client.wvd.microsoft.com" };
+            // Build dynamic endpoint list: rdweb + discovered RDP gateway
+            var endpoints = new List<string> { "rdweb.wvd.microsoft.com" };
+            var gwHost = await DiscoverRdpGatewayFromAfd();
+            if (!string.IsNullOrEmpty(gwHost))
+                endpoints.Add(gwHost);
+
             var sb = new StringBuilder();
+            if (!string.IsNullOrEmpty(gwHost))
+                sb.AppendLine($"Discovered RDP gateway: {gwHost}\n");
+            else
+                sb.AppendLine("⚠ Could not discover RDP gateway from AFD — checking rdweb only\n");
+
             int passed = 0;
             var issues = new List<string>();
 
             // Known Microsoft/Azure public IP first-octet ranges
-            // (covers Azure Front Door, Azure WAN, Azure infra)
             var knownAzureFirstOctets = new HashSet<byte> { 13, 20, 40, 51, 52, 65, 104, 131, 132, 134, 137, 138, 157, 168, 191, 204 };
 
-            foreach (var host in gateways)
+            foreach (var host in endpoints)
             {
                 sb.AppendLine($"  {host}");
 
@@ -3970,7 +4145,7 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    \u2717 DNS resolution failed: {ex.Message}");
+                    sb.AppendLine($"    ✗ DNS resolution failed: {ex.Message}");
                     issues.Add($"{host}: DNS resolution failed");
                     sb.AppendLine();
                     continue;
@@ -3990,8 +4165,6 @@ class Program
                     await proc.WaitForExitAsync();
                     cnameHasAfd = nsOutput.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
                                   nsOutput.Contains("azurefd", StringComparison.OrdinalIgnoreCase);
-                    // "privatelink-global" is a standard Microsoft DNS zone for ALL connections;
-                    // only match "privatelink" that is NOT followed by "-global"
                     cnameHasPrivateLink = nsOutput.Contains("privatelink", StringComparison.OrdinalIgnoreCase) &&
                                          !nsOutput.Contains("privatelink-global", StringComparison.OrdinalIgnoreCase);
                 }
@@ -4043,34 +4216,32 @@ class Program
 
                     if (isLoopback)
                     {
-                        sb.AppendLine($"    \u2717 {ip} \u2192 LOOPBACK \u2014 DNS is hijacked!");
+                        sb.AppendLine($"    ✗ {ip} → LOOPBACK — DNS is hijacked!");
                         issues.Add($"{host}: resolves to loopback {ip}");
                     }
                     else if (isLinkLocal)
                     {
-                        sb.AppendLine($"    \u2717 {ip} \u2192 LINK-LOCAL \u2014 DNS appears hijacked");
+                        sb.AppendLine($"    ✗ {ip} → LINK-LOCAL — DNS appears hijacked");
                         issues.Add($"{host}: resolves to link-local {ip}");
                     }
                     else if (isPrivate)
                     {
-                        // Private IP — likely Private Link
                         if (cnameHasPrivateLink || validCert)
-                            sb.AppendLine($"    \u2713 {ip} \u2192 Private Link (cert valid)");
+                            sb.AppendLine($"    ✓ {ip} → Private Link (cert valid)");
                         else
-                            sb.AppendLine($"    \u2713 {ip} \u2192 Private IP (likely Private Link)");
+                            sb.AppendLine($"    ✓ {ip} → Private IP (likely Private Link)");
                     }
                     else if (isMicrosoft || isKnownAzureRange || cnameHasAfd || validCert)
                     {
-                        // Known good: Microsoft rDNS, known Azure range, AFD CNAME, or valid MS cert
                         var reason = isMicrosoft ? rdns
                                    : isKnownAzureRange ? $"Azure IP range ({bytes[0]}.x.x.x)"
                                    : cnameHasAfd ? "AFD CNAME chain"
                                    : "valid Microsoft TLS cert";
-                        sb.AppendLine($"    \u2713 {ip} \u2192 {reason}");
+                        sb.AppendLine($"    ✓ {ip} → {reason}");
                     }
                     else
                     {
-                        sb.AppendLine($"    \u26a0 {ip} \u2192 {rdns} \u2014 not a recognized Microsoft host");
+                        sb.AppendLine($"    ⚠ {ip} → {rdns} — not a recognized Microsoft host");
                         issues.Add($"{host}: resolves to non-Microsoft IP {ip} ({rdns})");
                     }
                 }
@@ -4085,11 +4256,11 @@ class Program
             {
                 sb.AppendLine("Issues found:");
                 foreach (var issue in issues)
-                    sb.AppendLine($"  \u26a0 {issue}");
+                    sb.AppendLine($"  ⚠ {issue}");
             }
 
             result.ResultValue = issues.Count == 0
-                ? $"All {gateways.Length} gateways resolve to legitimate Microsoft IPs"
+                ? $"All {endpoints.Count} endpoints resolve to legitimate Microsoft IPs"
                 : $"{issues.Count} potential DNS issue(s) detected";
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = issues.Any(i => i.Contains("loopback") || i.Contains("link-local")) ? "Failed"
@@ -4106,23 +4277,19 @@ class Program
         var result = new TestResult { Id = "L-TCP-09", Name = "Gateway Used", Category = "tcp" };
         try
         {
-            var gateways = new[] { "afdfp-rdgateway-r1.wvd.microsoft.com", "rdweb.wvd.microsoft.com" };
             var sb = new StringBuilder();
+            var issues = new List<string>();
 
             using var httpHandler = new HttpClientHandler
             {
-                ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
-                {
-                    return true;
-                },
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
                 AllowAutoRedirect = false
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
-            // Fetch user's location via GeoIP
+            // ── Fetch user's location via GeoIP ──
             string userCity = null, userCountry = null;
             double userLat = 0, userLon = 0;
-            var gatewayLocations = new List<string>(); // collect for summary
             try
             {
                 var userGeo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
@@ -4130,7 +4297,6 @@ class Program
                 {
                     userCity = cityProp.GetString();
                     userCountry = userGeo.TryGetProperty("country", out var cProp) ? cProp.GetString() : "";
-                    // ipinfo.io returns loc as "lat,lon" string
                     if (userGeo.TryGetProperty("loc", out var locProp))
                     {
                         var parts = locProp.GetString()?.Split(',');
@@ -4140,148 +4306,208 @@ class Program
                             double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out userLon);
                         }
                     }
+                    sb.AppendLine($"Your location: {userCity}, {userCountry}");
+                    sb.AppendLine();
                 }
             }
-            catch { /* user location is best-effort */ }
+            catch { sb.AppendLine("Could not determine your location (GeoIP unavailable)\n"); }
 
-            foreach (var host in gateways)
+            // ── Part 1: AFD Edge Location (anycast — use X-MSEdge-Ref for PoP) ──
+            sb.AppendLine("═══ AFD Edge Location (Anycast) ═══");
+            var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
+            string afdPopCity = null;
+            string discoveredGateway = null;
+
+            try
             {
-                sb.AppendLine($"  {host}");
+                var afdIps = await Dns.GetHostAddressesAsync(afdHost);
+                sb.AppendLine($"  {afdHost}");
+                sb.AppendLine($"    IP: {afdIps.First()} (anycast — cannot geolocate)");
 
-                // Resolve IP
-                IPAddress[] ips;
-                try
-                {
-                    ips = await Dns.GetHostAddressesAsync(host);
-                }
-                catch (Exception ex)
-                {
-                    sb.AppendLine($"    IP: could not resolve ({ex.Message})");
-                    sb.AppendLine();
-                    continue;
-                }
+                var afdResp = await http.GetAsync($"https://{afdHost}/");
 
-                var ip = ips.First();
-                sb.AppendLine($"    IP: {ip}");
+                // Extract AFD PoP from X-MSEdge-Ref
+                string edgeRef = "";
+                if (afdResp.Headers.TryGetValues("X-MSEdge-Ref", out var edgeRefs))
+                    edgeRef = edgeRefs.FirstOrDefault() ?? "";
+                else if (afdResp.Headers.TryGetValues("x-azure-ref", out var azureRefs))
+                    edgeRef = azureRefs.FirstOrDefault() ?? "";
 
-                // Reverse DNS for edge node identification
-                try
+                if (!string.IsNullOrEmpty(edgeRef))
                 {
-                    var entry = await Dns.GetHostEntryAsync(ip);
-                    sb.AppendLine($"    Edge: {entry.HostName}");
-                }
-                catch
-                {
-                    sb.AppendLine($"    Edge: (no reverse DNS)");
-                }
-
-                // Determine route based on resolved IP.
-                // True Private Link resolves to a private RFC-1918 IP.
-                if (IsPrivateIp(ip))
-                {
-                    sb.AppendLine($"    Route: Private Link");
-
-                    // GeoIP is meaningful for Private Link (not anycast)
-                    try
+                    sb.AppendLine($"    Edge Ref: {edgeRef}");
+                    var popMatch = System.Text.RegularExpressions.Regex.Match(
+                        edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})Edge",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (popMatch.Success)
                     {
-                        var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
-                        if (gwGeo.TryGetProperty("city", out var gwCityProp))
+                        var popCode = popMatch.Groups[1].Value.ToUpperInvariant();
+                        afdPopCity = GetAfdPopLocation(popCode);
+                        var popLabel = afdPopCity != null ? $"{popCode} — {afdPopCity}" : popCode;
+                        sb.AppendLine($"    AFD PoP: {popLabel}");
+
+                        if (afdPopCity != null && userCity != null)
+                            sb.AppendLine($"    → Your traffic egresses via AFD edge in {afdPopCity}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"    AFD PoP: could not parse from Edge Ref");
+                    }
+                }
+
+                // Extract WVD service region
+                if (afdResp.Headers.TryGetValues("x-ms-wvd-service-region", out var regionVals))
+                {
+                    var region = regionVals.FirstOrDefault();
+                    if (!string.IsNullOrEmpty(region))
+                        sb.AppendLine($"    Service Region: {region}");
+                }
+
+                // Extract discovered gateway from Set-Cookie
+                if (afdResp.Headers.TryGetValues("Set-Cookie", out var cookies))
+                {
+                    foreach (var cookie in cookies)
+                    {
+                        var domainMatch = System.Text.RegularExpressions.Regex.Match(
+                            cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        if (domainMatch.Success)
                         {
-                            var gwCity = gwCityProp.GetString();
-                            var gwCountry = gwGeo.TryGetProperty("country", out var gwCProp) ? gwCProp.GetString() : "";
-                            var locationStr = $"{gwCity}, {gwCountry}";
-                            gatewayLocations.Add(locationStr);
-                            sb.AppendLine($"    Location: {locationStr}");
+                            discoveredGateway = domainMatch.Groups[1].Value;
+                            break;
                         }
                     }
-                    catch { /* GeoIP is best-effort */ }
                 }
-                else
-                {
-                    sb.AppendLine($"    Route: Azure Front Door (anycast)");
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"    ✗ AFD unreachable: {ex.InnerException?.Message ?? ex.Message}");
+                issues.Add("AFD endpoint unreachable");
+            }
 
-                    // For AFD endpoints, the resolved IP is anycast — GeoIP would show
-                    // Microsoft's registration address, not the actual edge node.
-                    // Instead, read the X-MSEdge-Ref header which contains the real PoP code.
+            sb.AppendLine();
+
+            // ── Part 2: Actual RDP Gateway (unicast — CAN geolocate, FQDN has region) ──
+            sb.AppendLine("═══ Actual RDP Gateway (Unicast) ═══");
+            if (!string.IsNullOrEmpty(discoveredGateway))
+            {
+                sb.AppendLine($"  {discoveredGateway}");
+
+                // Extract region from FQDN
+                var regionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
+                var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
+                if (regionName != null)
+                    sb.AppendLine($"    Azure Region: {regionName} ({regionCode})");
+                else if (regionCode != null)
+                    sb.AppendLine($"    Azure Region Code: {regionCode}");
+
+                try
+                {
+                    var gwIps = await Dns.GetHostAddressesAsync(discoveredGateway);
+                    var gwIp = gwIps.First();
+                    sb.AppendLine($"    IP: {gwIp}");
+
+                    bool inRange = gwIps.Any(ip => IsInW365Range(ip));
+                    if (inRange)
+                        sb.AppendLine($"    → IP in W365 range ✓");
+
+                    // Reverse DNS
                     try
                     {
-                        var edgeResponse = await http.GetAsync($"https://{host}/");
+                        var entry = await Dns.GetHostEntryAsync(gwIp);
+                        sb.AppendLine($"    Reverse DNS: {entry.HostName}");
+                    }
+                    catch { sb.AppendLine($"    Reverse DNS: (none)"); }
 
-                        // Try X-MSEdge-Ref first, then x-azure-ref
-                        string edgeRef = "";
-                        if (edgeResponse.Headers.TryGetValues("X-MSEdge-Ref", out var edgeRefs))
-                            edgeRef = edgeRefs.FirstOrDefault() ?? "";
-                        else if (edgeResponse.Headers.TryGetValues("x-azure-ref", out var azureRefs))
-                            edgeRef = azureRefs.FirstOrDefault() ?? "";
-
-                        if (!string.IsNullOrEmpty(edgeRef))
+                    // GeoIP for the unicast gateway IP — this IS meaningful (not anycast)
+                    if (!IsPrivateIp(gwIp))
+                    {
+                        try
                         {
-                            sb.AppendLine($"    Edge Ref: {edgeRef}");
-
-                            // Parse PoP code — format: "Ref A: xxx Ref B: LHREdge0512 Ref C: xxx"
-                            var popMatch = System.Text.RegularExpressions.Regex.Match(
-                                edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})Edge",
-                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                            if (popMatch.Success)
+                            var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{gwIp}/json", TimeSpan.FromSeconds(5));
+                            if (gwGeo.TryGetProperty("city", out var gwCityProp))
                             {
-                                var popCode = popMatch.Groups[1].Value.ToUpperInvariant();
-                                var popCity = GetAfdPopLocation(popCode);
-                                var popLabel = popCity != null ? $"{popCode} — {popCity}" : popCode;
-                                sb.AppendLine($"    AFD PoP: {popLabel}");
-                                gatewayLocations.Add(popCity ?? popCode);
+                                var gwCity = gwCityProp.GetString();
+                                var gwCountry = gwGeo.TryGetProperty("country", out var gwCProp) ? gwCProp.GetString() : "";
+                                sb.AppendLine($"    GeoIP Location: {gwCity}, {gwCountry}");
 
-                                // Compare PoP location with user location
-                                if (popCity != null && userCity != null)
+                                // Compare gateway location to user location
+                                if (userCity != null && gwGeo.TryGetProperty("loc", out var gwLocProp))
                                 {
-                                    sb.AppendLine($"    Your location: {userCity}, {userCountry}");
+                                    var gwParts = gwLocProp.GetString()?.Split(',');
+                                    if (gwParts?.Length == 2)
+                                    {
+                                        double.TryParse(gwParts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLat);
+                                        double.TryParse(gwParts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLon);
+                                        var distKm = HaversineDistanceKm(userLat, userLon, gwLat, gwLon);
+                                        sb.AppendLine($"    Distance from you: {distKm:N0} km");
+                                        if (distKm > 1500)
+                                        {
+                                            sb.AppendLine($"    ⚠ Gateway is far from your location — possible suboptimal routing");
+                                            issues.Add($"Gateway is {distKm:N0} km from your location");
+                                        }
+                                    }
                                 }
                             }
-                            else
-                            {
-                                sb.AppendLine($"    AFD PoP: could not parse from Edge Ref");
-                            }
                         }
+                        catch { sb.AppendLine($"    GeoIP: unavailable"); }
+                    }
+                    else
+                    {
+                        sb.AppendLine($"    Route: Private Link (private IP)");
+                    }
 
-                        // Also check x-ms-wvd-service-region
-                        if (edgeResponse.Headers.TryGetValues("x-ms-wvd-service-region", out var regionVals))
+                    // TLS cert
+                    try
+                    {
+                        using var tcp = new TcpClient();
+                        await tcp.ConnectAsync(gwIp, 443);
+                        using var ssl = new SslStream(tcp.GetStream(), false, (_, _, _, _) => true);
+                        await ssl.AuthenticateAsClientAsync(discoveredGateway);
+                        var cert = ssl.RemoteCertificate as X509Certificate2;
+                        if (cert != null)
                         {
-                            var region = regionVals.FirstOrDefault();
-                            if (!string.IsNullOrEmpty(region))
-                                sb.AppendLine($"    Service Region: {region}");
+                            var cn = cert.GetNameInfo(X509NameType.SimpleName, false);
+                            sb.AppendLine($"    Cert: {cn}");
                         }
                     }
-                    catch { /* X-MSEdge-Ref is best-effort */ }
-                }
-
-                // TLS cert subject for the specific gateway
-                try
-                {
-                    using var tcp = new TcpClient();
-                    await tcp.ConnectAsync(ip, 443);
-                    using var ssl = new SslStream(tcp.GetStream(), false, (_, _, _, _) => true);
-                    await ssl.AuthenticateAsClientAsync(host);
-                    var cert = ssl.RemoteCertificate as X509Certificate2;
-                    if (cert != null)
+                    catch (Exception ex)
                     {
-                        var cn = cert.GetNameInfo(X509NameType.SimpleName, false);
-                        sb.AppendLine($"    Cert: {cn}");
+                        sb.AppendLine($"    Cert: could not retrieve ({ex.InnerException?.Message ?? ex.Message})");
                     }
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    Cert: could not retrieve ({ex.InnerException?.Message ?? ex.Message})");
+                    sb.AppendLine($"    ✗ DNS/connect failed: {ex.Message}");
+                    issues.Add($"Cannot resolve/connect to gateway {discoveredGateway}");
                 }
-
-                sb.AppendLine();
+            }
+            else
+            {
+                sb.AppendLine("  Could not discover RDP gateway from AFD Set-Cookie header");
+                issues.Add("RDP gateway discovery failed");
             }
 
-            // Build result summary from PoP/location data
-            var summary = gatewayLocations.Distinct().ToList();
-            result.ResultValue = summary.Any()
-                ? $"Edge: {string.Join(" / ", summary)}"
-                : string.Join(", ", gateways.Select(g => { try { return $"{g} → {Dns.GetHostAddresses(g).First()}"; } catch { return g; } }));
+            // Build summary
+            var summaryParts = new List<string>();
+            if (afdPopCity != null)
+                summaryParts.Add($"AFD PoP: {afdPopCity}");
+            if (!string.IsNullOrEmpty(discoveredGateway))
+            {
+                var regionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
+                var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
+                summaryParts.Add(regionName != null
+                    ? $"Gateway: {regionName}"
+                    : $"Gateway: {discoveredGateway}");
+            }
+
+            result.ResultValue = summaryParts.Any()
+                ? string.Join(" | ", summaryParts)
+                : "Could not determine gateway";
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = "Passed";
+            result.Status = issues.Count == 0 ? "Passed" : "Warning";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
