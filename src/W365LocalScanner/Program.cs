@@ -1887,6 +1887,7 @@ class Program
             // Send a STUN binding request
             var stunRequest = BuildStunRequest();
             var endpoint = new IPEndPoint(ip, port);
+            var sw = Stopwatch.StartNew();
             await udp.SendAsync(stunRequest, stunRequest.Length, endpoint);
 
             try
@@ -1894,10 +1895,12 @@ class Program
                 var receiveTask = udp.ReceiveAsync();
                 if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
                 {
+                    sw.Stop();
+                    var rttMs = sw.ElapsedMilliseconds;
                     var response = receiveTask.Result;
                     result.Status = "Passed";
-                    result.ResultValue = $"TURN relay reachable at {ip}:{port} (UDP STUN response received)";
-                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {response.Buffer.Length} bytes";
+                    result.ResultValue = $"TURN relay reachable at {ip}:{port} — {rttMs}ms RTT";
+                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {response.Buffer.Length} bytes\nLatency: {rttMs}ms";
                 }
                 else
                 {

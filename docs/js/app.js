@@ -692,8 +692,17 @@ async function exportTextReport() {
         let turnSummary = turn04.resultValue || 'Unknown';
         const turn03 = r('L-UDP-03');
         if (turn03 && turn03.status === 'Passed') {
-            // L-UDP-03 resultValue is like "TURN relay reachable at x.x.x.x:3478 (UDP STUN response received)"
-            turnSummary = turn04.resultValue;
+            // Parse latency from L-UDP-03 detailedInfo ("Latency: 12ms") or resultValue ("— 12ms RTT")
+            let latMs = '';
+            if (turn03.detailedInfo) {
+                const latLine = turn03.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+                if (latLine) latMs = latLine.replace(/.*Latency:\s*/i, '').trim();
+            }
+            if (!latMs) {
+                const rttMatch = (turn03.resultValue || '').match(/(\d+)\s*ms\s*RTT/i);
+                if (rttMatch) latMs = `${rttMatch[1]}ms`;
+            }
+            if (latMs) turnSummary += `  — ${latMs} RTT`;
         }
         lines.push(`  TURN Relay:        ${turnSummary}`);
     } else {
