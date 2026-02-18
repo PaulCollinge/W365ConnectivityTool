@@ -860,6 +860,7 @@ class Program
             new("L-TCP-09", "Gateway Used", "Shows which gateway edge node and IP are being used", "tcp", RunGatewayUsed),
             new("L-TCP-06", "TLS Inspection Detection", "Validates TLS certificate chain", "tcp", RunTlsInspection),
             new("L-TCP-07", "Proxy / VPN / SWG Detection", "Detects proxy, VPN, SWG", "tcp", RunProxyVpnDetection),
+            new("L-TCP-10", "Network Path Trace", "ICMP traceroute to key W365/AVD endpoints", "tcp", RunNetworkPathTrace),
 
             // ── UDP Based RDP Connectivity ──
             new("L-UDP-03", "TURN Relay Reachability (UDP 3478)", "Tests UDP to TURN relay", "udp", RunTurnRelay),
@@ -1711,6 +1712,141 @@ class Program
             result.DetailedInfo = sb.ToString().Trim();
             if (intercepted)
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#tls-inspection";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    static async Task<TestResult> RunNetworkPathTrace()
+    {
+        var result = new TestResult { Id = "L-TCP-10", Name = "Network Path Trace", Category = "tcp" };
+        try
+        {
+            var sb = new StringBuilder();
+            var targets = new List<(string host, string role)>
+            {
+                ("afdfp-rdgateway-r1.wvd.microsoft.com", "RDP Gateway (AFD)"),
+                ("rdweb.wvd.microsoft.com", "AVD Web Access"),
+                ("login.microsoftonline.com", "Authentication"),
+                ("world.relay.avd.microsoft.com", "TURN Relay"),
+            };
+
+            // Try to discover the actual regional RDP gateway and add it
+            var gwHost = await DiscoverRdpGatewayFromAfd();
+            if (!string.IsNullOrEmpty(gwHost))
+            {
+                // Insert the real gateway right after the AFD entry
+                targets.Insert(1, (gwHost, "RDP Gateway (Regional)"));
+            }
+
+            int completed = 0;
+            int maxHops = 30;
+            int timeout = 2000; // ms per hop
+
+            foreach (var (host, role) in targets)
+            {
+                sb.AppendLine($"─── {role} ───");
+                sb.AppendLine($"Target: {host}");
+
+                IPAddress? targetIp;
+                try
+                {
+                    var addresses = await Dns.GetHostAddressesAsync(host);
+                    targetIp = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                    if (targetIp == null)
+                    {
+                        sb.AppendLine($"  ✗ No IPv4 address resolved");
+                        sb.AppendLine();
+                        continue;
+                    }
+                    sb.AppendLine($"Resolved: {targetIp}");
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  ✗ DNS failed: {ex.Message}");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                sb.AppendLine($"{"Hop",-4} {"IP Address",-18} {"RTT1",-8} {"RTT2",-8} {"RTT3",-8} Hostname");
+
+                bool reached = false;
+                using var ping = new Ping();
+                var payload = new byte[32];
+
+                for (int ttl = 1; ttl <= maxHops; ttl++)
+                {
+                    var options = new PingOptions(ttl, true);
+                    var rtts = new List<string>();
+                    IPAddress? hopIp = null;
+
+                    // Send 3 probes per hop for reliable RTT measurement
+                    for (int probe = 0; probe < 3; probe++)
+                    {
+                        try
+                        {
+                            var reply = await ping.SendPingAsync(targetIp, timeout, payload, options);
+                            if (reply.Status == IPStatus.TtlExpired || reply.Status == IPStatus.Success)
+                            {
+                                hopIp ??= reply.Address;
+                                rtts.Add($"{reply.RoundtripTime}ms");
+
+                                if (reply.Status == IPStatus.Success)
+                                    reached = true;
+                            }
+                            else
+                            {
+                                rtts.Add("*");
+                            }
+                        }
+                        catch
+                        {
+                            rtts.Add("*");
+                        }
+                    }
+
+                    // Pad RTTs to 3 entries
+                    while (rtts.Count < 3) rtts.Add("*");
+
+                    if (hopIp != null)
+                    {
+                        // Attempt reverse DNS
+                        string hostName = "";
+                        try
+                        {
+                            var entry = await Dns.GetHostEntryAsync(hopIp);
+                            if (!string.IsNullOrEmpty(entry.HostName) && entry.HostName != hopIp.ToString())
+                                hostName = entry.HostName;
+                        }
+                        catch { /* Reverse DNS not available */ }
+
+                        sb.AppendLine($"{ttl,-4} {hopIp,-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8} {hostName}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"{ttl,-4} {"*",-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8}");
+                    }
+
+                    if (reached)
+                    {
+                        sb.AppendLine($"  → Target reached at hop {ttl}");
+                        break;
+                    }
+                }
+
+                if (!reached)
+                    sb.AppendLine($"  → Target not reached within {maxHops} hops");
+                else
+                    completed++;
+
+                sb.AppendLine();
+            }
+
+            result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = completed == targets.Count ? "Passed" : completed > 0 ? "Warning" : "Failed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
