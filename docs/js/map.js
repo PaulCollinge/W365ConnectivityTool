@@ -230,7 +230,7 @@ function updateMapAfdCard(lookup) {
 
         // Show location as a badge — prefer AFD PoP (from X-MSEdge-Ref) over GeoIP Location
         const popLine = extractLine(gwUsed.detailedInfo, 'AFD PoP:');
-        const locLine = popLine
+        const locLine = (popLine && !popLine.toLowerCase().includes('could not parse'))
             ? popLine.replace(/^[A-Z]{2,5}\s*—\s*/, '')   // strip PoP code prefix e.g. "LHR — "
             : extractGatewayLocation(gwUsed.detailedInfo);
         if (locLine) {

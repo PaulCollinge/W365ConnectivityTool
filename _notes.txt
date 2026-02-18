@@ -1,0 +1,25 @@
+## What's Changed
+
+- **Renamed L-TCP-04** from 'RDWeb Service Check' to **'Gateway and Service Connectivity'** - better reflects what the test actually does (AFD discovery, RDP gateway probe, RDWeb feed, authentication)
+- Web dashboard cache bumped to v51
+
+---
+
+## Windows 365 / AVD Local Connectivity Scanner
+
+Download `W365LocalScanner.exe` and run it on the client machine.
+It will perform local-only diagnostics and automatically open the web diagnostics page with results.
+
+### Verify integrity
+
+SHA256: `08A5B527A0445C7399BFDD900758E5F42CA6E0AA3530C0626BBAF9775EDFF1B2`
+
+`powershell
+# Verify after download:
+(Get-FileHash W365LocalScanner.exe -Algorithm SHA256).Hash
+``n
+### Verify build provenance
+
+``ngh attestation verify W365LocalScanner.exe --repo PaulCollinge/W365ConnectivityTool
+``n
+Full Changelog: https://github.com/PaulCollinge/W365ConnectivityTool/compare/v1.4.8...v1.4.9

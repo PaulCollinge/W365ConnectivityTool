@@ -558,7 +558,7 @@ async function testGatewayLatency(test) {
 
         // Parse 3-letter PoP code from X-MSEdge-Ref
         if (edgeRef) {
-            const popMatch = edgeRef.match(/Ref\s+B:\s*([A-Z]{3})/i);
+            const popMatch = edgeRef.match(/Ref\s+B:\s*([A-Z]{2,5})\d*Edge/i);
             if (popMatch) {
                 afdPop = popMatch[1].toUpperCase();
                 afdPopCity = AFD_POP_MAP[afdPop] || '';

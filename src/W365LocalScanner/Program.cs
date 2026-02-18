@@ -4337,7 +4337,7 @@ class Program
                 {
                     sb.AppendLine($"    Edge Ref: {edgeRef}");
                     var popMatch = System.Text.RegularExpressions.Regex.Match(
-                        edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})Edge",
+                        edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})\d*Edge",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (popMatch.Success)
                     {
