@@ -1998,9 +1998,26 @@ class Program
                 sb.AppendLine($"Server 1: {stunHost1} → {stunIp1}");
             }
 
-            // Server 2: secondary Microsoft STUN server (for NAT comparison only)
-            var stunIp2 = IPAddress.Parse("13.107.17.41");
-            sb.AppendLine($"Server 2: 13.107.17.41 (secondary Microsoft STUN)");
+            // Server 2: stun1.l.google.com (independent STUN server — for NAT comparison)
+            var stunHost2 = "stun1.l.google.com";
+            int stunPort2 = 19302;
+            IPAddress? stunIp2 = null;
+            try
+            {
+                var dns2 = await Dns.GetHostAddressesAsync(stunHost2);
+                stunIp2 = dns2.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+            }
+            catch { }
+
+            if (stunIp2 == null)
+            {
+                sb.AppendLine($"⚠ DNS resolution of {stunHost2} failed, using fallback IP 142.250.31.127");
+                stunIp2 = IPAddress.Parse("142.250.31.127");
+            }
+            else
+            {
+                sb.AppendLine($"Server 2: {stunHost2} → {stunIp2} (port {stunPort2})");
+            }
             sb.AppendLine();
 
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
@@ -2011,7 +2028,7 @@ class Program
             // Send STUN to server 1
             var mapped1 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp1, 3478), sb, "Server 1");
             // Send STUN to server 2
-            var mapped2 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp2, 3478), sb, "Server 2");
+            var mapped2 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp2, stunPort2), sb, "Server 2");
 
             sb.AppendLine();
 

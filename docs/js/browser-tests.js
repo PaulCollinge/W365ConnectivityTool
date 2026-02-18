@@ -780,87 +780,91 @@ async function testNatType(test) {
     }
 
     try {
-        // Gather candidates from two independent STUN servers
+        // Use a SINGLE PeerConnection with BOTH STUN servers so the browser
+        // sends STUN binding requests from the SAME local socket to two
+        // different destinations.  For a Cone NAT (endpoint-independent
+        // mapping) the reflexive address is identical for both servers, so the
+        // browser de-duplicates and reports only ONE srflx candidate.  For a
+        // Symmetric NAT (endpoint-dependent mapping) the two servers see
+        // different reflexive ports, producing TWO distinct srflx candidates.
+        //
+        // The old code used two separate PeerConnections — each created its
+        // own socket, so even a Cone NAT would show different ports → always
+        // reported "Symmetric".  Fixed now.
+
         const stunServers = [
             'stun:stun.azure.com:3478',
             'stun:stun.l.google.com:19302'
         ];
 
-        const [candidates1, candidates2] = await Promise.all([
-            gatherIceCandidates({ iceServers: [{ urls: stunServers[0] }] }, 5000),
-            gatherIceCandidates({ iceServers: [{ urls: stunServers[1] }] }, 5000)
-        ]);
+        const candidates = await gatherIceCandidates({
+            iceServers: stunServers.map(url => ({ urls: url }))
+        }, 6000);
 
         const duration = Math.round(performance.now() - t0);
 
-        // Filter to IPv4 server-reflexive only (ignore host, relay, and IPv6)
         const isIPv4 = (addr) => addr && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(addr);
-        const srflx1 = candidates1.filter(c => c.type === 'srflx' && isIPv4(c.address));
-        const srflx2 = candidates2.filter(c => c.type === 'srflx' && isIPv4(c.address));
-        const allHost = candidates1.filter(c => c.type === 'host');
-        const allCandidates = [...candidates1, ...candidates2.filter(c2 =>
-            !candidates1.some(c1 => c1.type === c2.type && c1.address === c2.address && c1.port === c2.port))];
+        const srflx = candidates.filter(c => c.type === 'srflx' && isIPv4(c.address));
+        const allHost = candidates.filter(c => c.type === 'host');
 
         let natType = 'Unknown';
         let status = 'Warning';
         let detail = '';
 
-        if (srflx1.length === 0 && srflx2.length === 0 && allHost.length === 0) {
+        if (srflx.length === 0 && allHost.length === 0) {
             natType = 'Blocked';
             status = 'Failed';
-            detail = 'No candidates gathered from either STUN server. UDP is likely fully blocked.';
-        } else if (srflx1.length === 0 && srflx2.length === 0) {
+            detail = 'No ICE candidates gathered. UDP is likely fully blocked.';
+        } else if (srflx.length === 0) {
             natType = 'STUN Blocked';
             status = 'Warning';
             detail = 'Only host candidates available. STUN is blocked \u2014 RDP Shortpath may require TURN relay.\n' +
                 'Host candidates:\n' + allHost.map(c => `  ${c.address}:${c.port}`).join('\n');
-        } else if (srflx1.length === 0 || srflx2.length === 0) {
-            // Only one server returned reflexive — can't compare, but STUN partially works
-            const working = srflx1.length > 0 ? srflx1 : srflx2;
-            natType = 'Cone NAT (partial STUN)';
-            status = 'Passed';
-            detail = `Reflexive IP: ${working[0].address}:${working[0].port}\n` +
-                'One STUN server returned reflexive candidates. NAT allows STUN \u2014 RDP Shortpath should work.';
         } else {
-            // Compare reflexive mappings from both servers
-            // Sort by port to get consistent comparison
-            const ref1 = srflx1.sort((a, b) => a.port - b.port)[0];
-            const ref2 = srflx2.sort((a, b) => a.port - b.port)[0];
+            // Group srflx by their base socket (relatedAddress:relatedPort).
+            // Within each group, count distinct reflexive address:port pairs.
+            const byBase = {};
+            for (const c of srflx) {
+                const base = (c.relatedAddress && c.relatedPort)
+                    ? `${c.relatedAddress}:${c.relatedPort}`
+                    : 'default';
+                if (!byBase[base]) byBase[base] = new Set();
+                byBase[base].add(`${c.address}:${c.port}`);
+            }
 
-            detail += `STUN Server 1 (${stunServers[0]}):\n`;
-            detail += `  Reflexive: ${ref1.address}:${ref1.port}\n`;
-            detail += `STUN Server 2 (${stunServers[1]}):\n`;
-            detail += `  Reflexive: ${ref2.address}:${ref2.port}\n\n`;
+            detail += 'Server-reflexive candidates (from single socket to 2 STUN servers):\n';
+            let symmetric = false;
+            for (const [base, endpoints] of Object.entries(byBase)) {
+                const arr = [...endpoints];
+                detail += `  Local base ${base}:\n`;
+                arr.forEach(ep => { detail += `    Reflexive: ${ep}\n`; });
+                if (arr.length > 1) symmetric = true;
+            }
+            detail += '\n';
 
-            if (ref1.address !== ref2.address) {
-                // Different IPs — likely symmetric NAT or multi-homed
+            if (symmetric) {
                 natType = 'Symmetric NAT';
                 status = 'Warning';
-                detail += `Different reflexive IPs: ${ref1.address} vs ${ref2.address}\n` +
-                    'Symmetric NAT detected \u2014 direct STUN P2P may not work.\n' +
-                    'RDP Shortpath will use TURN relay instead (still UDP, still good).';
-            } else if (ref1.port !== ref2.port) {
-                // Same IP, different ports — symmetric NAT (endpoint-dependent mapping)
-                natType = 'Symmetric NAT';
-                status = 'Warning';
-                detail += `Same reflexive IP but different ports: ${ref1.address}:${ref1.port} vs :${ref2.port}\n` +
-                    'Endpoint-dependent port mapping detected (Symmetric NAT).\n' +
+                detail += 'Endpoint-dependent port mapping detected (Symmetric NAT).\n' +
+                    'Different STUN servers see different reflexive ports from the same local socket.\n' +
+                    'Direct STUN hole-punching is unlikely to succeed.\n' +
                     'RDP Shortpath will use TURN relay instead (still UDP, still good).';
             } else {
-                // Same IP and port — Cone NAT (full, restricted, or port-restricted)
-                // All cone types support STUN-based connectivity for RDP Shortpath
                 natType = 'Cone NAT \u2014 STUN connectivity supported';
                 status = 'Passed';
-                detail += `Consistent reflexive mapping: ${ref1.address}:${ref1.port}\n` +
-                    'NAT preserves the same external IP:port for different destinations.\n' +
+                const ep = [...Object.values(byBase)[0]][0];
+                detail += `Consistent reflexive mapping: ${ep}\n` +
+                    'Both STUN servers see the same external IP:port from the same local socket.\n' +
+                    'NAT preserves endpoint-independent mapping (Cone NAT).\n' +
                     'This is compatible with STUN \u2014 RDP Shortpath (UDP) should work well.\n\n' +
                     'NAT sub-type: Full Cone, Restricted Cone, or Port-Restricted Cone\n' +
                     '(all are compatible with RDP Shortpath via STUN/TURN).';
             }
         }
 
-        detail += '\n\nAll unique candidates:\n' + allCandidates.map(c =>
-            `  ${c.type}: ${c.address}:${c.port} (${c.protocol})`
+        detail += '\n\nAll ICE candidates:\n' + candidates.map(c =>
+            `  ${c.type}: ${c.address}:${c.port} (${c.protocol})` +
+            (c.relatedAddress ? ` raddr=${c.relatedAddress}:${c.relatedPort}` : '')
         ).join('\n');
 
         return makeResult(test, status, natType, detail, duration,
@@ -924,11 +928,21 @@ function parseCandidate(candidate) {
             address: candidate.address || candidate.ip || extractField(candidate.candidate, 4),
             port: candidate.port || parseInt(extractField(candidate.candidate, 5)) || 0,
             protocol: candidate.protocol || extractField(candidate.candidate, 2) || 'unknown',
+            relatedAddress: candidate.relatedAddress || extractRelated(candidate.candidate, 'raddr') || '',
+            relatedPort: candidate.relatedPort || parseInt(extractRelated(candidate.candidate, 'rport')) || 0,
             raw: candidate.candidate
         };
     } catch {
         return null;
     }
+}
+
+function extractRelated(candidateStr, field) {
+    if (!candidateStr) return '';
+    const idx = candidateStr.indexOf(field);
+    if (idx < 0) return '';
+    const parts = candidateStr.substring(idx).split(' ');
+    return parts.length > 1 ? parts[1] : '';
 }
 
 function extractField(candidateStr, index) {
