@@ -976,10 +976,10 @@ async function updateConnectivityOverview(results) {
     const tcpVpn = r('L-TCP-07');
     if (tcpTls || tcpDns || tcpVpn) {
         const items = [];
-        if (tcpTls) items.push(buildCheckItem('TLS', tcpTls));
-        if (tcpDns) items.push(buildCheckItem('DNS', tcpDns));
-        if (tcpVpn) items.push(buildCheckItem('Proxy/VPN', tcpVpn));
-        setVal('ov-tcp-path-val', items.join('&ensp;'));
+        if (tcpTls) items.push(buildCheckLine('TLS inspection', tcpTls));
+        if (tcpDns) items.push(buildCheckLine('DNS hijacking', tcpDns));
+        if (tcpVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', tcpVpn));
+        setVal('ov-tcp-path-val', items.join(''));
         hasContent = true;
     } else {
         setVal('ov-tcp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
@@ -990,9 +990,9 @@ async function updateConnectivityOverview(results) {
     const turnVpn = r('L-UDP-07');
     if (turnTls || turnVpn) {
         const items = [];
-        if (turnTls) items.push(buildCheckItem('TLS', turnTls));
-        if (turnVpn) items.push(buildCheckItem('Proxy/VPN', turnVpn));
-        setVal('ov-udp-path-val', items.join('&ensp;'));
+        if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
+        if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
+        setVal('ov-udp-path-val', items.join(''));
         hasContent = true;
     } else {
         setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
@@ -1019,13 +1019,13 @@ async function updateConnectivityOverview(results) {
     }
 }
 
-/** Build a small inline check-item like "✓ TLS" or "⚠ DNS" */
-function buildCheckItem(label, result) {
+/** Build a descriptive check line like "✓ TLS inspection not detected" */
+function buildCheckLine(label, result) {
     if (result.status === 'Passed') {
-        return `<span class="ov-status-icon ov-pass">✓</span>${label}`;
+        return `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>${label} not detected</div>`;
     } else if (result.status === 'Warning') {
-        return `<span class="ov-status-icon ov-warn">⚠</span>${label}`;
+        return `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>${label} detected</div>`;
     } else {
-        return `<span class="ov-status-icon ov-fail">✗</span>${label}`;
+        return `<div class="ov-check-line"><span class="ov-status-icon ov-fail">✗</span>${label} detected</div>`;
     }
 }
