@@ -941,10 +941,17 @@ async function testNetworkPathTrace(test) {
                     lines.push(`║  DNS: No A records found`);
                     warn++;
                 }
-                // Check for Private Link indicators
+                // Check for routing indicators
                 const chainStr = cnameChain.join(' ').toLowerCase();
+                // "privatelink" appears in standard Microsoft DNS chains even on public paths.
+                // Only flag Private Link if the final IP is actually a private/RFC1918 address.
                 if (chainStr.includes('privatelink')) {
-                    lines.push(`║  ⚠ Private Link CNAME detected`);
+                    const isPrivateIp = finalIp && /^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(finalIp);
+                    if (isPrivateIp) {
+                        lines.push(`║  ⚠ Private Link ACTIVE — resolves to private IP ${finalIp}`);
+                    } else {
+                        lines.push(`║  ℹ Private Link CNAME present (standard — public IP, not active)`);
+                    }
                 }
                 if (chainStr.includes('trafficmanager')) {
                     lines.push(`║  ℹ Traffic Manager routing detected`);
