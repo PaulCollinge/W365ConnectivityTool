@@ -824,36 +824,72 @@ function updateExportButton() {
 }
 
 // ── Connectivity Overview panel (quick-glance summary above the map) ──
-function updateConnectivityOverview(results) {
+async function updateConnectivityOverview(results) {
     const panel = document.getElementById('connectivity-overview');
     if (!panel || results.length === 0) return;
 
     const r = id => results.find(x => x.id === id);
-    const setVal = (elId, html) => { const el = document.getElementById(elId); if (el) el.innerHTML = html; };
-    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
+
+    // Helper: build an HTML string with a country-flag <img> prepended if a 2-letter code is found
+    function flagHtml(locationStr) {
+        const code = extractCountryCode(locationStr || '');
+        if (!code) return '';
+        return `<img src="https://flagcdn.com/20x15/${code}.png" alt="${code.toUpperCase()}" width="20" height="15" class="country-flag" onerror="this.style.display='none'"> `;
+    }
+
+    // setVal that prepends a flag when the value looks like a location string
+    const setVal = (elId, html, locationStr) => {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        el.innerHTML = (locationStr ? flagHtml(locationStr) : '') + html;
+    };
 
     let hasContent = false;
 
-    // 1. User Location (B-LE-01)
-    const userLoc = r('B-LE-01');
-    if (userLoc && userLoc.status === 'Passed') {
-        const ip = extractLine(userLoc.detailedInfo, 'Public IP:');
-        setVal('ov-user-location-val', esc(userLoc.resultValue) + (ip ? `  <span class="ov-dim">(IP: ${esc(ip)})</span>` : ''));
+    // 1. User Location — always fetch fresh GeoIP to avoid stale cached data
+    resetGeoCache();
+    const freshGeo = await fetchGeoIp();
+    if (freshGeo) {
+        const locStr = `${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}`;
+        // Also refresh B-LE-01 in allResults so the map stays in sync
+        const existing = allResults.find(x => x.id === 'B-LE-01');
+        if (existing) {
+            existing.resultValue = locStr;
+            existing.detailedInfo = `Public IP: ${freshGeo.query}\nLocation: ${locStr}\nCoordinates: ${freshGeo.lat}, ${freshGeo.lon}`;
+            existing.status = 'Passed';
+            updateTestUI('B-LE-01', existing);
+            updateConnectivityMap(allResults);
+        }
+        setVal('ov-user-location-val',
+            esc(locStr) + `  <span class="ov-dim">(IP: ${esc(freshGeo.query)})</span>`,
+            locStr);
         hasContent = true;
+    } else {
+        const userLoc = r('B-LE-01');
+        if (userLoc && userLoc.status === 'Passed') {
+            const ip = extractLine(userLoc.detailedInfo, 'Public IP:');
+            setVal('ov-user-location-val',
+                esc(userLoc.resultValue) + (ip ? `  <span class="ov-dim">(IP: ${esc(ip)})</span>` : ''),
+                userLoc.resultValue);
+            hasContent = true;
+        }
     }
 
     // 2. RDP Egress (test 27, fallback to L-TCP-09 "Your location:")
     const egress27 = r('27');
     if (egress27 && egress27.detailedInfo) {
         const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
-        setVal('ov-rdp-egress-val', esc(eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue));
+        const egressVal = eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue;
+        setVal('ov-rdp-egress-val', esc(egressVal), egressVal);
         hasContent = true;
     } else {
         const gw09f = r('L-TCP-09');
         if (gw09f && gw09f.detailedInfo) {
             const locLine = gw09f.detailedInfo.split('\n').find(l => l.trim().startsWith('Your location:'));
             if (locLine) {
-                setVal('ov-rdp-egress-val', esc(locLine.replace(/.*Your location:\s*/i, '').trim()) + ' <span class="ov-dim">(scanner GeoIP)</span>');
+                const locVal = locLine.replace(/.*Your location:\s*/i, '').trim();
+                setVal('ov-rdp-egress-val', esc(locVal) + ' <span class="ov-dim">(scanner GeoIP)</span>', locVal);
                 hasContent = true;
             } else {
                 setVal('ov-rdp-egress-val', '<span class="ov-dim">Requires Local Scanner</span>');
@@ -886,8 +922,9 @@ function updateConnectivityOverview(results) {
         const geoVal = extractLine(gw09.detailedInfo, 'GeoIP Location:');
         const distVal = extractLine(gw09.detailedInfo, 'Distance from you:');
         let gwHtml = esc(regionVal || geoVal || gw09.resultValue);
+        const gwLoc = geoVal || regionVal || '';  // for flag
         if (geoVal && regionVal) gwHtml = `${esc(regionVal)} <span class="ov-dim">(${esc(geoVal)})</span>`;
-        if (distVal) gwHtml += ` — ${esc(distVal)}`;
+        if (distVal) gwHtml += ` &mdash; ${esc(distVal)}`;
 
         // TCP latency from L-TCP-04
         const gw04 = r('L-TCP-04');
@@ -903,7 +940,7 @@ function updateConnectivityOverview(results) {
                 }
             }
         }
-        setVal('ov-rdp-gateway-val', gwHtml);
+        setVal('ov-rdp-gateway-val', gwHtml, gwLoc);
         hasContent = true;
     } else {
         setVal('ov-rdp-gateway-val', '<span class="ov-dim">Requires Local Scanner</span>');
@@ -912,7 +949,8 @@ function updateConnectivityOverview(results) {
     // 5. TURN Relay Location & Latency
     const turn04 = r('L-UDP-04');
     if (turn04 && turn04.status !== 'Skipped') {
-        let turnHtml = esc(turn04.resultValue || 'Unknown');
+        const turnLoc = turn04.resultValue || 'Unknown';
+        let turnHtml = esc(turnLoc);
         const turn03 = r('L-UDP-03');
         if (turn03 && turn03.status === 'Passed') {
             let latMs = '';
@@ -926,7 +964,7 @@ function updateConnectivityOverview(results) {
             }
             if (latMs) turnHtml += ` <span class="ov-latency">${esc(latMs)} RTT</span>`;
         }
-        setVal('ov-turn-relay-val', turnHtml);
+        setVal('ov-turn-relay-val', turnHtml, turnLoc);
         hasContent = true;
     } else {
         setVal('ov-turn-relay-val', '<span class="ov-dim">Requires Local Scanner</span>');

@@ -786,6 +786,12 @@ main {
 .overview-value .ov-dim { color: var(--text-muted); font-style: italic; }
 .overview-value .ov-latency { color: var(--accent); font-family: var(--mono); font-size: var(--text-xs); }
 
+.overview-value .country-flag {
+    vertical-align: middle;
+    margin-right: 4px;
+    border-radius: 2px;
+}
+
 @media (max-width: 768px) {
     .overview-grid { grid-template-columns: 1fr; }
     .overview-label { min-width: 120px; }
