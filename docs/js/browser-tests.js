@@ -99,6 +99,11 @@ const ALL_TESTS = [
         category: 'tcp', source: 'local'
     },
     {
+        id: 'B-TCP-04', name: 'Network Path Trace',
+        description: 'DNS chain resolution and timing to key RDP endpoints via DNS-over-HTTPS',
+        category: 'tcp', source: 'browser', run: testNetworkPathTrace
+    },
+    {
         id: 'L-TCP-06', name: 'TLS Inspection Detection',
         description: 'Validates certificate chain for TLS interception by proxies/firewalls (requires Local Scanner)',
         category: 'tcp', source: 'local'
@@ -876,6 +881,135 @@ async function testNatType(test) {
         return makeResult(test, 'Error', `NAT detection error: ${e.message}`,
             e.stack || e.message, Math.round(performance.now() - t0));
     }
+}
+
+
+// ── Network Path Trace ──
+// Uses Google DNS-over-HTTPS to resolve full CNAME chains for key RDP endpoints,
+// then times HTTPS connectivity to each. This is the closest to a traceroute
+// that a browser can do — useful for diagnosing CDN routing, Private Link,
+// split-horizon DNS, and proxy intervention.
+async function testNetworkPathTrace(test) {
+    const t0 = performance.now();
+    const lines = [];
+
+    const targets = [
+        { host: 'afdfp-rdgateway-r1.wvd.microsoft.com', label: 'RDP Gateway (AFD)' },
+        { host: 'rdweb.wvd.microsoft.com',               label: 'AVD Web Access' },
+        { host: 'client.wvd.microsoft.com',               label: 'AVD Client Service' },
+        { host: 'login.microsoftonline.com',              label: 'Authentication' },
+        { host: 'world.relay.avd.microsoft.com',          label: 'TURN Relay' },
+        { host: 'windows.cloud.microsoft',                label: 'Connection Center' }
+    ];
+
+    let ok = 0;
+    let warn = 0;
+
+    for (const target of targets) {
+        lines.push(`╔══ ${target.label} ══`);
+        lines.push(`║  Host: ${target.host}`);
+
+        // Step 1: DNS chain via DoH
+        let finalIp = '';
+        let cnameChain = [];
+        try {
+            const dnsResp = await fetch(
+                `https://dns.google/resolve?name=${target.host}&type=A`,
+                { signal: AbortSignal.timeout(5000), cache: 'no-store' }
+            );
+            if (dnsResp.ok) {
+                const dnsData = await dnsResp.json();
+                if (dnsData.Answer) {
+                    for (const rec of dnsData.Answer) {
+                        if (rec.type === 5) { // CNAME
+                            cnameChain.push(rec.data.replace(/\.$/, ''));
+                        } else if (rec.type === 1) { // A
+                            finalIp = rec.data;
+                        }
+                    }
+                }
+                if (cnameChain.length > 0) {
+                    lines.push(`║  DNS Chain:`);
+                    lines.push(`║    ${target.host}`);
+                    for (const cname of cnameChain) {
+                        lines.push(`║    → ${cname}`);
+                    }
+                    if (finalIp) lines.push(`║    → ${finalIp}`);
+                } else if (finalIp) {
+                    lines.push(`║  Resolved: ${finalIp}`);
+                } else {
+                    lines.push(`║  DNS: No A records found`);
+                    warn++;
+                }
+                // Check for Private Link indicators
+                const chainStr = cnameChain.join(' ').toLowerCase();
+                if (chainStr.includes('privatelink')) {
+                    lines.push(`║  ⚠ Private Link CNAME detected`);
+                }
+                if (chainStr.includes('trafficmanager')) {
+                    lines.push(`║  ℹ Traffic Manager routing detected`);
+                }
+                if (chainStr.includes('azurefd') || chainStr.includes('afd') || chainStr.includes('edgekey')) {
+                    lines.push(`║  ℹ Azure Front Door / CDN routing detected`);
+                }
+            } else {
+                lines.push(`║  DNS: DoH query failed (HTTP ${dnsResp.status})`);
+            }
+        } catch (e) {
+            lines.push(`║  DNS: DoH unavailable (${e.message})`);
+        }
+
+        // Step 2: HTTPS timing
+        try {
+            const start = performance.now();
+            await fetch(`https://${target.host}/?_trace=${Date.now()}`, {
+                method: 'HEAD', mode: 'no-cors', cache: 'no-store',
+                signal: AbortSignal.timeout(10000)
+            });
+            const ms = Math.round(performance.now() - start);
+            lines.push(`║  HTTPS: ✓ ${ms}ms`);
+
+            // Check Resource Timing for protocol info
+            if (typeof performance !== 'undefined' && performance.getEntriesByType) {
+                const entries = performance.getEntriesByType('resource')
+                    .filter(e => e.name.includes(target.host))
+                    .sort((a, b) => b.startTime - a.startTime);
+                if (entries.length > 0 && entries[0].nextHopProtocol) {
+                    lines.push(`║  Protocol: ${entries[0].nextHopProtocol}`);
+                }
+            }
+
+            ok++;
+        } catch (e) {
+            const ms = Math.round(performance.now() - t0);
+            lines.push(`║  HTTPS: ✗ Failed (${e.message})`);
+            warn++;
+        }
+
+        // Step 3: Also resolve AAAA (IPv6) — useful for dual-stack diagnostics
+        try {
+            const dns6Resp = await fetch(
+                `https://dns.google/resolve?name=${target.host}&type=AAAA`,
+                { signal: AbortSignal.timeout(3000), cache: 'no-store' }
+            );
+            if (dns6Resp.ok) {
+                const dns6Data = await dns6Resp.json();
+                const aaaa = dns6Data.Answer?.filter(r => r.type === 28).map(r => r.data) || [];
+                if (aaaa.length > 0) {
+                    lines.push(`║  IPv6: ${aaaa[0]}`);
+                }
+            }
+        } catch (e) { /* IPv6 lookup optional */ }
+
+        lines.push(`╚${'═'.repeat(50)}`);
+        lines.push('');
+    }
+
+    const duration = Math.round(performance.now() - t0);
+    const value = `${ok}/${targets.length} endpoints traced`;
+    const status = warn > 0 ? 'Warning' : 'Passed';
+
+    return makeResult(test, status, value, lines.join('\n'), duration);
 }
 
 
