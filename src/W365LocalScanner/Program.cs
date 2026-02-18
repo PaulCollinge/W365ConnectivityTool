@@ -1745,8 +1745,9 @@ class Program
 
             foreach (var (host, role) in targets)
             {
-                sb.AppendLine($"─── {role} ───");
-                sb.AppendLine($"Target: {host}");
+                sb.AppendLine($"╔══════════════════════════════════════════════════════════════");
+                sb.AppendLine($"║  Traceroute: {role}");
+                sb.AppendLine($"║  Target:     {host}");
 
                 IPAddress? targetIp;
                 try
@@ -1755,20 +1756,24 @@ class Program
                     targetIp = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                     if (targetIp == null)
                     {
-                        sb.AppendLine($"  ✗ No IPv4 address resolved");
+                        sb.AppendLine($"║  ✗ No IPv4 address resolved");
+                        sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                         sb.AppendLine();
                         continue;
                     }
-                    sb.AppendLine($"Resolved: {targetIp}");
+                    sb.AppendLine($"║  Resolved:   {targetIp}");
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"  ✗ DNS failed: {ex.Message}");
+                    sb.AppendLine($"║  ✗ DNS failed: {ex.Message}");
+                    sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                     sb.AppendLine();
                     continue;
                 }
 
-                sb.AppendLine($"{"Hop",-4} {"IP Address",-18} {"RTT1",-8} {"RTT2",-8} {"RTT3",-8} Hostname");
+                sb.AppendLine($"╠──────────────────────────────────────────────────────────────");
+                sb.AppendLine($"║  {"Hop",-4} {"IP Address",-18} {"RTT1",-8} {"RTT2",-8} {"RTT3",-8} Hostname");
+                sb.AppendLine($"║  {"───",-4} {"──────────",-18} {"────",-8} {"────",-8} {"────",-8} ────────");
 
                 bool reached = false;
                 using var ping = new Ping();
@@ -1820,25 +1825,26 @@ class Program
                         }
                         catch { /* Reverse DNS not available */ }
 
-                        sb.AppendLine($"{ttl,-4} {hopIp,-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8} {hostName}");
+                        sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8} {hostName}");
                     }
                     else
                     {
-                        sb.AppendLine($"{ttl,-4} {"*",-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8}");
+                        sb.AppendLine($"║  {ttl,-4} {"*",-18} {rtts[0],-8} {rtts[1],-8} {rtts[2],-8}");
                     }
 
                     if (reached)
                     {
-                        sb.AppendLine($"  → Target reached at hop {ttl}");
+                        sb.AppendLine($"║  → Target reached at hop {ttl}");
                         break;
                     }
                 }
 
                 if (!reached)
-                    sb.AppendLine($"  → Target not reached within {maxHops} hops");
+                    sb.AppendLine($"║  → Target not reached within {maxHops} hops");
                 else
                     completed++;
 
+                sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                 sb.AppendLine();
             }
 
