@@ -619,13 +619,24 @@ async function exportTextReport() {
         lines.push(`  User Location:     ${loc ? loc.resultValue : 'Unknown'}`);
     }
 
-    // 2. RDP Egress Location (from scanner test 27)
+    // 2. RDP Egress Location (prefer test 27, fallback to L-TCP-09 "Your location:")
     const egress27 = r('27');
     if (egress27 && egress27.detailedInfo) {
         const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
         lines.push(`  RDP Egress:        ${eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue}`);
     } else {
-        lines.push(`  RDP Egress:        (requires Local Scanner + cloud session)`);
+        // Fallback: L-TCP-09 (Gateway Used) includes the scanner's own GeoIP as "Your location:"
+        const gw09f = r('L-TCP-09');
+        if (gw09f && gw09f.detailedInfo) {
+            const locLine = gw09f.detailedInfo.split('\n').find(l => l.trim().startsWith('Your location:'));
+            if (locLine) {
+                lines.push(`  RDP Egress:        ${locLine.replace(/.*Your location:\s*/i, '').trim()}  (scanner GeoIP)`);
+            } else {
+                lines.push(`  RDP Egress:        (requires Local Scanner)`);
+            }
+        } else {
+            lines.push(`  RDP Egress:        (requires Local Scanner)`);
+        }
     }
 
     // 3. AFD Location (prefer scanner L-TCP-09, fallback to browser B-TCP-02)
