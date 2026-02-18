@@ -92,6 +92,8 @@ class Program
         {
             var test = tests[i];
             Console.Write($"  [{i + 1}/{tests.Count}] {test.Name}... ");
+            if (test.Id == "L-TCP-10")
+                Console.Write("(traceroute — this may take 1-2 minutes) ");
 
             try
             {
@@ -132,6 +134,9 @@ class Program
                     "Failed" => "\u2718",
                     _ => "\u2022"
                 };
+                // Traceroute prints sub-progress on separate lines, so start a new line for the final status
+                if (test.Id == "L-TCP-10")
+                    Console.Write("\n        ");
                 Console.WriteLine($"{icon} {result.Status} ({sw.ElapsedMilliseconds}ms)");
             }
             catch (Exception ex)
@@ -1746,6 +1751,7 @@ class Program
 
             foreach (var (host, role) in targets)
             {
+                Console.Write($"\n        Tracing {role}... ");
                 sb.AppendLine($"╔══════════════════════════════════════════════════════════════");
                 sb.AppendLine($"║  Traceroute: {role}");
                 sb.AppendLine($"║  Target:     {host}");
@@ -1847,6 +1853,7 @@ class Program
 
                 sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                 sb.AppendLine();
+                Console.Write(reached ? "✓" : "✗");
             }
 
             result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
