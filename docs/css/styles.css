@@ -366,27 +366,68 @@ main {
    ════════════════════════════════════════ */
 .progress-container {
     margin-bottom: var(--space-section);
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 14px 20px;
+    padding: 16px 20px;
     background: var(--bg-card);
     border-radius: var(--r-md);
-    border: 1px solid var(--border-default);
+    border: 1px solid var(--accent-border);
+    animation: progress-pulse 2s ease-in-out infinite;
+    box-shadow: 0 0 12px rgba(56,139,253,0.15);
+}
+
+@keyframes progress-pulse {
+    0%, 100% { border-color: var(--accent-border); box-shadow: 0 0 12px rgba(56,139,253,0.15); }
+    50% { border-color: var(--accent); box-shadow: 0 0 20px rgba(56,139,253,0.3); }
+}
+
+.progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.progress-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.progress-label::before {
+    content: '';
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: var(--accent);
+    border-radius: 50%;
+    animation: progress-dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes progress-dot-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+.progress-count {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-family: var(--mono);
 }
 
 .progress-bar {
-    flex: 1;
-    height: 6px;
+    height: 10px;
     background: var(--bg-surface);
-    border-radius: 3px;
+    border-radius: 5px;
     overflow: hidden;
+    margin-bottom: 8px;
 }
 
 .progress-fill {
     height: 100%;
     background: linear-gradient(90deg, var(--accent-dim), var(--accent));
-    border-radius: 3px;
+    border-radius: 5px;
     transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     width: 0%;
     position: relative;
@@ -397,20 +438,20 @@ main {
     content: '';
     position: absolute; inset: 0;
     background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%);
-    animation: shimmer 2s ease-in-out infinite;
+    animation: shimmer 1.5s ease-in-out infinite;
 }
 
 @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
 
-.progress-text {
-    font-size: var(--text-sm);
+.progress-test-name {
+    font-size: var(--text-xs);
     color: var(--text-muted);
     white-space: nowrap;
-    font-weight: 600;
-    font-family: var(--mono);
-    min-width: 56px;
-    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
+
+.progress-text { display: none; }
 
 /* ════════════════════════════════════════
    INFO BANNER

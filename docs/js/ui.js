@@ -172,18 +172,43 @@ function updateSummary(results) {
 }
 
 /**
- * Update progress bar.
+ * Update progress bar with current test info.
  */
-function updateProgress(current, total) {
+function updateProgress(current, total, testName) {
     const container = document.getElementById('progress-container');
     container.classList.remove('hidden');
 
     const fill = document.getElementById('progress-fill');
-    const text = document.getElementById('progress-text');
-
     const pct = Math.round((current / total) * 100);
     fill.style.width = `${pct}%`;
-    text.textContent = `${current} / ${total}`;
+
+    // Update header elements
+    let label = container.querySelector('.progress-label');
+    let count = container.querySelector('.progress-count');
+    let nameEl = container.querySelector('.progress-test-name');
+
+    // If the new layout elements don't exist yet, create them
+    if (!label) {
+        const header = document.createElement('div');
+        header.className = 'progress-header';
+        label = document.createElement('span');
+        label.className = 'progress-label';
+        count = document.createElement('span');
+        count.className = 'progress-count';
+        header.appendChild(label);
+        header.appendChild(count);
+        container.insertBefore(header, container.firstChild);
+
+        nameEl = document.createElement('div');
+        nameEl.className = 'progress-test-name';
+        container.appendChild(nameEl);
+    }
+
+    label.textContent = 'Running Tests…';
+    count.textContent = `${current} / ${total} (${pct}%)`;
+    if (testName) {
+        nameEl.textContent = `▸ ${testName}`;
+    }
 }
 
 function hideProgress() {

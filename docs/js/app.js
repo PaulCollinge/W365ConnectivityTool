@@ -154,10 +154,11 @@ async function runAllBrowserTests() {
     if (typeof resetGeoCache === 'function') resetGeoCache();
 
     // Show progress
-    updateProgress(0, total);
+    updateProgress(0, total, browserTests[0]?.name);
 
     for (const test of browserTests) {
         setTestRunning(test.id);
+        updateProgress(completed, total, test.name);
 
         try {
             const result = await test.run(test);
