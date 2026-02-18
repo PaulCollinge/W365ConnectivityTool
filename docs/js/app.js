@@ -734,6 +734,31 @@ async function exportTextReport() {
     const tcpTls = r('L-TCP-06');
     const tcpDns = r('L-TCP-08');
     const tcpVpn = r('L-TCP-07');
+
+    // GeoIP the STUN IP to distinguish CGNAT from proxy
+    let reportStunCountry = '';
+    let reportStunCity = '';
+    let reportHttpCountry = freshGeo?.country || '';
+    let reportHttpCity = freshGeo?.city || '';
+    let reportIsSplitPath = false;
+    if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
+        try {
+            const geoResp = await fetch(`https://ipinfo.io/${reportStunIp}/json`, {
+                signal: AbortSignal.timeout(5000), cache: 'no-store'
+            });
+            if (geoResp.ok) {
+                const geoData = await geoResp.json();
+                reportStunCountry = geoData.country || '';
+                reportStunCity = geoData.city || '';
+            }
+        } catch (e) { /* GeoIP lookup failed */ }
+        // Different countries = proxy; same country = CGNAT
+        if (reportStunCountry && reportHttpCountry &&
+            reportStunCountry.toUpperCase() !== reportHttpCountry.toUpperCase()) {
+            reportIsSplitPath = true;
+        }
+    }
+
     if (tcpTls || tcpDns || tcpVpn || (reportHttpIp && reportStunIp)) {
         lines.push(`  TCP-based RDP Path Optimisation:`);
         if (tcpTls) {
@@ -751,8 +776,12 @@ async function exportTextReport() {
         if (reportHttpIp && reportStunIp) {
             if (reportHttpIp === reportStunIp) {
                 lines.push(`    ✓ Split-path:         No proxy / split-path routing detected`);
+            } else if (reportIsSplitPath) {
+                lines.push(`    ⚠ Split-path:         Proxy / split-path routing detected`);
+                lines.push(`                          HTTP: ${reportHttpIp} [${reportHttpCity}, ${reportHttpCountry}]`);
+                lines.push(`                          STUN: ${reportStunIp} [${reportStunCity}, ${reportStunCountry}]`);
             } else {
-                lines.push(`    ⚠ Split-path:         Proxy / split-path routing detected (HTTP: ${reportHttpIp}, STUN: ${reportStunIp})`);
+                lines.push(`    ✓ Split-path:         No proxy detected (CGNAT: different IPs, same country)`);
             }
         }
     } else {
@@ -774,10 +803,10 @@ async function exportTextReport() {
             const icon = turnVpn.status === 'Passed' ? '✓' : '⚠';
             lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
         }
-        if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
+        if (reportIsSplitPath) {
             lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
         }
-    } else if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
+    } else if (reportIsSplitPath) {
         lines.push(`  UDP-based RDP Path Optimisation:`);
         lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
     } else {
@@ -1002,10 +1031,14 @@ async function updateConnectivityOverview(results) {
     // 6. TCP-based RDP Path Optimisation
     // Browser-native proxy detection: compare HTTP egress IP vs STUN reflexive IP.
     // HTTP fetch goes through the browser's proxy; STUN uses raw UDP.
-    // If the two public IPs differ, an HTTP proxy/SWG is in the path and
-    // TCP-based RDP will also traverse it.
+    // If the two IPs differ AND geolocate to different countries/cities,
+    // an HTTP proxy/SWG is likely in the path.
+    // Note: CGNAT (common on French ISPs etc.) can assign different public IPs
+    // to TCP vs UDP from the same ISP — that's NOT a proxy.
     let proxyCheckHtml = '';
     let httpEgressIp = freshGeo?.query || '';
+    let httpCountry = freshGeo?.country || '';
+    let httpCity = freshGeo?.city || '';
     if (!httpEgressIp) {
         const locResult = r('B-LE-01');
         if (locResult?.detailedInfo) {
@@ -1023,7 +1056,31 @@ async function updateConnectivityOverview(results) {
         if (httpEgressIp === stunReflexiveIp) {
             proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected</div>`;
         } else {
-            proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Proxy / split-path routing detected <span class="ov-dim">(HTTP: ${esc(httpEgressIp)}, STUN: ${esc(stunReflexiveIp)})</span></div>`;
+            // IPs differ — could be CGNAT or a real proxy. GeoIP the STUN IP to compare.
+            let stunCountry = '';
+            let stunCity = '';
+            try {
+                const geoResp = await fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
+                    signal: AbortSignal.timeout(5000), cache: 'no-store'
+                });
+                if (geoResp.ok) {
+                    const geoData = await geoResp.json();
+                    stunCountry = geoData.country || '';
+                    stunCity = geoData.city || '';
+                }
+            } catch (e) { /* GeoIP lookup failed — fall through */ }
+
+            if (stunCountry && httpCountry &&
+                stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
+                // Same country — likely CGNAT, not a proxy
+                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected <span class="ov-dim">(CGNAT: different IPs, same country)</span></div>`;
+            } else if (stunCountry && httpCountry) {
+                // Different countries — likely a proxy/VPN/SWG
+                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Proxy / split-path routing detected <span class="ov-dim">(HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}])</span></div>`;
+            } else {
+                // Couldn't GeoIP the STUN IP — show informational only
+                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-dim">ℹ</span>Different egress IPs <span class="ov-dim">(HTTP: ${esc(httpEgressIp)}, STUN: ${esc(stunReflexiveIp)} — may be CGNAT)</span></div>`;
+            }
         }
     }
 
@@ -1045,18 +1102,20 @@ async function updateConnectivityOverview(results) {
     // 7. UDP-based RDP Path Optimisation
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
+    // Only flag split-path on UDP section when countries actually differ (not CGNAT)
+    const isSplitPath = httpEgressIp && stunReflexiveIp &&
+        httpEgressIp !== stunReflexiveIp &&
+        proxyCheckHtml.includes('ov-warn');
     if (turnTls || turnVpn) {
         const items = [];
         if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
         if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
-        // If the proxy check showed matching IPs, note that UDP bypasses the proxy
-        if (proxyCheckHtml && httpEgressIp && stunReflexiveIp && httpEgressIp !== stunReflexiveIp) {
+        if (isSplitPath) {
             items.push(`<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
         }
         setVal('ov-udp-path-val', items.join(''));
         hasContent = true;
-    } else if (proxyCheckHtml && httpEgressIp && stunReflexiveIp && httpEgressIp !== stunReflexiveIp) {
-        // No scanner data, but we can show the UDP-bypasses-proxy finding
+    } else if (isSplitPath) {
         setVal('ov-udp-path-val',
             `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
         hasContent = true;
