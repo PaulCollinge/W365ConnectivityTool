@@ -791,9 +791,17 @@ async function exportTextReport() {
     lines.push('');
 
     // 7. TURN (UDP) Security Report
+    // Detect CGNAT in text report too
+    let reportIsCgnat = false;
+    if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp &&
+        reportStunCountry && reportHttpCountry &&
+        reportStunCountry.toUpperCase() === reportHttpCountry.toUpperCase()) {
+        reportIsCgnat = true;
+    }
+
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
-    if (turnTls || turnVpn) {
+    if (turnTls || turnVpn || reportIsSplitPath || reportIsCgnat) {
         lines.push(`  UDP-based RDP Path Optimisation:`);
         if (turnTls) {
             const icon = turnTls.status === 'Passed' ? '✓' : '⚠';
@@ -805,6 +813,20 @@ async function exportTextReport() {
         }
         if (reportIsSplitPath) {
             lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
+        }
+        if (reportIsCgnat) {
+            const natR = r('B-UDP-02');
+            const natType = natR?.resultValue || '';
+            const isSymmetric = natType.toLowerCase().includes('symmetric');
+            if (isSymmetric) {
+                lines.push(`    ⚠ CGNAT:              Carrier-Grade NAT detected — Symmetric NAT confirmed`);
+                lines.push(`                          STUN hole-punching unavailable; RDP Shortpath will use TURN relay`);
+            } else if (natR && natR.status === 'Passed') {
+                lines.push(`    ✓ CGNAT:              Detected but NAT mapping is Cone — STUN should work`);
+            } else {
+                lines.push(`    ⚠ CGNAT:              Carrier-Grade NAT detected — may limit STUN connectivity`);
+                lines.push(`                          RDP Shortpath may fall back to TURN relay`);
+            }
         }
     } else if (reportIsSplitPath) {
         lines.push(`  UDP-based RDP Path Optimisation:`);
@@ -1052,6 +1074,8 @@ async function updateConnectivityOverview(results) {
         const m = stunResult.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
         if (m) stunReflexiveIp = m[1];
     }
+    let isCgnat = false;
+    let isSplitPath = false;
     if (httpEgressIp && stunReflexiveIp) {
         if (httpEgressIp === stunReflexiveIp) {
             proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected</div>`;
@@ -1072,10 +1096,12 @@ async function updateConnectivityOverview(results) {
 
             if (stunCountry && httpCountry &&
                 stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                // Same country — likely CGNAT, not a proxy
-                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected <span class="ov-dim">(CGNAT: different IPs, same country)</span></div>`;
+                // Same country — CGNAT, not a proxy
+                isCgnat = true;
+                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected</div>`;
             } else if (stunCountry && httpCountry) {
                 // Different countries — likely a proxy/VPN/SWG
+                isSplitPath = true;
                 proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Proxy / split-path routing detected <span class="ov-dim">(HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}])</span></div>`;
             } else {
                 // Couldn't GeoIP the STUN IP — show informational only
@@ -1102,17 +1128,33 @@ async function updateConnectivityOverview(results) {
     // 7. UDP-based RDP Path Optimisation
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
-    // Only flag split-path on UDP section when countries actually differ (not CGNAT)
-    const isSplitPath = httpEgressIp && stunReflexiveIp &&
-        httpEgressIp !== stunReflexiveIp &&
-        proxyCheckHtml.includes('ov-warn');
-    if (turnTls || turnVpn) {
+
+    // Build CGNAT warning for UDP if detected
+    let cgnatHtml = '';
+    if (isCgnat) {
+        // Cross-reference with NAT type result
+        const natResult = r('B-UDP-02');
+        const natType = natResult?.resultValue || '';
+        const isSymmetric = natType.toLowerCase().includes('symmetric');
+        if (isSymmetric) {
+            cgnatHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Carrier-Grade NAT (CGNAT) detected — Symmetric NAT confirmed</div>`
+                + `<div class="ov-check-line ov-dim" style="padding-left:1.4em;">STUN hole-punching unavailable; RDP Shortpath will use TURN relay</div>`;
+        } else if (natResult && natResult.status === 'Passed') {
+            cgnatHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>CGNAT detected but NAT is Cone — STUN should work</div>`;
+        } else {
+            cgnatHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Carrier-Grade NAT (CGNAT) detected — may limit STUN connectivity</div>`
+                + `<div class="ov-check-line ov-dim" style="padding-left:1.4em;">RDP Shortpath may fall back to TURN relay</div>`;
+        }
+    }
+
+    if (turnTls || turnVpn || isSplitPath || cgnatHtml) {
         const items = [];
         if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
         if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
         if (isSplitPath) {
             items.push(`<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
         }
+        if (cgnatHtml) items.push(cgnatHtml);
         setVal('ov-udp-path-val', items.join(''));
         hasContent = true;
     } else if (isSplitPath) {
