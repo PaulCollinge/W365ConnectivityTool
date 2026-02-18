@@ -524,8 +524,25 @@ function mapCategoryFromId(id) {
 }
 
 // ── Export results as a text report ──
-function exportTextReport() {
+async function exportTextReport() {
     if (allResults.length === 0) return;
+
+    // Always fetch fresh GeoIP at export time — don't rely on cached B-LE-01
+    resetGeoCache();
+    const freshGeo = await fetchGeoIp();
+
+    // Update the B-LE-01 result in allResults with fresh data
+    if (freshGeo) {
+        const freshLoc = `${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}`;
+        const freshDetail = `Public IP: ${freshGeo.query}\nLocation: ${freshLoc}\nCoordinates: ${freshGeo.lat}, ${freshGeo.lon}`;
+        const existing = allResults.find(r => r.id === 'B-LE-01');
+        if (existing) {
+            existing.resultValue = freshLoc;
+            existing.detailedInfo = freshDetail;
+            existing.status = 'Passed';
+            updateTestUI('B-LE-01', existing);
+        }
+    }
 
     const lines = [];
     const divider = '═'.repeat(72);
@@ -537,29 +554,34 @@ function exportTextReport() {
     lines.push(`  Generated: ${new Date().toLocaleString()}`);
     lines.push(`  User Agent: ${navigator.userAgent}`);
 
-    // Current user location from the B-LE-01 browser test (live GeoIP)
-    const userLocResult = allResults.find(r => r.id === 'B-LE-01' && r.status === 'Passed');
-    if (userLocResult) {
-        lines.push(`  Location:   ${userLocResult.resultValue}`);
-        const pubIp = (userLocResult.detailedInfo || '').split('\n')
-            .find(l => l.startsWith('Public IP:'));
-        if (pubIp) lines.push(`  ${pubIp}`);
+    // Current user location — fresh GeoIP just fetched above
+    if (freshGeo) {
+        lines.push(`  Location:   ${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}`);
+        lines.push(`  Public IP:  ${freshGeo.query}`);
+    } else {
+        const userLocResult = allResults.find(r => r.id === 'B-LE-01' && r.status === 'Passed');
+        if (userLocResult) {
+            lines.push(`  Location:   ${userLocResult.resultValue}`);
+            const pubIp = (userLocResult.detailedInfo || '').split('\n')
+                .find(l => l.startsWith('Public IP:'));
+            if (pubIp) lines.push(`  ${pubIp}`);
+        }
     }
 
     // Note when scanner data was captured (may differ from current location)
     const scannerResults = allResults.filter(r => r.source === 'local');
     if (scannerResults.length > 0 && _importedScanTimestamp) {
         lines.push(`  Scanner data from: ${_importedScanTimestamp}`);
-        // Warn if scanner location differs from browser location
-        if (userLocResult) {
-            const browserLoc = (userLocResult.resultValue || '').toLowerCase();
+        // Warn if scanner location differs from current fresh location
+        if (freshGeo) {
+            const currentCity = freshGeo.city.toLowerCase();
             const test27 = scannerResults.find(r => r.id === '27');
             if (test27 && test27.detailedInfo) {
                 const egressLine = test27.detailedInfo.split('\n')
                     .find(l => l.trim().startsWith('Your egress location:'));
                 if (egressLine) {
                     const scannerLoc = egressLine.replace(/.*Your egress location:\s*/i, '').trim();
-                    if (scannerLoc && !browserLoc.includes(scannerLoc.split(',')[0].trim().toLowerCase())) {
+                    if (scannerLoc && !scannerLoc.toLowerCase().includes(currentCity)) {
                         lines.push(`  ⚠ Scanner was run from: ${scannerLoc}`);
                         lines.push(`    Current location differs — re-run the scanner for accurate results.`);
                     }
