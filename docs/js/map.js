@@ -22,11 +22,16 @@ function updateConnectivityMap(results) {
 // ── Card helpers ──
 
 /**
- * Extract a 2-letter ISO country code from a location string like "London, GB".
+ * Extract a 2-letter ISO country code from a location string like "London, GB"
+ * or "Marseille, Provence, FR (51.5.67.23)".
  * Returns lowercase code (e.g. "gb") for use with flag CDN, or '' if not found.
  */
 function extractCountryCode(locationStr) {
     if (!locationStr) return '';
+    // Try to find a standalone 2-letter code: ", XX" at end or ", XX (" before parenthetical
+    const m = locationStr.match(/,\s*([A-Z]{2})\s*(?:\(|$)/);
+    if (m) return m[1].toLowerCase();
+    // Fallback: last CSV part is exactly 2 uppercase letters
     const parts = locationStr.split(',');
     if (parts.length < 2) return '';
     const last = parts[parts.length - 1].trim();
