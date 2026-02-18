@@ -889,6 +889,25 @@ async function testNatType(test) {
 // then times HTTPS connectivity to each. Shows how DNS routes traffic through
 // AFD, Traffic Manager, and Private Link. For full ICMP traceroute (hop-by-hop),
 // use the Local Scanner test L-TCP-10.
+/**
+ * Identifies known Microsoft/Azure IP ranges when reverse DNS is unavailable.
+ */
+function identifyMicrosoftIp(ip) {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4 || parts.some(p => isNaN(p))) return '';
+    const [a, b] = parts;
+    if (a === 104 && b === 44) return '[Microsoft backbone]';
+    if (a === 104 && b >= 40 && b <= 47) return '[Azure]';
+    if (a === 40 && (b & 0xC0) === 64) return '[Azure]';
+    if (a === 20) return '[Azure]';
+    if (a === 13 && (b & 0xE0) === 64) return '[Azure]';
+    if (a === 52 && b >= 96 && b <= 111) return '[Microsoft 365]';
+    if (a === 51 && b === 5) return '[AVD TURN relay range]';
+    if (a === 150 && b === 171) return '[Microsoft backbone]';
+    if (a === 4 && b >= 150) return '[Microsoft]';
+    return '';
+}
+
 async function testNetworkPathTrace(test) {
     const t0 = performance.now();
     const lines = [];
@@ -945,6 +964,35 @@ async function testNetworkPathTrace(test) {
                 }
                 // Check for routing indicators
                 const chainStr = cnameChain.join(' ').toLowerCase();
+
+                // GSA / SASE / SWG detection
+                if (chainStr.includes('globalsecureaccess') || chainStr.includes('sse.microsoft') ||
+                    chainStr.includes('edge.security.microsoft')) {
+                    lines.push(`║  ⚠ Routed via: Microsoft Global Secure Access (Entra Private Access)`);
+                    lines.push(`║    Traffic is NOT going direct — routed through a security proxy`);
+                    warn++;
+                } else if (chainStr.includes('zscaler')) {
+                    lines.push(`║  ⚠ Routed via: Zscaler Secure Web Gateway`);
+                    lines.push(`║    Traffic is NOT going direct — routed through a security proxy`);
+                    warn++;
+                } else if (chainStr.includes('netskope')) {
+                    lines.push(`║  ⚠ Routed via: Netskope Secure Web Gateway`);
+                    lines.push(`║    Traffic is NOT going direct — routed through a security proxy`);
+                    warn++;
+                } else if (chainStr.includes('cloudflare-gateway') || chainStr.includes('swg')) {
+                    lines.push(`║  ⚠ Routed via: Third-party Secure Web Gateway`);
+                    lines.push(`║    Traffic is NOT going direct — routed through a security proxy`);
+                    warn++;
+                }
+
+                // Label final IP if it's a known Microsoft range
+                if (finalIp) {
+                    const msLabel = identifyMicrosoftIp(finalIp);
+                    if (msLabel) {
+                        lines.push(`║  ℹ IP identified: ${finalIp} ${msLabel}`);
+                    }
+                }
+
                 // "privatelink" appears in standard Microsoft DNS chains even on public paths.
                 // Only flag Private Link if the final IP is actually a private/RFC1918 address.
                 if (chainStr.includes('privatelink')) {
