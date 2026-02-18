@@ -602,6 +602,138 @@ async function exportTextReport() {
         (skipped > 0 ? `, ${skipped} skipped` : ''));
     lines.push('');
 
+    // ── Connectivity Overview (quick-glance summary) ──
+    lines.push(divider);
+    lines.push('  Connectivity Overview');
+    lines.push(divider);
+    lines.push('');
+
+    // Helper: find a result by ID
+    const r = id => allResults.find(x => x.id === id);
+
+    // 1. User Location
+    if (freshGeo) {
+        lines.push(`  User Location:     ${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}  (IP: ${freshGeo.query})`);
+    } else {
+        const loc = r('B-LE-01');
+        lines.push(`  User Location:     ${loc ? loc.resultValue : 'Unknown'}`);
+    }
+
+    // 2. RDP Egress Location (from scanner test 27)
+    const egress27 = r('27');
+    if (egress27 && egress27.detailedInfo) {
+        const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
+        lines.push(`  RDP Egress:        ${eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue}`);
+    } else {
+        lines.push(`  RDP Egress:        (requires Local Scanner + cloud session)`);
+    }
+
+    // 3. AFD Location (prefer scanner L-TCP-09, fallback to browser B-TCP-02)
+    const gw09 = r('L-TCP-09');
+    const afd02 = r('B-TCP-02');
+    if (gw09 && gw09.detailedInfo) {
+        const popLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('AFD PoP:'));
+        if (popLine) {
+            lines.push(`  AFD Edge PoP:      ${popLine.replace(/.*AFD PoP:\s*/i, '').trim()}`);
+        } else if (afd02) {
+            lines.push(`  AFD Edge PoP:      ${afd02.resultValue}`);
+        } else {
+            lines.push(`  AFD Edge PoP:      Unknown`);
+        }
+    } else if (afd02) {
+        lines.push(`  AFD Edge PoP:      ${afd02.resultValue}`);
+    } else {
+        lines.push(`  AFD Edge PoP:      (not tested)`);
+    }
+
+    // 4. Gateway Location & Latency (from L-TCP-09 + L-TCP-04)
+    if (gw09 && gw09.detailedInfo) {
+        const regionLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Azure Region:'));
+        const geoLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('GeoIP Location:'));
+        const distLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Distance from you:'));
+        const regionVal = regionLine ? regionLine.replace(/.*Azure Region:\s*/i, '').trim() : '';
+        const geoVal = geoLine ? geoLine.replace(/.*GeoIP Location:\s*/i, '').trim() : '';
+        let gwSummary = regionVal || geoVal || gw09.resultValue;
+        if (geoVal && regionVal) gwSummary = `${regionVal}  (${geoVal})`;
+        if (distLine) gwSummary += `  — ${distLine.replace(/.*Distance from you:\s*/i, '').trim()}`;
+        // try to find TCP latency from L-TCP-04
+        const gw04 = r('L-TCP-04');
+        if (gw04 && gw04.detailedInfo) {
+            const tcpLine = gw04.detailedInfo.split('\n').find(l => l.includes('[RDP Gateway]'));
+            if (tcpLine) {
+                const latLine = gw04.detailedInfo.split('\n')
+                    .slice(gw04.detailedInfo.split('\n').indexOf(tcpLine))
+                    .find(l => l.trim().match(/TCP connected in \d+ms/));
+                if (latLine) {
+                    const ms = latLine.match(/(\d+)ms/);
+                    if (ms) gwSummary += `  — TCP ${ms[1]}ms`;
+                }
+            }
+        }
+        lines.push(`  RDP Gateway:       ${gwSummary}`);
+    } else {
+        lines.push(`  RDP Gateway:       (requires Local Scanner)`);
+    }
+
+    // 5. TURN Relay Location & Latency (L-UDP-04 + L-UDP-03)
+    const turn04 = r('L-UDP-04');
+    if (turn04 && turn04.status !== 'Skipped') {
+        let turnSummary = turn04.resultValue || 'Unknown';
+        const turn03 = r('L-UDP-03');
+        if (turn03 && turn03.status === 'Passed') {
+            // L-UDP-03 resultValue is like "TURN relay reachable at x.x.x.x:3478 (UDP STUN response received)"
+            turnSummary = turn04.resultValue;
+        }
+        lines.push(`  TURN Relay:        ${turnSummary}`);
+    } else {
+        lines.push(`  TURN Relay:        (requires Local Scanner)`);
+    }
+
+    lines.push('');
+
+    // 6. TCP (RDP) Security Report
+    const tcpTls = r('L-TCP-06');
+    const tcpDns = r('L-TCP-08');
+    const tcpVpn = r('L-TCP-07');
+    if (tcpTls || tcpDns || tcpVpn) {
+        lines.push(`  TCP (RDP) Path Security:`);
+        if (tcpTls) {
+            const icon = tcpTls.status === 'Passed' ? '✓' : '⚠';
+            lines.push(`    ${icon} TLS Inspection:   ${tcpTls.resultValue}`);
+        }
+        if (tcpDns) {
+            const icon = tcpDns.status === 'Passed' ? '✓' : '⚠';
+            lines.push(`    ${icon} DNS Hijacking:    ${tcpDns.resultValue}`);
+        }
+        if (tcpVpn) {
+            const icon = tcpVpn.status === 'Passed' ? '✓' : '⚠';
+            lines.push(`    ${icon} Proxy/VPN/SWG:    ${tcpVpn.resultValue}`);
+        }
+    } else {
+        lines.push(`  TCP (RDP) Path Security:  (requires Local Scanner)`);
+    }
+
+    lines.push('');
+
+    // 7. TURN (UDP) Security Report
+    const turnTls = r('L-UDP-06');
+    const turnVpn = r('L-UDP-07');
+    if (turnTls || turnVpn) {
+        lines.push(`  TURN (UDP) Path Security:`);
+        if (turnTls) {
+            const icon = turnTls.status === 'Passed' ? '✓' : '⚠';
+            lines.push(`    ${icon} TLS Inspection:   ${turnTls.resultValue}`);
+        }
+        if (turnVpn) {
+            const icon = turnVpn.status === 'Passed' ? '✓' : '⚠';
+            lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
+        }
+    } else {
+        lines.push(`  TURN (UDP) Path Security:  (requires Local Scanner)`);
+    }
+
+    lines.push('');
+
     // Group by category
     const categoryNames = {
         local: 'Local Environment',
