@@ -1546,19 +1546,30 @@ class Program
             sb.AppendLine($"Target: {afdHost}");
             try
             {
-                var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {afdHost}")
-                {
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi);
-                var output = await proc!.StandardOutput.ReadToEndAsync();
-                await proc.WaitForExitAsync();
+                var (afdChain, afdGsa) = await ResolveDnsCnameChainAsync(afdHost);
 
                 var ips = await Dns.GetHostAddressesAsync(afdHost);
                 var ipStr = string.Join(", ", ips.Select(i => i.ToString()));
                 sb.AppendLine($"Resolved IPs: {ipStr}");
-                sb.AppendLine($"CNAME chain:");
-                sb.AppendLine(output.Trim());
+
+                if (afdChain.Count > 0)
+                {
+                    sb.AppendLine("CNAME chain:");
+                    string prev = afdHost;
+                    foreach (var cname in afdChain)
+                    {
+                        sb.AppendLine($"  {prev}");
+                        sb.AppendLine($"    → {cname}");
+                        prev = cname;
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("CNAME chain: (direct A record — no CNAMEs)");
+                }
+
+                if (afdGsa != null)
+                    sb.AppendLine($"\n⚠ Routing: {afdGsa}");
 
                 bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
                 sb.AppendLine(isPrivateLink
@@ -1575,25 +1586,37 @@ class Program
 
             // ── Part 2: Actual RDP Gateway (discovered from AFD) ──
             sb.AppendLine($"═══ Actual RDP Gateway ═══");
-            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var (gwHost, gwDiscoveryMethod) = await DiscoverRdpGatewayFromAfd();
             if (!string.IsNullOrEmpty(gwHost))
             {
                 sb.AppendLine($"Target: {gwHost}");
+                sb.AppendLine($"Discovery: {gwDiscoveryMethod}");
                 try
                 {
-                    var gwPsi = new ProcessStartInfo("nslookup", $"-type=CNAME {gwHost}")
-                    {
-                        RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                    };
-                    using var gwProc = Process.Start(gwPsi);
-                    var gwOutput = await gwProc!.StandardOutput.ReadToEndAsync();
-                    await gwProc.WaitForExitAsync();
+                    var (gwChain, gwGsa) = await ResolveDnsCnameChainAsync(gwHost);
 
                     var gwIps = await Dns.GetHostAddressesAsync(gwHost);
                     var gwIpStr = string.Join(", ", gwIps.Select(i => i.ToString()));
                     sb.AppendLine($"Resolved IPs: {gwIpStr}");
-                    sb.AppendLine($"CNAME chain:");
-                    sb.AppendLine(gwOutput.Trim());
+
+                    if (gwChain.Count > 0)
+                    {
+                        sb.AppendLine("CNAME chain:");
+                        string prev = gwHost;
+                        foreach (var cname in gwChain)
+                        {
+                            sb.AppendLine($"  {prev}");
+                            sb.AppendLine($"    → {cname}");
+                            prev = cname;
+                        }
+                    }
+                    else
+                    {
+                        sb.AppendLine("CNAME chain: (direct A record — no CNAMEs)");
+                    }
+
+                    if (gwGsa != null)
+                        sb.AppendLine($"\n⚠ Routing: {gwGsa}");
 
                     // Extract region from FQDN
                     var regionCode = ExtractRegionFromGatewayFqdn(gwHost);
@@ -1616,7 +1639,11 @@ class Program
             }
             else
             {
-                sb.AppendLine("  Could not discover RDP gateway from AFD");
+                sb.AppendLine($"  Could not discover RDP gateway from AFD");
+                if (!string.IsNullOrEmpty(gwDiscoveryMethod))
+                    sb.AppendLine($"  Reason: {gwDiscoveryMethod}");
+                sb.AppendLine($"  Note: Gateway discovery requires a reachable AFD endpoint.");
+                sb.AppendLine($"  A proxy, firewall, or GSA may prevent cookie-based discovery.");
                 issues.Add("Gateway discovery failed — cannot trace RDP gateway DNS chain");
             }
 
@@ -1646,7 +1673,7 @@ class Program
             bool intercepted = false;
 
             // Discover the actual RDP gateway — this is the critical connection that must NOT be TLS-inspected
-            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
             var host = gwHost ?? "rdweb.wvd.microsoft.com"; // fallback if discovery fails
             var port = 443;
 
@@ -1823,7 +1850,7 @@ class Program
             };
 
             // Try to discover the actual regional RDP gateway and add it
-            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
             if (!string.IsNullOrEmpty(gwHost))
             {
                 targets.Insert(1, (gwHost, "RDP Gateway (Regional)"));
@@ -1989,7 +2016,7 @@ class Program
             var issues = new List<string>();
 
             // Discover the actual RDP gateway for accurate probing
-            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
             var probeHost = gwHost ?? "rdweb.wvd.microsoft.com";
             if (gwHost != null)
                 sb.AppendLine($"Probing discovered RDP gateway: {gwHost}\n");
@@ -2579,8 +2606,13 @@ class Program
     /// Discovers the actual regional RDP gateway hostname from AFD's Set-Cookie Domain= header.
     /// Returns null if discovery fails. Each caller invokes this independently.
     /// </summary>
-    static async Task<string?> DiscoverRdpGatewayFromAfd()
+    static async Task<(string? host, string? detail)> DiscoverRdpGatewayFromAfd()
     {
+        var gwPattern = new System.Text.RegularExpressions.Regex(
+            @"(rdgateway[\w-]+\.wvd\.microsoft\.com)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        // Method 1: Set-Cookie Domain= header (standard AFD routing)
         try
         {
             using var handler = new HttpClientHandler
@@ -2589,7 +2621,10 @@ class Program
                 AllowAutoRedirect = false
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(8), handler);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Microsoft-WVD/1.0");
             var resp = await http.GetAsync("https://afdfp-rdgateway-r1.wvd.microsoft.com/");
+
+            // Check Set-Cookie headers (primary method)
             if (resp.Headers.TryGetValues("Set-Cookie", out var cookies))
             {
                 foreach (var cookie in cookies)
@@ -2597,12 +2632,46 @@ class Program
                     var m = System.Text.RegularExpressions.Regex.Match(
                         cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (m.Success) return m.Groups[1].Value;
+                    if (m.Success) return (m.Groups[1].Value, "AFD Set-Cookie header");
                 }
             }
+
+            // Check all response headers for gateway hostname pattern
+            foreach (var header in resp.Headers)
+            {
+                foreach (var val in header.Value)
+                {
+                    var hm = gwPattern.Match(val);
+                    if (hm.Success) return (hm.Groups[1].Value, $"AFD response header ({header.Key})");
+                }
+            }
+
+            // Check response body for gateway hostname pattern
+            try
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                if (!string.IsNullOrEmpty(body))
+                {
+                    var bm = gwPattern.Match(body);
+                    if (bm.Success) return (bm.Groups[1].Value, "AFD response body");
+                }
+            }
+            catch { }
+
+            // Check Location header for redirect to gateway
+            if (resp.Headers.Location != null)
+            {
+                var loc = resp.Headers.Location.ToString();
+                var lm = gwPattern.Match(loc);
+                if (lm.Success) return (lm.Groups[1].Value, "AFD redirect Location");
+            }
+
+            return (null, $"AFD responded HTTP {(int)resp.StatusCode} but no gateway hostname found in headers or body");
         }
-        catch { }
-        return null;
+        catch (Exception ex)
+        {
+            return (null, $"AFD request failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -2660,31 +2729,15 @@ class Program
 
     static async Task<(string hostname, int port, IPAddress ip)?> GetValidatedGateway()
     {
-        // First, try to discover the actual regional gateway from AFD's Set-Cookie header
+        // First, try to discover the actual regional gateway via AFD
         try
         {
-            using var handler = new HttpClientHandler
+            var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
+            if (!string.IsNullOrEmpty(gwHost))
             {
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
-                AllowAutoRedirect = false
-            };
-            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(8), handler);
-            var resp = await http.GetAsync("https://afdfp-rdgateway-r1.wvd.microsoft.com/");
-            if (resp.Headers.TryGetValues("Set-Cookie", out var cookies))
-            {
-                foreach (var cookie in cookies)
-                {
-                    var m = System.Text.RegularExpressions.Regex.Match(
-                        cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (m.Success)
-                    {
-                        var gwHost = m.Groups[1].Value;
-                        var ips = await Dns.GetHostAddressesAsync(gwHost);
-                        var ip = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-                        if (ip != null) return (gwHost, 443, ip);
-                    }
-                }
+                var ips = await Dns.GetHostAddressesAsync(gwHost);
+                var ip = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (ip != null) return (gwHost, 443, ip);
             }
         }
         catch { /* Fall through to static list */ }
@@ -4402,7 +4455,7 @@ class Program
         {
             // Build dynamic endpoint list: rdweb + discovered RDP gateway
             var endpoints = new List<string> { "rdweb.wvd.microsoft.com" };
-            var gwHost = await DiscoverRdpGatewayFromAfd();
+            var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
             if (!string.IsNullOrEmpty(gwHost))
                 endpoints.Add(gwHost);
 
