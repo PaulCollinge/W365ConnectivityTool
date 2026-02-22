@@ -175,11 +175,11 @@ class Program
         Console.WriteLine();
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
 
-        // Auto-open browser with results via local redirect HTML
-        // We create a temp HTML file that redirects via JavaScript, which:
-        //  1. Preserves #hash fragments (Windows ShellExecute strips them from URLs)
-        //  2. Sends BOTH ?zresults=compressed AND #results=uncompressed so the page
-        //     works whether the CDN is serving the new or old version of app.js
+        // Auto-open browser with results
+        // Uses #hash fragments for data (never sent to server, avoids "URI Too Long" from CDN).
+        // Method 1: Launch browser exe directly with full URL (bypasses ShellExecute limits)
+        // Method 2: Local HTML redirect file (preserves hash fragments)
+        // Method 3: ShellExecute fallback (strips hashes, so uses redirect file)
         try
         {
             // Compress JSON with raw deflate, then URL-safe base64
@@ -198,30 +198,18 @@ class Program
                 .TrimEnd('=');
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            // Build query-only URL with compressed data
-            var directUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&zresults={compressedBase64}";
+            // Data goes in hash fragment — never sent to server, no "URI Too Long" from CDN
+            var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
+            var hashUrl = $"{baseUrl}#zresults={compressedBase64}";
 
             Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
-            Console.WriteLine($"  URL length: {directUrl.Length} chars");
+            Console.WriteLine($"  URL length: {hashUrl.Length} chars (hash fragment — not sent to server)");
 
-            if (directUrl.Length > 32_000) // Conservative URL length limit
-            {
-                Console.WriteLine($"  Results too large for URL auto-import ({directUrl.Length} chars).");
-                Console.WriteLine($"  Drag and drop {Path.GetFullPath(outputPath)} onto the web page.");
-                directUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
-            }
-
-            // Also build uncompressed base64 for fallback hash
-            var uncompressedBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
-                .Replace('+', '-')
-                .Replace('/', '_')
-                .TrimEnd('=');
-
-            // Try multiple methods to open the browser — ShellExecute truncates long URLs
+            // Try multiple methods to open the browser
             bool opened = false;
 
             // Method 1: Find default browser exe via registry, launch directly
-            // This bypasses ShellExecute's URL length limits
+            // This bypasses ShellExecute and supports full-length URLs with hash fragments
             if (!opened)
             {
                 try
@@ -233,7 +221,7 @@ class Program
                         Process.Start(new ProcessStartInfo
                         {
                             FileName = browserPath,
-                            Arguments = directUrl,
+                            Arguments = hashUrl,
                             UseShellExecute = false
                         });
                         opened = true;
@@ -245,18 +233,18 @@ class Program
                 }
             }
 
-            // Method 2: Use a local HTML redirect file with both compressed + uncompressed
+            // Method 2: Use a local HTML redirect file (preserves hash fragments)
+            // ShellExecute strips # from URLs, but opening a local .html file works fine
             if (!opened)
             {
                 try
                 {
                     Console.WriteLine($"  Opening via redirect file...");
-                    var fullUrl = $"{directUrl}#results={uncompressedBase64}";
                     var redirectHtml = $@"<!DOCTYPE html>
 <html><head><title>Opening W365 Diagnostics...</title></head>
 <body><p>Redirecting to results page...</p>
-<script>window.location.replace({EscapeJsString(fullUrl)});</script>
-<p><a href=""{System.Security.SecurityElement.Escape(fullUrl)}"">Click here if not redirected automatically</a></p>
+<script>window.location.replace({EscapeJsString(hashUrl)});</script>
+<p><a href=""{System.Security.SecurityElement.Escape(hashUrl)}"">Click here if not redirected automatically</a></p>
 </body></html>";
                     var redirectPath = Path.Combine(Path.GetTempPath(), "W365ScanRedirect.html");
                     await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
@@ -269,11 +257,12 @@ class Program
                 }
             }
 
-            // Method 3: ShellExecute with URL directly (last resort, may truncate)
+            // Method 3: ShellExecute with base URL only (last resort — hash gets stripped)
+            // User will need to drag-and-drop the JSON file
             if (!opened)
             {
-                Console.WriteLine($"  Opening via ShellExecute...");
-                Process.Start(new ProcessStartInfo { FileName = directUrl, UseShellExecute = true });
+                Console.WriteLine($"  Opening via ShellExecute (hash stripped — use drag-and-drop)...");
+                Process.Start(new ProcessStartInfo { FileName = baseUrl, UseShellExecute = true });
             }
         }
         catch (Exception ex)
