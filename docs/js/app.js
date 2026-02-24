@@ -1052,14 +1052,17 @@ async function updateConnectivityOverview(results) {
         setVal('ov-turn-relay-val', '<span class="ov-dim">Requires Local Scanner</span>');
     }
 
-    // 6. TCP-based RDP Path Optimisation
-    // Browser-native proxy detection: compare HTTP egress IP vs STUN reflexive IP.
-    // HTTP fetch goes through the browser's proxy; STUN uses raw UDP.
-    // If the two IPs differ AND geolocate to different countries/cities,
-    // an HTTP proxy/SWG is likely in the path.
+    // 6. TCP-based RDP Path Optimization
+    // Browser-native split-path detection: compare HTTP egress IP vs STUN reflexive IP.
+    // HTTP fetch goes through the browser's proxy stack (TCP); STUN uses raw UDP.
+    // If the two IPs differ AND geolocate to different countries,
+    // an HTTP proxy/SWG is routing TCP traffic differently from UDP.
     // Note: CGNAT (common on French ISPs etc.) can assign different public IPs
     // to TCP vs UDP from the same ISP — that's NOT a proxy.
-    let proxyCheckHtml = '';
+    // This is distinct from L-TCP-07/L-UDP-07 which check the specific RDP path
+    // from the scanner side; this check uses browser-level egress comparison.
+    let splitPathTcpHtml = '';
+    let splitPathUdpHtml = '';
     let httpEgressIp = freshGeo?.query || '';
     let httpCountry = freshGeo?.country || '';
     let httpCity = freshGeo?.city || '';
@@ -1080,7 +1083,8 @@ async function updateConnectivityOverview(results) {
     let isSplitPath = false;
     if (httpEgressIp && stunReflexiveIp) {
         if (httpEgressIp === stunReflexiveIp) {
-            proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected</div>`;
+            splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
+            splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
         } else {
             // IPs differ — could be CGNAT or a real proxy. GeoIP the STUN IP to compare.
             let stunCountry = '';
@@ -1100,14 +1104,19 @@ async function updateConnectivityOverview(results) {
                 stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
                 // Same country — CGNAT, not a proxy
                 isCgnat = true;
-                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Proxy / split-path routing not detected</div>`;
+                splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
+                splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
             } else if (stunCountry && httpCountry) {
                 // Different countries — likely a proxy/VPN/SWG
                 isSplitPath = true;
-                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Proxy / split-path routing detected <span class="ov-dim">(HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}])</span></div>`;
+                const detail = `<span class="ov-dim">(HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}])</span>`;
+                splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Split-path routing detected ${detail}</div>`;
+                splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress) ${detail}</div>`;
             } else {
                 // Couldn't GeoIP the STUN IP — show informational only
-                proxyCheckHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-dim">ℹ</span>Different egress IPs <span class="ov-dim">(HTTP: ${esc(httpEgressIp)}, STUN: ${esc(stunReflexiveIp)} — may be CGNAT)</span></div>`;
+                const detail = `<span class="ov-dim">(HTTP: ${esc(httpEgressIp)}, STUN: ${esc(stunReflexiveIp)} — may be CGNAT)</span>`;
+                splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-dim">ℹ</span>Different egress IPs ${detail}</div>`;
+                splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-dim">ℹ</span>Different egress IPs ${detail}</div>`;
             }
         }
     }
@@ -1115,19 +1124,19 @@ async function updateConnectivityOverview(results) {
     const tcpTls = r('L-TCP-06');
     const tcpDns = r('L-TCP-08');
     const tcpVpn = r('L-TCP-07');
-    if (tcpTls || tcpDns || tcpVpn || proxyCheckHtml) {
+    if (tcpTls || tcpDns || tcpVpn || splitPathTcpHtml) {
         const items = [];
         if (tcpTls) items.push(buildCheckLine('TLS inspection', tcpTls));
         if (tcpDns) items.push(buildCheckLine('DNS hijacking', tcpDns));
         if (tcpVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', tcpVpn));
-        if (proxyCheckHtml) items.push(proxyCheckHtml);
+        if (splitPathTcpHtml) items.push(splitPathTcpHtml);
         setVal('ov-tcp-path-val', items.join(''));
         hasContent = true;
     } else {
         setVal('ov-tcp-path-val', '<span class="ov-dim">Requires Local Scanner or STUN test</span>');
     }
 
-    // 7. UDP-based RDP Path Optimisation
+    // 7. UDP-based RDP Path Optimization
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
 
@@ -1149,19 +1158,13 @@ async function updateConnectivityOverview(results) {
         }
     }
 
-    if (turnTls || turnVpn || isSplitPath || cgnatHtml) {
+    if (turnTls || turnVpn || splitPathUdpHtml || cgnatHtml) {
         const items = [];
         if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
         if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
-        if (isSplitPath) {
-            items.push(`<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
-        }
+        if (splitPathUdpHtml) items.push(splitPathUdpHtml);
         if (cgnatHtml) items.push(cgnatHtml);
         setVal('ov-udp-path-val', items.join(''));
-        hasContent = true;
-    } else if (isSplitPath) {
-        setVal('ov-udp-path-val',
-            `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress)</div>`);
         hasContent = true;
     } else {
         setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
