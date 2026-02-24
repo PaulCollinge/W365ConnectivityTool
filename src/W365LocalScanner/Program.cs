@@ -2031,11 +2031,10 @@ class Program
 
             result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = completed == targets.Count ? "Passed" : completed > 0 ? "Warning" : "Failed";
-            if (result.Status != "Passed")
-                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+            // Traceroute is informational — ICMP blocking is common and doesn't indicate a connectivity issue
+            result.Status = completed == targets.Count ? "Passed" : "Warning";
         }
-        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        catch (Exception ex) { result.Status = "Warning"; result.ResultValue = $"Traceroute unavailable: {ex.Message}"; }
         return result;
     }
 
