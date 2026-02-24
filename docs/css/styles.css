@@ -1047,7 +1047,7 @@ main {
 
 .map-diagram {
     display: grid;
-    grid-template-columns: 1fr 36px 1fr 36px 1fr 50px 1.2fr;
+    grid-template-columns: 1fr 80px 1fr 80px 1fr 50px 1.2fr;
     grid-template-rows: auto 8px auto 8px auto 36px auto;
     align-items: center;
     padding: 28px 24px;
@@ -1190,7 +1190,7 @@ main {
 /* Protocol label (TCP RDP / UDP RDP) */
 .map-proto-label {
     display: inline-block;
-    margin-top: 4px;
+    margin-left: 6px;
     padding: 1px 6px;
     font-family: var(--font-mono);
     font-size: 9px;
@@ -1199,6 +1199,7 @@ main {
     border: 1px solid var(--border-default);
     border-radius: 4px;
     letter-spacing: 0.5px;
+    vertical-align: middle;
 }
 
 /* ISP logo overlay on globe */
