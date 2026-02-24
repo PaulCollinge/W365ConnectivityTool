@@ -788,17 +788,20 @@ async function testNatType(test) {
     }
 
     try {
-        // Use a SINGLE PeerConnection with BOTH STUN servers so the browser
-        // sends STUN binding requests from the SAME local socket to two
-        // different destinations.  For a Cone NAT (endpoint-independent
-        // mapping) the reflexive address is identical for both servers, so the
-        // browser de-duplicates and reports only ONE srflx candidate.  For a
-        // Symmetric NAT (endpoint-dependent mapping) the two servers see
-        // different reflexive ports, producing TWO distinct srflx candidates.
+        // Strategy: use a SINGLE PeerConnection with BOTH STUN servers so the
+        // browser *may* send binding requests from the SAME local socket.
+        // For Cone NAT (endpoint-independent mapping) the reflexive address is
+        // identical for both servers.  For Symmetric NAT (endpoint-dependent
+        // mapping) the two servers see different reflexive ports.
         //
-        // The old code used two separate PeerConnections — each created its
-        // own socket, so even a Cone NAT would show different ports → always
-        // reported "Symmetric".  Fixed now.
+        // Caveat: some browsers create separate UDP sockets per STUN server
+        // even inside one PeerConnection.  When that happens, different
+        // reflexive ports are expected even with Cone NAT (each local port
+        // gets its own external mapping).  We handle this by:
+        //   1. Grouping srflx candidates by base socket (relatedAddress:relatedPort).
+        //   2. Only flagging Symmetric when a SINGLE base shows multiple reflexive endpoints.
+        //   3. When base info is unavailable, comparing reflexive IPs only —
+        //      same IP + different port from unknown bases is consistent with Cone NAT.
 
         const stunServers = [
             'stun:stun.azure.com:3478',
@@ -832,15 +835,18 @@ async function testNatType(test) {
             // Group srflx by their base socket (relatedAddress:relatedPort).
             // Within each group, count distinct reflexive address:port pairs.
             const byBase = {};
+            let hasRealBase = false;
             for (const c of srflx) {
-                const base = (c.relatedAddress && c.relatedPort)
+                const hasBase = c.relatedAddress && c.relatedPort;
+                const base = hasBase
                     ? `${c.relatedAddress}:${c.relatedPort}`
                     : 'default';
+                if (hasBase) hasRealBase = true;
                 if (!byBase[base]) byBase[base] = new Set();
                 byBase[base].add(`${c.address}:${c.port}`);
             }
 
-            detail += 'Server-reflexive candidates (from single socket to 2 STUN servers):\n';
+            detail += 'Server-reflexive candidates (from single PeerConnection to 2 STUN servers):\n';
             let symmetric = false;
             for (const [base, endpoints] of Object.entries(byBase)) {
                 const arr = [...endpoints];
@@ -850,23 +856,39 @@ async function testNatType(test) {
             }
             detail += '\n';
 
+            // When base info is unavailable (all grouped under 'default'),
+            // different ports alone don't prove Symmetric NAT — they can come
+            // from different local sockets which is normal browser behaviour.
+            // Only flag Symmetric if reflexive IPs also differ.
+            if (symmetric && !hasRealBase) {
+                const reflexIPs = new Set(srflx.map(c => c.address));
+                if (reflexIPs.size === 1) {
+                    // Same public IP, different ports, no base info —
+                    // consistent with Cone NAT using multiple local sockets.
+                    symmetric = false;
+                    detail += 'Note: Multiple reflexive ports observed but all share the same public IP.\n' +
+                        'Base socket info unavailable — port differences likely from separate local sockets.\n' +
+                        'This is consistent with Cone NAT (endpoint-independent mapping).\n\n';
+                }
+            }
+
             if (symmetric) {
                 natType = 'Symmetric NAT';
                 status = 'Warning';
-                detail += 'Endpoint-dependent port mapping detected (Symmetric NAT).\n' +
-                    'Different STUN servers see different reflexive ports from the same local socket.\n' +
+                detail += 'Endpoint-dependent mapping detected (Symmetric NAT).\n' +
+                    'Different STUN servers see different reflexive addresses from the same local socket.\n' +
                     'Direct STUN hole-punching is unlikely to succeed.\n' +
                     'RDP Shortpath will use TURN relay instead (still UDP, still good).';
             } else {
-                natType = 'Cone NAT \u2014 STUN connectivity supported';
+                natType = 'Cone NAT \u2014 STUN compatible';
                 status = 'Passed';
-                const ep = [...Object.values(byBase)[0]][0];
-                detail += `Consistent reflexive mapping: ${ep}\n` +
-                    'Both STUN servers see the same external IP:port from the same local socket.\n' +
+                const reflexIPs = [...new Set(srflx.map(c => c.address))];
+                const ep = reflexIPs[0];
+                detail += `Consistent reflexive IP: ${ep}\n` +
                     'NAT preserves endpoint-independent mapping (Cone NAT).\n' +
                     'This is compatible with STUN \u2014 RDP Shortpath (UDP) should work well.\n\n' +
-                    'NAT sub-type: Full Cone, Restricted Cone, or Port-Restricted Cone\n' +
-                    '(all are compatible with RDP Shortpath via STUN/TURN).';
+                    'Sub-type: Full Cone, Restricted Cone, or Port-Restricted Cone\n' +
+                    '(all support RDP Shortpath via STUN).';
             }
         }
 
