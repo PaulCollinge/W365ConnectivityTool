@@ -292,6 +292,71 @@ function updateMapLocalGwCard(lookup) {
     setDeviceDot('device-gw-dot', gw.status);
 }
 
+// ── Well-known ISP domain map ──
+const ISP_DOMAINS = {
+    'cloudflare':'cloudflare.com','comcast':'comcast.com','xfinity':'comcast.com',
+    'at&t':'att.com','att':'att.com','verizon':'verizon.com','spectrum':'spectrum.com',
+    'charter':'spectrum.com','cox':'cox.com','t-mobile':'t-mobile.com','tmobile':'t-mobile.com',
+    'sprint':'sprint.com','centurylink':'centurylink.com','lumen':'lumen.com',
+    'frontier':'frontier.com','windstream':'windstream.com','mediacom':'mediacom.com',
+    'optimum':'optimum.net','altice':'altice.com','suddenlink':'suddenlink.com',
+    'google':'google.com','google fiber':'fiber.google.com','amazon':'amazon.com',
+    'aws':'aws.amazon.com','microsoft':'microsoft.com','azure':'azure.microsoft.com',
+    'akamai':'akamai.com','fastly':'fastly.com',
+    'bt':'bt.com','british telecom':'bt.com','sky':'sky.com','sky broadband':'sky.com',
+    'virgin media':'virginmedia.com','vodafone':'vodafone.com','talktalk':'talktalk.co.uk',
+    'plusnet':'plus.net','ee':'ee.co.uk','three':'three.co.uk','o2':'o2.co.uk',
+    'orange':'orange.com','free':'free.fr','sfr':'sfr.fr','bouygues':'bouyguestelecom.fr',
+    'deutsche telekom':'telekom.de','telekom':'telekom.de','telefonica':'telefonica.com',
+    'movistar':'movistar.com','swisscom':'swisscom.ch','proximus':'proximus.be',
+    'kpn':'kpn.com','ziggo':'ziggo.nl','telia':'telia.com','telenor':'telenor.com',
+    'telstra':'telstra.com.au','optus':'optus.com.au','tpg':'tpg.com.au','nbn':'nbnco.com.au',
+    'bell':'bell.ca','rogers':'rogers.com','telus':'telus.com','shaw':'shaw.ca',
+    'jio':'jio.com','airtel':'airtel.in','bsnl':'bsnl.co.in','vi':'myvi.in',
+    'ntt':'ntt.com','softbank':'softbank.jp','kddi':'kddi.com','au':'au.com',
+    'singtel':'singtel.com','starhub':'starhub.com',
+    'china telecom':'chinatelecom.com.cn','china unicom':'chinaunicom.com',
+    'china mobile':'chinamobile.com',
+    'etisalat':'etisalat.ae','du':'du.ae','stc':'stc.com.sa','zain':'zain.com',
+    'mtn':'mtn.com','safaricom':'safaricom.co.ke',
+    'claro':'claro.com','telmex':'telmex.com','oi':'oi.com.br','vivo':'vivo.com.br',
+    'cogent':'cogentco.com','hurricane electric':'he.net','level 3':'lumen.com',
+    'zayo':'zayo.com','tata communications':'tatacommunications.com',
+    'rackspace':'rackspace.com','digitalocean':'digitalocean.com','linode':'linode.com',
+    'ovh':'ovh.com','hetzner':'hetzner.com','scaleway':'scaleway.com',
+    'oracle':'oracle.com','ibm':'ibm.com','alibaba':'alibabacloud.com'
+};
+
+function guessIspDomain(ispName) {
+    if (!ispName) return null;
+    // Strip AS number prefix (e.g. "AS13335 Cloudflare, Inc." -> "Cloudflare, Inc.")
+    const cleaned = ispName.replace(/^AS\d+\s*/i, '').replace(/[,.]\s*(Inc|LLC|Ltd|Corp|Co|SA|GmbH|AG|NV|BV|Pty|Plc)\.?$/i, '').trim();
+    const lower = cleaned.toLowerCase();
+    // Check known mapping
+    for (const [key, domain] of Object.entries(ISP_DOMAINS)) {
+        if (lower.includes(key)) return domain;
+    }
+    // Heuristic: turn name into domain guess (e.g. "Acme Telecom" -> "acmetelecom.com")
+    const slug = lower.replace(/[^a-z0-9]/g, '');
+    return slug ? slug + '.com' : null;
+}
+
+function setIspLogo(ispName) {
+    const img = document.getElementById('isp-logo-img');
+    if (!img) return;
+    const domain = guessIspDomain(ispName);
+    if (!domain) { img.style.display = 'none'; return; }
+    // Use Clearbit Logo API (returns 128px square logo)
+    const url = `https://logo.clearbit.com/${domain}?size=80`;
+    img.src = url;
+    img.style.display = 'block';
+    img.onerror = function() {
+        // Fallback to Google favicons
+        this.src = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+        this.onerror = function() { this.style.display = 'none'; };
+    };
+}
+
 // ── ISP Card ──
 function updateMapIspCard(lookup) {
     const isp = lookup['B-LE-02'];
@@ -314,6 +379,8 @@ function updateMapIspCard(lookup) {
     setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
 
     setAccentStatus('map-isp-accent', isp.status);
+    setDeviceDot('device-isp-dot', isp.status);
+    setIspLogo(isp.resultValue);
 }
 
 // ── AFD Edge Card ──

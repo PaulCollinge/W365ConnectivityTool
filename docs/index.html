@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=95">
+    <link rel="stylesheet" href="css/styles.css?v=96">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -260,13 +260,34 @@
 
                 <div class="map-arrow-cell map-g-arrow2"><span class="map-hline"></span><span class="map-arrow">▸</span></div>
 
-                <div class="map-card map-g-isp" id="map-isp">
-                    <div class="map-card-accent" id="map-isp-accent"></div>
-                    <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">🌐</span> ISP</div>
-                        <div class="map-card-detail" id="map-isp-detail">Awaiting results...</div>
-                        <div class="map-card-detail" id="map-isp-detail2"></div>
-                        <div class="map-card-detail" id="map-isp-detail3"></div>
+                <div class="map-client-device map-g-isp" id="map-isp">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Globe body -->
+                            <circle cx="60" cy="42" r="32" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Longitude lines -->
+                            <ellipse cx="60" cy="42" rx="14" ry="32" fill="none" stroke="#21262d" stroke-width="1"/>
+                            <ellipse cx="60" cy="42" rx="26" ry="32" fill="none" stroke="#21262d" stroke-width="0.7"/>
+                            <!-- Latitude lines -->
+                            <ellipse cx="60" cy="42" rx="32" ry="10" fill="none" stroke="#21262d" stroke-width="1"/>
+                            <line x1="28" y1="42" x2="92" y2="42" stroke="#21262d" stroke-width="0.7"/>
+                            <!-- Equator highlight -->
+                            <ellipse cx="60" cy="42" rx="32" ry="10" fill="none" stroke="#58a6ff" stroke-width="0.5" opacity="0.3"/>
+                            <!-- Status dot -->
+                            <circle class="device-status-dot" id="device-isp-dot" cx="60" cy="42" r="5" fill="#484f58" opacity="0.6"/>
+                            <!-- Stand -->
+                            <line x1="60" y1="74" x2="60" y2="82" stroke="#30363d" stroke-width="2"/>
+                            <ellipse cx="60" cy="84" rx="16" ry="4" fill="none" stroke="#30363d" stroke-width="2"/>
+                        </svg>
+                        <!-- Dynamic ISP logo overlay -->
+                        <img class="isp-logo" id="isp-logo-img" alt="" />
+                        <div class="device-accent" id="map-isp-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">ISP</div>
+                        <div class="device-detail" id="map-isp-detail">Awaiting results...</div>
+                        <div class="device-detail" id="map-isp-detail2"></div>
+                        <div class="device-detail" id="map-isp-detail3"></div>
                     </div>
                 </div>
 
@@ -523,10 +544,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=95"></script>
-    <script src="js/browser-tests.js?v=95"></script>
-    <script src="js/ui.js?v=95"></script>
-    <script src="js/map.js?v=95"></script>
-    <script src="js/app.js?v=95"></script>
+    <script src="js/config.js?v=96"></script>
+    <script src="js/browser-tests.js?v=96"></script>
+    <script src="js/ui.js?v=96"></script>
+    <script src="js/map.js?v=96"></script>
+    <script src="js/app.js?v=96"></script>
 </body>
 </html>

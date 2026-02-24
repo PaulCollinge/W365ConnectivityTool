@@ -1180,6 +1180,23 @@ main {
     font-size: 10px;
 }
 
+/* ISP logo overlay on globe */
+.isp-logo {
+    display: none;
+    position: absolute;
+    top: 26px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+    border-radius: 50%;
+    background: var(--bg-card);
+    border: 2px solid var(--border-default);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    z-index: 2;
+}
+
 .map-card {
     display: flex;
     border: 1px solid var(--border-default);
