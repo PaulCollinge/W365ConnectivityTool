@@ -88,78 +88,132 @@ class Program
             Console.WriteLine();
         }
 
-        for (int i = 0; i < tests.Count; i++)
+        // Separate slow tests (traceroute) so we can push results to the browser early
+        var deferredIds = new HashSet<string> { "L-TCP-10" };
+        var fastTests = tests.Where(t => !deferredIds.Contains(t.Id)).ToList();
+        var deferredTests = tests.Where(t => deferredIds.Contains(t.Id)).ToList();
+        var totalCount = tests.Count;
+
+        // ── Phase 1: Run fast tests (everything except traceroute) ──
+        for (int i = 0; i < fastTests.Count; i++)
         {
-            var test = tests[i];
-            Console.Write($"  [{i + 1}/{tests.Count}] {test.Name}... ");
-            if (test.Id == "L-TCP-10")
+            var test = fastTests[i];
+            Console.Write($"  [{i + 1}/{totalCount}] {test.Name}... ");
+            RunSingleTest(test, results).Wait();
+        }
+
+        // Push results to browser immediately so the user can review while traceroute runs
+        if (deferredTests.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  ────────────────────────────────────────────────────");
+            Console.WriteLine("  Opening results in browser while traceroute runs...");
+            Console.WriteLine("  ────────────────────────────────────────────────────");
+
+            await WriteResultsJson(outputPath, results);
+            await OpenBrowserWithResults(outputPath, results);
+
+            Console.WriteLine();
+
+            // ── Phase 2: Run deferred tests (traceroute) ──
+            for (int i = 0; i < deferredTests.Count; i++)
+            {
+                var test = deferredTests[i];
+                var num = fastTests.Count + i + 1;
+                Console.Write($"  [{num}/{totalCount}] {test.Name}... ");
                 Console.Write("(traceroute — this may take 1-2 minutes) ");
-
-            try
-            {
-                var sw = Stopwatch.StartNew();
-                var testTask = test.Run();
-                // Cloud tests sample for ~60s, so allow 90s for them plus overhead
-                // Traceroute (L-TCP-10) can take up to 120s for multiple endpoints
-                var testTimeout = test.Category == "cloud" ? 90 : test.Id == "L-TCP-10" ? 120 : 60;
-                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(testTimeout));
-
-                if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
-                {
-                    sw.Stop();
-                    results.Add(new TestResult
-                    {
-                        Id = test.Id,
-                        Name = test.Name,
-                        Description = test.Description,
-                        Category = test.Category,
-                        Status = "Warning",
-                        ResultValue = $"Timed out after {testTimeout}s",
-                        DetailedInfo = $"The test did not complete within {testTimeout} seconds. This may indicate a network issue (hanging TLS handshake, unresponsive proxy, etc.).",
-                        Duration = (int)sw.ElapsedMilliseconds
-                    });
-                    Console.WriteLine($"\u26A0 Timed out ({testTimeout}s)");
-                    continue;
-                }
-
-                var result = await testTask;
-                sw.Stop();
-                result.Duration = (int)sw.ElapsedMilliseconds;
-                results.Add(result);
-
-                var icon = result.Status switch
-                {
-                    "Passed" => "\u2714",
-                    "Warning" => "\u26A0",
-                    "Failed" => "\u2718",
-                    _ => "\u2022"
-                };
-                // Traceroute prints sub-progress on separate lines, so start a new line for the final status
-                if (test.Id == "L-TCP-10")
-                    Console.Write("\n        ");
-                Console.WriteLine($"{icon} {result.Status} ({sw.ElapsedMilliseconds}ms)");
+                await RunSingleTest(test, results);
             }
-            catch (Exception ex)
+
+            Console.WriteLine();
+            Console.WriteLine("  Traceroute complete — updating results...");
+
+            // Rewrite JSON with complete results (including traceroute)
+            await WriteResultsJson(outputPath, results);
+            // Re-open browser: BroadcastChannel merges updated results into the existing tab
+            await OpenBrowserWithResults(outputPath, results);
+        }
+        else
+        {
+            // No deferred tests — write and open once
+            await WriteResultsJson(outputPath, results);
+            await OpenBrowserWithResults(outputPath, results);
+        }
+
+        // Print executive summary report
+        PrintSummaryReport(results, includeCloud);
+
+        Console.WriteLine();
+
+        var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
+        return failed > 0 ? 1 : 0;
+    }
+
+    // ── Helper: Run a single test with timeout and logging ──
+    static async Task RunSingleTest(TestDefinition test, List<TestResult> results)
+    {
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            var testTask = test.Run();
+            var testTimeout = test.Category == "cloud" ? 90 : test.Id == "L-TCP-10" ? 120 : 60;
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(testTimeout));
+
+            if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
             {
+                sw.Stop();
                 results.Add(new TestResult
                 {
                     Id = test.Id,
                     Name = test.Name,
                     Description = test.Description,
                     Category = test.Category,
-                    Status = "Error",
-                    ResultValue = $"Error: {ex.Message}",
-                    DetailedInfo = ex.ToString(),
-                    Duration = 0
+                    Status = "Warning",
+                    ResultValue = $"Timed out after {testTimeout}s",
+                    DetailedInfo = $"The test did not complete within {testTimeout} seconds. This may indicate a network issue (hanging TLS handshake, unresponsive proxy, etc.).",
+                    Duration = (int)sw.ElapsedMilliseconds
                 });
-                Console.WriteLine($"\u2718 Error: {ex.Message}");
+                Console.WriteLine($"\u26A0 Timed out ({testTimeout}s)");
+                return;
             }
+
+            var result = await testTask;
+            sw.Stop();
+            result.Duration = (int)sw.ElapsedMilliseconds;
+            results.Add(result);
+
+            var icon = result.Status switch
+            {
+                "Passed" => "\u2714",
+                "Warning" => "\u26A0",
+                "Failed" => "\u2718",
+                _ => "\u2022"
+            };
+            // Traceroute prints sub-progress on separate lines
+            if (test.Id == "L-TCP-10")
+                Console.Write("\n        ");
+            Console.WriteLine($"{icon} {result.Status} ({sw.ElapsedMilliseconds}ms)");
         }
+        catch (Exception ex)
+        {
+            results.Add(new TestResult
+            {
+                Id = test.Id,
+                Name = test.Name,
+                Description = test.Description,
+                Category = test.Category,
+                Status = "Error",
+                ResultValue = $"Error: {ex.Message}",
+                DetailedInfo = ex.ToString(),
+                Duration = 0
+            });
+            Console.WriteLine($"\u2718 Error: {ex.Message}");
+        }
+    }
 
-        // Print executive summary report
-        PrintSummaryReport(results, includeCloud);
-
-        // Write JSON output
+    // ── Helper: Write results JSON file ──
+    static async Task WriteResultsJson(string outputPath, List<TestResult> results)
+    {
         var output = new ScanOutput
         {
             Timestamp = DateTime.UtcNow,
@@ -171,18 +225,25 @@ class Program
 
         var json = JsonSerializer.Serialize(output, ScanJsonContext.Default.ScanOutput);
         await File.WriteAllTextAsync(outputPath, json, Encoding.UTF8);
-
-        Console.WriteLine();
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
+    }
 
-        // Auto-open browser with results
-        // Uses #hash fragments for data (never sent to server, avoids "URI Too Long" from CDN).
-        // Method 1: Launch browser exe directly with full URL (bypasses ShellExecute limits)
-        // Method 2: Local HTML redirect file (preserves hash fragments)
-        // Method 3: ShellExecute fallback (strips hashes, so uses redirect file)
+    // ── Helper: Open browser with compressed results ──
+    static async Task OpenBrowserWithResults(string outputPath, List<TestResult> results)
+    {
+        var output = new ScanOutput
+        {
+            Timestamp = DateTime.UtcNow,
+            MachineName = Environment.MachineName,
+            OsVersion = Environment.OSVersion.ToString(),
+            DotNetVersion = RuntimeInformation.FrameworkDescription,
+            Results = results
+        };
+
+        var json = JsonSerializer.Serialize(output, ScanJsonContext.Default.ScanOutput);
+
         try
         {
-            // Compress JSON with raw deflate, then URL-safe base64
             byte[] compressed;
             using (var ms = new MemoryStream())
             {
@@ -198,18 +259,14 @@ class Program
                 .TrimEnd('=');
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            // Data goes in hash fragment — never sent to server, no "URI Too Long" from CDN
             var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
             var hashUrl = $"{baseUrl}#zresults={compressedBase64}";
 
-            Console.WriteLine($"  Compressed: {json.Length} → {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
-            Console.WriteLine($"  URL length: {hashUrl.Length} chars (hash fragment — not sent to server)");
+            Console.WriteLine($"  Compressed: {json.Length} \u2192 {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
 
-            // Try multiple methods to open the browser
             bool opened = false;
 
-            // Method 1: Find default browser exe via registry, launch directly
-            // This bypasses ShellExecute and supports full-length URLs with hash fragments
+            // Method 1: Direct browser exe launch (preserves hash fragments)
             if (!opened)
             {
                 try
@@ -233,8 +290,7 @@ class Program
                 }
             }
 
-            // Method 2: Use a local HTML redirect file (preserves hash fragments)
-            // ShellExecute strips # from URLs, but opening a local .html file works fine
+            // Method 2: Local HTML redirect file
             if (!opened)
             {
                 try
@@ -257,11 +313,10 @@ class Program
                 }
             }
 
-            // Method 3: ShellExecute with base URL only (last resort — hash gets stripped)
-            // User will need to drag-and-drop the JSON file
+            // Method 3: ShellExecute fallback
             if (!opened)
             {
-                Console.WriteLine($"  Opening via ShellExecute (hash stripped — use drag-and-drop)...");
+                Console.WriteLine($"  Opening via ShellExecute (hash stripped \u2014 use drag-and-drop)...");
                 Process.Start(new ProcessStartInfo { FileName = baseUrl, UseShellExecute = true });
             }
         }
@@ -272,10 +327,6 @@ class Program
             Console.WriteLine($"    1. Open https://paulcollinge.github.io/W365ConnectivityTool/");
             Console.WriteLine($"    2. Drag and drop {Path.GetFullPath(outputPath)} onto the page");
         }
-        Console.WriteLine();
-
-        var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
-        return failed > 0 ? 1 : 0;
     }
 
     // ── Summary Report ──────────────────────────────────────────────
