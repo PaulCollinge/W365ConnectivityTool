@@ -989,22 +989,23 @@ function lookupGatewayRegion(ip) {
  * Maps Azure region identifiers to friendly display names.
  */
 function getAzureRegionFriendlyName(region) {
+    // Official display names per https://learn.microsoft.com/azure/reliability/regions-list
     const map = {
         uksouth:'UK South', ukwest:'UK West',
-        northeurope:'North Europe (Ireland)', westeurope:'West Europe (Netherlands)',
+        northeurope:'North Europe', westeurope:'West Europe',
         centralfrance:'France Central', southfrance:'France South',
         germanywc:'Germany West Central', germanyn:'Germany North',
         norwaye:'Norway East', norwayw:'Norway West',
         swedencentral:'Sweden Central', swedensouth:'Sweden South',
         switzerlandn:'Switzerland North', switzerlandw:'Switzerland West',
         italynorth:'Italy North', spaincentral:'Spain Central', polandcentral:'Poland Central',
-        eastus:'East US', eastus2:'East US 2', eastus2euap:'East US 2 (Canary)',
+        eastus:'East US', eastus2:'East US 2', eastus2euap:'East US 2 EUAP',
         centralus:'Central US', northcentralus:'North Central US',
         southcentralus:'South Central US', westcentralus:'West Central US',
         westus:'West US', westus2:'West US 2', westus3:'West US 3',
         canadacentral:'Canada Central', canadaeast:'Canada East',
         mexicocentral:'Mexico Central', chilec:'Chile Central',
-        southeastasia:'Southeast Asia (Singapore)', eastasia:'East Asia (Hong Kong)',
+        southeastasia:'Southeast Asia', eastasia:'East Asia',
         japaneast:'Japan East', japanwest:'Japan West',
         koreacentral:'Korea Central', koreasouth:'Korea South',
         centralindia:'Central India', southindia:'South India', westindia:'West India',

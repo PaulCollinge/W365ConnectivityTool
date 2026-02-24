@@ -2561,7 +2561,8 @@ class Program
     }
 
     /// <summary>
-    /// Maps Azure region identifiers (from Service Tags) to friendly display names.
+    /// Maps Azure region identifiers (from Service Tags) to official Microsoft display names.
+    /// Source: https://learn.microsoft.com/azure/reliability/regions-list
     /// </summary>
     static string? GetAzureRegionFriendlyName(string region)
     {
@@ -2570,25 +2571,25 @@ class Program
             // Europe
             ["uksouth"] = "UK South",
             ["ukwest"] = "UK West",
-            ["northeurope"] = "North Europe (Ireland)",
-            ["westeurope"] = "West Europe (Netherlands)",
-            ["centralfrance"] = "France Central",
-            ["southfrance"] = "France South",
-            ["germanywc"] = "Germany West Central",
-            ["germanyn"] = "Germany North",
-            ["norwaye"] = "Norway East",
-            ["norwayw"] = "Norway West",
+            ["northeurope"] = "North Europe",
+            ["westeurope"] = "West Europe",
+            ["centralfrance"] = "France Central",   // Service Tags alias for francecentral
+            ["southfrance"] = "France South",       // Service Tags alias for francesouth
+            ["germanywc"] = "Germany West Central", // Service Tags alias for germanywestcentral
+            ["germanyn"] = "Germany North",         // Service Tags alias for germanynorth
+            ["norwaye"] = "Norway East",            // Service Tags alias for norwayeast
+            ["norwayw"] = "Norway West",            // Service Tags alias for norwaywest
             ["swedencentral"] = "Sweden Central",
             ["swedensouth"] = "Sweden South",
-            ["switzerlandn"] = "Switzerland North",
-            ["switzerlandw"] = "Switzerland West",
+            ["switzerlandn"] = "Switzerland North",  // Service Tags alias for switzerlandnorth
+            ["switzerlandw"] = "Switzerland West",   // Service Tags alias for switzerlandwest
             ["italynorth"] = "Italy North",
             ["spaincentral"] = "Spain Central",
             ["polandcentral"] = "Poland Central",
             // North America
             ["eastus"] = "East US",
             ["eastus2"] = "East US 2",
-            ["eastus2euap"] = "East US 2 (Canary)",
+            ["eastus2euap"] = "East US 2 EUAP",
             ["centralus"] = "Central US",
             ["northcentralus"] = "North Central US",
             ["southcentralus"] = "South Central US",
@@ -2599,10 +2600,10 @@ class Program
             ["canadacentral"] = "Canada Central",
             ["canadaeast"] = "Canada East",
             ["mexicocentral"] = "Mexico Central",
-            ["chilec"] = "Chile Central",
+            ["chilec"] = "Chile Central",            // Service Tags alias for chilecentral
             // Asia Pacific
-            ["southeastasia"] = "Southeast Asia (Singapore)",
-            ["eastasia"] = "East Asia (Hong Kong)",
+            ["southeastasia"] = "Southeast Asia",
+            ["eastasia"] = "East Asia",
             ["japaneast"] = "Japan East",
             ["japanwest"] = "Japan West",
             ["koreacentral"] = "Korea Central",
@@ -3074,9 +3075,9 @@ class Program
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            // Europe
+            // Europe — display names per https://learn.microsoft.com/azure/reliability/regions-list
             ["UKS"] = "UK South", ["UKW"] = "UK West",
-            ["NEU"] = "North Europe (Ireland)", ["WEU"] = "West Europe (Netherlands)",
+            ["NEU"] = "North Europe", ["WEU"] = "West Europe",
             ["FRC"] = "France Central", ["FRS"] = "France South",
             ["GWC"] = "Germany West Central", ["GN"] = "Germany North",
             ["NOE"] = "Norway East", ["NOW"] = "Norway West",
@@ -3091,7 +3092,7 @@ class Program
             ["WUS"] = "West US", ["WUS2"] = "West US 2", ["WUS3"] = "West US 3",
             ["CC"] = "Canada Central", ["CE"] = "Canada East",
             // Asia Pacific
-            ["SEA"] = "Southeast Asia (Singapore)", ["EA"] = "East Asia (Hong Kong)",
+            ["SEA"] = "Southeast Asia", ["EA"] = "East Asia",
             ["JE"] = "Japan East", ["JW"] = "Japan West",
             ["KRC"] = "Korea Central", ["KRS"] = "Korea South",
             ["CIN"] = "Central India", ["SIN"] = "South India", ["WIN"] = "West India",
