@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=81">
+    <link rel="stylesheet" href="css/styles.css?v=82">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -128,18 +128,21 @@
                     <span class="ov-section-title">RDP Connectivity</span>
                 </div>
                 <div class="ov-section-body ov-connectivity-grid">
-                    <div class="ov-conn-card" id="ov-afd-card">
+                    <div class="ov-conn-card ov-conn-afd" id="ov-afd-card">
                         <div class="ov-conn-label">AFD Edge</div>
+                        <div class="ov-conn-flag" id="ov-afd-flag"></div>
                         <div class="ov-conn-location" id="ov-afd-pop-val">—</div>
                         <div class="ov-conn-latency" id="ov-afd-latency-val"></div>
                     </div>
-                    <div class="ov-conn-card" id="ov-gateway-card">
-                        <div class="ov-conn-label">RDP Gateway <span class="ov-proto-tag">TCP</span></div>
+                    <div class="ov-conn-card ov-conn-tcp" id="ov-gateway-card">
+                        <div class="ov-conn-label">RDP Gateway <span class="ov-proto-tag ov-tag-tcp">TCP</span></div>
+                        <div class="ov-conn-flag" id="ov-gateway-flag"></div>
                         <div class="ov-conn-location" id="ov-rdp-gateway-val">—</div>
                         <div class="ov-conn-latency" id="ov-rdp-gateway-latency-val"></div>
                     </div>
-                    <div class="ov-conn-card" id="ov-turn-card">
-                        <div class="ov-conn-label">TURN Relay <span class="ov-proto-tag">UDP</span></div>
+                    <div class="ov-conn-card ov-conn-udp" id="ov-turn-card">
+                        <div class="ov-conn-label">TURN Relay <span class="ov-proto-tag ov-tag-udp">UDP</span></div>
+                        <div class="ov-conn-flag" id="ov-turn-flag"></div>
                         <div class="ov-conn-location" id="ov-turn-relay-val">—</div>
                         <div class="ov-conn-latency" id="ov-turn-relay-latency-val"></div>
                     </div>
@@ -449,10 +452,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=81"></script>
-    <script src="js/browser-tests.js?v=81"></script>
-    <script src="js/ui.js?v=81"></script>
-    <script src="js/map.js?v=81"></script>
-    <script src="js/app.js?v=81"></script>
+    <script src="js/config.js?v=82"></script>
+    <script src="js/browser-tests.js?v=82"></script>
+    <script src="js/ui.js?v=82"></script>
+    <script src="js/map.js?v=82"></script>
+    <script src="js/app.js?v=82"></script>
 </body>
 </html>

@@ -912,6 +912,89 @@ async function updateConnectivityOverview(results) {
     const r = id => results.find(x => x.id === id);
     const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
 
+    // AFD PoP airport code → ISO 3166-1 alpha-2 country code (lowercase)
+    const AFD_POP_COUNTRY = {
+        'LHR':'gb','MAN':'gb','DUB':'ie',
+        'AMS':'nl','FRA':'de','PAR':'fr','MAD':'es','MIL':'it','ZRH':'ch',
+        'VIE':'at','CPH':'dk','HEL':'fi','OSL':'no','STO':'se','WAW':'pl',
+        'BUD':'hu','PRG':'cz','BER':'de','MRS':'fr','LIS':'pt','ATH':'gr',
+        'SOF':'bg','BUH':'ro','ZAG':'hr','BEG':'rs','BTS':'sk',
+        'IAD':'us','JFK':'us','EWR':'us','ATL':'us','MIA':'us','ORD':'us',
+        'DFW':'us','LAX':'us','SJC':'us','SEA':'us','DEN':'us','PHX':'us',
+        'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','QRO':'mx',
+        'YYZ':'ca','YUL':'ca','YVR':'ca',
+        'SIN':'sg','HKG':'hk','NRT':'jp','KIX':'jp','ICN':'kr',
+        'BOM':'in','MAA':'in','DEL':'in','BLR':'in','HYD':'in',
+        'KUL':'my','BKK':'th','CGK':'id','MNL':'ph','TPE':'tw',
+        'SYD':'au','MEL':'au','PER':'au','AKL':'nz',
+        'DXB':'ae','AUH':'ae','DOH':'qa','JNB':'za','CPT':'za','NBO':'ke',
+        'GRU':'br','GIG':'br','SCL':'cl','BOG':'co','EZE':'ar','LIM':'pe'
+    };
+
+    // Extract the 3-letter AFD PoP code from a string like "London (LHR)" or "LHR"
+    function extractAfdPopCode(str) {
+        if (!str) return '';
+        const m = str.match(/\(([A-Z]{3})\)/);
+        if (m) return m[1];
+        const t = str.trim();
+        if (/^[A-Z]{3}$/.test(t)) return t;
+        return '';
+    }
+
+    // Get country code from various location string formats:
+    // 1. ", XX" suffix (e.g. "London, GB")
+    // 2. AFD PoP airport code (e.g. "LHR")
+    // 3. Azure region friendly name (e.g. "UK South")
+    const AZURE_REGION_COUNTRY = {
+        'uk south':'gb','uk west':'gb',
+        'north europe':'ie','west europe':'nl',
+        'france central':'fr','france south':'fr',
+        'germany west central':'de','germany north':'de',
+        'norway east':'no','norway west':'no',
+        'sweden central':'se','sweden south':'se',
+        'switzerland north':'ch','switzerland west':'ch',
+        'italy north':'it','spain central':'es','poland central':'pl',
+        'east us':'us','east us 2':'us','east us 2 euap':'us',
+        'central us':'us','north central us':'us','south central us':'us',
+        'west central us':'us','west us':'us','west us 2':'us','west us 3':'us',
+        'canada central':'ca','canada east':'ca','mexico central':'mx',
+        'chile central':'cl','brazil south':'br',
+        'southeast asia':'sg','east asia':'hk',
+        'japan east':'jp','japan west':'jp',
+        'korea central':'kr','korea south':'kr',
+        'central india':'in','south india':'in','west india':'in',
+        'jio india west':'in',
+        'australia east':'au','australia southeast':'au','australia central':'au',
+        'taiwan north':'tw','taiwan northwest':'tw',
+        'new zealand north':'nz',
+        'south africa north':'za','south africa west':'za',
+        'uae north':'ae','uae central':'ae','israel central':'il',
+        'qatar central':'qa'
+    };
+
+    function getCountryCode(locationStr) {
+        if (!locationStr) return '';
+        const code = extractCountryCode(locationStr);
+        if (code) return code;
+        const pop = extractAfdPopCode(locationStr);
+        if (pop && AFD_POP_COUNTRY[pop]) return AFD_POP_COUNTRY[pop];
+        // Try Azure region friendly name match
+        const lower = locationStr.toLowerCase().trim();
+        if (AZURE_REGION_COUNTRY[lower]) return AZURE_REGION_COUNTRY[lower];
+        // Partial match: check if the string starts with an Azure region name
+        for (const [region, cc] of Object.entries(AZURE_REGION_COUNTRY)) {
+            if (lower.startsWith(region)) return cc;
+        }
+        return '';
+    }
+
+    // Set a large flag image in a dedicated flag element
+    function setCardFlag(flagElId, countryCode) {
+        const el = document.getElementById(flagElId);
+        if (!el || !countryCode) { if (el) el.innerHTML = ''; return; }
+        el.innerHTML = `<img src="https://flagcdn.com/40x30/${countryCode}.png" alt="${countryCode.toUpperCase()}" width="40" height="30" onerror="this.style.display='none'">`;
+    }
+
     // Helper: build an HTML string with a country-flag <img> prepended if a 2-letter code is found
     function flagHtml(locationStr) {
         const code = extractCountryCode(locationStr || '');
@@ -983,18 +1066,50 @@ async function updateConnectivityOverview(results) {
     // 3. AFD Edge PoP (L-TCP-09 or B-TCP-02)
     const gw09 = r('L-TCP-09');
     const afd02 = r('B-TCP-02');
+    let afdPopStr = '';
+
+    // Helper: extract clean AFD PoP string from B-TCP-02 detailedInfo or resultValue
+    function getAfdPopFromBrowser(test) {
+        if (!test) return '';
+        if (test.detailedInfo) {
+            const popLine = test.detailedInfo.split('\n').find(l => l.trim().startsWith('AFD PoP:'));
+            if (popLine) return popLine.replace(/.*AFD PoP:\s*/i, '').trim();
+        }
+        // Strip "✓ " prefix and " — Nms" suffix from resultValue
+        return (test.resultValue || '').replace(/^[✓✗⚠]\s*/, '').replace(/\s*[—–-]\s*\d+ms$/, '').trim();
+    }
+
     if (gw09 && gw09.detailedInfo) {
         const popLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('AFD PoP:'));
         if (popLine) {
-            setVal('ov-afd-pop-val', esc(popLine.replace(/.*AFD PoP:\s*/i, '').trim()));
+            afdPopStr = popLine.replace(/.*AFD PoP:\s*/i, '').trim();
+            setVal('ov-afd-pop-val', esc(afdPopStr));
             hasContent = true;
         } else if (afd02) {
-            setVal('ov-afd-pop-val', esc(afd02.resultValue));
+            afdPopStr = getAfdPopFromBrowser(afd02);
+            setVal('ov-afd-pop-val', esc(afdPopStr));
             hasContent = true;
         }
     } else if (afd02 && afd02.status !== 'NotRun') {
-        setVal('ov-afd-pop-val', esc(afd02.resultValue));
+        afdPopStr = getAfdPopFromBrowser(afd02);
+        setVal('ov-afd-pop-val', esc(afdPopStr));
         hasContent = true;
+    }
+    // Set AFD card flag from PoP airport code
+    setCardFlag('ov-afd-flag', getCountryCode(afdPopStr));
+    // AFD latency from B-TCP-02
+    if (afd02 && afd02.detailedInfo) {
+        const afdLatLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+        if (afdLatLine) {
+            const avgMatch = afdLatLine.match(/avg\s+(\d+)ms/);
+            if (avgMatch) setVal('ov-afd-latency-val', `${avgMatch[1]}ms`);
+        } else {
+            const statusLine = afd02.detailedInfo.split('\n').find(l => l.includes('Connected'));
+            if (statusLine) {
+                const msMatch = statusLine.match(/(\d+)ms/);
+                if (msMatch) setVal('ov-afd-latency-val', `${msMatch[1]}ms`);
+            }
+        }
     }
 
     // 4. RDP Gateway Location & Latency
@@ -1007,7 +1122,8 @@ async function updateConnectivityOverview(results) {
         if (geoVal && regionVal) gwLocHtml = `${esc(regionVal)} <span class="ov-dim">(${esc(geoVal)})</span>`;
         if (distVal) gwLocHtml += `<br><span class="ov-dim">${esc(distVal)}</span>`;
 
-        setVal('ov-rdp-gateway-val', gwLocHtml, gwLoc);
+        setVal('ov-rdp-gateway-val', gwLocHtml);
+        setCardFlag('ov-gateway-flag', getCountryCode(gwLoc));
 
         // TCP latency from L-TCP-04
         const gw04 = r('L-TCP-04');
@@ -1032,7 +1148,8 @@ async function updateConnectivityOverview(results) {
     const turn04 = r('L-UDP-04');
     if (turn04 && turn04.status !== 'Skipped') {
         const turnLoc = turn04.resultValue || 'Unknown';
-        setVal('ov-turn-relay-val', esc(turnLoc), turnLoc);
+        setVal('ov-turn-relay-val', esc(turnLoc));
+        setCardFlag('ov-turn-flag', getCountryCode(turnLoc));
 
         const turn03 = r('L-UDP-03');
         if (turn03 && turn03.status === 'Passed') {
