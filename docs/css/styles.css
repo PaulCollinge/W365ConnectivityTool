@@ -1092,14 +1092,14 @@ main {
 .map-line-label.lat-warn { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-bg); }
 .map-line-label.lat-bad  { color: var(--red); border-color: var(--red-border); background: var(--red-bg); }
 
-/* Arrow cell latency: above the line */
+/* Arrow cell latency: below the line */
 .map-arrow-cell { position: relative; }
-.map-arrow-cell .map-line-label { top: -2px; left: 50%; transform: translate(-50%, -100%); }
+.map-arrow-cell .map-line-label { bottom: -2px; left: 50%; transform: translate(-50%, 100%); }
 
-/* Fanout latency: near each branch exit */
-.map-ll-afd  { right: 2px; top: 16.5%; transform: translateY(-130%); }
-.map-ll-rdgw { right: 2px; top: 50%; transform: translateY(-130%); }
-.map-ll-turn { right: 2px; top: 83.5%; transform: translateY(-130%); }
+/* Fanout latency: below each branch line */
+.map-ll-afd  { right: 4px; top: 16.5%; transform: translateY(2px); }
+.map-ll-rdgw { right: 4px; top: 50%; transform: translateY(2px); }
+.map-ll-turn { right: 4px; top: 83.5%; transform: translateY(2px); }
 
 .map-card {
     display: flex;
