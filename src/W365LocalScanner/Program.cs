@@ -2715,26 +2715,84 @@ class Program
             }
             else if (mapped1 == mapped2)
             {
-                sb.AppendLine($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
+                // Same reflexive IP:port from both servers = Endpoint-Independent Mapping
+                // This means the NAT is "cone-shaped". We can't distinguish Full Cone vs
+                // Restricted Cone vs Port-Restricted Cone with STUN alone (that requires
+                // the server to probe from alternate IPs/ports), but all three support
+                // RDP Shortpath equally well.
+
+                // Check if reflexive IP matches a local interface (= no NAT / direct)
+                var reflexIp = mapped1!.Split(':')[0];
+                var localAddrs = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                    .SelectMany(nic => nic.GetIPProperties().UnicastAddresses)
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.Address.ToString())
+                    .ToHashSet();
+
+                string natLabel;
+                if (localAddrs.Contains(reflexIp))
+                {
+                    natLabel = "Open Internet (No NAT)";
+                    sb.AppendLine($"✓ Reflexive IP {reflexIp} matches a local interface — no NAT detected.");
+                }
+                else
+                {
+                    natLabel = "Cone NAT (Full Cone / Restricted Cone / Port-Restricted Cone)";
+                    sb.AppendLine($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
+                }
                 sb.AppendLine();
-                sb.AppendLine("NAT Type: Cone (Endpoint-Independent Mapping)");
+                sb.AppendLine($"NAT Type: {natLabel}");
+                sb.AppendLine("  Endpoint-Independent Mapping — the same external IP:port is used");
+                sb.AppendLine("  regardless of destination. This is the best NAT type for P2P/UDP.");
+                sb.AppendLine();
                 sb.AppendLine("RDP Shortpath for public networks is LIKELY to work.");
                 sb.AppendLine();
                 sb.AppendLine("Shortpath modes available:");
-                sb.AppendLine("  • STUN (direct): Client ↔ Cloud PC via UDP hole-punching");
-                sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC (fallback)");
+                sb.AppendLine("  • STUN (direct): Client ↔ Cloud PC via UDP hole-punching ✓");
+                sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC (fallback) ✓");
+                sb.AppendLine();
+                sb.AppendLine("NAT type reference:");
+                sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
+                sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
+                sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
+                sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails");
                 result.Status = "Passed";
-                result.ResultValue = $"Cone NAT — Shortpath ready ({mapped1})";
+                result.ResultValue = $"{natLabel} — Shortpath ready ({mapped1})";
             }
             else
             {
+                // Different reflexive endpoints = Endpoint-Dependent Mapping
+                var ip1 = mapped1!.Split(':')[0];
+                var ip2 = mapped2!.Split(':')[0];
+                var port1 = mapped1.Split(':')[1];
+                var port2 = mapped2.Split(':')[1];
+
                 sb.AppendLine($"✗ Servers returned different reflexive endpoints:");
-                sb.AppendLine($"    Server 1: {mapped1}");
-                sb.AppendLine($"    Server 2: {mapped2}");
+                sb.AppendLine($"    Server 1 (stun.azure.com):  {mapped1}");
+                sb.AppendLine($"    Server 2 (13.107.17.41):    {mapped2}");
                 sb.AppendLine();
-                sb.AppendLine("NAT Type: Symmetric (Endpoint-Dependent Mapping)");
-                sb.AppendLine("RDP Shortpath via STUN (direct) is UNLIKELY to work.");
-                sb.AppendLine("TURN relay fallback will still be used if available.");
+
+                if (ip1 != ip2)
+                {
+                    sb.AppendLine("NAT Type: Symmetric NAT (different external IP per destination)");
+                    sb.AppendLine("  The NAT assigns a completely different public IP per destination.");
+                    sb.AppendLine("  This may also indicate multi-WAN or load-balanced egress.");
+                }
+                else
+                {
+                    sb.AppendLine($"NAT Type: Symmetric NAT (same IP {ip1}, but port {port1} vs {port2})");
+                    sb.AppendLine("  The NAT assigns a different external port per destination.");
+                    sb.AppendLine("  This is Endpoint-Dependent Mapping (Symmetric NAT).");
+                }
+                sb.AppendLine();
+                sb.AppendLine("RDP Shortpath via STUN (direct hole-punching) is UNLIKELY to work.");
+                sb.AppendLine("TURN relay fallback will still provide UDP transport if available.");
+                sb.AppendLine();
+                sb.AppendLine("NAT type reference:");
+                sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
+                sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
+                sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
+                sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
                 result.Status = "Warning";
                 result.ResultValue = $"Symmetric NAT — Shortpath via STUN unlikely";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";

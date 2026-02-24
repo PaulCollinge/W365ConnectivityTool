@@ -827,8 +827,26 @@ async function testNatType(test) {
             const reflexIPs = [...new Set(srflx.map(c => c.address))];
             const reflexEPs = [...new Set(srflx.map(c => `${c.address}:${c.port}`))];
 
-            natType = 'STUN OK \u2014 behind NAT';
-            status = 'Passed';
+            // Check if reflexive IP matches any host candidate (= no NAT)
+            const hostIPs = new Set(allHost.map(c => c.address));
+            const isDirectInternet = reflexIPs.every(ip => hostIPs.has(ip));
+
+            if (isDirectInternet) {
+                natType = 'Open Internet (No NAT)';
+                status = 'Passed';
+            } else if (reflexIPs.length === 1 && reflexEPs.length === 1) {
+                natType = 'Cone NAT — STUN OK';
+                status = 'Passed';
+            } else if (reflexIPs.length === 1) {
+                // Same IP, different ports — might be port-dependent mapping
+                // but also could be browser using separate sockets
+                natType = 'STUN OK — likely Cone NAT';
+                status = 'Passed';
+            } else {
+                // Multiple reflexive IPs — could be Symmetric or multi-egress
+                natType = 'STUN OK — multiple egress IPs';
+                status = 'Passed';
+            }
 
             detail += 'Server-reflexive candidates:\n';
             srflx.forEach(c => {
@@ -841,12 +859,18 @@ async function testNatType(test) {
 
             detail += `Public IP${reflexIPs.length > 1 ? 's' : ''}: ${reflexIPs.join(', ')}\n`;
             detail += `Reflexive endpoints: ${reflexEPs.length}\n\n`;
-            detail += 'STUN binding succeeded \u2014 UDP connectivity confirmed.\n' +
-                'RDP Shortpath (UDP) should be available.\n\n' +
-                'Note: Accurate NAT type classification (Full Cone / Restricted Cone /\n' +
-                'Port-Restricted Cone / Symmetric) requires the Local Scanner\'s\n' +
-                'dedicated two-server STUN test (L-UDP-05), which uses controlled\n' +
-                'sockets for reliable comparison.';
+            detail += 'STUN binding succeeded — UDP connectivity confirmed.\n' +
+                'RDP Shortpath (UDP) should be available.\n\n';
+
+            detail += 'NAT type reference:\n' +
+                '  Full Cone           — Any host can send to the mapped port             ✓ Shortpath\n' +
+                '  Restricted Cone     — Only hosts the client contacted can reply         ✓ Shortpath\n' +
+                '  Port-Restricted Cone — Only the exact host:port can reply               ✓ Shortpath\n' +
+                '  Symmetric           — Different mapping per destination                 ✗ STUN fails\n\n';
+
+            detail += 'Note: Precise NAT type classification (distinguishing all four types)\n' +
+                'requires the Local Scanner\'s dedicated two-server STUN test (L-UDP-05),\n' +
+                'which uses a single controlled UDP socket for reliable comparison.';
         }
 
         detail += '\n\nAll ICE candidates:\n' + candidates.map(c =>
