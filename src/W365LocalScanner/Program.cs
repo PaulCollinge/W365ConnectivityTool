@@ -2031,10 +2031,11 @@ class Program
 
             result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
             result.DetailedInfo = sb.ToString().Trim();
-            // Traceroute is informational — ICMP blocking is common and doesn't indicate a connectivity issue
-            result.Status = completed == targets.Count ? "Passed" : "Warning";
+            // Traceroute is purely informational — ICMP blocking is extremely common on
+            // corporate networks and does not indicate any connectivity issue.
+            result.Status = "Passed";
         }
-        catch (Exception ex) { result.Status = "Warning"; result.ResultValue = $"Traceroute unavailable: {ex.Message}"; }
+        catch (Exception ex) { result.Status = "Passed"; result.ResultValue = $"Traceroute unavailable: {ex.Message}"; }
         return result;
     }
 
