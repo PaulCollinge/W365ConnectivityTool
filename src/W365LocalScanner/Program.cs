@@ -2674,12 +2674,34 @@ class Program
                 sb.AppendLine($"Server 1: {stunHost1} → {stunIp1}");
             }
 
-            // Server 2: 13.107.17.41:3478 (Microsoft's second STUN server, same as avdnettest.exe / Test-Shortpath.ps1)
-            // Using a second Microsoft IP (not Google) avoids false Symmetric results on networks
-            // that route Microsoft vs Google traffic via different egress paths.
-            var stunIp2 = IPAddress.Parse("13.107.17.41");
-            int stunPort2 = 3478;
-            sb.AppendLine($"Server 2: {stunIp2} (port {stunPort2})");
+            // Server 2 pool: try multiple STUN servers in order until one responds.
+            // Primary: 13.107.17.41 (Microsoft, per Test-Shortpath.ps1 / avdnettest.exe)
+            // Fallbacks: stun.cloudflare.com, stun1.l.google.com (if primary is unreachable)
+            var server2Pool = new List<(string label, IPEndPoint ep)>
+            {
+                ("13.107.17.41 (Microsoft)", new IPEndPoint(IPAddress.Parse("13.107.17.41"), 3478)),
+            };
+
+            // Resolve fallback STUN servers upfront (DNS in parallel with main test)
+            try
+            {
+                var cfDns = await Dns.GetHostAddressesAsync("stun.cloudflare.com");
+                var cfIp = cfDns.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (cfIp != null && !cfIp.Equals(stunIp1))
+                    server2Pool.Add(($"stun.cloudflare.com ({cfIp})", new IPEndPoint(cfIp, 3478)));
+            }
+            catch { }
+
+            try
+            {
+                var gDns = await Dns.GetHostAddressesAsync("stun1.l.google.com");
+                var gIp = gDns.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (gIp != null && !gIp.Equals(stunIp1))
+                    server2Pool.Add(($"stun1.l.google.com ({gIp})", new IPEndPoint(gIp, 19302)));
+            }
+            catch { }
+
+            sb.AppendLine($"Server 2 candidates: {string.Join(", ", server2Pool.Select(s => s.label))}");
             sb.AppendLine();
 
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
@@ -2689,8 +2711,21 @@ class Program
 
             // Send STUN to server 1
             var mapped1 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp1, 3478), sb, "Server 1");
-            // Send STUN to server 2
-            var mapped2 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp2, stunPort2), sb, "Server 2");
+
+            // Send STUN to server 2 (try pool in order)
+            string? mapped2 = null;
+            string server2UsedLabel = "";
+            bool usedFallbackServer = false;
+            foreach (var (label, ep) in server2Pool)
+            {
+                mapped2 = await SendStunAndGetMapped(udp, ep, sb, $"Server 2");
+                if (mapped2 != null)
+                {
+                    server2UsedLabel = label;
+                    usedFallbackServer = (label != server2Pool[0].label);
+                    break;
+                }
+            }
 
             sb.AppendLine();
 
@@ -2707,11 +2742,26 @@ class Program
             else if (mapped1 == null || mapped2 == null)
             {
                 var working = mapped1 ?? mapped2;
-                sb.AppendLine($"⚠ Only one STUN server responded (reflexive: {working}).");
-                sb.AppendLine("  NAT type could not be fully determined.");
-                sb.AppendLine("  STUN connectivity is partially available.");
+                var serverOk = mapped1 != null ? "Server 1 (stun.azure.com)" : $"Server 2 ({server2UsedLabel})";
+                sb.AppendLine($"⚠ Only one STUN server responded — reflexive endpoint: {working}");
+                sb.AppendLine($"  Responding server: {serverOk}");
+                sb.AppendLine($"  Non-responding: {(mapped1 == null ? "Server 1 (stun.azure.com)" : "all Server 2 candidates")}");
+                sb.AppendLine();
+                sb.AppendLine("NAT Type: Cannot determine (need two server responses to compare)");
+                sb.AppendLine();
+                sb.AppendLine("However, STUN binding DID succeed, which confirms:");
+                sb.AppendLine("  • Outbound UDP is NOT fully blocked");
+                sb.AppendLine("  • RDP Shortpath via TURN relay should work");
+                sb.AppendLine("  • STUN direct hole-punching may also work (NAT type unknown)");
+                sb.AppendLine();
+                sb.AppendLine("NAT type reference (for when both servers respond):");
+                sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
+                sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
+                sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
+                sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails");
                 result.Status = "Warning";
-                result.ResultValue = $"Partial STUN — reflexive {working}";
+                result.ResultValue = $"Partial STUN — NAT type undetermined ({working})";
+                result.RemediationText = "One STUN server did not respond. UDP works but NAT type could not be classified.";
             }
             else if (mapped1 == mapped2)
             {
@@ -2739,8 +2789,18 @@ class Program
                 {
                     natLabel = "Cone NAT (Full Cone / Restricted Cone / Port-Restricted Cone)";
                     sb.AppendLine($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
+                    sb.AppendLine($"  Server 1: stun.azure.com ({stunIp1})");
+                    sb.AppendLine($"  Server 2: {server2UsedLabel}");
                 }
                 sb.AppendLine();
+                if (usedFallbackServer)
+                {
+                    sb.AppendLine($"⚠ Note: Primary Server 2 (13.107.17.41) did not respond.");
+                    sb.AppendLine($"  Used fallback: {server2UsedLabel}");
+                    sb.AppendLine($"  On split-routing networks, non-Microsoft servers may give different");
+                    sb.AppendLine($"  egress IPs. If this result seems wrong, verify with avdnettest.exe.");
+                    sb.AppendLine();
+                }
                 sb.AppendLine($"NAT Type: {natLabel}");
                 sb.AppendLine("  Endpoint-Independent Mapping — the same external IP:port is used");
                 sb.AppendLine("  regardless of destination. This is the best NAT type for P2P/UDP.");
@@ -2768,15 +2828,27 @@ class Program
                 var port2 = mapped2.Split(':')[1];
 
                 sb.AppendLine($"✗ Servers returned different reflexive endpoints:");
-                sb.AppendLine($"    Server 1 (stun.azure.com):  {mapped1}");
-                sb.AppendLine($"    Server 2 (13.107.17.41):    {mapped2}");
+                sb.AppendLine($"    Server 1 (stun.azure.com / {stunIp1}):  {mapped1}");
+                sb.AppendLine($"    Server 2 ({server2UsedLabel}):  {mapped2}");
                 sb.AppendLine();
+
+                if (usedFallbackServer)
+                {
+                    sb.AppendLine($"⚠ Note: Primary Server 2 (13.107.17.41) did not respond.");
+                    sb.AppendLine($"  Used fallback: {server2UsedLabel}");
+                    sb.AppendLine($"  Different IPs/ports MAY be caused by split-routing (different egress");
+                    sb.AppendLine($"  for Microsoft vs non-Microsoft traffic) rather than Symmetric NAT.");
+                    sb.AppendLine($"  Verify with avdnettest.exe for a definitive result.");
+                    sb.AppendLine();
+                }
 
                 if (ip1 != ip2)
                 {
                     sb.AppendLine("NAT Type: Symmetric NAT (different external IP per destination)");
                     sb.AppendLine("  The NAT assigns a completely different public IP per destination.");
                     sb.AppendLine("  This may also indicate multi-WAN or load-balanced egress.");
+                    if (usedFallbackServer)
+                        sb.AppendLine("  ↑ Could also be split-routing since a non-Microsoft fallback server was used.");
                 }
                 else
                 {
