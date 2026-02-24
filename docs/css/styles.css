@@ -1559,3 +1559,50 @@ footer {
 .live-diagnostics-section .test-list {
     padding: 12px 16px;
 }
+
+/* ── NAT Type Banner (UDP category header) ── */
+.nat-type-banner {
+    display: none; /* hidden until populated */
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    margin: 0 16px 8px;
+    border-radius: 8px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    line-height: 1.4;
+}
+.nat-type-banner.visible { display: flex; }
+.nat-type-banner .nat-icon {
+    font-size: 1.4rem;
+    flex-shrink: 0;
+}
+.nat-type-banner .nat-label {
+    flex: 1;
+}
+.nat-type-banner .nat-source {
+    font-weight: 400;
+    font-size: 0.75rem;
+    opacity: 0.65;
+    margin-left: 6px;
+}
+.nat-type-banner.nat-cone {
+    background: rgba(63,185,80,0.10);
+    border: 1px solid rgba(63,185,80,0.25);
+    color: var(--green);
+}
+.nat-type-banner.nat-symmetric {
+    background: rgba(248,81,73,0.10);
+    border: 1px solid rgba(248,81,73,0.25);
+    color: var(--red);
+}
+.nat-type-banner.nat-warn {
+    background: rgba(210,153,34,0.10);
+    border: 1px solid rgba(210,153,34,0.25);
+    color: #d29922;
+}
+.nat-type-banner.nat-blocked {
+    background: rgba(248,81,73,0.10);
+    border: 1px solid rgba(248,81,73,0.25);
+    color: var(--red);
+}

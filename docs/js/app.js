@@ -802,8 +802,37 @@ async function exportTextReport() {
 
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
-    if (turnTls || turnVpn || reportIsSplitPath || reportIsCgnat) {
+
+    // NAT type line for text report — prefer scanner L-UDP-05, fall back to B-UDP-02
+    const reportNatSrc = r('L-UDP-05') || r('B-UDP-02');
+    let reportNatLine = '';
+    if (reportNatSrc) {
+        const nv = reportNatSrc.resultValue || '';
+        const nlc = nv.toLowerCase();
+        const nsrc = r('L-UDP-05') ? 'Scanner' : 'Browser';
+        let nIcon, nLabel;
+        if (nlc.includes('cone') || nlc.includes('open internet')) {
+            nIcon = '✓';
+            nLabel = nlc.includes('open internet') ? 'Open Internet (No NAT)' : 'Cone NAT — Shortpath ready';
+        } else if (nlc.includes('symmetric')) {
+            nIcon = '✗';
+            nLabel = 'Symmetric NAT — STUN hole-punching unlikely';
+        } else if (nlc.includes('stun ok')) {
+            nIcon = '✓';
+            nLabel = 'STUN OK — UDP connectivity confirmed';
+        } else if (nlc.includes('blocked') || nlc.includes('failed')) {
+            nIcon = '✗';
+            nLabel = 'STUN blocked — UDP 3478 unreachable';
+        } else {
+            nIcon = '⚠';
+            nLabel = nv;
+        }
+        reportNatLine = `    ${nIcon} NAT Type:         ${nLabel} [${nsrc}]`;
+    }
+
+    if (reportNatLine || turnTls || turnVpn || reportIsSplitPath || reportIsCgnat) {
         lines.push(`  UDP-based RDP Path Optimisation:`);
+        if (reportNatLine) lines.push(reportNatLine);
         if (turnTls) {
             const icon = turnTls.status === 'Passed' ? '✓' : '⚠';
             lines.push(`    ${icon} TLS Inspection:   ${turnTls.resultValue}`);
@@ -833,7 +862,7 @@ async function exportTextReport() {
         lines.push(`  UDP-based RDP Path Optimisation:`);
         lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
     } else {
-        lines.push(`  UDP-based RDP Path Optimisation:  (requires Local Scanner)`);
+        lines.push(`  UDP-based RDP Path Optimisation:  (requires Local Scanner or STUN test)`);
     }
 
     lines.push('');
@@ -1185,11 +1214,44 @@ async function updateConnectivityOverview(results) {
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
 
+    // NAT type line — prefer scanner L-UDP-05 (accurate), fall back to browser B-UDP-02
+    let natTypeHtml = '';
+    const scannerNat = r('L-UDP-05');
+    const browserNat = r('B-UDP-02');
+    const natSource = scannerNat || browserNat;
+    if (natSource) {
+        const val = natSource.resultValue || '';
+        const lc = val.toLowerCase();
+        const src = scannerNat ? 'Scanner' : 'Browser';
+        let icon, cls, label;
+        if (lc.includes('cone') || lc.includes('open internet')) {
+            icon = '✓'; cls = 'ov-pass';
+            label = lc.includes('open internet') ? 'Open Internet (No NAT)'
+                  : 'Cone NAT — Shortpath ready';
+        } else if (lc.includes('symmetric')) {
+            icon = '✗'; cls = 'ov-fail';
+            label = 'Symmetric NAT — STUN hole-punching unlikely';
+        } else if (lc.includes('stun ok')) {
+            icon = '✓'; cls = 'ov-pass';
+            label = 'STUN OK — UDP connectivity confirmed';
+        } else if (lc.includes('partial')) {
+            icon = '⚠'; cls = 'ov-warn';
+            label = 'Partial STUN — NAT type undetermined';
+        } else if (lc.includes('blocked') || lc.includes('failed')) {
+            icon = '✗'; cls = 'ov-fail';
+            label = 'STUN blocked — UDP 3478 unreachable';
+        } else {
+            icon = '⚠'; cls = 'ov-warn';
+            label = val;
+        }
+        natTypeHtml = `<div class="ov-check-line"><span class="ov-status-icon ${cls}">${icon}</span>NAT Type: ${esc(label)} <span class="ov-dim">[${src}]</span></div>`;
+    }
+
     // Build CGNAT warning for UDP if detected
     let cgnatHtml = '';
     if (isCgnat) {
         // Cross-reference with NAT type result
-        const natResult = r('B-UDP-02');
+        const natResult = browserNat;
         const natType = natResult?.resultValue || '';
         const isSymmetric = natType.toLowerCase().includes('symmetric');
         if (isSymmetric) {
@@ -1203,8 +1265,9 @@ async function updateConnectivityOverview(results) {
         }
     }
 
-    if (turnTls || turnVpn || splitPathUdpHtml || cgnatHtml) {
+    if (natTypeHtml || turnTls || turnVpn || splitPathUdpHtml || cgnatHtml) {
         const items = [];
+        if (natTypeHtml) items.push(natTypeHtml);
         if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
         if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
         if (splitPathUdpHtml) items.push(splitPathUdpHtml);
@@ -1212,7 +1275,7 @@ async function updateConnectivityOverview(results) {
         setVal('ov-udp-path-val', items.join(''));
         hasContent = true;
     } else {
-        setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner</span>');
+        setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner or STUN test</span>');
     }
 
     // Overall verdict
