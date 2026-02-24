@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=94">
+    <link rel="stylesheet" href="css/styles.css?v=95">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -223,12 +223,38 @@
 
                 <div class="map-arrow-cell map-g-arrow1"><span class="map-hline"></span><span class="map-arrow">▸</span><span class="map-line-label" id="map-lat-gw"></span></div>
 
-                <div class="map-card map-g-localgw" id="map-localgw">
-                    <div class="map-card-accent" id="map-localgw-accent"></div>
-                    <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">🏠</span> Local Gateway</div>
-                        <div class="map-card-detail" id="map-localgw-detail">Awaiting results...</div>
-                        <div class="map-card-detail" id="map-localgw-detail2"></div>
+                <div class="map-client-device map-g-localgw" id="map-localgw">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Router body -->
+                            <rect x="14" y="30" width="92" height="40" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Antennas -->
+                            <line x1="35" y1="30" x2="28" y2="10" stroke="#30363d" stroke-width="2" stroke-linecap="round"/>
+                            <circle cx="28" cy="8" r="3" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+                            <line x1="85" y1="30" x2="92" y2="10" stroke="#30363d" stroke-width="2" stroke-linecap="round"/>
+                            <circle cx="92" cy="8" r="3" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+                            <!-- WiFi arcs -->
+                            <path d="M50 18 Q60 8 70 18" stroke="#58a6ff" stroke-width="1.5" fill="none" opacity="0.3"/>
+                            <path d="M46 24 Q60 10 74 24" stroke="#58a6ff" stroke-width="1.5" fill="none" opacity="0.2"/>
+                            <!-- Status LEDs -->
+                            <circle class="device-status-dot" id="device-gw-dot" cx="30" cy="50" r="3" fill="#484f58"/>
+                            <circle cx="42" cy="50" r="2" fill="#21262d"/>
+                            <circle cx="52" cy="50" r="2" fill="#21262d"/>
+                            <!-- Ethernet ports -->
+                            <rect x="68" y="44" width="10" height="12" rx="1" fill="none" stroke="#21262d" stroke-width="1"/>
+                            <rect x="82" y="44" width="10" height="12" rx="1" fill="none" stroke="#21262d" stroke-width="1"/>
+                            <!-- Ventilation lines -->
+                            <line x1="24" y1="62" x2="40" y2="62" stroke="#21262d" stroke-width="0.5"/>
+                            <!-- Base feet -->
+                            <rect x="28" y="70" width="12" height="4" rx="2" fill="#21262d"/>
+                            <rect x="80" y="70" width="12" height="4" rx="2" fill="#21262d"/>
+                        </svg>
+                        <div class="device-accent" id="map-localgw-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">Local Gateway</div>
+                        <div class="device-detail" id="map-localgw-detail">Awaiting results...</div>
+                        <div class="device-detail" id="map-localgw-detail2"></div>
                     </div>
                 </div>
 
@@ -298,12 +324,34 @@
 
                 <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div><span class="map-dns-arw">▾</span></div>
 
-                <div class="map-card map-g-dns" id="map-dns">
-                    <div class="map-card-accent" id="map-dns-accent"></div>
-                    <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">🔍</span> DNS</div>
-                        <div class="map-card-detail" id="map-dns-detail">Awaiting results...</div>
-                        <div class="map-card-detail" id="map-dns-detail2"></div>
+                <div class="map-client-device map-g-dns" id="map-dns">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Server rack body -->
+                            <rect x="24" y="8" width="72" height="84" rx="5" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Top drive bay -->
+                            <rect x="32" y="16" width="56" height="18" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                            <text x="60" y="29" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="9" font-weight="700">DNS</text>
+                            <circle class="device-status-dot" id="device-dns-dot" cx="82" cy="25" r="2.5" fill="#484f58"/>
+                            <!-- Middle drive bay -->
+                            <rect x="32" y="40" width="56" height="18" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                            <line x1="38" y1="46" x2="58" y2="46" stroke="#30363d" stroke-width="1"/>
+                            <line x1="38" y1="50" x2="52" y2="50" stroke="#30363d" stroke-width="1"/>
+                            <line x1="38" y1="54" x2="56" y2="54" stroke="#30363d" stroke-width="1"/>
+                            <circle cx="82" cy="49" r="2" fill="#21262d"/>
+                            <!-- Bottom drive bay -->
+                            <rect x="32" y="64" width="56" height="18" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                            <line x1="38" y1="70" x2="54" y2="70" stroke="#30363d" stroke-width="1"/>
+                            <line x1="38" y1="74" x2="50" y2="74" stroke="#30363d" stroke-width="1"/>
+                            <line x1="38" y1="78" x2="56" y2="78" stroke="#30363d" stroke-width="1"/>
+                            <circle cx="82" cy="73" r="2" fill="#21262d"/>
+                        </svg>
+                        <div class="device-accent" id="map-dns-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">DNS</div>
+                        <div class="device-detail" id="map-dns-detail">Awaiting results...</div>
+                        <div class="device-detail" id="map-dns-detail2"></div>
                         <div class="map-card-badge hidden" id="map-dns-badge"></div>
                     </div>
                 </div>
@@ -475,10 +523,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=94"></script>
-    <script src="js/browser-tests.js?v=94"></script>
-    <script src="js/ui.js?v=94"></script>
-    <script src="js/map.js?v=94"></script>
-    <script src="js/app.js?v=94"></script>
+    <script src="js/config.js?v=95"></script>
+    <script src="js/browser-tests.js?v=95"></script>
+    <script src="js/ui.js?v=95"></script>
+    <script src="js/map.js?v=95"></script>
+    <script src="js/app.js?v=95"></script>
 </body>
 </html>

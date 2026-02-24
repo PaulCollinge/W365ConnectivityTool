@@ -191,11 +191,23 @@ function setFlaggedBadge(elementId, text, cssClass, locationStr) {
 function setAccentStatus(elementId, status) {
     const el = document.getElementById(elementId);
     if (!el) return;
-    el.className = 'map-card-accent';
+    // Support both map-card-accent and device-accent classes
+    el.className = el.className.includes('device-accent') ? 'device-accent' : 'map-card-accent';
     if (status === 'Passed') el.classList.add('status-passed');
     else if (status === 'Warning') el.classList.add('status-warning');
     else if (status === 'Failed' || status === 'Error') el.classList.add('status-failed');
     else if (status === 'Running') el.classList.add('status-running');
+}
+
+function setDeviceDot(dotId, status) {
+    const dot = document.getElementById(dotId);
+    if (!dot) return;
+    const color = status === 'Passed' ? '#3fb950'
+        : status === 'Warning' ? '#d29922'
+        : status === 'Failed' || status === 'Error' ? '#f85149'
+        : status === 'Running' ? '#58a6ff'
+        : '#484f58';
+    dot.setAttribute('fill', color);
 }
 
 function setText(elementId, text) {
@@ -260,17 +272,7 @@ function updateMapClientCard(lookup) {
     setFlaggedText('map-client-location', location || 'Awaiting results...');
     setText('map-client-ip', publicIp ? `🌐 ${publicIp}` : '');
     setAccentStatus('map-client-accent', status);
-
-    // Update device screen status dot
-    const dot = document.getElementById('device-status-dot');
-    if (dot) {
-        const dotColor = status === 'Passed' ? '#3fb950'
-            : status === 'Warning' ? '#d29922'
-            : status === 'Failed' ? '#f85149'
-            : status === 'Running' ? '#58a6ff'
-            : '#484f58';
-        dot.setAttribute('fill', dotColor);
-    }
+    setDeviceDot('device-status-dot', status);
 }
 
 // ── Local Gateway Card ──
@@ -287,6 +289,7 @@ function updateMapLocalGwCard(lookup) {
     setText('map-localgw-detail', gwIp || gw.resultValue || '');
     setText('map-localgw-detail2', gw.resultValue || '');
     setAccentStatus('map-localgw-accent', gw.status);
+    setDeviceDot('device-gw-dot', gw.status);
 }
 
 // ── ISP Card ──
@@ -530,9 +533,8 @@ function updateMapDnsCard(lookup) {
     setText('map-dns-detail', detail1);
     setText('map-dns-detail2', detail2);
     setAccentStatus('map-dns-accent', status);
+    setDeviceDot('device-dns-dot', status);
 }
-
-// ── Latency line labels on connectivity path ──
 function updateMapLatencyLabels(lookup) {
     function setLL(id, ms, type) {
         const el = document.getElementById(id);
