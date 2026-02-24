@@ -700,19 +700,23 @@ main {
 }
 .test-expand:hover { background: var(--accent-bg); }
 
-.test-remediation { margin-top: 6px; }
+.test-remediation { margin-top: 8px; }
 .test-remediation a {
-    font-size: var(--text-xs);
-    color: var(--accent);
+    font-size: var(--text-sm);
+    color: var(--accent-bright);
     text-decoration: none;
-    font-weight: 500;
+    font-weight: 600;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    transition: color var(--transition);
+    gap: 5px;
+    padding: 3px 10px 3px 6px;
+    border-radius: 6px;
+    background: rgba(56,139,253,0.1);
+    border: 1px solid rgba(56,139,253,0.25);
+    transition: color var(--transition), background var(--transition), border-color var(--transition);
 }
-.test-remediation a::after { content: '\2192'; font-size: 12px; }
-.test-remediation a:hover { color: var(--accent-bright); text-decoration: underline; }
+.test-remediation a::after { content: '\2192'; font-size: 13px; }
+.test-remediation a:hover { color: #fff; background: rgba(56,139,253,0.2); border-color: rgba(56,139,253,0.4); text-decoration: none; }
 .test-remediation-text {
     margin-top: 4px;
     font-size: var(--text-xs);
