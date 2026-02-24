@@ -1067,9 +1067,30 @@ main {
 .map-hline {
     flex: 1;
     height: 2px;
-    background: linear-gradient(90deg, var(--accent-border), var(--accent));
     border-radius: 1px;
+    position: relative;
+    overflow: visible;
+    background: repeating-linear-gradient(90deg,
+        var(--accent) 0px, var(--accent) 8px,
+        transparent 8px, transparent 14px
+    );
+    animation: flowRight 0.8s linear infinite;
 }
+/* Traveling ping dot on horizontal connectors */
+.map-hline::after {
+    content: '';
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent), 0 0 14px rgba(88,166,255,0.4);
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    animation: pingDot 2.5s ease-in-out infinite;
+}
+.map-g-arrow2 .map-hline::after { animation-delay: 1.25s; }
 .map-arrow { color: var(--accent); font-size: 14px; line-height: 1; margin-left: -4px; }
 
 /* ── Latency line labels (on connectivity path lines) ── */
@@ -1183,10 +1204,61 @@ main {
 .map-card-badge.proximity-far  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
 .map-dns-connector { display: flex; flex-direction: column; align-items: center; height: 100%; }
-.map-vline { width: 2px; flex: 1; background: var(--accent); border-radius: 1px; }
+.map-vline {
+    width: 2px;
+    flex: 1;
+    border-radius: 1px;
+    background: repeating-linear-gradient(180deg,
+        var(--accent) 0px, var(--accent) 8px,
+        transparent 8px, transparent 14px
+    );
+    background-size: 2px 14px;
+    animation: flowDown 0.8s linear infinite;
+}
 .map-dns-arw { color: var(--accent); font-size: 10px; line-height: 1; margin-top: -2px; }
 .map-fanout { display: flex; align-items: stretch; position: relative; overflow: visible; }
 .map-fanout-svg { width: 100%; height: 100%; }
+
+/* ── Animated SVG fanout lines ── */
+.fan-tcp {
+    stroke: #58a6ff;
+    stroke-dasharray: 8 5;
+    animation: flowTcp 0.8s linear infinite;
+}
+.fan-udp {
+    stroke: #f0883e;
+    stroke-dasharray: 6 4;
+    animation: flowUdp 0.7s linear infinite;
+}
+
+/* ── Flowing line keyframes ── */
+@keyframes flowRight {
+    to { background-position: 14px 0; }
+}
+@keyframes flowDown {
+    to { background-position: 0 14px; }
+}
+@keyframes flowTcp {
+    to { stroke-dashoffset: -13; }
+}
+@keyframes flowUdp {
+    to { stroke-dashoffset: -10; }
+}
+@keyframes pingDot {
+    0%   { left: 0;    opacity: 0; }
+    5%   { opacity: 1; }
+    95%  { opacity: 1; }
+    100% { left: 100%; opacity: 0; }
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+    .map-hline, .map-vline { animation: none !important; }
+    .fan-tcp, .fan-udp     { animation: none !important; }
+    .map-hline::after      { display: none; }
+    .map-hline { background: linear-gradient(90deg, var(--accent-border), var(--accent)); }
+    .map-vline { background: var(--accent); }
+}
 
 /* ── Security Status Bar ── */
 .map-security-bar {

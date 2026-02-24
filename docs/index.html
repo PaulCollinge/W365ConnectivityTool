@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=91">
+    <link rel="stylesheet" href="css/styles.css?v=92">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -228,12 +228,12 @@
 
                 <div class="map-fanout map-g-fanout">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
-                        <line x1="0" y1="100" x2="30" y2="100" stroke="#58a6ff" stroke-width="2"/>
-                        <line x1="30" y1="100" x2="30" y2="33" stroke="#58a6ff" stroke-width="2"/>
-                        <line x1="30" y1="100" x2="30" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
-                        <line x1="30" y1="33" x2="60" y2="33" stroke="#58a6ff" stroke-width="2"/>
-                        <line x1="30" y1="100" x2="60" y2="100" stroke="#58a6ff" stroke-width="2"/>
-                        <line x1="30" y1="167" x2="60" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
+                        <line class="fan-tcp" x1="0" y1="100" x2="30" y2="100" stroke-width="2"/>
+                        <line class="fan-tcp" x1="30" y1="100" x2="30" y2="33" stroke-width="2"/>
+                        <line class="fan-udp" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
+                        <line class="fan-tcp" x1="30" y1="33" x2="60" y2="33" stroke-width="2"/>
+                        <line class="fan-tcp" x1="30" y1="100" x2="60" y2="100" stroke-width="2"/>
+                        <line class="fan-udp" x1="30" y1="167" x2="60" y2="167" stroke-width="2"/>
                     </svg>
                     <span class="map-line-label map-ll-afd" id="map-lat-afd"></span>
                     <span class="map-line-label map-ll-rdgw" id="map-lat-rdgw"></span>
@@ -456,10 +456,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=91"></script>
-    <script src="js/browser-tests.js?v=91"></script>
-    <script src="js/ui.js?v=91"></script>
-    <script src="js/map.js?v=91"></script>
-    <script src="js/app.js?v=91"></script>
+    <script src="js/config.js?v=92"></script>
+    <script src="js/browser-tests.js?v=92"></script>
+    <script src="js/ui.js?v=92"></script>
+    <script src="js/map.js?v=92"></script>
+    <script src="js/app.js?v=92"></script>
 </body>
 </html>
