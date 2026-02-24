@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=84">
+    <link rel="stylesheet" href="css/styles.css?v=85">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -187,7 +187,7 @@
                     </div>
                 </div>
 
-                <div class="map-arrow-cell map-g-arrow1"><span class="map-hline"></span><span class="map-arrow">▸</span></div>
+                <div class="map-arrow-cell map-g-arrow1"><span class="map-hline"></span><span class="map-arrow">▸</span><span class="map-line-label" id="map-lat-gw"></span></div>
 
                 <div class="map-card map-g-localgw" id="map-localgw">
                     <div class="map-card-accent" id="map-localgw-accent"></div>
@@ -219,6 +219,9 @@
                         <line x1="30" y1="100" x2="60" y2="100" stroke="#58a6ff" stroke-width="2"/>
                         <line x1="30" y1="167" x2="60" y2="167" stroke="#f0883e" stroke-width="2" stroke-dasharray="6,4"/>
                     </svg>
+                    <span class="map-line-label map-ll-afd" id="map-lat-afd"></span>
+                    <span class="map-line-label map-ll-rdgw" id="map-lat-rdgw"></span>
+                    <span class="map-line-label map-ll-turn" id="map-lat-turn"></span>
                 </div>
 
                 <div class="map-card map-g-afd" id="map-afd">
@@ -259,7 +262,7 @@
                     </div>
                 </div>
 
-                <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div></div>
+                <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div><span class="map-dns-arw">▾</span></div>
 
                 <div class="map-card map-g-dns" id="map-dns">
                     <div class="map-card-accent" id="map-dns-accent"></div>
@@ -453,10 +456,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=84"></script>
-    <script src="js/browser-tests.js?v=84"></script>
-    <script src="js/ui.js?v=84"></script>
-    <script src="js/map.js?v=84"></script>
-    <script src="js/app.js?v=84"></script>
+    <script src="js/config.js?v=85"></script>
+    <script src="js/browser-tests.js?v=85"></script>
+    <script src="js/ui.js?v=85"></script>
+    <script src="js/map.js?v=85"></script>
+    <script src="js/app.js?v=85"></script>
 </body>
 </html>

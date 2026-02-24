@@ -1044,7 +1044,7 @@ main {
 .map-diagram {
     display: grid;
     grid-template-columns: 1fr 36px 1fr 36px 1fr 50px 1.2fr;
-    grid-template-rows: auto 8px auto 8px auto 12px auto;
+    grid-template-rows: auto 8px auto 8px auto 20px auto;
     align-items: center;
     padding: 28px 24px;
     min-height: 260px;
@@ -1060,7 +1060,7 @@ main {
 .map-g-afd     { grid-column: 7; grid-row: 1; }
 .map-g-rdgw    { grid-column: 7; grid-row: 3; }
 .map-g-turn    { grid-column: 7; grid-row: 5; }
-.map-g-dnsline { grid-column: 3; grid-row: 6; justify-self: center; }
+.map-g-dnsline { grid-column: 3; grid-row: 5 / 7; justify-self: center; z-index: 1; pointer-events: none; }
 .map-g-dns     { grid-column: 3; grid-row: 7; }
 
 .map-arrow-cell { display: flex; align-items: center; width: 100%; }
@@ -1071,6 +1071,35 @@ main {
     border-radius: 1px;
 }
 .map-arrow { color: var(--accent); font-size: 14px; line-height: 1; margin-left: -4px; }
+
+/* ── Latency line labels (on connectivity path lines) ── */
+.map-line-label {
+    position: absolute;
+    font-size: 9px;
+    font-weight: 700;
+    font-family: var(--mono);
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    z-index: 2;
+    pointer-events: none;
+}
+.map-line-label:empty { display: none; }
+.map-line-label.lat-good { color: var(--green); border-color: var(--green-border); background: var(--green-bg); }
+.map-line-label.lat-warn { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-bg); }
+.map-line-label.lat-bad  { color: var(--red); border-color: var(--red-border); background: var(--red-bg); }
+
+/* Arrow cell latency: above the line */
+.map-arrow-cell { position: relative; }
+.map-arrow-cell .map-line-label { top: -2px; left: 50%; transform: translate(-50%, -100%); }
+
+/* Fanout latency: near each branch exit */
+.map-ll-afd  { right: 2px; top: 16.5%; transform: translateY(-130%); }
+.map-ll-rdgw { right: 2px; top: 50%; transform: translateY(-130%); }
+.map-ll-turn { right: 2px; top: 83.5%; transform: translateY(-130%); }
 
 .map-card {
     display: flex;
@@ -1153,9 +1182,10 @@ main {
 .map-card-badge.proximity-moderate { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
 .map-card-badge.proximity-far  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
-.map-dns-connector { display: flex; justify-content: center; height: 12px; }
-.map-vline { width: 2px; height: 100%; background: var(--accent); border-radius: 1px; box-shadow: 0 0 6px var(--accent-glow); }
-.map-fanout { display: flex; align-items: stretch; }
+.map-dns-connector { display: flex; flex-direction: column; align-items: center; }
+.map-vline { width: 2px; flex: 1; background: linear-gradient(180deg, transparent 0%, var(--accent) 40%); border-radius: 1px; }
+.map-dns-arw { color: var(--accent); font-size: 10px; line-height: 1; margin-top: -1px; }
+.map-fanout { display: flex; align-items: stretch; position: relative; overflow: visible; }
 .map-fanout-svg { width: 100%; height: 100%; }
 
 /* ── Security Status Bar ── */

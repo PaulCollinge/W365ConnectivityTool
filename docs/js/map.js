@@ -17,6 +17,7 @@ function updateConnectivityMap(results) {
     updateMapTurnCard(lookup);
     updateMapDnsCard(lookup);
     updateMapSecurityBar(lookup);
+    updateMapLatencyLabels(lookup);
 }
 
 // ── Card helpers ──
@@ -72,22 +73,28 @@ const AZURE_REGION_TO_COUNTRY = {
 
 /** AFD PoP 3-letter airport codes → ISO country codes */
 const AFD_POP_TO_COUNTRY = {
-    'LHR':'gb','MAN':'gb','DUB':'ie',
-    'AMS':'nl','FRA':'de','PAR':'fr','MAD':'es','MIL':'it','ZRH':'ch',
+    'LHR':'gb','LTS':'gb','LON':'gb','MAN':'gb','EDG':'gb','DUB':'ie',
+    'AMS':'nl','FRA':'de','BER':'de','MUC':'de','PAR':'fr','MRS':'fr',
+    'MAD':'es','BCN':'es','MIL':'it','ROM':'it','ZRH':'ch','GVA':'ch',
     'VIE':'at','CPH':'dk','HEL':'fi','OSL':'no','STO':'se','WAW':'pl',
-    'BUD':'hu','PRG':'cz','BER':'de','MRS':'fr','LIS':'pt','ATH':'gr',
+    'BUD':'hu','PRG':'cz','LIS':'pt','ATH':'gr','BRU':'be',
     'SOF':'bg','BUH':'ro','ZAG':'hr','BEG':'rs','BTS':'sk',
-    'IAD':'us','JFK':'us','EWR':'us','ATL':'us','MIA':'us','ORD':'us',
+    'IAD':'us','DCA':'us','JFK':'us','EWR':'us','ATL':'us','MIA':'us','ORD':'us',
     'DFW':'us','LAX':'us','SJC':'us','SEA':'us','DEN':'us','PHX':'us',
-    'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','QRO':'mx',
+    'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','PHL':'us','IAH':'us','QRO':'mx',
     'YYZ':'ca','YUL':'ca','YVR':'ca',
     'SIN':'sg','HKG':'hk','NRT':'jp','KIX':'jp','ICN':'kr',
     'BOM':'in','MAA':'in','DEL':'in','BLR':'in','HYD':'in',
     'KUL':'my','BKK':'th','CGK':'id','MNL':'ph','TPE':'tw',
-    'SYD':'au','MEL':'au','PER':'au','AKL':'nz',
-    'DXB':'ae','AUH':'ae','DOH':'qa','JNB':'za','CPT':'za','NBO':'ke',
-    'GRU':'br','GIG':'br','SCL':'cl','BOG':'co','EZE':'ar','LIM':'pe'
+    'SYD':'au','MEL':'au','PER':'au','BNE':'au','AKL':'nz',
+    'DXB':'ae','AUH':'ae','FJR':'ae','DOH':'qa','BAH':'bh',
+    'RUH':'sa','JED':'sa','TLV':'il',
+    'JNB':'za','CPT':'za','NBO':'ke',
+    'GRU':'br','GIG':'br','CWB':'br','SCL':'cl','BOG':'co','EZE':'ar','LIM':'pe'
 };
+
+/** Country code aliases — non-ISO codes that appear in GeoIP / scanner data */
+const COUNTRY_CODE_ALIASES = { 'uk': 'gb' };
 
 /**
  * Resolve a country code from any location string format:
@@ -99,16 +106,21 @@ const AFD_POP_TO_COUNTRY = {
  */
 function resolveCountryCode(locationStr) {
     if (!locationStr) return '';
+    const code = _resolveCountryCodeInner(locationStr);
+    return COUNTRY_CODE_ALIASES[code] || code;
+}
+
+function _resolveCountryCodeInner(locationStr) {
     // 1. Standard ", XX" country code
     const cc = extractCountryCode(locationStr);
     if (cc) return cc;
     // 2. AFD PoP code: "(LHR)" or "LHR — City" or bare "LHR"
     const parenMatch = locationStr.match(/\(([A-Z]{3})\)/);
     if (parenMatch && AFD_POP_TO_COUNTRY[parenMatch[1]]) return AFD_POP_TO_COUNTRY[parenMatch[1]];
-    const dashMatch = locationStr.match(/^([A-Z]{3})\s*[—–-]\s*/);
+    const dashMatch = locationStr.match(/^([A-Z]{2,5})\s*[—–-]\s*/);
     if (dashMatch && AFD_POP_TO_COUNTRY[dashMatch[1]]) return AFD_POP_TO_COUNTRY[dashMatch[1]];
     const bare = locationStr.trim();
-    if (/^[A-Z]{3}$/.test(bare) && AFD_POP_TO_COUNTRY[bare]) return AFD_POP_TO_COUNTRY[bare];
+    if (/^[A-Z]{2,5}$/.test(bare) && AFD_POP_TO_COUNTRY[bare]) return AFD_POP_TO_COUNTRY[bare];
     // 3. Strip common prefixes and trailing IPs
     let clean = locationStr.replace(/^(?:TURN relay|RDP Gateway|Gateway|AFD Edge|AFD PoP):\s*/i, '').trim();
     clean = clean.replace(/\s*\([\d.]+\)\s*$/, '').trim();
@@ -507,6 +519,80 @@ function updateMapDnsCard(lookup) {
     setText('map-dns-detail', detail1);
     setText('map-dns-detail2', detail2);
     setAccentStatus('map-dns-accent', status);
+}
+
+// ── Latency line labels on connectivity path ──
+function updateMapLatencyLabels(lookup) {
+    function setLL(id, ms, type) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (ms == null || isNaN(ms)) { el.textContent = ''; return; }
+        el.textContent = ms < 1 ? '<1ms' : ms + 'ms';
+        el.classList.remove('lat-good', 'lat-warn', 'lat-bad');
+        el.classList.add(latencyClassLine(ms, type));
+    }
+
+    // Local GW: L-LE-05 "Gateway X.X.X.X: avg Nms"
+    const gw05 = lookup['L-LE-05'];
+    let gwMs = null;
+    if (gw05 && gw05.resultValue) {
+        const m = gw05.resultValue.match(/avg\s+(\d+)ms/);
+        if (m) gwMs = parseInt(m[1]);
+    }
+    setLL('map-lat-gw', gwMs, 'gw');
+
+    // AFD Edge: B-TCP-02 "Latency: avg Nms" or resultValue "— Nms"
+    const afd02 = lookup['B-TCP-02'];
+    let afdMs = null;
+    if (afd02 && afd02.detailedInfo) {
+        const latLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+        if (latLine) {
+            const m = latLine.match(/avg\s+(\d+)ms/);
+            if (m) afdMs = parseInt(m[1]);
+        }
+    }
+    if (afdMs == null && afd02 && afd02.resultValue) {
+        const m = afd02.resultValue.match(/(\d+)\s*ms/);
+        if (m) afdMs = parseInt(m[1]);
+    }
+    setLL('map-lat-afd', afdMs, 'tcp');
+
+    // RD Gateway: L-TCP-04 "[RDP Gateway]" → "TCP connected in Nms"
+    const tcp04 = lookup['L-TCP-04'];
+    let rdgwMs = null;
+    if (tcp04 && tcp04.detailedInfo) {
+        const lines = tcp04.detailedInfo.split('\n');
+        const gwIdx = lines.findIndex(l => l.includes('[RDP Gateway]'));
+        if (gwIdx >= 0) {
+            for (let i = gwIdx; i < Math.min(gwIdx + 5, lines.length); i++) {
+                const m = lines[i].match(/TCP connected in (\d+)ms/);
+                if (m) { rdgwMs = parseInt(m[1]); break; }
+            }
+        }
+    }
+    setLL('map-lat-rdgw', rdgwMs, 'tcp');
+
+    // TURN Relay: L-UDP-03 "Latency: Nms" or resultValue "Nms RTT"
+    const turn03 = lookup['L-UDP-03'];
+    let turnMs = null;
+    if (turn03 && turn03.detailedInfo) {
+        const latLine = turn03.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+        if (latLine) {
+            const m = latLine.match(/(\d+)\s*ms/);
+            if (m) turnMs = parseInt(m[1]);
+        }
+    }
+    if (turnMs == null && turn03 && turn03.resultValue) {
+        const m = turn03.resultValue.match(/(\d+)\s*ms/);
+        if (m) turnMs = parseInt(m[1]);
+    }
+    setLL('map-lat-turn', turnMs, 'udp');
+}
+
+function latencyClassLine(ms, type) {
+    if (type === 'gw') return ms < 5 ? 'lat-good' : ms < 20 ? 'lat-warn' : 'lat-bad';
+    if (type === 'udp') return ms < 100 ? 'lat-good' : ms < 200 ? 'lat-warn' : 'lat-bad';
+    return ms < 50 ? 'lat-good' : ms < 150 ? 'lat-warn' : 'lat-bad';
 }
 
 // ── Helper: extract location from gateway detailedInfo ──
