@@ -273,12 +273,7 @@ function setClientOSIcon() {
     if (win) win.style.display = os === 'win' ? '' : 'none';
     if (mac) mac.style.display = os === 'mac' ? '' : 'none';
     if (linux) linux.style.display = os === 'linux' ? '' : 'none';
-    // Update title
-    const title = document.getElementById('map-client-title');
-    if (title) {
-        const label = os === 'mac' ? 'You (macOS)' : os === 'linux' ? 'You (Linux)' : 'You (Windows)';
-        title.textContent = label;
-    }
+    // Title stays as "Client (This device)" — OS shown via icon only
 }
 
 // Run OS detection immediately
