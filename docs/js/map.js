@@ -260,6 +260,17 @@ function updateMapClientCard(lookup) {
     setFlaggedText('map-client-location', location || 'Awaiting results...');
     setText('map-client-ip', publicIp ? `🌐 ${publicIp}` : '');
     setAccentStatus('map-client-accent', status);
+
+    // Update device screen status dot
+    const dot = document.getElementById('device-status-dot');
+    if (dot) {
+        const dotColor = status === 'Passed' ? '#3fb950'
+            : status === 'Warning' ? '#d29922'
+            : status === 'Failed' ? '#f85149'
+            : status === 'Running' ? '#58a6ff'
+            : '#484f58';
+        dot.setAttribute('fill', dotColor);
+    }
 }
 
 // ── Local Gateway Card ──

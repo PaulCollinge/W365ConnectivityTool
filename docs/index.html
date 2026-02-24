@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=93">
+    <link rel="stylesheet" href="css/styles.css?v=94">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -194,12 +194,30 @@
                 <span class="map-subtitle">Network flow diagram</span>
             </div>
             <div class="map-diagram">
-                <div class="map-card map-g-client" id="map-client">
-                    <div class="map-card-accent" id="map-client-accent"></div>
-                    <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">💻</span> You (Client)</div>
-                        <div class="map-card-detail" id="map-client-location">Awaiting results...</div>
-                        <div class="map-card-detail mono" id="map-client-ip"></div>
+                <div class="map-client-device map-g-client" id="map-client">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Screen -->
+                            <rect x="18" y="6" width="84" height="54" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Screen glass -->
+                            <rect x="22" y="10" width="76" height="46" rx="2" fill="#161b22"/>
+                            <!-- W365 text on screen -->
+                            <text x="60" y="38" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="11" font-weight="700">W365</text>
+                            <!-- Status dot (animated) -->
+                            <circle class="device-status-dot" id="device-status-dot" cx="60" cy="48" r="3" fill="#484f58"/>
+                            <!-- Camera -->
+                            <circle cx="60" cy="8" r="1.5" fill="#21262d"/>
+                            <!-- Base / Hinge -->
+                            <path d="M14 62 L106 62 L112 74 Q112 78 108 78 L12 78 Q8 78 8 74 Z" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Trackpad -->
+                            <rect x="46" y="66" width="28" height="8" rx="2" fill="none" stroke="#21262d" stroke-width="1"/>
+                        </svg>
+                        <div class="device-accent" id="map-client-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">You (Client)</div>
+                        <div class="device-detail" id="map-client-location">Awaiting results...</div>
+                        <div class="device-detail mono" id="map-client-ip"></div>
                     </div>
                 </div>
 
@@ -457,10 +475,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=93"></script>
-    <script src="js/browser-tests.js?v=93"></script>
-    <script src="js/ui.js?v=93"></script>
-    <script src="js/map.js?v=93"></script>
-    <script src="js/app.js?v=93"></script>
+    <script src="js/config.js?v=94"></script>
+    <script src="js/browser-tests.js?v=94"></script>
+    <script src="js/ui.js?v=94"></script>
+    <script src="js/map.js?v=94"></script>
+    <script src="js/app.js?v=94"></script>
 </body>
 </html>
