@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=92">
+    <link rel="stylesheet" href="css/styles.css?v=93">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -228,12 +228,12 @@
 
                 <div class="map-fanout map-g-fanout">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
-                        <line class="fan-tcp" x1="0" y1="100" x2="30" y2="100" stroke-width="2"/>
-                        <line class="fan-tcp" x1="30" y1="100" x2="30" y2="33" stroke-width="2"/>
-                        <line class="fan-udp" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
-                        <line class="fan-tcp" x1="30" y1="33" x2="60" y2="33" stroke-width="2"/>
-                        <line class="fan-tcp" x1="30" y1="100" x2="60" y2="100" stroke-width="2"/>
-                        <line class="fan-udp" x1="30" y1="167" x2="60" y2="167" stroke-width="2"/>
+                        <line class="fan-afd"  x1="0" y1="100" x2="30" y2="100" stroke-width="2"/>
+                        <line class="fan-afd"  x1="30" y1="100" x2="30" y2="33"  stroke-width="2"/>
+                        <line class="fan-turn" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
+                        <line class="fan-afd"  x1="30" y1="33"  x2="60" y2="33"  stroke-width="2"/>
+                        <line class="fan-rdgw" x1="30" y1="100" x2="60" y2="100" stroke-width="2"/>
+                        <line class="fan-turn" x1="30" y1="167" x2="60" y2="167" stroke-width="2"/>
                     </svg>
                     <span class="map-line-label map-ll-afd" id="map-lat-afd"></span>
                     <span class="map-line-label map-ll-rdgw" id="map-lat-rdgw"></span>
@@ -310,8 +310,9 @@
             </div>
             <div class="map-legend">
                 <div class="legend-lines">
-                    <div class="legend-item"><span class="legend-line solid"></span><span class="legend-label">TCP 443: You → Local GW → ISP → AFD Edge / RD Gateway</span></div>
-                    <div class="legend-item"><span class="legend-line dashed"></span><span class="legend-label">UDP 3478: You → Local GW → ISP → TURN Relay (shortpath)</span></div>
+                    <div class="legend-item"><span class="legend-line line-afd"></span><span class="legend-label">TCP 443 → AFD Edge</span></div>
+                    <div class="legend-item"><span class="legend-line line-rdgw"></span><span class="legend-label">TCP 443 → RD Gateway</span></div>
+                    <div class="legend-item"><span class="legend-line line-turn"></span><span class="legend-label">UDP 3478 → TURN Relay (shortpath)</span></div>
                 </div>
                 <div class="legend-badges">
                     <span class="legend-badge ok">✓ OK</span>
@@ -456,10 +457,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=92"></script>
-    <script src="js/browser-tests.js?v=92"></script>
-    <script src="js/ui.js?v=92"></script>
-    <script src="js/map.js?v=92"></script>
-    <script src="js/app.js?v=92"></script>
+    <script src="js/config.js?v=93"></script>
+    <script src="js/browser-tests.js?v=93"></script>
+    <script src="js/ui.js?v=93"></script>
+    <script src="js/map.js?v=93"></script>
+    <script src="js/app.js?v=93"></script>
 </body>
 </html>

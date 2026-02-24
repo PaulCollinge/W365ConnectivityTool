@@ -1044,7 +1044,7 @@ main {
 .map-diagram {
     display: grid;
     grid-template-columns: 1fr 36px 1fr 36px 1fr 50px 1.2fr;
-    grid-template-rows: auto 8px auto 8px auto 28px auto;
+    grid-template-rows: auto 8px auto 8px auto 36px auto;
     align-items: center;
     padding: 28px 24px;
     min-height: 260px;
@@ -1203,32 +1203,36 @@ main {
 .map-card-badge.proximity-moderate { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
 .map-card-badge.proximity-far  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
-.map-dns-connector { display: flex; flex-direction: column; align-items: center; height: 100%; }
+.map-dns-connector { display: flex; flex-direction: column; align-items: center; height: 100%; min-height: 32px; }
 .map-vline {
     width: 2px;
     flex: 1;
     border-radius: 1px;
     background: repeating-linear-gradient(180deg,
-        var(--accent) 0px, var(--accent) 8px,
-        transparent 8px, transparent 14px
+        var(--accent) 0px, var(--accent) 6px,
+        transparent 6px, transparent 10px
     );
-    background-size: 2px 14px;
-    animation: flowDown 0.8s linear infinite;
+    animation: flowDown 0.6s linear infinite;
 }
 .map-dns-arw { color: var(--accent); font-size: 10px; line-height: 1; margin-top: -2px; }
 .map-fanout { display: flex; align-items: stretch; position: relative; overflow: visible; }
 .map-fanout-svg { width: 100%; height: 100%; }
 
-/* ── Animated SVG fanout lines ── */
-.fan-tcp {
-    stroke: #58a6ff;
+/* ── Animated SVG fanout lines (color per destination) ── */
+.fan-afd {
+    stroke: #3fb950;
     stroke-dasharray: 8 5;
-    animation: flowTcp 0.8s linear infinite;
+    animation: flowFan 0.8s linear infinite;
 }
-.fan-udp {
+.fan-rdgw {
+    stroke: #a371f7;
+    stroke-dasharray: 8 5;
+    animation: flowFan 0.8s linear infinite;
+}
+.fan-turn {
     stroke: #f0883e;
     stroke-dasharray: 6 4;
-    animation: flowUdp 0.7s linear infinite;
+    animation: flowFan 0.7s linear infinite;
 }
 
 /* ── Flowing line keyframes ── */
@@ -1236,13 +1240,10 @@ main {
     to { background-position: 14px 0; }
 }
 @keyframes flowDown {
-    to { background-position: 0 14px; }
+    to { background-position: 0 10px; }
 }
-@keyframes flowTcp {
+@keyframes flowFan {
     to { stroke-dashoffset: -13; }
-}
-@keyframes flowUdp {
-    to { stroke-dashoffset: -10; }
 }
 @keyframes pingDot {
     0%   { left: 0;    opacity: 0; }
@@ -1254,7 +1255,7 @@ main {
 /* Respect reduced-motion preference */
 @media (prefers-reduced-motion: reduce) {
     .map-hline, .map-vline { animation: none !important; }
-    .fan-tcp, .fan-udp     { animation: none !important; }
+    .fan-afd, .fan-rdgw, .fan-turn { animation: none !important; }
     .map-hline::after      { display: none; }
     .map-hline { background: linear-gradient(90deg, var(--accent-border), var(--accent)); }
     .map-vline { background: var(--accent); }
@@ -1303,8 +1304,9 @@ main {
 .legend-lines { display: flex; flex-direction: column; gap: 4px; }
 .legend-item { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
 .legend-line { display: inline-block; width: 24px; height: 2px; flex-shrink: 0; border-radius: 1px; }
-.legend-line.solid { background: var(--accent); }
-.legend-line.dashed { background: repeating-linear-gradient(90deg, #f0883e 0, #f0883e 5px, transparent 5px, transparent 8px); }
+.legend-line.line-afd  { background: #3fb950; }
+.legend-line.line-rdgw { background: #a371f7; }
+.legend-line.line-turn { background: repeating-linear-gradient(90deg, #f0883e 0, #f0883e 5px, transparent 5px, transparent 8px); }
 .legend-badges { display: flex; gap: 6px; }
 .legend-badge { font-size: 10px; padding: 3px 10px; border-radius: 100px; font-weight: 600; }
 .legend-badge.ok   { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
