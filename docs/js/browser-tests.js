@@ -796,7 +796,7 @@ async function testNatType(test) {
     try {
         const stunServers = [
             'stun:stun.azure.com:3478',
-            'stun:stun.l.google.com:19302'
+            'stun:world.turn.wvd.microsoft.com:3478'
         ];
 
         const candidates = await gatherIceCandidates({

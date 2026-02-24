@@ -2632,76 +2632,94 @@ class Program
     }
 
     // ── L-UDP-05: STUN NAT Type Detection ──
-    // Replicates the methodology from Microsoft's Test-Shortpath.ps1 / avdnettest.exe:
     // Uses a single UdpClient to send STUN binding requests to two different servers,
     // compares the reflexive (XOR-MAPPED-ADDRESS) endpoints to determine NAT type.
     // Same reflexive endpoint = Cone NAT (Shortpath likely)
     // Different reflexive endpoints = Symmetric NAT (Shortpath unlikely)
+    //
+    // Both servers are resolved from world.turn.wvd.microsoft.com (51.5.0.0/16).
+    // TURN servers support STUN Binding per RFC 5766, and these IPs are already
+    // required for W365 connectivity — no extra firewall rules needed.
     static async Task<TestResult> RunStunNatType()
     {
         var result = new TestResult { Id = "L-UDP-05", Name = "STUN NAT Type Detection", Category = "udp" };
         try
         {
             var sb = new StringBuilder();
-            sb.AppendLine("Method: Two-server STUN comparison (same as avdnettest.exe / Test-Shortpath.ps1)");
+            sb.AppendLine("Method: Two-server STUN comparison");
             sb.AppendLine("A single UDP socket sends STUN binding requests to two servers.");
             sb.AppendLine("If both return the same reflexive IP:port, NAT is cone-shaped (Shortpath works).");
             sb.AppendLine("If they differ, NAT is symmetric (Shortpath unlikely).");
             sb.AppendLine();
 
-            // NOTE: This test uses external STUN servers purely for NAT type detection
-            // (STUN compatibility check). These are NOT the W365 RDP connectivity endpoints.
-            // W365 RDP uses 51.5.0.0/16 and world.relay.avd.microsoft.com for actual TURN relay.
+            // Resolve world.turn.wvd.microsoft.com to get TURN relay IPs in 51.5.0.0/16.
+            // These servers support STUN Binding (RFC 5766) on UDP 3478.
+            // Using only Microsoft TURN IPs avoids requiring third-party endpoints.
+            var turnHost = "world.turn.wvd.microsoft.com";
+            var turnIps = new HashSet<IPAddress>();
 
-            // Server 1: stun.azure.com (Microsoft's public STUN server — for NAT testing only)
-            var stunHost1 = "stun.azure.com";
-            IPAddress? stunIp1 = null;
-            try
+            // Resolve multiple times to collect round-robin IPs
+            for (int i = 0; i < 6; i++)
             {
-                var dns1 = await Dns.GetHostAddressesAsync(stunHost1);
-                stunIp1 = dns1.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-            }
-            catch { }
-
-            if (stunIp1 == null)
-            {
-                // Fallback to known stun.azure.com IP for NAT testing
-                sb.AppendLine($"⚠ DNS resolution of {stunHost1} failed, using fallback IP 20.202.22.68");
-                stunIp1 = IPAddress.Parse("20.202.22.68");
-            }
-            else
-            {
-                sb.AppendLine($"Server 1: {stunHost1} → {stunIp1}");
+                try
+                {
+                    var addrs = await Dns.GetHostAddressesAsync(turnHost);
+                    foreach (var a in addrs.Where(a => a.AddressFamily == AddressFamily.InterNetwork))
+                        turnIps.Add(a);
+                }
+                catch { }
+                if (turnIps.Count >= 2) break;
+                await Task.Delay(200); // Brief pause to allow DNS round-robin rotation
             }
 
-            // Server 2 pool: try multiple STUN servers in order until one responds.
-            // Primary: 13.107.17.41 (Microsoft, per Test-Shortpath.ps1 / avdnettest.exe)
-            // Fallbacks: stun.cloudflare.com, stun1.l.google.com (if primary is unreachable)
-            var server2Pool = new List<(string label, IPEndPoint ep)>
-            {
-                ("13.107.17.41 (Microsoft)", new IPEndPoint(IPAddress.Parse("13.107.17.41"), 3478)),
-            };
+            var sortedIps = turnIps.OrderBy(ip => ip.ToString()).ToList();
 
-            // Resolve fallback STUN servers upfront (DNS in parallel with main test)
-            try
+            if (sortedIps.Count < 2)
             {
-                var cfDns = await Dns.GetHostAddressesAsync("stun.cloudflare.com");
-                var cfIp = cfDns.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-                if (cfIp != null && !cfIp.Equals(stunIp1))
-                    server2Pool.Add(($"stun.cloudflare.com ({cfIp})", new IPEndPoint(cfIp, 3478)));
+                // Fallback: if DNS only returns one IP, try stun.azure.com as Server 2
+                sb.AppendLine($"DNS: {turnHost} resolved to {(sortedIps.Count == 0 ? "nothing" : sortedIps[0].ToString())}");
+                sb.AppendLine("⚠ Could not resolve two distinct TURN IPs from DNS round-robin.");
+
+                if (sortedIps.Count == 0)
+                {
+                    sb.AppendLine($"  DNS resolution of {turnHost} failed completely.");
+                    sb.AppendLine("  Check DNS and firewall allow 51.5.0.0/16 on UDP 3478.");
+                    result.Status = "Failed";
+                    result.ResultValue = $"DNS failed — cannot resolve {turnHost}";
+                    result.RemediationText = $"Ensure {turnHost} resolves and UDP 3478 to 51.5.0.0/16 is allowed.";
+                    result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                    result.DetailedInfo = sb.ToString().Trim();
+                    return result;
+                }
+
+                // Try stun.azure.com as a second server
+                sb.AppendLine("  Falling back to stun.azure.com as Server 2.");
+                try
+                {
+                    var fallbackAddrs = await Dns.GetHostAddressesAsync("stun.azure.com");
+                    var fallbackIp = fallbackAddrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                    if (fallbackIp != null && !sortedIps.Contains(fallbackIp))
+                        sortedIps.Add(fallbackIp);
+                }
+                catch { }
+
+                if (sortedIps.Count < 2)
+                {
+                    sb.AppendLine("  stun.azure.com also failed to resolve.");
+                    result.Status = "Warning";
+                    result.ResultValue = "Only one STUN server IP available — cannot compare";
+                    result.DetailedInfo = sb.ToString().Trim();
+                    return result;
+                }
             }
-            catch { }
 
-            try
-            {
-                var gDns = await Dns.GetHostAddressesAsync("stun1.l.google.com");
-                var gIp = gDns.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-                if (gIp != null && !gIp.Equals(stunIp1))
-                    server2Pool.Add(($"stun1.l.google.com ({gIp})", new IPEndPoint(gIp, 19302)));
-            }
-            catch { }
+            var stunIp1 = sortedIps[0];
+            var stunIp2 = sortedIps[1];
 
-            sb.AppendLine($"Server 2 candidates: {string.Join(", ", server2Pool.Select(s => s.label))}");
+            sb.AppendLine($"Server 1: {stunIp1} ({turnHost})");
+            sb.AppendLine($"Server 2: {stunIp2} ({(sortedIps.Count > 1 && turnIps.Contains(stunIp2) ? turnHost : "stun.azure.com")})");
+            if (sortedIps.Count > 2)
+                sb.AppendLine($"  (also resolved: {string.Join(", ", sortedIps.Skip(2))})");
             sb.AppendLine();
 
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
@@ -2710,22 +2728,9 @@ class Program
             sb.AppendLine($"Local UDP port: {localPort}");
 
             // Send STUN to server 1
-            var mapped1 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp1, 3478), sb, "Server 1");
-
-            // Send STUN to server 2 (try pool in order)
-            string? mapped2 = null;
-            string server2UsedLabel = "";
-            bool usedFallbackServer = false;
-            foreach (var (label, ep) in server2Pool)
-            {
-                mapped2 = await SendStunAndGetMapped(udp, ep, sb, $"Server 2");
-                if (mapped2 != null)
-                {
-                    server2UsedLabel = label;
-                    usedFallbackServer = (label != server2Pool[0].label);
-                    break;
-                }
-            }
+            var mapped1 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp1, 3478), sb, $"Server 1 ({stunIp1})");
+            // Send STUN to server 2
+            var mapped2 = await SendStunAndGetMapped(udp, new IPEndPoint(stunIp2, 3478), sb, $"Server 2 ({stunIp2})");
 
             sb.AppendLine();
 
@@ -2742,15 +2747,16 @@ class Program
             else if (mapped1 == null || mapped2 == null)
             {
                 var working = mapped1 ?? mapped2;
-                var serverOk = mapped1 != null ? "Server 1 (stun.azure.com)" : $"Server 2 ({server2UsedLabel})";
+                var okIp = mapped1 != null ? stunIp1 : stunIp2;
+                var failIp = mapped1 == null ? stunIp1 : stunIp2;
                 sb.AppendLine($"⚠ Only one STUN server responded — reflexive endpoint: {working}");
-                sb.AppendLine($"  Responding server: {serverOk}");
-                sb.AppendLine($"  Non-responding: {(mapped1 == null ? "Server 1 (stun.azure.com)" : "all Server 2 candidates")}");
+                sb.AppendLine($"  Responding:     {okIp} ({turnHost})");
+                sb.AppendLine($"  Non-responding: {failIp} ({turnHost})");
                 sb.AppendLine();
                 sb.AppendLine("NAT Type: Cannot determine (need two server responses to compare)");
                 sb.AppendLine();
                 sb.AppendLine("However, STUN binding DID succeed, which confirms:");
-                sb.AppendLine("  • Outbound UDP is NOT fully blocked");
+                sb.AppendLine("  • Outbound UDP 3478 to 51.5.0.0/16 is NOT fully blocked");
                 sb.AppendLine("  • RDP Shortpath via TURN relay should work");
                 sb.AppendLine("  • STUN direct hole-punching may also work (NAT type unknown)");
                 sb.AppendLine();
@@ -2761,7 +2767,7 @@ class Program
                 sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails");
                 result.Status = "Warning";
                 result.ResultValue = $"Partial STUN — NAT type undetermined ({working})";
-                result.RemediationText = "One STUN server did not respond. UDP works but NAT type could not be classified.";
+                result.RemediationText = $"TURN server {failIp} did not respond to STUN. UDP works but NAT type could not be classified.";
             }
             else if (mapped1 == mapped2)
             {
@@ -2789,18 +2795,10 @@ class Program
                 {
                     natLabel = "Cone NAT (Full Cone / Restricted Cone / Port-Restricted Cone)";
                     sb.AppendLine($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
-                    sb.AppendLine($"  Server 1: stun.azure.com ({stunIp1})");
-                    sb.AppendLine($"  Server 2: {server2UsedLabel}");
+                    sb.AppendLine($"  Server 1: {stunIp1} ({turnHost})");
+                    sb.AppendLine($"  Server 2: {stunIp2} ({turnHost})");
                 }
                 sb.AppendLine();
-                if (usedFallbackServer)
-                {
-                    sb.AppendLine($"⚠ Note: Primary Server 2 (13.107.17.41) did not respond.");
-                    sb.AppendLine($"  Used fallback: {server2UsedLabel}");
-                    sb.AppendLine($"  On split-routing networks, non-Microsoft servers may give different");
-                    sb.AppendLine($"  egress IPs. If this result seems wrong, verify with avdnettest.exe.");
-                    sb.AppendLine();
-                }
                 sb.AppendLine($"NAT Type: {natLabel}");
                 sb.AppendLine("  Endpoint-Independent Mapping — the same external IP:port is used");
                 sb.AppendLine("  regardless of destination. This is the best NAT type for P2P/UDP.");
@@ -2828,27 +2826,15 @@ class Program
                 var port2 = mapped2.Split(':')[1];
 
                 sb.AppendLine($"✗ Servers returned different reflexive endpoints:");
-                sb.AppendLine($"    Server 1 (stun.azure.com / {stunIp1}):  {mapped1}");
-                sb.AppendLine($"    Server 2 ({server2UsedLabel}):  {mapped2}");
+                sb.AppendLine($"    Server 1 ({stunIp1}):  {mapped1}");
+                sb.AppendLine($"    Server 2 ({stunIp2}):  {mapped2}");
                 sb.AppendLine();
-
-                if (usedFallbackServer)
-                {
-                    sb.AppendLine($"⚠ Note: Primary Server 2 (13.107.17.41) did not respond.");
-                    sb.AppendLine($"  Used fallback: {server2UsedLabel}");
-                    sb.AppendLine($"  Different IPs/ports MAY be caused by split-routing (different egress");
-                    sb.AppendLine($"  for Microsoft vs non-Microsoft traffic) rather than Symmetric NAT.");
-                    sb.AppendLine($"  Verify with avdnettest.exe for a definitive result.");
-                    sb.AppendLine();
-                }
 
                 if (ip1 != ip2)
                 {
                     sb.AppendLine("NAT Type: Symmetric NAT (different external IP per destination)");
                     sb.AppendLine("  The NAT assigns a completely different public IP per destination.");
                     sb.AppendLine("  This may also indicate multi-WAN or load-balanced egress.");
-                    if (usedFallbackServer)
-                        sb.AppendLine("  ↑ Could also be split-routing since a non-Microsoft fallback server was used.");
                 }
                 else
                 {
