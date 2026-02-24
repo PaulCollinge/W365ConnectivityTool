@@ -4616,13 +4616,26 @@ class Program
                 sb.AppendLine($"Host: {hostname}");
                 sb.AppendLine($"IP:   {ip}");
 
+                // Service Tags region lookup (authoritative) — preferred over GeoIP
+                string gwServiceTagRegion = null;
+                if (IPAddress.TryParse(ip.ToString(), out var gwParsedIp))
+                {
+                    var stRegion = LookupGatewayRegion(gwParsedIp);
+                    if (stRegion != null)
+                    {
+                        var stFriendly = GetAzureRegionFriendlyName(stRegion) ?? stRegion;
+                        gwServiceTagRegion = stFriendly;
+                        sb.AppendLine($"Location: {stFriendly}");
+                    }
+                }
+
                 try
                 {
                     var gwGeo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
                     string gwCity = gwGeo.TryGetProperty("city", out var gc) ? gc.GetString() ?? "" : "";
                     string gwRegion = gwGeo.TryGetProperty("region", out var gr) ? gr.GetString() ?? "" : "";
                     string gwCountry = gwGeo.TryGetProperty("country", out var gco) ? gco.GetString() ?? "" : "";
-                    sb.AppendLine($"Location: {gwCity}, {gwRegion}, {gwCountry}");
+                    sb.AppendLine($"{(gwServiceTagRegion != null ? "GeoIP" : "Location")}: {gwCity}, {gwRegion}, {gwCountry}");
 
                     if (hasUserGeo && gwGeo.TryGetProperty("loc", out var gloc))
                     {
@@ -5106,6 +5119,7 @@ class Program
 
             // ── Part 2: Actual RDP Gateway (unicast — CAN geolocate, FQDN has region) ──
             sb.AppendLine("═══ Actual RDP Gateway (Unicast) ═══");
+            string gatewayDisplayRegion = null; // for summary line
             if (!string.IsNullOrEmpty(discoveredGateway))
             {
                 sb.AppendLine($"  {discoveredGateway}");
@@ -5128,6 +5142,21 @@ class Program
                     if (inRange)
                         sb.AppendLine($"    → IP in W365 range ✓");
 
+                    // Service Tags region lookup (authoritative) — preferred over GeoIP
+                    var gwIpv4 = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                    string serviceTagsRegion = null;
+                    if (gwIpv4 != null)
+                    {
+                        var stRegion = LookupGatewayRegion(gwIpv4);
+                        if (stRegion != null)
+                        {
+                            var stFriendly = GetAzureRegionFriendlyName(stRegion) ?? stRegion;
+                            serviceTagsRegion = stFriendly;
+                            gatewayDisplayRegion = stFriendly;
+                            sb.AppendLine($"    Location: {stFriendly}");
+                        }
+                    }
+
                     // Reverse DNS
                     try
                     {
@@ -5136,7 +5165,7 @@ class Program
                     }
                     catch { sb.AppendLine($"    Reverse DNS: (none)"); }
 
-                    // GeoIP for the unicast gateway IP — this IS meaningful (not anycast)
+                    // GeoIP for the unicast gateway IP — supplementary to Service Tags
                     if (!IsPrivateIp(gwIp))
                     {
                         try
@@ -5211,11 +5240,16 @@ class Program
                 summaryParts.Add($"AFD PoP: {afdPopCity}");
             if (!string.IsNullOrEmpty(discoveredGateway))
             {
-                var regionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
-                var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
-                summaryParts.Add(regionName != null
-                    ? $"Gateway: {regionName}"
-                    : $"Gateway: {discoveredGateway}");
+                if (gatewayDisplayRegion != null)
+                    summaryParts.Add($"Gateway: {gatewayDisplayRegion}");
+                else
+                {
+                    var regionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
+                    var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
+                    summaryParts.Add(regionName != null
+                        ? $"Gateway: {regionName}"
+                        : $"Gateway: {discoveredGateway}");
+                }
             }
 
             result.ResultValue = summaryParts.Any()

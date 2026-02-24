@@ -450,9 +450,26 @@ function extractGatewayLocationWithProximity(detailedInfo) {
 }
 
 // Extract location for RD Gateway (rdweb/client endpoint, not AFD)
+// Prefers authoritative "Location:" from Service Tags (e.g. "UK South") over GeoIP city names.
 function extractRdGwLocationWithProximity(detailedInfo) {
     if (!detailedInfo) return { location: '', proximity: '' };
-    // Find all Location: lines — the 2nd+ are rdweb/client (regional gateway)
+
+    // First check for Service Tags-sourced location in the RDP Gateway block
+    // L-TCP-09 outputs "    Location: UK South" from Service Tags, and
+    // "    GeoIP Location: Cardiff, GB" as supplementary. Prefer the non-GeoIP one.
+    const gwBlock = detailedInfo.match(/═══ Actual RDP Gateway[\s\S]*?(?=═══|$)/i);
+    if (gwBlock) {
+        // Look for "Location:" that is NOT "GeoIP Location:"
+        const stMatch = gwBlock[0].match(/^\s*Location:\s*([^\n\r]+)/m);
+        if (stMatch && !stMatch[0].includes('GeoIP')) {
+            const full = stMatch[1].trim();
+            const proxMatch = full.match(/(.+?)\s+([✔≈⚠].+)/);
+            if (proxMatch) return { location: proxMatch[1].trim(), proximity: proxMatch[2].trim() };
+            return { location: full, proximity: '' };
+        }
+    }
+
+    // Fallback: find all Location: lines — the 2nd+ are rdweb/client (regional gateway)
     const matches = [...detailedInfo.matchAll(/Location:\s*([^\n\r]+)/gi)];
     // Use the second match (rdweb) if available, otherwise fall back to first
     const locMatch = matches.length > 1 ? matches[1] : matches[0];
