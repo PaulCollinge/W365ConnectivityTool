@@ -1066,7 +1066,7 @@ async function testNetworkPathTrace(test) {
         { host: 'rdweb.wvd.microsoft.com',               label: 'AVD Web Access' },
         { host: 'client.wvd.microsoft.com',               label: 'AVD Client Service' },
         { host: 'login.microsoftonline.com',              label: 'Authentication' },
-        { host: 'world.relay.avd.microsoft.com',          label: 'TURN Relay' },
+        { host: 'world.relay.avd.microsoft.com',          label: 'TURN Relay', udpOnly: true },
         { host: 'windows.cloud.microsoft',                label: 'Connection Center' }
     ];
 
@@ -1163,31 +1163,36 @@ async function testNetworkPathTrace(test) {
             lines.push(`║  DNS: DoH unavailable (${e.message})`);
         }
 
-        // Step 2: HTTPS timing
-        try {
-            const start = performance.now();
-            await fetch(`https://${target.host}/?_trace=${Date.now()}`, {
-                method: 'HEAD', mode: 'no-cors', cache: 'no-store',
-                signal: AbortSignal.timeout(10000)
-            });
-            const ms = Math.round(performance.now() - start);
-            lines.push(`║  HTTPS: ✓ ${ms}ms`);
-
-            // Check Resource Timing for protocol info
-            if (typeof performance !== 'undefined' && performance.getEntriesByType) {
-                const entries = performance.getEntriesByType('resource')
-                    .filter(e => e.name.includes(target.host))
-                    .sort((a, b) => b.startTime - a.startTime);
-                if (entries.length > 0 && entries[0].nextHopProtocol) {
-                    lines.push(`║  Protocol: ${entries[0].nextHopProtocol}`);
-                }
-            }
-
+        // Step 2: HTTPS timing (skip for UDP-only endpoints like TURN relay)
+        if (target.udpOnly) {
+            lines.push(`║  HTTPS: skipped (UDP 3478 only — use L-UDP-03 for reachability)`);
             ok++;
-        } catch (e) {
-            const ms = Math.round(performance.now() - t0);
-            lines.push(`║  HTTPS: ✗ Failed (${e.message})`);
-            warn++;
+        } else {
+            try {
+                const start = performance.now();
+                await fetch(`https://${target.host}/?_trace=${Date.now()}`, {
+                    method: 'HEAD', mode: 'no-cors', cache: 'no-store',
+                    signal: AbortSignal.timeout(10000)
+                });
+                const ms = Math.round(performance.now() - start);
+                lines.push(`║  HTTPS: ✓ ${ms}ms`);
+
+                // Check Resource Timing for protocol info
+                if (typeof performance !== 'undefined' && performance.getEntriesByType) {
+                    const entries = performance.getEntriesByType('resource')
+                        .filter(e => e.name.includes(target.host))
+                        .sort((a, b) => b.startTime - a.startTime);
+                    if (entries.length > 0 && entries[0].nextHopProtocol) {
+                        lines.push(`║  Protocol: ${entries[0].nextHopProtocol}`);
+                    }
+                }
+
+                ok++;
+            } catch (e) {
+                const ms = Math.round(performance.now() - t0);
+                lines.push(`║  HTTPS: ✗ Failed (${e.message})`);
+                warn++;
+            }
         }
 
         // Step 3: Also resolve AAAA (IPv6) — useful for dual-stack diagnostics
