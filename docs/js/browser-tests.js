@@ -890,6 +890,75 @@ async function testNatType(test) {
 // AFD, Traffic Manager, and Private Link. For full ICMP traceroute (hop-by-hop),
 // use the Local Scanner test L-TCP-10.
 /**
+ * Azure Service Tags subnet→region lookup for TURN relay IPs (51.5.0.0/16).
+ * Source: ServiceTags_Public JSON → AzureCloud.{region} entries for WVDRelays.
+ * Returns Azure region identifier (e.g. 'uksouth') or null.
+ */
+function lookupTurnRelayRegion(ip) {
+    const p = ip.split('.').map(Number);
+    if (p.length !== 4 || p[0] !== 51 || p[1] !== 5) return null;
+    const c = p[2]; // third octet
+    // /23 ranges (third octet with bit 0 masked)
+    const r23 = {
+        0:'southcentralus', 2:'eastus2', 4:'uksouth', 8:'southindia',
+        16:'centralindia', 28:'germanywc', 30:'westindia', 38:'eastus', 40:'northcentralus'
+    };
+    const masked = c & 0xFE;
+    if (r23[masked] !== undefined) return r23[masked];
+    // /24 ranges
+    const r24 = {
+        6:'uksouth', 7:'southindia', 10:'southindia', 11:'westeurope', 12:'westeurope',
+        13:'brazilsouth', 14:'brazilsouth', 15:'centralindia', 18:'ukwest', 19:'uaenorth',
+        20:'northeurope', 21:'southeastasia', 22:'southeastasia', 23:'westus', 24:'centralus',
+        25:'eastasia', 26:'canadacentral', 27:'centralfrance', 32:'australiaeast',
+        33:'japaneast', 34:'japaneast', 35:'japanwest', 36:'japanwest',
+        37:'australiasoutheast', 42:'southafricanorth', 43:'southafricawest',
+        44:'uaecentral', 45:'westcentralus', 46:'westus', 47:'westus3', 48:'canadaeast',
+        49:'norwaye', 50:'australiacentral', 51:'koreacentral', 52:'koreasouth',
+        53:'switzerlandn', 54:'eastus2euap', 55:'israelcentral', 56:'mexicocentral',
+        57:'spaincentral', 58:'taiwannorth', 59:'newzealandnorth', 60:'italynorth',
+        61:'polandcentral', 62:'swedencentral', 63:'newzealandnorth', 64:'taiwannorthwest',
+        65:'swedencentral', 66:'swedensouth', 67:'southfrance', 68:'germanyn',
+        69:'switzerlandw', 70:'norwayw', 71:'westus2', 72:'chilec'
+    };
+    return r24[c] || null;
+}
+
+/**
+ * Maps Azure region identifiers to friendly display names.
+ */
+function getAzureRegionFriendlyName(region) {
+    const map = {
+        uksouth:'UK South', ukwest:'UK West',
+        northeurope:'North Europe (Ireland)', westeurope:'West Europe (Netherlands)',
+        centralfrance:'France Central', southfrance:'France South',
+        germanywc:'Germany West Central', germanyn:'Germany North',
+        norwaye:'Norway East', norwayw:'Norway West',
+        swedencentral:'Sweden Central', swedensouth:'Sweden South',
+        switzerlandn:'Switzerland North', switzerlandw:'Switzerland West',
+        italynorth:'Italy North', spaincentral:'Spain Central', polandcentral:'Poland Central',
+        eastus:'East US', eastus2:'East US 2', eastus2euap:'East US 2 (Canary)',
+        centralus:'Central US', northcentralus:'North Central US',
+        southcentralus:'South Central US', westcentralus:'West Central US',
+        westus:'West US', westus2:'West US 2', westus3:'West US 3',
+        canadacentral:'Canada Central', canadaeast:'Canada East',
+        mexicocentral:'Mexico Central', chilec:'Chile Central',
+        southeastasia:'Southeast Asia (Singapore)', eastasia:'East Asia (Hong Kong)',
+        japaneast:'Japan East', japanwest:'Japan West',
+        koreacentral:'Korea Central', koreasouth:'Korea South',
+        centralindia:'Central India', southindia:'South India', westindia:'West India',
+        australiaeast:'Australia East', australiasoutheast:'Australia Southeast',
+        australiacentral:'Australia Central',
+        taiwannorth:'Taiwan North', taiwannorthwest:'Taiwan Northwest',
+        newzealandnorth:'New Zealand North',
+        southafricanorth:'South Africa North', southafricawest:'South Africa West',
+        uaenorth:'UAE North', uaecentral:'UAE Central', israelcentral:'Israel Central',
+        brazilsouth:'Brazil South'
+    };
+    return map[region] || null;
+}
+
+/**
  * Identifies known Microsoft/Azure IP ranges when reverse DNS is unavailable.
  */
 function identifyMicrosoftIp(ip) {
@@ -902,7 +971,14 @@ function identifyMicrosoftIp(ip) {
     if (a === 20) return '[Azure]';
     if (a === 13 && (b & 0xE0) === 64) return '[Azure]';
     if (a === 52 && b >= 96 && b <= 111) return '[Microsoft 365]';
-    if (a === 51 && b === 5) return '[AVD TURN relay range]';
+    if (a === 51 && b === 5) {
+        const region = lookupTurnRelayRegion(ip);
+        if (region) {
+            const friendly = getAzureRegionFriendlyName(region);
+            return friendly ? `[AVD TURN relay — ${friendly}]` : `[AVD TURN relay — ${region}]`;
+        }
+        return '[AVD TURN relay range]';
+    }
     if (a === 150 && b === 171) return '[Microsoft backbone]';
     if (a === 4 && b >= 150) return '[Microsoft]';
     return '';

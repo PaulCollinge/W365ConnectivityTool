@@ -1760,8 +1760,17 @@ class Program
         if (b[0] == 13 && (b[1] & 0xE0) == 64) return "[Azure]";
         // 52.96.0.0/12 — Microsoft 365
         if (b[0] == 52 && b[1] >= 96 && b[1] <= 111) return "[Microsoft 365]";
-        // 51.5.0.0/16 — AVD TURN relay
-        if (b[0] == 51 && b[1] == 5) return "[AVD TURN relay range]";
+        // 51.5.0.0/16 — AVD TURN relay (use Service Tags for region)
+        if (b[0] == 51 && b[1] == 5)
+        {
+            var region = LookupTurnRelayRegion(ip);
+            if (region != null)
+            {
+                var friendly = GetAzureRegionFriendlyName(region);
+                return friendly != null ? $"[AVD TURN relay — {friendly}]" : $"[AVD TURN relay — {region}]";
+            }
+            return "[AVD TURN relay range]";
+        }
         // 150.171.0.0/16 — Microsoft backbone
         if (b[0] == 150 && b[1] == 171) return "[Microsoft backbone]";
         // 4.0.0.0/8 parts — Microsoft (Level3/Microsoft)
@@ -2227,26 +2236,217 @@ class Program
                 return result;
             }
 
-            // GeoIP the relay IP
-            var geo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
-
-            if (geo.TryGetProperty("city", out var cityProp))
+            // Primary: Use Azure Service Tags subnet→region mapping (authoritative)
+            var azureRegion = LookupTurnRelayRegion(ip);
+            if (azureRegion != null)
             {
-                var city = cityProp.GetString();
-                var region = geo.TryGetProperty("region", out var rProp) ? rProp.GetString() : "";
-                var country = geo.TryGetProperty("country", out var cProp) ? cProp.GetString() : "";
-                result.ResultValue = $"TURN relay: {city}, {region}, {country} ({ip})";
-                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nLocation: {city}, {region}, {country}";
+                var friendlyName = GetAzureRegionFriendlyName(azureRegion);
+                var label = friendlyName != null ? $"{friendlyName} ({azureRegion})" : azureRegion;
+                result.ResultValue = $"TURN relay: {label} ({ip})";
+                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nAzure Region: {label}\nSource: Azure Service Tags (subnet mapping)";
                 result.Status = "Passed";
             }
             else
             {
-                result.ResultValue = $"TURN relay IP: {ip} (location unknown)";
-                result.Status = "Warning";
+                // Fallback: GeoIP for IPs outside the known 51.5.0.0/16 range
+                try
+                {
+                    var geo = await FetchGeoIpAsync($"https://ipinfo.io/{ip}/json", TimeSpan.FromSeconds(5));
+                    if (geo.TryGetProperty("city", out var cityProp))
+                    {
+                        var city = cityProp.GetString();
+                        var region = geo.TryGetProperty("region", out var rProp) ? rProp.GetString() : "";
+                        var country = geo.TryGetProperty("country", out var cProp) ? cProp.GetString() : "";
+                        result.ResultValue = $"TURN relay: {city}, {region}, {country} ({ip})";
+                        result.DetailedInfo = $"Host: {host}\nIP: {ip}\nLocation: {city}, {region}, {country}\nSource: GeoIP (IP not in known Service Tags subnets)";
+                        result.Status = "Passed";
+                    }
+                    else
+                    {
+                        result.ResultValue = $"TURN relay IP: {ip} (location unknown)";
+                        result.Status = "Warning";
+                    }
+                }
+                catch
+                {
+                    result.ResultValue = $"TURN relay IP: {ip} (region lookup failed)";
+                    result.Status = "Warning";
+                }
             }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    /// <summary>
+    /// Looks up a TURN relay IP against the Azure Service Tags WVDRelays subnet table.
+    /// Returns the Azure region name (e.g. "uksouth") or null if not matched.
+    /// Source: ServiceTags_Public JSON → AzureCloud.{region} entries for 51.5.0.0/16
+    /// </summary>
+    static string? LookupTurnRelayRegion(IPAddress ip)
+    {
+        // Subnet → Azure region mapping from Microsoft Service Tags (WVDRelays / 51.5.0.0/16)
+        // Derived from: https://www.microsoft.com/en-us/download/details.aspx?id=56519
+        var subnets = new (byte secondOctet, byte thirdOctet, int prefixLen, string region)[]
+        {
+            // /23 entries (cover 2× /24 blocks)
+            (5, 0, 23, "southcentralus"),    // 51.5.0.0/23
+            (5, 2, 23, "eastus2"),           // 51.5.2.0/23
+            (5, 4, 23, "uksouth"),           // 51.5.4.0/23
+            (5, 8, 23, "southindia"),        // 51.5.8.0/23
+            (5, 16, 23, "centralindia"),     // 51.5.16.0/23
+            (5, 28, 23, "germanywc"),        // 51.5.28.0/23
+            (5, 30, 23, "westindia"),        // 51.5.30.0/23
+            (5, 38, 23, "eastus"),           // 51.5.38.0/23
+            (5, 40, 23, "northcentralus"),   // 51.5.40.0/23
+
+            // /24 entries
+            (5, 6, 24, "uksouth"),           // 51.5.6.0/24
+            (5, 7, 24, "southindia"),        // 51.5.7.0/24
+            (5, 10, 24, "southindia"),       // 51.5.10.0/24
+            (5, 11, 24, "westeurope"),       // 51.5.11.0/24
+            (5, 12, 24, "westeurope"),       // 51.5.12.0/24
+            (5, 13, 24, "brazilsouth"),      // 51.5.13.0/24
+            (5, 14, 24, "brazilsouth"),      // 51.5.14.0/24
+            (5, 15, 24, "centralindia"),     // 51.5.15.0/24
+            (5, 18, 24, "ukwest"),           // 51.5.18.0/24
+            (5, 19, 24, "uaenorth"),         // 51.5.19.0/24
+            (5, 20, 24, "northeurope"),      // 51.5.20.0/24
+            (5, 21, 24, "southeastasia"),    // 51.5.21.0/24
+            (5, 22, 24, "southeastasia"),    // 51.5.22.0/24
+            (5, 23, 24, "westus"),           // 51.5.23.0/24
+            (5, 24, 24, "centralus"),        // 51.5.24.0/24
+            (5, 25, 24, "eastasia"),         // 51.5.25.0/24
+            (5, 26, 24, "canadacentral"),    // 51.5.26.0/24
+            (5, 27, 24, "centralfrance"),    // 51.5.27.0/24
+            (5, 32, 24, "australiaeast"),    // 51.5.32.0/24
+            (5, 33, 24, "japaneast"),        // 51.5.33.0/24
+            (5, 34, 24, "japaneast"),        // 51.5.34.0/24
+            (5, 35, 24, "japanwest"),        // 51.5.35.0/24
+            (5, 36, 24, "japanwest"),        // 51.5.36.0/24
+            (5, 37, 24, "australiasoutheast"), // 51.5.37.0/24
+            (5, 42, 24, "southafricanorth"), // 51.5.42.0/24
+            (5, 43, 24, "southafricawest"),  // 51.5.43.0/24
+            (5, 44, 24, "uaecentral"),       // 51.5.44.0/24
+            (5, 45, 24, "westcentralus"),    // 51.5.45.0/24
+            (5, 46, 24, "westus"),           // 51.5.46.0/24
+            (5, 47, 24, "westus3"),          // 51.5.47.0/24
+            (5, 48, 24, "canadaeast"),       // 51.5.48.0/24
+            (5, 49, 24, "norwaye"),          // 51.5.49.0/24
+            (5, 50, 24, "australiacentral"), // 51.5.50.0/24
+            (5, 51, 24, "koreacentral"),     // 51.5.51.0/24
+            (5, 52, 24, "koreasouth"),       // 51.5.52.0/24
+            (5, 53, 24, "switzerlandn"),     // 51.5.53.0/24
+            (5, 54, 24, "eastus2euap"),      // 51.5.54.0/24 (canary)
+            (5, 55, 24, "israelcentral"),    // 51.5.55.0/24
+            (5, 56, 24, "mexicocentral"),    // 51.5.56.0/24
+            (5, 57, 24, "spaincentral"),     // 51.5.57.0/24
+            (5, 58, 24, "taiwannorth"),      // 51.5.58.0/24
+            (5, 59, 24, "newzealandnorth"),  // 51.5.59.0/24
+            (5, 60, 24, "italynorth"),       // 51.5.60.0/24
+            (5, 61, 24, "polandcentral"),    // 51.5.61.0/24
+            (5, 62, 24, "swedencentral"),    // 51.5.62.0/24
+            (5, 63, 24, "newzealandnorth"),  // 51.5.63.0/24
+            (5, 64, 24, "taiwannorthwest"),  // 51.5.64.0/24
+            (5, 65, 24, "swedencentral"),    // 51.5.65.0/24
+            (5, 66, 24, "swedensouth"),      // 51.5.66.0/24
+            (5, 67, 24, "southfrance"),      // 51.5.67.0/24
+            (5, 68, 24, "germanyn"),         // 51.5.68.0/24
+            (5, 69, 24, "switzerlandw"),     // 51.5.69.0/24
+            (5, 70, 24, "norwayw"),          // 51.5.70.0/24
+            (5, 71, 24, "westus2"),          // 51.5.71.0/24
+            (5, 72, 24, "chilec"),           // 51.5.72.0/24
+        };
+
+        var bytes = ip.GetAddressBytes();
+        if (bytes[0] != 51) return null;
+
+        // Check /23 first (more specific for ranges that span 2× /24)
+        foreach (var (_, third, prefixLen, region) in subnets)
+        {
+            if (prefixLen == 23 && bytes[1] == 5)
+            {
+                // /23 means the third octet matches with bit 0 masked off
+                if ((bytes[2] & 0xFE) == (third & 0xFE))
+                    return region;
+            }
+        }
+        // Then check /24
+        foreach (var (_, third, prefixLen, region) in subnets)
+        {
+            if (prefixLen == 24 && bytes[1] == 5 && bytes[2] == third)
+                return region;
+        }
+
+        return null; // IP in 51.x range but not in known WVDRelays subnets
+    }
+
+    /// <summary>
+    /// Maps Azure region identifiers (from Service Tags) to friendly display names.
+    /// </summary>
+    static string? GetAzureRegionFriendlyName(string region)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Europe
+            ["uksouth"] = "UK South",
+            ["ukwest"] = "UK West",
+            ["northeurope"] = "North Europe (Ireland)",
+            ["westeurope"] = "West Europe (Netherlands)",
+            ["centralfrance"] = "France Central",
+            ["southfrance"] = "France South",
+            ["germanywc"] = "Germany West Central",
+            ["germanyn"] = "Germany North",
+            ["norwaye"] = "Norway East",
+            ["norwayw"] = "Norway West",
+            ["swedencentral"] = "Sweden Central",
+            ["swedensouth"] = "Sweden South",
+            ["switzerlandn"] = "Switzerland North",
+            ["switzerlandw"] = "Switzerland West",
+            ["italynorth"] = "Italy North",
+            ["spaincentral"] = "Spain Central",
+            ["polandcentral"] = "Poland Central",
+            // North America
+            ["eastus"] = "East US",
+            ["eastus2"] = "East US 2",
+            ["eastus2euap"] = "East US 2 (Canary)",
+            ["centralus"] = "Central US",
+            ["northcentralus"] = "North Central US",
+            ["southcentralus"] = "South Central US",
+            ["westcentralus"] = "West Central US",
+            ["westus"] = "West US",
+            ["westus2"] = "West US 2",
+            ["westus3"] = "West US 3",
+            ["canadacentral"] = "Canada Central",
+            ["canadaeast"] = "Canada East",
+            ["mexicocentral"] = "Mexico Central",
+            ["chilec"] = "Chile Central",
+            // Asia Pacific
+            ["southeastasia"] = "Southeast Asia (Singapore)",
+            ["eastasia"] = "East Asia (Hong Kong)",
+            ["japaneast"] = "Japan East",
+            ["japanwest"] = "Japan West",
+            ["koreacentral"] = "Korea Central",
+            ["koreasouth"] = "Korea South",
+            ["centralindia"] = "Central India",
+            ["southindia"] = "South India",
+            ["westindia"] = "West India",
+            ["australiaeast"] = "Australia East",
+            ["australiasoutheast"] = "Australia Southeast",
+            ["australiacentral"] = "Australia Central",
+            ["taiwannorth"] = "Taiwan North",
+            ["taiwannorthwest"] = "Taiwan Northwest",
+            ["newzealandnorth"] = "New Zealand North",
+            // Middle East & Africa
+            ["southafricanorth"] = "South Africa North",
+            ["southafricawest"] = "South Africa West",
+            ["uaenorth"] = "UAE North",
+            ["uaecentral"] = "UAE Central",
+            ["israelcentral"] = "Israel Central",
+            // South America
+            ["brazilsouth"] = "Brazil South",
+        };
+        return map.TryGetValue(region, out var name) ? name : null;
     }
 
     // ── L-UDP-05: STUN NAT Type Detection ──

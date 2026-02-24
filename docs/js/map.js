@@ -353,7 +353,8 @@ function updateMapTurnCard(lookup) {
 
 /**
  * Browser-based TURN relay geolocation: resolves world.relay.avd.microsoft.com
- * via DoH, then geolocates the IP with ipinfo.io and shows it on the map card.
+ * via DoH, then uses Azure Service Tags subnet mapping for region (authoritative),
+ * falling back to ipinfo.io geolocation.
  * Only called when scanner L-UDP-04 data is not available.
  */
 let _turnGeoRunning = false;
@@ -372,7 +373,16 @@ async function geolocateTurnRelay() {
         if (!aRecord) return;
         const relayIp = aRecord.data;
 
-        // Step 2: Geolocate the relay IP
+        // Step 2a: Try Azure Service Tags lookup (authoritative, no external call needed)
+        const azureRegion = (typeof lookupTurnRelayRegion === 'function') ? lookupTurnRelayRegion(relayIp) : null;
+        if (azureRegion) {
+            const friendly = (typeof getAzureRegionFriendlyName === 'function') ? getAzureRegionFriendlyName(azureRegion) : null;
+            const label = friendly ? `${friendly} (${azureRegion})` : azureRegion;
+            setFlaggedBadge('map-turn-loc-badge', `📍 ${label}`, 'location-badge', label);
+            return;
+        }
+
+        // Step 2b: Fallback to GeoIP for IPs outside known Service Tags subnets
         const geoResp = await fetch(
             `https://ipinfo.io/${relayIp}/json`,
             { signal: AbortSignal.timeout(5000), cache: 'no-store' }
