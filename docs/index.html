@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=98">
+    <link rel="stylesheet" href="css/styles.css?v=99">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -201,9 +201,29 @@
                             <rect x="18" y="6" width="84" height="54" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
                             <!-- Screen glass -->
                             <rect x="22" y="10" width="76" height="46" rx="2" fill="#161b22"/>
-                            <!-- W365 text on screen -->
-                            <text x="60" y="38" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="11" font-weight="700">W365</text>
-                            <!-- Status dot (animated) -->
+                            <!-- OS icon: Windows (shown by default) -->
+                            <g id="os-icon-win">
+                                <rect x="44" y="22" width="14" height="14" rx="1" fill="#58a6ff" opacity="0.8"/>
+                                <rect x="60" y="22" width="14" height="14" rx="1" fill="#58a6ff" opacity="0.65"/>
+                                <rect x="44" y="38" width="14" height="14" rx="1" fill="#58a6ff" opacity="0.65"/>
+                                <rect x="60" y="38" width="14" height="14" rx="1" fill="#58a6ff" opacity="0.5"/>
+                                <line x1="59" y1="22" x2="59" y2="52" stroke="#161b22" stroke-width="2"/>
+                                <line x1="44" y1="37" x2="74" y2="37" stroke="#161b22" stroke-width="2"/>
+                            </g>
+                            <!-- OS icon: macOS (hidden by default) -->
+                            <g id="os-icon-mac" style="display:none">
+                                <path d="M60 20c1.5-3 5-5.5 8-5.5 4 0 6 3 6 6.5 0 7-8 14-14 19-6-5-14-12-14-19 0-3.5 2-6.5 6-6.5 3 0 6.5 2.5 8 5.5z" fill="#c9d1d9" opacity="0.8"/>
+                                <path d="M60 20c-0.5-2-1-4 0-7 0.5 1.5 2 3 3 3.5" fill="none" stroke="#c9d1d9" stroke-width="1" opacity="0.6"/>
+                            </g>
+                            <!-- OS icon: Linux (hidden by default) -->
+                            <g id="os-icon-linux" style="display:none">
+                                <ellipse cx="60" cy="40" rx="8" ry="10" fill="#e6edf3" opacity="0.7"/>
+                                <ellipse cx="60" cy="34" rx="6" ry="7" fill="#f0c040" opacity="0.8"/>
+                                <circle cx="57" cy="32" r="1.2" fill="#161b22"/>
+                                <circle cx="63" cy="32" r="1.2" fill="#161b22"/>
+                                <ellipse cx="60" cy="36" rx="2" ry="1" fill="#f08030" opacity="0.8"/>
+                            </g>
+                            <!-- Status dot -->
                             <circle class="device-status-dot" id="device-status-dot" cx="60" cy="48" r="3" fill="#484f58"/>
                             <!-- Camera -->
                             <circle cx="60" cy="8" r="1.5" fill="#21262d"/>
@@ -215,7 +235,7 @@
                         <div class="device-accent" id="map-client-accent"></div>
                     </div>
                     <div class="device-info">
-                        <div class="device-title">You (Client)</div>
+                        <div class="device-title" id="map-client-title">You (Client)</div>
                         <div class="device-detail" id="map-client-location">Awaiting results...</div>
                         <div class="device-detail mono" id="map-client-ip"></div>
                     </div>
@@ -365,26 +385,19 @@
                 <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div><span class="map-dns-arw">▾</span></div>
 
                 <div class="map-client-device map-g-dns" id="map-dns">
-                    <div class="device-laptop">
-                        <svg class="device-svg" viewBox="0 0 120 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <!-- Server rack body -->
-                            <rect x="24" y="8" width="72" height="84" rx="5" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
-                            <!-- Top drive bay -->
-                            <rect x="32" y="16" width="56" height="18" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
-                            <text x="60" y="29" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="9" font-weight="700">DNS</text>
-                            <circle class="device-status-dot" id="device-dns-dot" cx="82" cy="25" r="2.5" fill="#484f58"/>
-                            <!-- Middle drive bay -->
-                            <rect x="32" y="40" width="56" height="18" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
-                            <line x1="38" y1="46" x2="58" y2="46" stroke="#30363d" stroke-width="1"/>
-                            <line x1="38" y1="50" x2="52" y2="50" stroke="#30363d" stroke-width="1"/>
-                            <line x1="38" y1="54" x2="56" y2="54" stroke="#30363d" stroke-width="1"/>
-                            <circle cx="82" cy="49" r="2" fill="#21262d"/>
-                            <!-- Bottom drive bay -->
-                            <rect x="32" y="64" width="56" height="18" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
-                            <line x1="38" y1="70" x2="54" y2="70" stroke="#30363d" stroke-width="1"/>
-                            <line x1="38" y1="74" x2="50" y2="74" stroke="#30363d" stroke-width="1"/>
-                            <line x1="38" y1="78" x2="56" y2="78" stroke="#30363d" stroke-width="1"/>
-                            <circle cx="82" cy="73" r="2" fill="#21262d"/>
+                    <div class="device-laptop device-dns-size">
+                        <svg class="device-svg" viewBox="0 0 100 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Compact server body -->
+                            <rect x="10" y="4" width="80" height="48" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Top bay -->
+                            <rect x="16" y="10" width="68" height="16" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                            <text x="44" y="21" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="8" font-weight="700">DNS</text>
+                            <circle class="device-status-dot" id="device-dns-dot" cx="78" cy="18" r="2" fill="#484f58"/>
+                            <!-- Bottom bay -->
+                            <rect x="16" y="30" width="68" height="16" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                            <line x1="22" y1="36" x2="46" y2="36" stroke="#30363d" stroke-width="1"/>
+                            <line x1="22" y1="40" x2="40" y2="40" stroke="#30363d" stroke-width="1"/>
+                            <circle cx="78" cy="38" r="2" fill="#21262d"/>
                         </svg>
                         <div class="device-accent" id="map-dns-accent"></div>
                     </div>
@@ -563,10 +576,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=98"></script>
-    <script src="js/browser-tests.js?v=98"></script>
-    <script src="js/ui.js?v=98"></script>
-    <script src="js/map.js?v=98"></script>
-    <script src="js/app.js?v=98"></script>
+    <script src="js/config.js?v=99"></script>
+    <script src="js/browser-tests.js?v=99"></script>
+    <script src="js/ui.js?v=99"></script>
+    <script src="js/map.js?v=99"></script>
+    <script src="js/app.js?v=99"></script>
 </body>
 </html>

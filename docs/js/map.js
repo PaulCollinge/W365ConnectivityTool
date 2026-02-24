@@ -256,6 +256,34 @@ function extractLine(detailedInfo, prefix) {
     return '';
 }
 
+// ── OS Detection for client icon ──
+function detectClientOS() {
+    const ua = navigator.userAgent || '';
+    const p = navigator.platform || '';
+    if (/Mac/i.test(p) || /Mac/i.test(ua)) return 'mac';
+    if (/Linux/i.test(p) && !/Android/i.test(ua)) return 'linux';
+    return 'win'; // default Windows
+}
+
+function setClientOSIcon() {
+    const os = detectClientOS();
+    const win = document.getElementById('os-icon-win');
+    const mac = document.getElementById('os-icon-mac');
+    const linux = document.getElementById('os-icon-linux');
+    if (win) win.style.display = os === 'win' ? '' : 'none';
+    if (mac) mac.style.display = os === 'mac' ? '' : 'none';
+    if (linux) linux.style.display = os === 'linux' ? '' : 'none';
+    // Update title
+    const title = document.getElementById('map-client-title');
+    if (title) {
+        const label = os === 'mac' ? 'You (macOS)' : os === 'linux' ? 'You (Linux)' : 'You (Windows)';
+        title.textContent = label;
+    }
+}
+
+// Run OS detection immediately
+setClientOSIcon();
+
 // ── Client Card ──
 function updateMapClientCard(lookup) {
     let location = '';

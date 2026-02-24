@@ -1133,6 +1133,9 @@ main {
     position: relative;
     width: 100px;
 }
+.device-dns-size {
+    width: 80px;
+}
 .device-svg {
     width: 100%;
     height: auto;
