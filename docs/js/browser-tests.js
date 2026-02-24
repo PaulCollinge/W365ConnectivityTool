@@ -776,13 +776,15 @@ async function testWebRtcStun(test) {
 }
 
 // ── NAT Type Detection ──
-// Gathers ICE srflx candidates via two STUN servers to check NAT behaviour.
-// Browser-based detection CANNOT reliably distinguish Symmetric from
-// Port-Restricted Cone via port numbers alone (browsers may use separate
-// sockets per STUN server, and even within one socket, candidate reporting
-// varies).  Therefore we compare reflexive IPs only:
-//   • Same reflexive IP  → Cone NAT (endpoint-independent mapping) → STUN OK
-//   • Different reflexive IPs → likely Symmetric NAT or multi-WAN → warn
+// Browser-based ICE gathering can confirm STUN reachability and report the
+// reflexive (public) address, but it CANNOT reliably classify NAT type.
+// Browsers may use separate sockets per server, and corporate networks may
+// route traffic to different STUN servers via different egress IPs.  Both
+// produce different reflexive mappings that look like Symmetric NAT but aren't.
+//
+// Strategy: report STUN as working if we get any srflx candidate.  Show the
+// reflexive addresses found.  Leave accurate NAT classification to the
+// Local Scanner's dedicated two-server STUN test (L-UDP-05).
 async function testNatType(test) {
     const t0 = performance.now();
 
@@ -821,9 +823,12 @@ async function testNatType(test) {
             detail = 'Only host candidates available. STUN is blocked \u2014 RDP Shortpath may require TURN relay.\n' +
                 'Host candidates:\n' + allHost.map(c => `  ${c.address}:${c.port}`).join('\n');
         } else {
-            // Collect all distinct reflexive IPs and full endpoints
+            // STUN worked — we have at least one server-reflexive candidate
             const reflexIPs = [...new Set(srflx.map(c => c.address))];
             const reflexEPs = [...new Set(srflx.map(c => `${c.address}:${c.port}`))];
+
+            natType = 'STUN OK \u2014 behind NAT';
+            status = 'Passed';
 
             detail += 'Server-reflexive candidates:\n';
             srflx.forEach(c => {
@@ -834,30 +839,14 @@ async function testNatType(test) {
             });
             detail += '\n';
 
-            if (reflexIPs.length > 1) {
-                // Different public IPs — strong indicator of Symmetric NAT or multi-WAN
-                natType = 'Symmetric NAT';
-                status = 'Warning';
-                detail += `Multiple distinct reflexive IPs detected: ${reflexIPs.join(', ')}\n` +
-                    'Different STUN servers see different public IPs.\n' +
-                    'This indicates endpoint-dependent mapping (Symmetric NAT) or multi-WAN.\n' +
-                    'Direct STUN hole-punching is unlikely to succeed.\n' +
-                    'RDP Shortpath will use TURN relay instead (still UDP, still good).';
-            } else {
-                // Same public IP — consistent with Cone NAT
-                // (port differences are expected when browsers use multiple local sockets)
-                natType = 'Cone NAT \u2014 STUN compatible';
-                status = 'Passed';
-                detail += `Consistent reflexive IP: ${reflexIPs[0]}`;
-                if (reflexEPs.length > 1) {
-                    detail += ` (${reflexEPs.length} port mappings \u2014 normal with multiple local sockets)`;
-                }
-                detail += '\n' +
-                    'NAT preserves endpoint-independent mapping (Cone NAT).\n' +
-                    'This is compatible with STUN \u2014 RDP Shortpath (UDP) should work well.\n\n' +
-                    'Sub-type: Full Cone, Restricted Cone, or Port-Restricted Cone\n' +
-                    '(all support RDP Shortpath via STUN).';
-            }
+            detail += `Public IP${reflexIPs.length > 1 ? 's' : ''}: ${reflexIPs.join(', ')}\n`;
+            detail += `Reflexive endpoints: ${reflexEPs.length}\n\n`;
+            detail += 'STUN binding succeeded \u2014 UDP connectivity confirmed.\n' +
+                'RDP Shortpath (UDP) should be available.\n\n' +
+                'Note: Accurate NAT type classification (Full Cone / Restricted Cone /\n' +
+                'Port-Restricted Cone / Symmetric) requires the Local Scanner\'s\n' +
+                'dedicated two-server STUN test (L-UDP-05), which uses controlled\n' +
+                'sockets for reliable comparison.';
         }
 
         detail += '\n\nAll ICE candidates:\n' + candidates.map(c =>
