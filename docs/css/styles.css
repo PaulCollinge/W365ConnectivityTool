@@ -787,19 +787,45 @@ main {
     gap: 0;
 }
 
+/* ── Overview Sections ── */
+.ov-section {
+    border-bottom: 1px solid var(--border-default);
+}
+.ov-section:last-child { border-bottom: none; }
+
+.ov-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+}
+.ov-section-icon { font-size: 0.95rem; }
+.ov-section-title {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.ov-section-body {
+    padding: 4px 0;
+}
+
 .overview-row {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 24px;
+    padding: 10px 24px;
     border-bottom: 1px solid var(--border);
     transition: background var(--transition);
 }
 .overview-row:hover {
     background: var(--bg-hover);
 }
-.overview-row:last-child,
-.overview-row:nth-last-child(2):nth-child(odd) {
+.overview-row:last-child {
     border-bottom: none;
 }
 
@@ -837,8 +863,106 @@ main {
     border-radius: 2px;
 }
 
+/* ── RDP Connectivity Cards ── */
+.ov-connectivity-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    padding: 12px 24px;
+}
+.ov-conn-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: 14px 16px;
+    text-align: center;
+    transition: border-color var(--transition), box-shadow var(--transition);
+}
+.ov-conn-card:hover {
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 1px var(--accent-border);
+}
+.ov-conn-label {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+}
+.ov-proto-tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    border: 1px solid var(--accent-border);
+    vertical-align: middle;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+.ov-conn-location {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    line-height: 1.5;
+    margin-bottom: 4px;
+}
+.ov-conn-location .country-flag {
+    vertical-align: middle;
+    margin-right: 4px;
+    border-radius: 2px;
+}
+.ov-conn-latency {
+    font-size: var(--text-xs);
+    color: var(--accent);
+    font-family: var(--mono);
+}
+
+/* ── Path Optimisation Columns ── */
+.ov-optim-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    padding: 0;
+}
+.ov-optim-col {
+    padding: 12px 24px;
+    border-right: 1px solid var(--border);
+}
+.ov-optim-col:last-child { border-right: none; }
+.ov-optim-heading {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+.ov-optim-heading .ov-dim {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-style: normal;
+}
+.ov-optim-checks {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+.ov-optim-checks .ov-status-icon {
+    margin-right: 6px;
+    font-weight: 700;
+}
+.ov-optim-checks .ov-pass { color: var(--green); }
+.ov-optim-checks .ov-warn { color: var(--yellow); }
+.ov-optim-checks .ov-fail { color: var(--red); }
+.ov-optim-checks .ov-dim { color: var(--text-muted); font-style: italic; }
+
 @media (max-width: 768px) {
     .overview-grid { grid-template-columns: 1fr; }
+    .ov-connectivity-grid { grid-template-columns: 1fr; }
+    .ov-optim-grid { grid-template-columns: 1fr; }
+    .ov-optim-col { border-right: none; border-bottom: 1px solid var(--border); }
+    .ov-optim-col:last-child { border-bottom: none; }
     .overview-label { min-width: 120px; }
     .overview-row { padding: 10px 16px; }
 }

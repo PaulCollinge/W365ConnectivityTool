@@ -1002,10 +1002,12 @@ async function updateConnectivityOverview(results) {
         const regionVal = extractLine(gw09.detailedInfo, 'Azure Region:');
         const geoVal = extractLine(gw09.detailedInfo, 'GeoIP Location:');
         const distVal = extractLine(gw09.detailedInfo, 'Distance from you:');
-        let gwHtml = esc(regionVal || geoVal || gw09.resultValue);
+        let gwLocHtml = esc(regionVal || geoVal || gw09.resultValue);
         const gwLoc = geoVal || regionVal || '';  // for flag
-        if (geoVal && regionVal) gwHtml = `${esc(regionVal)} <span class="ov-dim">(${esc(geoVal)})</span>`;
-        if (distVal) gwHtml += ` &mdash; ${esc(distVal)}`;
+        if (geoVal && regionVal) gwLocHtml = `${esc(regionVal)} <span class="ov-dim">(${esc(geoVal)})</span>`;
+        if (distVal) gwLocHtml += `<br><span class="ov-dim">${esc(distVal)}</span>`;
+
+        setVal('ov-rdp-gateway-val', gwLocHtml, gwLoc);
 
         // TCP latency from L-TCP-04
         const gw04 = r('L-TCP-04');
@@ -1017,11 +1019,10 @@ async function updateConnectivityOverview(results) {
                     .find(l => l.trim().match(/TCP connected in \d+ms/));
                 if (latLine) {
                     const ms = latLine.match(/(\d+)ms/);
-                    if (ms) gwHtml += ` <span class="ov-latency">TCP ${ms[1]}ms</span>`;
+                    if (ms) setVal('ov-rdp-gateway-latency-val', `${ms[1]}ms TCP`);
                 }
             }
         }
-        setVal('ov-rdp-gateway-val', gwHtml, gwLoc);
         hasContent = true;
     } else {
         setVal('ov-rdp-gateway-val', '<span class="ov-dim">Requires Local Scanner</span>');
@@ -1031,7 +1032,8 @@ async function updateConnectivityOverview(results) {
     const turn04 = r('L-UDP-04');
     if (turn04 && turn04.status !== 'Skipped') {
         const turnLoc = turn04.resultValue || 'Unknown';
-        let turnHtml = esc(turnLoc);
+        setVal('ov-turn-relay-val', esc(turnLoc), turnLoc);
+
         const turn03 = r('L-UDP-03');
         if (turn03 && turn03.status === 'Passed') {
             let latMs = '';
@@ -1043,9 +1045,8 @@ async function updateConnectivityOverview(results) {
                 const rttMatch = (turn03.resultValue || '').match(/(\d+)\s*ms\s*RTT/i);
                 if (rttMatch) latMs = `${rttMatch[1]}ms`;
             }
-            if (latMs) turnHtml += ` <span class="ov-latency">${esc(latMs)} RTT</span>`;
+            if (latMs) setVal('ov-turn-relay-latency-val', `${esc(latMs)} RTT`);
         }
-        setVal('ov-turn-relay-val', turnHtml, turnLoc);
         hasContent = true;
     } else {
         setVal('ov-turn-relay-val', '<span class="ov-dim">Requires Local Scanner</span>');

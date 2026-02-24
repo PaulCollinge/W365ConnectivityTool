@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=79">
+    <link rel="stylesheet" href="css/styles.css?v=80">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -102,34 +102,65 @@
                 <h2>Connectivity Overview</h2>
                 <span class="overview-verdict" id="overview-verdict"></span>
             </div>
-            <div class="overview-grid">
-                <div class="overview-row" id="ov-user-location">
-                    <span class="overview-label">User Location</span>
-                    <span class="overview-value" id="ov-user-location-val">—</span>
+
+            <!-- Section 1: Location & Egress -->
+            <div class="ov-section">
+                <div class="ov-section-header">
+                    <span class="ov-section-icon">📍</span>
+                    <span class="ov-section-title">Location &amp; Egress</span>
                 </div>
-                <div class="overview-row" id="ov-rdp-egress">
-                    <span class="overview-label">RDP Egress</span>
-                    <span class="overview-value" id="ov-rdp-egress-val">—</span>
+                <div class="ov-section-body">
+                    <div class="overview-row" id="ov-user-location">
+                        <span class="overview-label">Your Location</span>
+                        <span class="overview-value" id="ov-user-location-val">—</span>
+                    </div>
+                    <div class="overview-row" id="ov-rdp-egress">
+                        <span class="overview-label">RDP Egress</span>
+                        <span class="overview-value" id="ov-rdp-egress-val">—</span>
+                    </div>
                 </div>
-                <div class="overview-row" id="ov-afd-pop">
-                    <span class="overview-label">AFD Edge PoP</span>
-                    <span class="overview-value" id="ov-afd-pop-val">—</span>
+            </div>
+
+            <!-- Section 2: RDP Connectivity -->
+            <div class="ov-section">
+                <div class="ov-section-header">
+                    <span class="ov-section-icon">🔗</span>
+                    <span class="ov-section-title">RDP Connectivity</span>
                 </div>
-                <div class="overview-row" id="ov-rdp-gateway">
-                    <span class="overview-label">RDP Gateway</span>
-                    <span class="overview-value" id="ov-rdp-gateway-val">—</span>
+                <div class="ov-section-body ov-connectivity-grid">
+                    <div class="ov-conn-card" id="ov-afd-card">
+                        <div class="ov-conn-label">AFD Edge</div>
+                        <div class="ov-conn-location" id="ov-afd-pop-val">—</div>
+                        <div class="ov-conn-latency" id="ov-afd-latency-val"></div>
+                    </div>
+                    <div class="ov-conn-card" id="ov-gateway-card">
+                        <div class="ov-conn-label">RDP Gateway <span class="ov-proto-tag">TCP</span></div>
+                        <div class="ov-conn-location" id="ov-rdp-gateway-val">—</div>
+                        <div class="ov-conn-latency" id="ov-rdp-gateway-latency-val"></div>
+                    </div>
+                    <div class="ov-conn-card" id="ov-turn-card">
+                        <div class="ov-conn-label">TURN Relay <span class="ov-proto-tag">UDP</span></div>
+                        <div class="ov-conn-location" id="ov-turn-relay-val">—</div>
+                        <div class="ov-conn-latency" id="ov-turn-relay-latency-val"></div>
+                    </div>
                 </div>
-                <div class="overview-row" id="ov-turn-relay">
-                    <span class="overview-label">TURN Relay</span>
-                    <span class="overview-value" id="ov-turn-relay-val">—</span>
+            </div>
+
+            <!-- Section 3: Path Optimisation -->
+            <div class="ov-section">
+                <div class="ov-section-header">
+                    <span class="ov-section-icon">🛡️</span>
+                    <span class="ov-section-title">Path Optimisation</span>
                 </div>
-                <div class="overview-row" id="ov-tcp-path">
-                    <span class="overview-label">TCP Path</span>
-                    <span class="overview-value" id="ov-tcp-path-val">—</span>
-                </div>
-                <div class="overview-row" id="ov-udp-path">
-                    <span class="overview-label">UDP Path</span>
-                    <span class="overview-value" id="ov-udp-path-val">—</span>
+                <div class="ov-section-body ov-optim-grid">
+                    <div class="ov-optim-col">
+                        <div class="ov-optim-heading">TCP <span class="ov-dim">(RDP Reverse Connect)</span></div>
+                        <div class="ov-optim-checks" id="ov-tcp-path-val">—</div>
+                    </div>
+                    <div class="ov-optim-col">
+                        <div class="ov-optim-heading">UDP <span class="ov-dim">(RDP Shortpath)</span></div>
+                        <div class="ov-optim-checks" id="ov-udp-path-val">—</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -417,10 +448,10 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=79"></script>
-    <script src="js/browser-tests.js?v=79"></script>
-    <script src="js/ui.js?v=79"></script>
-    <script src="js/map.js?v=79"></script>
-    <script src="js/app.js?v=79"></script>
+    <script src="js/config.js?v=80"></script>
+    <script src="js/browser-tests.js?v=80"></script>
+    <script src="js/ui.js?v=80"></script>
+    <script src="js/map.js?v=80"></script>
+    <script src="js/app.js?v=80"></script>
 </body>
 </html>
