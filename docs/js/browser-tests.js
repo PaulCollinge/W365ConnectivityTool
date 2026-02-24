@@ -925,6 +925,67 @@ function lookupTurnRelayRegion(ip) {
 }
 
 /**
+ * Looks up an RDP Gateway IP in 40.64.144.0/20 against Azure Service Tags.
+ * Returns Azure region identifier (e.g. 'uksouth') or null.
+ */
+function lookupGatewayRegion(ip) {
+    const p = ip.split('.').map(Number);
+    if (p.length !== 4 || p[0] !== 40 || p[1] !== 64 || p[2] < 144 || p[2] > 159) return null;
+    const offset = (p[2] - 144) * 256 + p[3];
+    // /30 (mask off 2 host bits)
+    const r30 = {928:'eastus2euap'};
+    let m = offset & 0xFFFC;
+    if (r30[m]) return r30[m];
+    // /29 (mask off 3 host bits)
+    const r29 = {
+        128:'swedensouth', 136:'swedencentral', 144:'taiwannorthwest', 152:'newzealandnorth',
+        168:'taiwannorth', 176:'spaincentral', 184:'mexicocentral', 192:'eastus2',
+        200:'uksouth', 208:'southindia', 216:'southeastasia', 224:'brazilsouth',
+        232:'centralindia', 240:'ukwest', 248:'israelcentral',
+        960:'southfrance', 968:'germanyn', 976:'switzerlandw', 984:'norwayw',
+        1000:'chilec', 1008:'polandcentral', 1016:'italynorth'
+    };
+    m = offset & 0xFFF8;
+    if (r29[m]) return r29[m];
+    // /28 (mask off 4 host bits)
+    const r28 = {
+        160:'taiwannorth', 256:'eastus2', 272:'uksouth', 288:'southindia',
+        304:'southcentralus', 320:'brazilsouth', 336:'centralindia', 352:'ukwest',
+        368:'uaenorth', 384:'westeurope', 400:'southeastasia', 416:'westus2',
+        432:'centralus', 448:'eastasia', 464:'canadacentral', 480:'centralfrance',
+        496:'germanywc', 512:'westindia', 528:'australiaeast', 544:'japaneast',
+        560:'japanwest', 576:'australiasoutheast', 592:'eastus', 608:'northcentralus',
+        624:'southafricanorth', 640:'southafricawest', 656:'uaecentral',
+        672:'westcentralus', 688:'westus', 704:'westus3', 720:'canadaeast',
+        736:'norwaye', 752:'australiacentral', 768:'koreacentral', 784:'koreasouth',
+        800:'switzerlandn', 816:'jioindiawest', 832:'northeurope'
+    };
+    m = offset & 0xFFF0;
+    if (r28[m]) return r28[m];
+    // /27 (mask off 5 host bits)
+    const r27 = {
+        0:'southcentralus', 32:'westeurope', 64:'northeurope',
+        1024:'germanyn', 1056:'eastus2', 1088:'uksouth', 1120:'southindia',
+        1152:'brazilsouth', 1216:'centralindia', 1248:'ukwest', 1280:'uaenorth',
+        1312:'southeastasia', 1344:'westus2', 1376:'centralus', 1408:'eastasia',
+        1440:'canadacentral', 1472:'centralfrance', 1504:'germanywc', 1536:'westindia',
+        1568:'australiaeast', 1600:'japaneast', 1632:'japanwest',
+        1664:'australiasoutheast', 1696:'eastus', 1728:'northcentralus',
+        1760:'southafricanorth', 1792:'southafricawest', 1824:'uaecentral',
+        1856:'westcentralus', 1888:'westus', 1920:'westus3', 1952:'canadaeast',
+        1984:'norwaye', 2016:'australiacentral', 2048:'koreacentral', 2080:'koreasouth',
+        2112:'switzerlandn', 2144:'jioindiawest', 2176:'israelcentral',
+        2208:'mexicocentral', 2240:'spaincentral', 2272:'taiwannorth',
+        2304:'newzealandnorth', 2336:'taiwannorthwest', 2368:'swedencentral',
+        2400:'swedensouth', 2432:'southfrance', 2464:'switzerlandw', 2496:'norwayw',
+        2528:'italynorth', 2560:'polandcentral', 2592:'chilec'
+    };
+    m = offset & 0xFFE0;
+    if (r27[m]) return r27[m];
+    return null;
+}
+
+/**
  * Maps Azure region identifiers to friendly display names.
  */
 function getAzureRegionFriendlyName(region) {
@@ -953,6 +1014,7 @@ function getAzureRegionFriendlyName(region) {
         newzealandnorth:'New Zealand North',
         southafricanorth:'South Africa North', southafricawest:'South Africa West',
         uaenorth:'UAE North', uaecentral:'UAE Central', israelcentral:'Israel Central',
+        jioindiawest:'Jio India West',
         brazilsouth:'Brazil South'
     };
     return map[region] || null;
@@ -967,6 +1029,14 @@ function identifyMicrosoftIp(ip) {
     const [a, b] = parts;
     if (a === 104 && b === 44) return '[Microsoft backbone]';
     if (a === 104 && b >= 40 && b <= 47) return '[Azure]';
+    if (a === 40 && b === 64 && parts[2] >= 144 && parts[2] <= 159) {
+        const region = lookupGatewayRegion(ip);
+        if (region) {
+            const friendly = getAzureRegionFriendlyName(region);
+            return friendly ? `[RDP Gateway — ${friendly}]` : `[RDP Gateway — ${region}]`;
+        }
+        return '[RDP Gateway range]';
+    }
     if (a === 40 && (b & 0xC0) === 64) return '[Azure]';
     if (a === 20) return '[Azure]';
     if (a === 13 && (b & 0xE0) === 64) return '[Azure]';

@@ -1393,6 +1393,18 @@ class Program
                         ? $"    → IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) ✓"
                         : $"    → IP NOT in expected W365 ranges");
 
+                    // Service Tags region lookup for gateway IP
+                    var gwFirstIp = gwIps.FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                    if (gwFirstIp != null)
+                    {
+                        var gwRegion = LookupGatewayRegion(gwFirstIp);
+                        if (gwRegion != null)
+                        {
+                            var gwFriendly = GetAzureRegionFriendlyName(gwRegion) ?? gwRegion;
+                            sb.AppendLine($"    → Gateway region (Service Tags): {gwFriendly}");
+                        }
+                    }
+
                     using var tcp = new TcpClient();
                     var sw = Stopwatch.StartNew();
                     using var cts = new CancellationTokenSource(5000);
@@ -1752,6 +1764,17 @@ class Program
         if (b[0] == 104 && b[1] == 44) return "[Microsoft backbone]";
         // 104.40.0.0/13 — Azure compute
         if (b[0] == 104 && b[1] >= 40 && b[1] <= 47) return "[Azure]";
+        // 40.64.144.0/20 — RDP Gateway (use Service Tags for region)
+        if (b[0] == 40 && b[1] == 64 && b[2] >= 144 && b[2] <= 159)
+        {
+            var region = LookupGatewayRegion(ip);
+            if (region != null)
+            {
+                var friendly = GetAzureRegionFriendlyName(region);
+                return friendly != null ? $"[RDP Gateway — {friendly}]" : $"[RDP Gateway — {region}]";
+            }
+            return "[RDP Gateway range]";
+        }
         // 40.64.0.0/10 — Azure / Microsoft
         if (b[0] == 40 && (b[1] & 0xC0) == 64) return "[Azure]";
         // 20.33.0.0/16 and similar — Azure networking
@@ -2382,6 +2405,163 @@ class Program
     }
 
     /// <summary>
+    /// Looks up an RDP Gateway IP against the Azure Service Tags WindowsVirtualDesktop subnet table.
+    /// Returns the Azure region name (e.g. "uksouth") or null if not matched.
+    /// Source: ServiceTags_Public JSON → AzureCloud.{region} entries for 40.64.144.0/20
+    /// </summary>
+    static string? LookupGatewayRegion(IPAddress ip)
+    {
+        // Subnet → Azure region mapping from Microsoft Service Tags (WindowsVirtualDesktop / 40.64.144.0/20)
+        // Derived from: https://www.microsoft.com/en-us/download/details.aspx?id=56519
+        // Each entry: (offset from 40.64.144.0, prefix length, region)
+        var subnets = new (int offset, int prefixLen, string region)[]
+        {
+            // /27 entries (32 IPs each)
+            (0, 27, "southcentralus"),       // 40.64.144.0/27
+            (32, 27, "westeurope"),           // 40.64.144.32/27
+            (64, 27, "northeurope"),          // 40.64.144.64/27
+            (1024, 27, "germanyn"),           // 40.64.148.0/27
+            (1056, 27, "eastus2"),            // 40.64.148.32/27
+            (1088, 27, "uksouth"),            // 40.64.148.64/27
+            (1120, 27, "southindia"),         // 40.64.148.96/27
+            (1152, 27, "brazilsouth"),        // 40.64.148.128/27
+            (1216, 27, "centralindia"),       // 40.64.148.192/27
+            (1248, 27, "ukwest"),             // 40.64.148.224/27
+            (1280, 27, "uaenorth"),           // 40.64.149.0/27
+            (1312, 27, "southeastasia"),      // 40.64.149.32/27
+            (1344, 27, "westus2"),            // 40.64.149.64/27
+            (1376, 27, "centralus"),          // 40.64.149.96/27
+            (1408, 27, "eastasia"),           // 40.64.149.128/27
+            (1440, 27, "canadacentral"),      // 40.64.149.160/27
+            (1472, 27, "centralfrance"),      // 40.64.149.192/27
+            (1504, 27, "germanywc"),          // 40.64.149.224/27
+            (1536, 27, "westindia"),          // 40.64.150.0/27
+            (1568, 27, "australiaeast"),      // 40.64.150.32/27
+            (1600, 27, "japaneast"),          // 40.64.150.64/27
+            (1632, 27, "japanwest"),          // 40.64.150.96/27
+            (1664, 27, "australiasoutheast"), // 40.64.150.128/27
+            (1696, 27, "eastus"),             // 40.64.150.160/27
+            (1728, 27, "northcentralus"),     // 40.64.150.192/27
+            (1760, 27, "southafricanorth"),   // 40.64.150.224/27
+            (1792, 27, "southafricawest"),    // 40.64.151.0/27
+            (1824, 27, "uaecentral"),         // 40.64.151.32/27
+            (1856, 27, "westcentralus"),      // 40.64.151.64/27
+            (1888, 27, "westus"),             // 40.64.151.96/27
+            (1920, 27, "westus3"),            // 40.64.151.128/27
+            (1952, 27, "canadaeast"),         // 40.64.151.160/27
+            (1984, 27, "norwaye"),            // 40.64.151.192/27
+            (2016, 27, "australiacentral"),   // 40.64.151.224/27
+            (2048, 27, "koreacentral"),       // 40.64.152.0/27
+            (2080, 27, "koreasouth"),         // 40.64.152.32/27
+            (2112, 27, "switzerlandn"),       // 40.64.152.64/27
+            (2144, 27, "jioindiawest"),       // 40.64.152.96/27
+            (2176, 27, "israelcentral"),      // 40.64.152.128/27
+            (2208, 27, "mexicocentral"),      // 40.64.152.160/27
+            (2240, 27, "spaincentral"),       // 40.64.152.192/27
+            (2272, 27, "taiwannorth"),        // 40.64.152.224/27
+            (2304, 27, "newzealandnorth"),    // 40.64.153.0/27
+            (2336, 27, "taiwannorthwest"),    // 40.64.153.32/27
+            (2368, 27, "swedencentral"),      // 40.64.153.64/27
+            (2400, 27, "swedensouth"),        // 40.64.153.96/27
+            (2432, 27, "southfrance"),        // 40.64.153.128/27
+            (2464, 27, "switzerlandw"),       // 40.64.153.160/27
+            (2496, 27, "norwayw"),            // 40.64.153.192/27
+            (2528, 27, "italynorth"),         // 40.64.153.224/27
+            (2560, 27, "polandcentral"),      // 40.64.154.0/27
+            (2592, 27, "chilec"),             // 40.64.154.32/27
+            // /28 entries (16 IPs each)
+            (160, 28, "taiwannorth"),         // 40.64.144.160/28
+            (256, 28, "eastus2"),             // 40.64.145.0/28
+            (272, 28, "uksouth"),             // 40.64.145.16/28
+            (288, 28, "southindia"),          // 40.64.145.32/28
+            (304, 28, "southcentralus"),      // 40.64.145.48/28
+            (320, 28, "brazilsouth"),         // 40.64.145.64/28
+            (336, 28, "centralindia"),        // 40.64.145.80/28
+            (352, 28, "ukwest"),              // 40.64.145.96/28
+            (368, 28, "uaenorth"),            // 40.64.145.112/28
+            (384, 28, "westeurope"),          // 40.64.145.128/28
+            (400, 28, "southeastasia"),       // 40.64.145.144/28
+            (416, 28, "westus2"),             // 40.64.145.160/28
+            (432, 28, "centralus"),           // 40.64.145.176/28
+            (448, 28, "eastasia"),            // 40.64.145.192/28
+            (464, 28, "canadacentral"),       // 40.64.145.208/28
+            (480, 28, "centralfrance"),       // 40.64.145.224/28
+            (496, 28, "germanywc"),           // 40.64.145.240/28
+            (512, 28, "westindia"),           // 40.64.146.0/28
+            (528, 28, "australiaeast"),       // 40.64.146.16/28
+            (544, 28, "japaneast"),           // 40.64.146.32/28
+            (560, 28, "japanwest"),           // 40.64.146.48/28
+            (576, 28, "australiasoutheast"),  // 40.64.146.64/28
+            (592, 28, "eastus"),              // 40.64.146.80/28
+            (608, 28, "northcentralus"),      // 40.64.146.96/28
+            (624, 28, "southafricanorth"),    // 40.64.146.112/28
+            (640, 28, "southafricawest"),     // 40.64.146.128/28
+            (656, 28, "uaecentral"),          // 40.64.146.144/28
+            (672, 28, "westcentralus"),       // 40.64.146.160/28
+            (688, 28, "westus"),              // 40.64.146.176/28
+            (704, 28, "westus3"),             // 40.64.146.192/28
+            (720, 28, "canadaeast"),          // 40.64.146.208/28
+            (736, 28, "norwaye"),             // 40.64.146.224/28
+            (752, 28, "australiacentral"),    // 40.64.146.240/28
+            (768, 28, "koreacentral"),        // 40.64.147.0/28
+            (784, 28, "koreasouth"),          // 40.64.147.16/28
+            (800, 28, "switzerlandn"),        // 40.64.147.32/28
+            (816, 28, "jioindiawest"),        // 40.64.147.48/28
+            (832, 28, "northeurope"),         // 40.64.147.64/28
+            // /29 entries (8 IPs each)
+            (128, 29, "swedensouth"),         // 40.64.144.128/29
+            (136, 29, "swedencentral"),       // 40.64.144.136/29
+            (144, 29, "taiwannorthwest"),     // 40.64.144.144/29
+            (152, 29, "newzealandnorth"),     // 40.64.144.152/29
+            (168, 29, "taiwannorth"),         // 40.64.144.168/29
+            (176, 29, "spaincentral"),        // 40.64.144.176/29
+            (184, 29, "mexicocentral"),       // 40.64.144.184/29
+            (192, 29, "eastus2"),             // 40.64.144.192/29
+            (200, 29, "uksouth"),             // 40.64.144.200/29
+            (208, 29, "southindia"),          // 40.64.144.208/29
+            (216, 29, "southeastasia"),       // 40.64.144.216/29
+            (224, 29, "brazilsouth"),         // 40.64.144.224/29
+            (232, 29, "centralindia"),        // 40.64.144.232/29
+            (240, 29, "ukwest"),              // 40.64.144.240/29
+            (248, 29, "israelcentral"),       // 40.64.144.248/29
+            (960, 29, "southfrance"),         // 40.64.147.192/29
+            (968, 29, "germanyn"),            // 40.64.147.200/29
+            (976, 29, "switzerlandw"),        // 40.64.147.208/29
+            (984, 29, "norwayw"),             // 40.64.147.216/29
+            (1000, 29, "chilec"),             // 40.64.147.232/29
+            (1008, 29, "polandcentral"),      // 40.64.147.240/29
+            (1016, 29, "italynorth"),         // 40.64.147.248/29
+            // /30 entries (4 IPs each)
+            (928, 30, "eastus2euap"),         // 40.64.147.160/30
+        };
+
+        var bytes = ip.GetAddressBytes();
+        if (bytes.Length != 4) return null;
+
+        // Check if IP is in 40.64.144.0/20 (40.64.144.0 – 40.64.159.255)
+        if (bytes[0] != 40 || bytes[1] != 64 || bytes[2] < 144 || bytes[2] > 159) return null;
+
+        // Compute offset from 40.64.144.0
+        int offset = (bytes[2] - 144) * 256 + bytes[3];
+
+        // Longest-prefix-match: check /30, then /29, /28, /27
+        foreach (int pfx in new[] { 30, 29, 28, 27 })
+        {
+            int hostBits = 32 - pfx;
+            int mask = ~((1 << hostBits) - 1) & 0xFFF; // mask off host bits within /20
+            int maskedOffset = offset & mask;
+
+            foreach (var (entryOffset, entryPfx, region) in subnets)
+            {
+                if (entryPfx == pfx && entryOffset == maskedOffset)
+                    return region;
+            }
+        }
+
+        return null; // IP in 40.64.144.0/20 but not in known WVD subnets
+    }
+
+    /// <summary>
     /// Maps Azure region identifiers (from Service Tags) to friendly display names.
     /// </summary>
     static string? GetAzureRegionFriendlyName(string region)
@@ -2443,6 +2623,7 @@ class Program
             ["uaenorth"] = "UAE North",
             ["uaecentral"] = "UAE Central",
             ["israelcentral"] = "Israel Central",
+            ["jioindiawest"] = "Jio India West",
             // South America
             ["brazilsouth"] = "Brazil South",
         };
