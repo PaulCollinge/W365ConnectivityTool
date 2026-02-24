@@ -2674,26 +2674,12 @@ class Program
                 sb.AppendLine($"Server 1: {stunHost1} → {stunIp1}");
             }
 
-            // Server 2: stun1.l.google.com (independent STUN server — for NAT comparison)
-            var stunHost2 = "stun1.l.google.com";
-            int stunPort2 = 19302;
-            IPAddress? stunIp2 = null;
-            try
-            {
-                var dns2 = await Dns.GetHostAddressesAsync(stunHost2);
-                stunIp2 = dns2.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-            }
-            catch { }
-
-            if (stunIp2 == null)
-            {
-                sb.AppendLine($"⚠ DNS resolution of {stunHost2} failed, using fallback IP 142.250.31.127");
-                stunIp2 = IPAddress.Parse("142.250.31.127");
-            }
-            else
-            {
-                sb.AppendLine($"Server 2: {stunHost2} → {stunIp2} (port {stunPort2})");
-            }
+            // Server 2: 13.107.17.41:3478 (Microsoft's second STUN server, same as avdnettest.exe / Test-Shortpath.ps1)
+            // Using a second Microsoft IP (not Google) avoids false Symmetric results on networks
+            // that route Microsoft vs Google traffic via different egress paths.
+            var stunIp2 = IPAddress.Parse("13.107.17.41");
+            int stunPort2 = 3478;
+            sb.AppendLine($"Server 2: {stunIp2} (port {stunPort2})");
             sb.AppendLine();
 
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
