@@ -5312,7 +5312,7 @@ class Program
             ["ATH"] = "Athens, GR", ["LIS"] = "Lisbon, PT", ["BRU"] = "Brussels, BE",
             // North America
             ["IAD"] = "Ashburn, VA, US", ["DCA"] = "Washington DC, US",
-            ["JFK"] = "New York, US", ["EWR"] = "Newark, NJ, US",
+            ["JFK"] = "New York, US", ["EWR"] = "Newark, NJ, US", ["TEB"] = "Teterboro, NJ, US",
             ["BOS"] = "Boston, US", ["PHL"] = "Philadelphia, US",
             ["ATL"] = "Atlanta, US", ["MIA"] = "Miami, US",
             ["ORD"] = "Chicago, US", ["DFW"] = "Dallas, US",

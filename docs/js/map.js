@@ -79,7 +79,7 @@ const AFD_POP_TO_COUNTRY = {
     'VIE':'at','CPH':'dk','HEL':'fi','OSL':'no','STO':'se','WAW':'pl',
     'BUD':'hu','PRG':'cz','LIS':'pt','ATH':'gr','BRU':'be',
     'SOF':'bg','BUH':'ro','ZAG':'hr','BEG':'rs','BTS':'sk',
-    'IAD':'us','DCA':'us','JFK':'us','EWR':'us','ATL':'us','MIA':'us','ORD':'us',
+    'IAD':'us','DCA':'us','JFK':'us','EWR':'us','TEB':'us','ATL':'us','MIA':'us','ORD':'us',
     'DFW':'us','LAX':'us','SJC':'us','SEA':'us','DEN':'us','PHX':'us',
     'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','PHL':'us','IAH':'us','QRO':'mx',
     'YYZ':'ca','YUL':'ca','YVR':'ca',
