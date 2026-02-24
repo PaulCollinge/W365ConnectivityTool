@@ -912,81 +912,9 @@ async function updateConnectivityOverview(results) {
     const r = id => results.find(x => x.id === id);
     const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
 
-    // AFD PoP airport code → ISO 3166-1 alpha-2 country code (lowercase)
-    const AFD_POP_COUNTRY = {
-        'LHR':'gb','MAN':'gb','DUB':'ie',
-        'AMS':'nl','FRA':'de','PAR':'fr','MAD':'es','MIL':'it','ZRH':'ch',
-        'VIE':'at','CPH':'dk','HEL':'fi','OSL':'no','STO':'se','WAW':'pl',
-        'BUD':'hu','PRG':'cz','BER':'de','MRS':'fr','LIS':'pt','ATH':'gr',
-        'SOF':'bg','BUH':'ro','ZAG':'hr','BEG':'rs','BTS':'sk',
-        'IAD':'us','JFK':'us','EWR':'us','ATL':'us','MIA':'us','ORD':'us',
-        'DFW':'us','LAX':'us','SJC':'us','SEA':'us','DEN':'us','PHX':'us',
-        'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','QRO':'mx',
-        'YYZ':'ca','YUL':'ca','YVR':'ca',
-        'SIN':'sg','HKG':'hk','NRT':'jp','KIX':'jp','ICN':'kr',
-        'BOM':'in','MAA':'in','DEL':'in','BLR':'in','HYD':'in',
-        'KUL':'my','BKK':'th','CGK':'id','MNL':'ph','TPE':'tw',
-        'SYD':'au','MEL':'au','PER':'au','AKL':'nz',
-        'DXB':'ae','AUH':'ae','DOH':'qa','JNB':'za','CPT':'za','NBO':'ke',
-        'GRU':'br','GIG':'br','SCL':'cl','BOG':'co','EZE':'ar','LIM':'pe'
-    };
-
-    // Extract the 3-letter AFD PoP code from a string like "London (LHR)" or "LHR"
-    function extractAfdPopCode(str) {
-        if (!str) return '';
-        const m = str.match(/\(([A-Z]{3})\)/);
-        if (m) return m[1];
-        const t = str.trim();
-        if (/^[A-Z]{3}$/.test(t)) return t;
-        return '';
-    }
-
-    // Get country code from various location string formats:
-    // 1. ", XX" suffix (e.g. "London, GB")
-    // 2. AFD PoP airport code (e.g. "LHR")
-    // 3. Azure region friendly name (e.g. "UK South")
-    const AZURE_REGION_COUNTRY = {
-        'uk south':'gb','uk west':'gb',
-        'north europe':'ie','west europe':'nl',
-        'france central':'fr','france south':'fr',
-        'germany west central':'de','germany north':'de',
-        'norway east':'no','norway west':'no',
-        'sweden central':'se','sweden south':'se',
-        'switzerland north':'ch','switzerland west':'ch',
-        'italy north':'it','spain central':'es','poland central':'pl',
-        'east us':'us','east us 2':'us','east us 2 euap':'us',
-        'central us':'us','north central us':'us','south central us':'us',
-        'west central us':'us','west us':'us','west us 2':'us','west us 3':'us',
-        'canada central':'ca','canada east':'ca','mexico central':'mx',
-        'chile central':'cl','brazil south':'br',
-        'southeast asia':'sg','east asia':'hk',
-        'japan east':'jp','japan west':'jp',
-        'korea central':'kr','korea south':'kr',
-        'central india':'in','south india':'in','west india':'in',
-        'jio india west':'in',
-        'australia east':'au','australia southeast':'au','australia central':'au',
-        'taiwan north':'tw','taiwan northwest':'tw',
-        'new zealand north':'nz',
-        'south africa north':'za','south africa west':'za',
-        'uae north':'ae','uae central':'ae','israel central':'il',
-        'qatar central':'qa'
-    };
-
-    function getCountryCode(locationStr) {
-        if (!locationStr) return '';
-        const code = extractCountryCode(locationStr);
-        if (code) return code;
-        const pop = extractAfdPopCode(locationStr);
-        if (pop && AFD_POP_COUNTRY[pop]) return AFD_POP_COUNTRY[pop];
-        // Try Azure region friendly name match
-        const lower = locationStr.toLowerCase().trim();
-        if (AZURE_REGION_COUNTRY[lower]) return AZURE_REGION_COUNTRY[lower];
-        // Partial match: check if the string starts with an Azure region name
-        for (const [region, cc] of Object.entries(AZURE_REGION_COUNTRY)) {
-            if (lower.startsWith(region)) return cc;
-        }
-        return '';
-    }
+    // Use shared resolveCountryCode from map.js (handles ", XX", AFD PoP codes,
+    // Azure region names, and prefixed TURN/Gateway strings)
+    const getCountryCode = resolveCountryCode;
 
     // Set a large flag image in a dedicated flag element
     function setCardFlag(flagElId, countryCode) {
@@ -997,7 +925,7 @@ async function updateConnectivityOverview(results) {
 
     // Helper: build an HTML string with a country-flag <img> prepended if a 2-letter code is found
     function flagHtml(locationStr) {
-        const code = extractCountryCode(locationStr || '');
+        const code = resolveCountryCode(locationStr || '');
         if (!code) return '';
         return `<img src="https://flagcdn.com/20x15/${code}.png" alt="${code.toUpperCase()}" width="20" height="15" class="country-flag" onerror="this.style.display='none'"> `;
     }

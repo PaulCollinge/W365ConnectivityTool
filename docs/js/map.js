@@ -40,6 +40,88 @@ function extractCountryCode(locationStr) {
 }
 
 /**
+ * Azure region friendly names → ISO country codes.
+ * Shared by both map.js and app.js for flag resolution.
+ */
+const AZURE_REGION_TO_COUNTRY = {
+    'uk south':'gb','uk west':'gb',
+    'north europe':'ie','west europe':'nl',
+    'france central':'fr','france south':'fr',
+    'germany west central':'de','germany north':'de',
+    'norway east':'no','norway west':'no',
+    'sweden central':'se','sweden south':'se',
+    'switzerland north':'ch','switzerland west':'ch',
+    'italy north':'it','spain central':'es','poland central':'pl',
+    'east us':'us','east us 2':'us','east us 2 euap':'us',
+    'central us':'us','north central us':'us','south central us':'us',
+    'west central us':'us','west us':'us','west us 2':'us','west us 3':'us',
+    'canada central':'ca','canada east':'ca','mexico central':'mx',
+    'chile central':'cl','brazil south':'br',
+    'southeast asia':'sg','east asia':'hk',
+    'japan east':'jp','japan west':'jp',
+    'korea central':'kr','korea south':'kr',
+    'central india':'in','south india':'in','west india':'in',
+    'jio india west':'in',
+    'australia east':'au','australia southeast':'au','australia central':'au',
+    'taiwan north':'tw','taiwan northwest':'tw',
+    'new zealand north':'nz',
+    'south africa north':'za','south africa west':'za',
+    'uae north':'ae','uae central':'ae','israel central':'il',
+    'qatar central':'qa'
+};
+
+/** AFD PoP 3-letter airport codes → ISO country codes */
+const AFD_POP_TO_COUNTRY = {
+    'LHR':'gb','MAN':'gb','DUB':'ie',
+    'AMS':'nl','FRA':'de','PAR':'fr','MAD':'es','MIL':'it','ZRH':'ch',
+    'VIE':'at','CPH':'dk','HEL':'fi','OSL':'no','STO':'se','WAW':'pl',
+    'BUD':'hu','PRG':'cz','BER':'de','MRS':'fr','LIS':'pt','ATH':'gr',
+    'SOF':'bg','BUH':'ro','ZAG':'hr','BEG':'rs','BTS':'sk',
+    'IAD':'us','JFK':'us','EWR':'us','ATL':'us','MIA':'us','ORD':'us',
+    'DFW':'us','LAX':'us','SJC':'us','SEA':'us','DEN':'us','PHX':'us',
+    'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','QRO':'mx',
+    'YYZ':'ca','YUL':'ca','YVR':'ca',
+    'SIN':'sg','HKG':'hk','NRT':'jp','KIX':'jp','ICN':'kr',
+    'BOM':'in','MAA':'in','DEL':'in','BLR':'in','HYD':'in',
+    'KUL':'my','BKK':'th','CGK':'id','MNL':'ph','TPE':'tw',
+    'SYD':'au','MEL':'au','PER':'au','AKL':'nz',
+    'DXB':'ae','AUH':'ae','DOH':'qa','JNB':'za','CPT':'za','NBO':'ke',
+    'GRU':'br','GIG':'br','SCL':'cl','BOG':'co','EZE':'ar','LIM':'pe'
+};
+
+/**
+ * Resolve a country code from any location string format:
+ *   1. ", XX" suffix (GeoIP: "Cardiff, GB")
+ *   2. AFD PoP airport code ("LHR — London", "London (LHR)", "LHR")
+ *   3. Azure region friendly name ("UK South", "UK South (uksouth)")
+ *   4. Prefixed strings ("TURN relay: UK South (uksouth) (51.5.x.x)")
+ * Returns lowercase 2-letter code or ''.
+ */
+function resolveCountryCode(locationStr) {
+    if (!locationStr) return '';
+    // 1. Standard ", XX" country code
+    const cc = extractCountryCode(locationStr);
+    if (cc) return cc;
+    // 2. AFD PoP code: "(LHR)" or "LHR — City" or bare "LHR"
+    const parenMatch = locationStr.match(/\(([A-Z]{3})\)/);
+    if (parenMatch && AFD_POP_TO_COUNTRY[parenMatch[1]]) return AFD_POP_TO_COUNTRY[parenMatch[1]];
+    const dashMatch = locationStr.match(/^([A-Z]{3})\s*[—–-]\s*/);
+    if (dashMatch && AFD_POP_TO_COUNTRY[dashMatch[1]]) return AFD_POP_TO_COUNTRY[dashMatch[1]];
+    const bare = locationStr.trim();
+    if (/^[A-Z]{3}$/.test(bare) && AFD_POP_TO_COUNTRY[bare]) return AFD_POP_TO_COUNTRY[bare];
+    // 3. Strip common prefixes and trailing IPs
+    let clean = locationStr.replace(/^(?:TURN relay|RDP Gateway|Gateway|AFD Edge|AFD PoP):\s*/i, '').trim();
+    clean = clean.replace(/\s*\([\d.]+\)\s*$/, '').trim();
+    const lower = clean.toLowerCase();
+    if (AZURE_REGION_TO_COUNTRY[lower]) return AZURE_REGION_TO_COUNTRY[lower];
+    // 4. Partial match — string starts with a known region name
+    for (const [region, code] of Object.entries(AZURE_REGION_TO_COUNTRY)) {
+        if (lower.startsWith(region)) return code;
+    }
+    return '';
+}
+
+/**
  * Create a small flag <img> element for a 2-letter country code.
  * Uses flagcdn.com (free, no key required, CDN-backed).
  */
@@ -62,7 +144,7 @@ function setFlaggedText(elementId, text) {
     const el = document.getElementById(elementId);
     if (!el) return;
     el.textContent = '';
-    const code = extractCountryCode(text);
+    const code = resolveCountryCode(text);
     if (code) {
         const flag = createFlagImg(code);
         if (flag) el.appendChild(flag);
@@ -84,7 +166,7 @@ function setFlaggedBadge(elementId, text, cssClass, locationStr) {
     }
     el.textContent = '';
     el.className = 'map-card-badge ' + cssClass;
-    const code = extractCountryCode(locationStr || text);
+    const code = resolveCountryCode(locationStr || text);
     if (code) {
         const flag = createFlagImg(code);
         if (flag) el.appendChild(flag);
