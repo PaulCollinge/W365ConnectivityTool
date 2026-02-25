@@ -286,7 +286,16 @@ async function fetchUserLocation() {
                 }
             } catch (_) { /* reverse geocode failed */ }
             if (!browserLoc) {
-                browserLoc = { city: 'Unknown', region: 'Unknown', country: 'Unknown', lat, lon, source: 'browser' };
+                // Reverse geocode failed — use GeoIP for city/region/country
+                // but keep the accurate browser coords
+                const fallbackGeo = await geoPromise;
+                browserLoc = {
+                    city: fallbackGeo ? fallbackGeo.city : 'Unknown',
+                    region: fallbackGeo ? fallbackGeo.regionName : 'Unknown',
+                    country: fallbackGeo ? fallbackGeo.country : 'Unknown',
+                    lat, lon,
+                    source: fallbackGeo ? 'browser-coords-ip-city' : 'browser'
+                };
             }
         } catch (e) {
             console.warn('Browser geolocation unavailable:', e.message);
@@ -503,12 +512,14 @@ async function testUserLocation(test) {
 
     const sourceLabel = loc.source === 'browser'
         ? 'Browser Geolocation (GPS/WiFi)'
+        : loc.source === 'browser-coords-ip-city'
+        ? 'Browser coordinates + GeoIP city'
         : 'GeoIP (IP-based — city may be approximate)';
 
-    // Only show city confidently when from browser geolocation
-    const value = loc.source === 'browser'
-        ? `${loc.city}, ${loc.region}, ${loc.country}`
-        : `${loc.region}, ${loc.country}`;
+    // Only show city confidently when from browser geolocation or browser-coords
+    const value = loc.source === 'ip'
+        ? `${loc.region}, ${loc.country}`
+        : `${loc.city}, ${loc.region}, ${loc.country}`;
 
     const lines = [
         `Public IP: ${loc.ip}`,

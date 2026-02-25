@@ -1360,34 +1360,34 @@ async function updateConnectivityOverview(results) {
 
     let hasContent = false;
 
-    // 1. User Location — use shared resolver (browser geolocation + GeoIP)
-    resetUserLocCache();
-    const freshLoc = await fetchUserLocation();
-    if (freshLoc) {
-        // Show city only when from browser geolocation (GeoIP city is ISP-registered, often wrong)
-        const locStr = freshLoc.source === 'browser'
-            ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
-            : `${freshLoc.region}, ${freshLoc.country}`;
-        // Also refresh B-LE-01 in allResults so the map stays in sync
-        const existing = allResults.find(x => x.id === 'B-LE-01');
-        if (existing) {
-            existing.resultValue = locStr;
-            existing.detailedInfo = `Public IP: ${freshLoc.ip}\nLocation: ${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}\nCoordinates: ${freshLoc.lat}, ${freshLoc.lon}\nSource: ${freshLoc.source === 'browser' ? 'Browser Geolocation' : 'GeoIP'}`;
-            existing.status = 'Passed';
-            updateTestUI('B-LE-01', existing);
-            updateConnectivityMap(allResults);
-        }
+    // 1. User Location — prefer existing B-LE-01 result (already resolved by
+    //    testUserLocation with browser geolocation).  Only fetch fresh when
+    //    no B-LE-01 result exists (e.g. scanner-only import).
+    const existingLoc = r('B-LE-01');
+    if (existingLoc && existingLoc.status === 'Passed' && existingLoc.resultValue && !existingLoc.resultValue.includes('Unknown')) {
+        const ip = extractLine(existingLoc.detailedInfo, 'Public IP:');
         setVal('ov-user-location-val',
-            esc(locStr) + `  <span class="ov-dim">(IP: ${esc(freshLoc.ip)})</span>`,
-            locStr);
+            esc(existingLoc.resultValue) + (ip ? `  <span class="ov-dim">(IP: ${esc(ip)})</span>` : ''),
+            existingLoc.resultValue);
         hasContent = true;
     } else {
-        const userLoc = r('B-LE-01');
-        if (userLoc && userLoc.status === 'Passed') {
-            const ip = extractLine(userLoc.detailedInfo, 'Public IP:');
+        // No good B-LE-01 — fetch fresh (scanner-only import path)
+        const freshLoc = await fetchUserLocation();
+        if (freshLoc) {
+            const locStr = freshLoc.source === 'ip'
+                ? `${freshLoc.region}, ${freshLoc.country}`
+                : `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`;
+            const existing = allResults.find(x => x.id === 'B-LE-01');
+            if (existing) {
+                existing.resultValue = locStr;
+                existing.detailedInfo = `Public IP: ${freshLoc.ip}\nLocation: ${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}\nCoordinates: ${freshLoc.lat}, ${freshLoc.lon}\nSource: ${freshLoc.source}`;
+                existing.status = 'Passed';
+                updateTestUI('B-LE-01', existing);
+                updateConnectivityMap(allResults);
+            }
             setVal('ov-user-location-val',
-                esc(userLoc.resultValue) + (ip ? `  <span class="ov-dim">(IP: ${esc(ip)})</span>` : ''),
-                userLoc.resultValue);
+                esc(locStr) + `  <span class="ov-dim">(IP: ${esc(freshLoc.ip)})</span>`,
+                locStr);
             hasContent = true;
         }
     }
