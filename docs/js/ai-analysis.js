@@ -95,7 +95,6 @@ function runAnalysisEngine(results) {
                     'Consider moving closer to the access point or switching to 5 GHz. Wired Ethernet is always preferred for Cloud PC use.'));
             }
         }
-        }
     }
 
     // ── 2. Gateway / router latency ──
