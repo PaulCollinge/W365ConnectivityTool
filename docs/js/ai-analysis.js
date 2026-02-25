@@ -569,103 +569,53 @@ function copyAnalysisText() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Copilot integration: build prompt, copy, open
+//  Copilot integration: copy full report + instructions, open Copilot
 // ═══════════════════════════════════════════════════════════════════
-function buildCopilotPrompt(results, findings) {
-    const lines = [];
-
-    lines.push('I ran a Windows 365 / Azure Virtual Desktop connectivity scan from my physical device. Please analyse the results below and provide:');
-    lines.push('1. Root-cause analysis of any failures or warnings');
-    lines.push('2. Specific remediation steps (commands, settings, registry keys where applicable)');
-    lines.push('3. Whether the issue is at the client, local network, ISP, or Azure edge');
-    lines.push('Be concise but thorough. Reference Microsoft Learn docs where helpful.');
-    lines.push('');
-
-    // ── Key test results ──
-    lines.push('== SCAN RESULTS ==');
-    const passed = results.filter(x => x.status === 'Passed').length;
-    const warned = results.filter(x => x.status === 'Warning').length;
-    const failed = results.filter(x => x.status === 'Failed' || x.status === 'Error').length;
-    lines.push(`${results.length} tests: ${passed} passed, ${warned} warnings, ${failed} failed`);
-    lines.push('');
-
-    // Include every non-passed test with detail
-    const issues = results.filter(x => x.status !== 'Passed' && x.status !== 'Skipped' && x.status !== 'NotRun');
-    if (issues.length > 0) {
-        lines.push('-- Failed / Warning Tests --');
-        for (const t of issues) {
-            lines.push(`[${t.status.toUpperCase()}] ${t.id} ${t.name}: ${t.resultValue}`);
-            if (t.detailedInfo) {
-                // Include up to 400 chars of detail
-                const detail = t.detailedInfo.substring(0, 400).replace(/[\r]/g, '');
-                lines.push(detail);
-            }
-            lines.push('');
-        }
-    }
-
-    // Include key environment info (always useful for analysis)
-    lines.push('-- Environment --');
-    const envIds = ['B-LE-01', 'B-LE-02', 'L-LE-04', 'L-LE-05', 'L-LE-06', 'L-LE-07', 'L-LE-08'];
-    for (const id of envIds) {
-        const t = results.find(x => x.id === id);
-        if (t) lines.push(`${t.name}: ${t.resultValue}`);
-    }
-    lines.push('');
-
-    // Include live session data if available
-    const sessionIds = ['17b', '18', '20', '21', '24', '27'];
-    const sessionResults = sessionIds.map(id => results.find(x => x.id === id)).filter(Boolean);
-    if (sessionResults.length > 0) {
-        lines.push('-- Live Session Diagnostics --');
-        for (const t of sessionResults) {
-            lines.push(`${t.name}: ${t.status} - ${t.resultValue}`);
-            // Include latency samples for spike analysis
-            if ((t.id === '18' || t.id === '20') && t.detailedInfo) {
-                const valLine = t.detailedInfo.split('\n').find(l => l.startsWith('Values:') || l.includes('RTT Samples:'));
-                if (valLine) lines.push(valLine.trim());
-            }
-        }
-        lines.push('');
-    }
-
-    // Include our rule-based findings as context
-    if (findings && findings.length > 0) {
-        lines.push('-- Automated Analysis Findings --');
-        for (const f of findings) {
-            lines.push(`[${f.severity.toUpperCase()}] ${f.title}: ${f.detail}`);
-        }
-        lines.push('');
-    }
-
-    lines.push('Please provide your analysis based on the above results.');
-
-    return lines.join('\n');
-}
-
 async function copilotAnalysis(btn) {
     if (!allResults || allResults.length === 0) return;
 
-    const findings = runAnalysisEngine(allResults);
-    const prompt = buildCopilotPrompt(allResults, findings);
+    // Show generating state
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = 'Generating report...';
+    btn.disabled = true;
 
     try {
+        // Build the full export text (same as Export Text button)
+        const exportText = await generateExportText();
+
+        // Prepend Copilot instructions
+        const instructions = [
+            'I ran a Windows 365 / Azure Virtual Desktop connectivity scan from my physical device.',
+            'Please analyse the full diagnostic report below and provide:',
+            '1. Root-cause analysis of any failures or warnings',
+            '2. Specific remediation steps (commands, settings, registry keys where applicable)',
+            '3. Whether the issue is at the client, local network, ISP, or Azure edge',
+            'Be concise but thorough. Reference Microsoft Learn docs where helpful.',
+            '',
+            '---',
+            ''
+        ].join('\n');
+
+        const prompt = instructions + exportText;
+
         await navigator.clipboard.writeText(prompt);
-        // Update button to show success
-        const origHtml = btn.innerHTML;
         btn.innerHTML = '\u2714 Copied! Paste into Copilot with Ctrl+V';
         btn.classList.add('btn-copied');
+        btn.disabled = false;
         setTimeout(() => {
             btn.innerHTML = origHtml;
             btn.classList.remove('btn-copied');
         }, 4000);
-        // Open Copilot after a short delay
         setTimeout(() => {
             window.open('https://copilot.microsoft.com/', '_blank', 'noopener');
         }, 600);
     } catch (e) {
-        // Clipboard failed — show the prompt in a modal for manual copy
-        showPromptModal(prompt);
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+        // Clipboard failed — build a fallback prompt
+        const exportText = await generateExportText();
+        const instructions = 'I ran a Windows 365 connectivity scan. Please analyse the report below and provide root-cause analysis and remediation steps.\n\n---\n\n';
+        showPromptModal(instructions + exportText);
     }
 }
 

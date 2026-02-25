@@ -528,8 +528,8 @@ function mapCategoryFromId(id) {
 }
 
 // ── Export results as a text report ──
-async function exportTextReport() {
-    if (allResults.length === 0) return;
+async function generateExportText() {
+    if (allResults.length === 0) return '';
 
     // Always fetch fresh GeoIP at export time — don't rely on cached B-LE-01
     resetGeoCache();
@@ -912,7 +912,12 @@ async function exportTextReport() {
     lines.push('  End of report');
     lines.push(thinDiv);
 
-    const text = lines.join('\n');
+    return lines.join('\n');
+}
+
+async function exportTextReport() {
+    const text = await generateExportText();
+    if (!text) return;
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
