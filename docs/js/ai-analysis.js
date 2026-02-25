@@ -521,6 +521,15 @@ function showAnalysisPanel(findings) {
             <div class="analysis-findings">
                 ${findingsHtml}
             </div>
+            <div class="analysis-copilot">
+                <div class="analysis-copilot-info">
+                    <strong>Want deeper analysis?</strong> Copy the results below and paste into Microsoft Copilot for AI-powered root-cause analysis and remediation advice.
+                </div>
+                <button class="btn btn-ai" onclick="copilotAnalysis(this)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Copy &amp; Open Copilot
+                </button>
+            </div>
             <div class="analysis-footer">
                 <button class="btn btn-secondary" onclick="copyAnalysisText()">Copy as Text</button>
                 <button class="btn btn-secondary" onclick="closeAnalysisPanel()">Close</button>
@@ -557,6 +566,132 @@ function copyAnalysisText() {
         const btn = document.querySelector('.analysis-footer .btn-secondary');
         if (btn) { const orig = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = orig, 1500); }
     }).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Copilot integration: build prompt, copy, open
+// ═══════════════════════════════════════════════════════════════════
+function buildCopilotPrompt(results, findings) {
+    const lines = [];
+
+    lines.push('I ran a Windows 365 / Azure Virtual Desktop connectivity scan from my physical device. Please analyse the results below and provide:');
+    lines.push('1. Root-cause analysis of any failures or warnings');
+    lines.push('2. Specific remediation steps (commands, settings, registry keys where applicable)');
+    lines.push('3. Whether the issue is at the client, local network, ISP, or Azure edge');
+    lines.push('Be concise but thorough. Reference Microsoft Learn docs where helpful.');
+    lines.push('');
+
+    // ── Key test results ──
+    lines.push('== SCAN RESULTS ==');
+    const passed = results.filter(x => x.status === 'Passed').length;
+    const warned = results.filter(x => x.status === 'Warning').length;
+    const failed = results.filter(x => x.status === 'Failed' || x.status === 'Error').length;
+    lines.push(`${results.length} tests: ${passed} passed, ${warned} warnings, ${failed} failed`);
+    lines.push('');
+
+    // Include every non-passed test with detail
+    const issues = results.filter(x => x.status !== 'Passed' && x.status !== 'Skipped' && x.status !== 'NotRun');
+    if (issues.length > 0) {
+        lines.push('-- Failed / Warning Tests --');
+        for (const t of issues) {
+            lines.push(`[${t.status.toUpperCase()}] ${t.id} ${t.name}: ${t.resultValue}`);
+            if (t.detailedInfo) {
+                // Include up to 400 chars of detail
+                const detail = t.detailedInfo.substring(0, 400).replace(/[\r]/g, '');
+                lines.push(detail);
+            }
+            lines.push('');
+        }
+    }
+
+    // Include key environment info (always useful for analysis)
+    lines.push('-- Environment --');
+    const envIds = ['B-LE-01', 'B-LE-02', 'L-LE-04', 'L-LE-05', 'L-LE-06', 'L-LE-07', 'L-LE-08'];
+    for (const id of envIds) {
+        const t = results.find(x => x.id === id);
+        if (t) lines.push(`${t.name}: ${t.resultValue}`);
+    }
+    lines.push('');
+
+    // Include live session data if available
+    const sessionIds = ['17b', '18', '20', '21', '24', '27'];
+    const sessionResults = sessionIds.map(id => results.find(x => x.id === id)).filter(Boolean);
+    if (sessionResults.length > 0) {
+        lines.push('-- Live Session Diagnostics --');
+        for (const t of sessionResults) {
+            lines.push(`${t.name}: ${t.status} - ${t.resultValue}`);
+            // Include latency samples for spike analysis
+            if ((t.id === '18' || t.id === '20') && t.detailedInfo) {
+                const valLine = t.detailedInfo.split('\n').find(l => l.startsWith('Values:') || l.includes('RTT Samples:'));
+                if (valLine) lines.push(valLine.trim());
+            }
+        }
+        lines.push('');
+    }
+
+    // Include our rule-based findings as context
+    if (findings && findings.length > 0) {
+        lines.push('-- Automated Analysis Findings --');
+        for (const f of findings) {
+            lines.push(`[${f.severity.toUpperCase()}] ${f.title}: ${f.detail}`);
+        }
+        lines.push('');
+    }
+
+    lines.push('Please provide your analysis based on the above results.');
+
+    return lines.join('\n');
+}
+
+async function copilotAnalysis(btn) {
+    if (!allResults || allResults.length === 0) return;
+
+    const findings = runAnalysisEngine(allResults);
+    const prompt = buildCopilotPrompt(allResults, findings);
+
+    try {
+        await navigator.clipboard.writeText(prompt);
+        // Update button to show success
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '\u2714 Copied! Paste into Copilot with Ctrl+V';
+        btn.classList.add('btn-copied');
+        setTimeout(() => {
+            btn.innerHTML = origHtml;
+            btn.classList.remove('btn-copied');
+        }, 4000);
+        // Open Copilot after a short delay
+        setTimeout(() => {
+            window.open('https://copilot.microsoft.com/', '_blank', 'noopener');
+        }, 600);
+    } catch (e) {
+        // Clipboard failed — show the prompt in a modal for manual copy
+        showPromptModal(prompt);
+    }
+}
+
+function showPromptModal(prompt) {
+    const overlay = document.createElement('div');
+    overlay.className = 'analysis-overlay show';
+    overlay.style.zIndex = '10001';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    overlay.innerHTML = `
+        <div class="analysis-panel" style="transform:translateX(0)">
+            <div class="analysis-panel-header">
+                <div class="analysis-panel-title">Copy Prompt for Copilot</div>
+                <button class="analysis-close" onclick="this.closest('.analysis-overlay').remove()" title="Close">\u2715</button>
+            </div>
+            <p style="padding:16px 24px;color:var(--text-secondary);font-size:13px;margin:0">
+                Clipboard access was blocked. Select all text below (Ctrl+A), copy it (Ctrl+C),
+                then paste it into <a href="https://copilot.microsoft.com/" target="_blank" rel="noopener" style="color:var(--accent)">Microsoft Copilot</a>.
+            </p>
+            <textarea readonly style="flex:1;margin:0 24px 16px;padding:12px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--r-sm);font-family:monospace;font-size:12px;resize:none;box-sizing:border-box">${prompt.replace(/</g, '&lt;')}</textarea>
+            <div class="analysis-footer">
+                <button class="btn btn-ai" onclick="window.open('https://copilot.microsoft.com/','_blank','noopener');this.closest('.analysis-overlay').remove()">Open Copilot</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
 }
 
 function escapeHtml(str) {
