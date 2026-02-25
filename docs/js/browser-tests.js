@@ -409,19 +409,78 @@ async function testEndpointReachability(test) {
 }
 
 // ── User Location ──
+// Uses the browser Geolocation API (GPS / WiFi / cell) for accurate physical
+// location, with reverse-geocoding via Nominatim.  Falls back to GeoIP-based
+// city when geolocation permission is denied or unavailable.
 async function testUserLocation(test) {
     const t0 = performance.now();
-    const geo = await fetchGeoIp();
-    const duration = Math.round(performance.now() - t0);
 
-    if (!geo) {
-        return makeResult(test, 'Warning', 'Could not determine location',
-            'GeoIP lookup failed. This may be blocked by a firewall or proxy.', duration);
+    // Start GeoIP fetch in parallel (we always need the public IP / ISP)
+    const geoPromise = fetchGeoIp();
+
+    // Try browser geolocation for accurate physical position
+    let browserLoc = null;
+    if (navigator.geolocation) {
+        try {
+            const pos = await new Promise((resolve, reject) => {
+                navigator.geolocation.getCurrentPosition(resolve, reject, {
+                    enableHighAccuracy: false,
+                    timeout: 8000,
+                    maximumAge: 60000
+                });
+            });
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            // Reverse-geocode to get city / region / country
+            try {
+                const rgUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`;
+                const rgResp = await fetch(rgUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'W365ConnectivityTool/1.0' } });
+                if (rgResp.ok) {
+                    const rgData = await rgResp.json();
+                    const addr = rgData.address || {};
+                    browserLoc = {
+                        city: addr.city || addr.town || addr.village || addr.suburb || addr.county || 'Unknown',
+                        region: addr.state || addr.county || 'Unknown',
+                        country: addr.country_code ? addr.country_code.toUpperCase() : 'Unknown',
+                        lat, lon,
+                        source: 'browser'
+                    };
+                }
+            } catch (_) { /* reverse geocode failed, use raw coords */ }
+            // If reverse geocode failed, still use raw coords
+            if (!browserLoc) {
+                browserLoc = { city: 'Unknown', region: 'Unknown', country: 'Unknown', lat, lon, source: 'browser' };
+            }
+        } catch (e) {
+            // Permission denied or timeout — fall through to GeoIP
+            console.warn('Browser geolocation unavailable:', e.message);
+        }
     }
 
-    const value = `${geo.city}, ${geo.regionName}, ${geo.country}`;
-    const detail = `Public IP: ${geo.query}\nLocation: ${geo.city}, ${geo.regionName}, ${geo.country}\nCoordinates: ${geo.lat}, ${geo.lon}`;
-    return makeResult(test, 'Passed', value, detail, duration);
+    const geo = await geoPromise;
+    const duration = Math.round(performance.now() - t0);
+
+    if (!browserLoc && !geo) {
+        return makeResult(test, 'Warning', 'Could not determine location',
+            'Both browser geolocation and GeoIP lookup failed. Location permission may be blocked.', duration);
+    }
+
+    // Prefer browser geolocation for city/coords, but always show public IP from GeoIP
+    const loc = browserLoc || { city: geo.city, region: geo.regionName, country: geo.country, lat: geo.lat, lon: geo.lon, source: 'ip' };
+    const ip = geo ? geo.query : 'Unknown';
+    const sourceLabel = loc.source === 'browser' ? 'Browser Geolocation (GPS/WiFi)' : 'GeoIP (IP-based, approximate)';
+
+    const value = `${loc.city}, ${loc.region}, ${loc.country}`;
+    const lines = [
+        `Public IP: ${ip}`,
+        `Location: ${loc.city}, ${loc.region}, ${loc.country}`,
+        `Coordinates: ${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`,
+        `Source: ${sourceLabel}`
+    ];
+    if (loc.source === 'ip') {
+        lines.push('Note: GeoIP maps your ISP\'s registered IP location, which may differ from your physical location. Allow browser location access for better accuracy.');
+    }
+    return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }
 
 // ── ISP Detection ──
