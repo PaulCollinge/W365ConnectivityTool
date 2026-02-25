@@ -931,6 +931,11 @@ function updateExportButton() {
         btn.disabled = allResults.length === 0;
         btn.title = allResults.length === 0 ? 'Run tests first' : `Export ${allResults.length} results as text`;
     }
+    const aiBtn = document.getElementById('btn-ai-analysis');
+    if (aiBtn) {
+        aiBtn.disabled = allResults.length === 0;
+        aiBtn.title = allResults.length === 0 ? 'Run tests first' : 'Analyze results with Microsoft Copilot';
+    }
 }
 
 // ── Connectivity Overview panel (quick-glance summary above the map) ──

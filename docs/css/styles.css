@@ -284,6 +284,100 @@ header {
 }
 .btn-download:active { transform: translateY(0); }
 
+.btn-ai {
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    color: #fff;
+    box-shadow: 0 0 0 1px rgba(139,92,246,0.5), 0 2px 8px rgba(139,92,246,0.25);
+    font-weight: 700;
+}
+.btn-ai:hover {
+    background: linear-gradient(135deg, #9d74f7, #747bf3);
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px #8b5cf6, 0 4px 16px rgba(139,92,246,0.35);
+}
+.btn-ai:active { transform: translateY(0); }
+.btn-ai:disabled {
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: 0 0 0 1px var(--border-default);
+}
+
+.ai-toast {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    padding: 12px 24px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border-emphasis);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    font-size: var(--text-sm);
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.3s, transform 0.3s;
+    pointer-events: none;
+}
+.ai-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+.ai-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+}
+.ai-modal {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-emphasis);
+    border-radius: var(--r-lg);
+    padding: 24px;
+    max-width: 640px;
+    width: 90%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    box-shadow: 0 16px 64px rgba(0,0,0,0.5);
+}
+.ai-modal h3 {
+    margin: 0;
+    font-size: var(--text-lg);
+    color: var(--text-primary);
+}
+.ai-modal p {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+}
+.ai-modal textarea {
+    width: 100%;
+    min-height: 200px;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-sm);
+    padding: 12px;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    resize: vertical;
+    box-sizing: border-box;
+}
+.ai-modal-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
 .btn-icon { font-size: var(--text-sm); }
 
 /* ════════════════════════════════════════

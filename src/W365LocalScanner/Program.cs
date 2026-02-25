@@ -1095,7 +1095,7 @@ class Program
         return result;
     }
 
-    static Task<TestResult> RunNetworkAdapters()
+    static async Task<TestResult> RunNetworkAdapters()
     {
         var result = new TestResult { Id = "L-LE-06", Name = "Network Adapter Details", Category = "local" };
         try
@@ -1105,6 +1105,8 @@ class Program
                 .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback);
 
             int count = 0;
+            var allDnsServers = new List<string>();   // collect unique DNS server IPs across adapters
+
             foreach (var a in adapters)
             {
                 count++;
@@ -1116,7 +1118,41 @@ class Program
                     .Where(u => u.Address.AddressFamily == AddressFamily.InterNetwork)
                     .Select(u => u.Address.ToString());
                 sb.AppendLine($"  IPv4: {string.Join(", ", ips)}");
+
+                // DNS servers configured on this adapter
+                var dnsAddrs = a.GetIPProperties().DnsAddresses
+                    .Where(d => d.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(d => d.ToString())
+                    .ToList();
+                if (dnsAddrs.Count > 0)
+                {
+                    sb.AppendLine($"  DNS Servers: {string.Join(", ", dnsAddrs)}");
+                    foreach (var dns in dnsAddrs)
+                        if (!allDnsServers.Contains(dns))
+                            allDnsServers.Add(dns);
+                }
                 sb.AppendLine();
+            }
+
+            // Attempt reverse DNS (PTR) lookup on each DNS server to get its name
+            if (allDnsServers.Count > 0)
+            {
+                sb.AppendLine("═══ DNS Servers ═══");
+                foreach (var dnsIp in allDnsServers)
+                {
+                    string name = "";
+                    try
+                    {
+                        var entry = await Dns.GetHostEntryAsync(dnsIp);
+                        if (!string.IsNullOrEmpty(entry.HostName) && entry.HostName != dnsIp)
+                            name = entry.HostName;
+                    }
+                    catch { /* PTR lookup failed — that's fine */ }
+
+                    sb.AppendLine(string.IsNullOrEmpty(name)
+                        ? $"  {dnsIp}"
+                        : $"  {dnsIp} ({name})");
+                }
             }
 
             result.ResultValue = $"{count} active adapter(s)";
@@ -1124,7 +1160,7 @@ class Program
             result.Status = count > 0 ? "Passed" : "Warning";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
-        return Task.FromResult(result);
+        return result;
     }
 
     static async Task<TestResult> RunBandwidthTest()
