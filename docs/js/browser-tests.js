@@ -239,6 +239,84 @@ let _geoCache = null;
 /** Clear the GeoIP cache so the next fetchGeoIp() call fetches fresh data. */
 function resetGeoCache() { _geoCache = null; }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Shared user-location resolver (browser geolocation + GeoIP)
+// ═══════════════════════════════════════════════════════════════════
+let _userLocCache = null;
+function resetUserLocCache() { _userLocCache = null; }
+
+/**
+ * Resolves the user's location using browser Geolocation API (GPS/WiFi)
+ * with Nominatim reverse-geocoding, falling back to GeoIP for IP/ISP data.
+ * Returns { city, region, country, lat, lon, ip, source } or null.
+ * Results are cached until resetUserLocCache() is called.
+ */
+async function fetchUserLocation() {
+    if (_userLocCache) return _userLocCache;
+
+    // Start GeoIP in parallel (always needed for public IP)
+    const geoPromise = fetchGeoIp();
+
+    // Try browser geolocation for accurate physical position
+    let browserLoc = null;
+    if (navigator.geolocation) {
+        try {
+            const pos = await new Promise((resolve, reject) => {
+                navigator.geolocation.getCurrentPosition(resolve, reject, {
+                    enableHighAccuracy: false,
+                    timeout: 8000,
+                    maximumAge: 300000   // 5 min cache to avoid re-prompting
+                });
+            });
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            try {
+                const rgUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`;
+                const rgResp = await fetch(rgUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'W365ConnectivityTool/1.0' } });
+                if (rgResp.ok) {
+                    const rgData = await rgResp.json();
+                    const addr = rgData.address || {};
+                    browserLoc = {
+                        city: addr.city || addr.town || addr.village || addr.suburb || addr.county || 'Unknown',
+                        region: addr.state || addr.county || 'Unknown',
+                        country: addr.country_code ? addr.country_code.toUpperCase() : 'Unknown',
+                        lat, lon,
+                        source: 'browser'
+                    };
+                }
+            } catch (_) { /* reverse geocode failed */ }
+            if (!browserLoc) {
+                browserLoc = { city: 'Unknown', region: 'Unknown', country: 'Unknown', lat, lon, source: 'browser' };
+            }
+        } catch (e) {
+            console.warn('Browser geolocation unavailable:', e.message);
+        }
+    }
+
+    const geo = await geoPromise;
+    if (!browserLoc && !geo) return null;
+
+    const loc = browserLoc || {
+        city: geo.city,
+        region: geo.regionName,
+        country: geo.country,
+        lat: geo.lat,
+        lon: geo.lon,
+        source: 'ip'
+    };
+
+    _userLocCache = {
+        city: loc.city,
+        region: loc.region,
+        country: loc.country,
+        lat: loc.lat,
+        lon: loc.lon,
+        ip: geo ? geo.query : 'Unknown',
+        source: loc.source
+    };
+    return _userLocCache;
+}
+
 async function fetchGeoIp() {
     if (_geoCache) return _geoCache;
     // Primary: ipinfo.io (most accurate city-level geo, HTTPS, CORS-friendly)
@@ -409,76 +487,37 @@ async function testEndpointReachability(test) {
 }
 
 // ── User Location ──
-// Uses the browser Geolocation API (GPS / WiFi / cell) for accurate physical
-// location, with reverse-geocoding via Nominatim.  Falls back to GeoIP-based
-// city when geolocation permission is denied or unavailable.
+// Uses the shared fetchUserLocation() helper which tries browser Geolocation
+// API first (GPS/WiFi) with Nominatim reverse-geocoding, then falls back to
+// GeoIP.  City is only shown confidently when browser geolocation is available.
 async function testUserLocation(test) {
     const t0 = performance.now();
-
-    // Start GeoIP fetch in parallel (we always need the public IP / ISP)
-    const geoPromise = fetchGeoIp();
-
-    // Try browser geolocation for accurate physical position
-    let browserLoc = null;
-    if (navigator.geolocation) {
-        try {
-            const pos = await new Promise((resolve, reject) => {
-                navigator.geolocation.getCurrentPosition(resolve, reject, {
-                    enableHighAccuracy: false,
-                    timeout: 8000,
-                    maximumAge: 60000
-                });
-            });
-            const lat = pos.coords.latitude;
-            const lon = pos.coords.longitude;
-            // Reverse-geocode to get city / region / country
-            try {
-                const rgUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`;
-                const rgResp = await fetch(rgUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'W365ConnectivityTool/1.0' } });
-                if (rgResp.ok) {
-                    const rgData = await rgResp.json();
-                    const addr = rgData.address || {};
-                    browserLoc = {
-                        city: addr.city || addr.town || addr.village || addr.suburb || addr.county || 'Unknown',
-                        region: addr.state || addr.county || 'Unknown',
-                        country: addr.country_code ? addr.country_code.toUpperCase() : 'Unknown',
-                        lat, lon,
-                        source: 'browser'
-                    };
-                }
-            } catch (_) { /* reverse geocode failed, use raw coords */ }
-            // If reverse geocode failed, still use raw coords
-            if (!browserLoc) {
-                browserLoc = { city: 'Unknown', region: 'Unknown', country: 'Unknown', lat, lon, source: 'browser' };
-            }
-        } catch (e) {
-            // Permission denied or timeout — fall through to GeoIP
-            console.warn('Browser geolocation unavailable:', e.message);
-        }
-    }
-
-    const geo = await geoPromise;
+    resetUserLocCache();    // always resolve fresh for explicit test
+    const loc = await fetchUserLocation();
     const duration = Math.round(performance.now() - t0);
 
-    if (!browserLoc && !geo) {
+    if (!loc) {
         return makeResult(test, 'Warning', 'Could not determine location',
             'Both browser geolocation and GeoIP lookup failed. Location permission may be blocked.', duration);
     }
 
-    // Prefer browser geolocation for city/coords, but always show public IP from GeoIP
-    const loc = browserLoc || { city: geo.city, region: geo.regionName, country: geo.country, lat: geo.lat, lon: geo.lon, source: 'ip' };
-    const ip = geo ? geo.query : 'Unknown';
-    const sourceLabel = loc.source === 'browser' ? 'Browser Geolocation (GPS/WiFi)' : 'GeoIP (IP-based, approximate)';
+    const sourceLabel = loc.source === 'browser'
+        ? 'Browser Geolocation (GPS/WiFi)'
+        : 'GeoIP (IP-based — city may be approximate)';
 
-    const value = `${loc.city}, ${loc.region}, ${loc.country}`;
+    // Only show city confidently when from browser geolocation
+    const value = loc.source === 'browser'
+        ? `${loc.city}, ${loc.region}, ${loc.country}`
+        : `${loc.region}, ${loc.country}`;
+
     const lines = [
-        `Public IP: ${ip}`,
+        `Public IP: ${loc.ip}`,
         `Location: ${loc.city}, ${loc.region}, ${loc.country}`,
         `Coordinates: ${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`,
         `Source: ${sourceLabel}`
     ];
     if (loc.source === 'ip') {
-        lines.push('Note: GeoIP maps your ISP\'s registered IP location, which may differ from your physical location. Allow browser location access for better accuracy.');
+        lines.push('Note: City shown is your ISP\'s registered IP location which may not match your physical location. Allow browser location access for accurate city detection.');
     }
     return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }

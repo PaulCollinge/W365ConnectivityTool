@@ -150,8 +150,9 @@ async function runAllBrowserTests() {
     // Reset browser results (keep imported local results)
     allResults = allResults.filter(r => r.source === 'local');
 
-    // Clear GeoIP cache so location is re-fetched fresh
+    // Clear GeoIP and user-location caches so location is re-fetched fresh
     if (typeof resetGeoCache === 'function') resetGeoCache();
+    if (typeof resetUserLocCache === 'function') resetUserLocCache();
 
     // Show progress
     updateProgress(0, total, browserTests[0]?.name);
@@ -531,17 +532,18 @@ function mapCategoryFromId(id) {
 async function generateExportText() {
     if (allResults.length === 0) return '';
 
-    // Always fetch fresh GeoIP at export time — don't rely on cached B-LE-01
-    resetGeoCache();
-    const freshGeo = await fetchGeoIp();
+    // Always fetch fresh location at export time — use shared resolver
+    const freshLoc = await fetchUserLocation();
 
     // Update the B-LE-01 result in allResults with fresh data
-    if (freshGeo) {
-        const freshLoc = `${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}`;
-        const freshDetail = `Public IP: ${freshGeo.query}\nLocation: ${freshLoc}\nCoordinates: ${freshGeo.lat}, ${freshGeo.lon}`;
+    if (freshLoc) {
+        const freshLocStr = freshLoc.source === 'browser'
+            ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
+            : `${freshLoc.region}, ${freshLoc.country}`;
+        const freshDetail = `Public IP: ${freshLoc.ip}\nLocation: ${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}\nCoordinates: ${freshLoc.lat}, ${freshLoc.lon}\nSource: ${freshLoc.source === 'browser' ? 'Browser Geolocation' : 'GeoIP'}`;
         const existing = allResults.find(r => r.id === 'B-LE-01');
         if (existing) {
-            existing.resultValue = freshLoc;
+            existing.resultValue = freshLocStr;
             existing.detailedInfo = freshDetail;
             existing.status = 'Passed';
             updateTestUI('B-LE-01', existing);
@@ -558,10 +560,13 @@ async function generateExportText() {
     lines.push(`  Generated: ${new Date().toLocaleString()}`);
     lines.push(`  User Agent: ${navigator.userAgent}`);
 
-    // Current user location — fresh GeoIP just fetched above
-    if (freshGeo) {
-        lines.push(`  Location:   ${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}`);
-        lines.push(`  Public IP:  ${freshGeo.query}`);
+    // Current user location — fresh data just fetched above
+    if (freshLoc) {
+        const locLabel = freshLoc.source === 'browser'
+            ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
+            : `${freshLoc.region}, ${freshLoc.country}`;
+        lines.push(`  Location:   ${locLabel} (${freshLoc.source === 'browser' ? 'GPS/WiFi' : 'GeoIP'})`);
+        lines.push(`  Public IP:  ${freshLoc.ip}`);
     } else {
         const userLocResult = allResults.find(r => r.id === 'B-LE-01' && r.status === 'Passed');
         if (userLocResult) {
@@ -577,15 +582,15 @@ async function generateExportText() {
     if (scannerResults.length > 0 && _importedScanTimestamp) {
         lines.push(`  Scanner data from: ${_importedScanTimestamp}`);
         // Warn if scanner location differs from current fresh location
-        if (freshGeo) {
-            const currentCity = freshGeo.city.toLowerCase();
+        if (freshLoc) {
+            const currentRegion = freshLoc.region.toLowerCase();
             const test27 = scannerResults.find(r => r.id === '27');
             if (test27 && test27.detailedInfo) {
                 const egressLine = test27.detailedInfo.split('\n')
                     .find(l => l.trim().startsWith('Your egress location:'));
                 if (egressLine) {
                     const scannerLoc = egressLine.replace(/.*Your egress location:\s*/i, '').trim();
-                    if (scannerLoc && !scannerLoc.toLowerCase().includes(currentCity)) {
+                    if (scannerLoc && !scannerLoc.toLowerCase().includes(currentRegion)) {
                         lines.push(`  ⚠ Scanner was run from: ${scannerLoc}`);
                         lines.push(`    Current location differs — re-run the scanner for accurate results.`);
                     }
@@ -616,8 +621,11 @@ async function generateExportText() {
     const r = id => allResults.find(x => x.id === id);
 
     // 1. User Location
-    if (freshGeo) {
-        lines.push(`  User Location:     ${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}  (IP: ${freshGeo.query})`);
+    if (freshLoc) {
+        const locLabel = freshLoc.source === 'browser'
+            ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
+            : `${freshLoc.region}, ${freshLoc.country}`;
+        lines.push(`  User Location:     ${locLabel}  (IP: ${freshLoc.ip})`);
     } else {
         const loc = r('B-LE-01');
         lines.push(`  User Location:     ${loc ? loc.resultValue : 'Unknown'}`);
@@ -717,7 +725,7 @@ async function generateExportText() {
 
     // 6. TCP (RDP) Security Report
     // Browser-native proxy detection for the text report
-    let reportHttpIp = freshGeo?.query || '';
+    let reportHttpIp = freshLoc?.ip || '';
     if (!reportHttpIp) {
         const locR = r('B-LE-01');
         if (locR?.detailedInfo) {
@@ -739,8 +747,8 @@ async function generateExportText() {
     // GeoIP the STUN IP to distinguish CGNAT from proxy
     let reportStunCountry = '';
     let reportStunCity = '';
-    let reportHttpCountry = freshGeo?.country || '';
-    let reportHttpCity = freshGeo?.city || '';
+    let reportHttpCountry = freshLoc?.country || '';
+    let reportHttpCity = freshLoc?.source === 'browser' ? (freshLoc?.city || '') : '';
     let reportIsSplitPath = false;
     if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
         try {
@@ -1352,22 +1360,25 @@ async function updateConnectivityOverview(results) {
 
     let hasContent = false;
 
-    // 1. User Location — always fetch fresh GeoIP to avoid stale cached data
-    resetGeoCache();
-    const freshGeo = await fetchGeoIp();
-    if (freshGeo) {
-        const locStr = `${freshGeo.city}, ${freshGeo.regionName}, ${freshGeo.country}`;
+    // 1. User Location — use shared resolver (browser geolocation + GeoIP)
+    resetUserLocCache();
+    const freshLoc = await fetchUserLocation();
+    if (freshLoc) {
+        // Show city only when from browser geolocation (GeoIP city is ISP-registered, often wrong)
+        const locStr = freshLoc.source === 'browser'
+            ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
+            : `${freshLoc.region}, ${freshLoc.country}`;
         // Also refresh B-LE-01 in allResults so the map stays in sync
         const existing = allResults.find(x => x.id === 'B-LE-01');
         if (existing) {
             existing.resultValue = locStr;
-            existing.detailedInfo = `Public IP: ${freshGeo.query}\nLocation: ${locStr}\nCoordinates: ${freshGeo.lat}, ${freshGeo.lon}`;
+            existing.detailedInfo = `Public IP: ${freshLoc.ip}\nLocation: ${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}\nCoordinates: ${freshLoc.lat}, ${freshLoc.lon}\nSource: ${freshLoc.source === 'browser' ? 'Browser Geolocation' : 'GeoIP'}`;
             existing.status = 'Passed';
             updateTestUI('B-LE-01', existing);
             updateConnectivityMap(allResults);
         }
         setVal('ov-user-location-val',
-            esc(locStr) + `  <span class="ov-dim">(IP: ${esc(freshGeo.query)})</span>`,
+            esc(locStr) + `  <span class="ov-dim">(IP: ${esc(freshLoc.ip)})</span>`,
             locStr);
         hasContent = true;
     } else {
@@ -1521,9 +1532,9 @@ async function updateConnectivityOverview(results) {
     // from the scanner side; this check uses browser-level egress comparison.
     let splitPathTcpHtml = '';
     let splitPathUdpHtml = '';
-    let httpEgressIp = freshGeo?.query || '';
-    let httpCountry = freshGeo?.country || '';
-    let httpCity = freshGeo?.city || '';
+    let httpEgressIp = freshLoc?.ip || '';
+    let httpCountry = freshLoc?.country || '';
+    let httpCity = freshLoc?.source === 'browser' ? (freshLoc?.city || '') : '';
     if (!httpEgressIp) {
         const locResult = r('B-LE-01');
         if (locResult?.detailedInfo) {
