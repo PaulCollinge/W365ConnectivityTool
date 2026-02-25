@@ -91,18 +91,10 @@ function runAnalysisEngine(results) {
                     'Move closer to the access point, remove physical obstructions, or switch to a 5 GHz band. If possible, use a wired Ethernet connection for Cloud PC sessions.'));
             } else if (sig < 60) {
                 findings.push(finding(SEV.WARNING, 'Marginal WiFi signal',
-                    `Signal strength is ${sig}%. While usable, this may cause occasional latency spikes under load.`,
+                    `Signal strength is ${sig}% — below the recommended 60% minimum.`,
                     'Consider moving closer to the access point or switching to 5 GHz. Wired Ethernet is always preferred for Cloud PC use.'));
             }
         }
-        // Check for WiFi adapter power management hints
-        if (wifi.detailedInfo) {
-            const detail = wifi.detailedInfo.toLowerCase();
-            if (detail.includes('intel') && (detail.includes('ax201') || detail.includes('ax200') || detail.includes('ax211') || detail.includes('be200'))) {
-                findings.push(finding(SEV.INFO, 'Intel WiFi adapter detected',
-                    'Intel WiFi adapters have independent power management that can cause periodic latency spikes even when Windows power policy is set to Maximum Performance.',
-                    'Open Device Manager \u2192 Network Adapters \u2192 Intel WiFi \u2192 Properties \u2192 Advanced. Set "Power Saving Mode" to Off, "Roaming Aggressiveness" to Lowest, and "U-APSD Support" to Disabled.'));
-            }
         }
     }
 
@@ -118,7 +110,7 @@ function runAnalysisEngine(results) {
             } else if (avg > 20) {
                 findings.push(finding(SEV.WARNING, 'Elevated gateway latency',
                     `Average latency to your gateway is ${avg.toFixed(0)} ms (ideal is < 5 ms). This adds delay to every Azure round-trip.`,
-                    'This commonly indicates WiFi contention or an overloaded home router. A wired connection or 5 GHz WiFi band may help.'));
+                    'A wired connection or 5 GHz WiFi band may help. If the issue persists, check the router and local network for congestion.'));
             }
         }
     }
@@ -133,7 +125,7 @@ function runAnalysisEngine(results) {
             if (mbps < 5) {
                 findings.push(finding(SEV.CRITICAL, 'Very low bandwidth',
                     `Bandwidth is only ${mbps.toFixed(1)} Mbps — well below the 20 Mbps recommended for a good Cloud PC experience. Video, screen updates and file transfers will be severely impacted.`,
-                    'Check for other devices consuming bandwidth, streaming, or large downloads. Contact your ISP if bandwidth is consistently below plan speeds. Use a wired connection if on WiFi.'));
+                    'Use a wired connection if on WiFi. Contact your ISP if bandwidth is consistently below plan speeds.'));
             } else if (mbps < 10) {
                 findings.push(finding(SEV.WARNING, 'Low bandwidth',
                     `Bandwidth is ${mbps.toFixed(1)} Mbps — below the 20 Mbps recommended for optimal Cloud PC performance.`,
@@ -175,8 +167,8 @@ function runAnalysisEngine(results) {
     const dnsHijack = r('L-TCP-08');
     if (dnsHijack && dnsHijack.status !== 'Passed' && dnsHijack.status !== 'Skipped') {
         findings.push(finding(SEV.WARNING, 'DNS hijacking detected',
-            `DNS responses are being modified, possibly by a captive portal, security appliance, or ISP. ${dnsHijack.resultValue}`,
-            'Check if a corporate DNS sinkhole or ISP-level DNS redirect is in place. Use a direct DNS resolver (e.g. 8.8.8.8 or corporate DNS) and verify NXDOMAIN is returned for non-existent domains.'));
+            `DNS responses are being modified — queries for non-existent domains are not returning NXDOMAIN. ${dnsHijack.resultValue}`,
+            'Verify DNS resolver configuration. Use a direct DNS resolver (e.g. 8.8.8.8 or corporate DNS) and confirm NXDOMAIN is returned for non-existent domains.'));
     }
 
     // ── 7. VPN / Proxy / SWG ──
@@ -189,8 +181,8 @@ function runAnalysisEngine(results) {
                           vpn.detailedInfo.toLowerCase().includes('split tunnel');
         }
         if (isVpn && !splitTunnel) {
-            findings.push(finding(SEV.WARNING, 'VPN detected \u2014 check split tunnelling',
-                `A VPN connection is active. If W365 traffic is routed through the VPN tunnel, it will add latency and reduce throughput. ${vpn.resultValue}`,
+            findings.push(finding(SEV.WARNING, 'VPN detected \u2014 split tunnelling not confirmed',
+                `A VPN connection is active and split tunnelling for W365 traffic could not be confirmed. ${vpn.resultValue}`,
                 'Configure split tunnelling to exclude Windows 365 FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the VPN tunnel. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
         } else if (isVpn && splitTunnel) {
             findings.push(finding(SEV.INFO, 'VPN detected \u2014 correctly split-tunnelled',
@@ -214,7 +206,7 @@ function runAnalysisEngine(results) {
         const detectedSwg = swgNames.find(s => detail.includes(s));
         if (detectedSwg) {
             findings.push(finding(SEV.INFO, `Secure Web Gateway detected (${detectedSwg})`,
-                'Traffic is routing through a cloud security service. This is expected in managed environments but adds latency.',
+                'Traffic is routing through a cloud security service.',
                 'Ensure Windows 365 endpoints are in the SWG bypass list for optimal performance.'));
         }
         // Private Link
@@ -274,8 +266,8 @@ function runAnalysisEngine(results) {
                         'Open Device Manager \u2192 WiFi adapter \u2192 Properties \u2192 Advanced. Disable Power Saving Mode, set Roaming Aggressiveness to Lowest, disable U-APSD. If using Intel AX200/AX201/AX211, these settings are in the Intel driver properties. Alternatively, use a wired Ethernet connection.'));
                 } else if (spikes && spikes.count >= 3) {
                     findings.push(finding(SEV.WARNING, 'Latency spikes detected',
-                        `${spikes.count} latency spikes exceeding ${spikes.threshold} ms detected (avg ${spikes.avgMs} ms, peak ${spikes.maxMs} ms). These are irregular, suggesting intermittent network congestion or interference.`,
-                        'Check for WiFi interference, competing bandwidth usage, or packet buffering. Monitor with a continuous ping to the gateway to correlate spikes with other network activity.'));
+                        `${spikes.count} latency spikes exceeding ${spikes.threshold} ms detected (avg ${spikes.avgMs} ms, peak ${spikes.maxMs} ms). The spikes are irregular and do not follow a periodic pattern.`,
+                        'Monitor with a continuous ping to the gateway to identify when spikes occur. Check WiFi stability and competing bandwidth usage.'));
                 }
             }
         }
@@ -306,7 +298,7 @@ function runAnalysisEngine(results) {
             if (pct > 15) {
                 findings.push(finding(SEV.CRITICAL, 'Severe packet loss',
                     `Packet / frame loss is ${pct.toFixed(1)}% — this will cause visible screen corruption, freezing, and frequent disconnects.`,
-                    'Check the WiFi signal strength, network adapter drivers, and for any duplex mismatches. On wired connections, try a different cable or switch port. Check for UDP throttling by firewalls.'));
+                    'Check WiFi signal strength and network adapter drivers. On wired connections, try a different cable or switch port.'));
             } else if (pct > 5) {
                 findings.push(finding(SEV.WARNING, 'Packet loss detected',
                     `${pct.toFixed(1)}% packet / frame loss — above the 5% threshold. Users may experience occasional freezes or visual artefacts.`,
@@ -361,7 +353,7 @@ function runAnalysisEngine(results) {
     if (egress && egress.status !== 'Passed' && egress.status !== 'Skipped') {
         findings.push(finding(egress.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING,
             'Non-local egress detected',
-            `RDP traffic is not egressing locally: ${egress.resultValue}. Traffic may be hairpinned through a VPN or corporate proxy, adding unnecessary latency.`,
+            `RDP traffic is not egressing locally: ${egress.resultValue}`,
             'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
     }
 
@@ -417,15 +409,7 @@ function runAnalysisEngine(results) {
             'High encoding time (>33 ms per frame) indicates GPU or CPU overload on the Cloud PC. Check for GPU driver updates in the Cloud PC, reduce display resolution, or close GPU-intensive applications.'));
     }
 
-    // ── 23. CNAME chain / DNS analysis ──
-    const cname = r('L-TCP-05');
-    if (cname && cname.status !== 'Passed' && cname.status !== 'Skipped') {
-        findings.push(finding(SEV.INFO, 'DNS CNAME chain analysis',
-            cname.resultValue,
-            'Complex CNAME chains can add DNS resolution latency. This is usually informational unless combined with slow DNS (B-TCP-03).'));
-    }
-
-    // ── 24. Overall health summary (always add) ──
+    // ── 23. Overall health summary (always add) ──
     const failed = results.filter(x => x.status === 'Failed' || x.status === 'Error').length;
     const warned = results.filter(x => x.status === 'Warning').length;
     const passed = results.filter(x => x.status === 'Passed').length;
@@ -523,7 +507,7 @@ function showAnalysisPanel(findings) {
             </div>
             <div class="analysis-copilot">
                 <div class="analysis-copilot-info">
-                    <strong>Want deeper analysis?</strong> Copy the results below and paste into Microsoft Copilot for AI-powered root-cause analysis and remediation advice.
+                    <strong>Want deeper analysis?</strong> Copy the full diagnostic report and paste into Microsoft Copilot for AI-powered root-cause analysis.
                 </div>
                 <button class="btn btn-ai" onclick="copilotAnalysis(this)">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -590,6 +574,7 @@ async function copilotAnalysis(btn) {
             '1. Root-cause analysis of any failures or warnings',
             '2. Specific remediation steps (commands, settings, registry keys where applicable)',
             '3. Whether the issue is at the client, local network, ISP, or Azure edge',
+            'Only highlight issues you have high confidence on based on the data. Do not guess or speculate about what might be wrong.',
             'Be concise but thorough. Reference Microsoft Learn docs where helpful.',
             '',
             '---',
