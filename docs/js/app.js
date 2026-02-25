@@ -1374,9 +1374,9 @@ async function updateConnectivityOverview(results) {
         // No good B-LE-01 — fetch fresh (scanner-only import path)
         const freshLoc = await fetchUserLocation();
         if (freshLoc) {
-            const locStr = freshLoc.source === 'ip'
-                ? `${freshLoc.region}, ${freshLoc.country}`
-                : `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`;
+            const locStr = freshLoc.source === 'browser'
+                ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
+                : `${freshLoc.region}, ${freshLoc.country}`;
             const existing = allResults.find(x => x.id === 'B-LE-01');
             if (existing) {
                 existing.resultValue = locStr;
@@ -1532,14 +1532,21 @@ async function updateConnectivityOverview(results) {
     // from the scanner side; this check uses browser-level egress comparison.
     let splitPathTcpHtml = '';
     let splitPathUdpHtml = '';
-    let httpEgressIp = freshLoc?.ip || '';
-    let httpCountry = freshLoc?.country || '';
-    let httpCity = freshLoc?.source === 'browser' ? (freshLoc?.city || '') : '';
-    if (!httpEgressIp) {
+    // Derive HTTP egress info from B-LE-01 result (always in scope)
+    let httpEgressIp = '';
+    let httpCountry = '';
+    let httpCity = '';
+    {
         const locResult = r('B-LE-01');
         if (locResult?.detailedInfo) {
-            const m = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
-            if (m) httpEgressIp = m[1];
+            const mIp = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
+            if (mIp) httpEgressIp = mIp[1];
+            const mSrc = locResult.detailedInfo.match(/Source:\s*(.+)/);
+            const isBrowser = mSrc && mSrc[1].includes('GPS');
+            // Country from resultValue tail e.g. "London, England, GB"
+            const rvParts = (locResult.resultValue || '').split(',').map(s => s.trim());
+            if (rvParts.length >= 2) httpCountry = rvParts[rvParts.length - 1];
+            if (isBrowser && rvParts.length >= 3) httpCity = rvParts[0];
         }
     }
     let stunReflexiveIp = '';

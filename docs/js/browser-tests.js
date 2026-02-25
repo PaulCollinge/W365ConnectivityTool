@@ -516,10 +516,12 @@ async function testUserLocation(test) {
         ? 'Browser coordinates + GeoIP city'
         : 'GeoIP (IP-based — city may be approximate)';
 
-    // Only show city confidently when from browser geolocation or browser-coords
-    const value = loc.source === 'ip'
-        ? `${loc.region}, ${loc.country}`
-        : `${loc.city}, ${loc.region}, ${loc.country}`;
+    // Only show city when it comes from Nominatim reverse geocoding (browser source).
+    // 'browser-coords-ip-city' has GeoIP city which may be the ISP's registered
+    // location (e.g. Wembley) — not the user's actual city.
+    const value = loc.source === 'browser'
+        ? `${loc.city}, ${loc.region}, ${loc.country}`
+        : `${loc.region}, ${loc.country}`;
 
     const lines = [
         `Public IP: ${loc.ip}`,
