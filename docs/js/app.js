@@ -365,8 +365,26 @@ async function decodeCompressedHash(raw) {
     const json = await Promise.race([decompressPromise, timeoutPromise]);
     ilog('Decompressed: ' + bytes.length + ' → ' + json.length + ' chars');
     console.log(`Auto-import (compressed): decompressed ${bytes.length} → ${json.length} bytes`);
-    const parsed = JSON.parse(json);
-    ilog('Parsed JSON: ' + (parsed.results?.length ?? 0) + ' results, machine=' + (parsed.machineName || 'unknown'));
+    let parsed = JSON.parse(json);
+    ilog('Parsed JSON: ' + (parsed.results?.length ?? parsed.r?.length ?? 0) + ' results, machine=' + (parsed.machineName || 'unknown'));
+
+    // Expand compact share-link format (_f:2) back to standard import format
+    if (parsed._f === 2 && Array.isArray(parsed.r)) {
+        const STATUS_EXPAND = { P:'Passed', F:'Failed', W:'Warning', I:'Info', N:'NotRun', E:'Pending', X:'Error' };
+        parsed = {
+            timestamp: parsed.ts,
+            machineName: 'SharedLink',
+            results: parsed.r.map(c => ({
+                id: c.i,
+                status: STATUS_EXPAND[c.s] || c.s,
+                resultValue: c.v || '',
+                detailedInfo: c.d || '',
+                duration: c.t || 0
+            }))
+        };
+        ilog('Expanded compact format: ' + parsed.results.length + ' results');
+    }
+
     return parsed;
 }
 
@@ -1025,20 +1043,32 @@ async function copyShareLink() {
         btn.innerHTML = 'Compressing...';
         btn.disabled = true;
 
-        // Build a compact payload (same format as the scanner)
-        const payload = {
-            timestamp: new Date().toISOString(),
-            machineName: 'WebExport',
-            results: allResults.map(r => ({
-                id: r.id, name: r.name, category: r.category,
-                status: r.status, resultValue: r.resultValue || '',
-                detailedInfo: r.detailedInfo || '', duration: r.duration || 0,
-                remediationUrl: r.remediationUrl || '', remediationText: r.remediationText || ''
-            }))
-        };
+        // Status → single char mapping (saves ~6 chars per result)
+        const STATUS_MAP = { Passed:'P', Failed:'F', Warning:'W', Info:'I', NotRun:'N', Pending:'E', Error:'X' };
+
+        // Build a compact payload — drop derivable fields (name, category,
+        // remediationUrl/Text are in ALL_TESTS), use short keys, skip unrun tests,
+        // and cap detailedInfo to keep the URL within browser limits.
+        const MAX_DETAIL = 400;  // chars per test
+        const compactResults = allResults
+            .filter(r => r.status && r.status !== 'NotRun')
+            .map(r => {
+                const obj = {
+                    i: r.id,
+                    s: STATUS_MAP[r.status] || r.status,
+                    v: r.resultValue || ''
+                };
+                let d = r.detailedInfo || '';
+                if (d.length > MAX_DETAIL) d = d.substring(0, MAX_DETAIL) + '…[truncated]';
+                if (d) obj.d = d;
+                if (r.duration) obj.t = r.duration;
+                return obj;
+            });
+
+        const payload = { _f: 2, ts: new Date().toISOString(), r: compactResults };
         const json = JSON.stringify(payload);
 
-        // Compress with deflate-raw (same as scanner)
+        // Compress with deflate-raw
         const cs = new CompressionStream('deflate-raw');
         const writer = cs.writable.getWriter();
         writer.write(new TextEncoder().encode(json));
@@ -1062,8 +1092,8 @@ async function copyShareLink() {
 
         const shareUrl = `${location.origin}${location.pathname}?zresults=${b64}`;
 
-        // Check URL length — most browsers support ~65k, but warn if very large
-        if (shareUrl.length > 60000) {
+        // Practical URL limit — proxies/servers often reject >8 KB
+        if (shareUrl.length > 32000) {
             btn.innerHTML = 'Link too large — use Export instead';
             btn.disabled = false;
             setTimeout(() => { btn.innerHTML = origHtml; }, 3000);
