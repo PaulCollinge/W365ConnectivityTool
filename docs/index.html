@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=112">
+    <link rel="stylesheet" href="css/styles.css?v=113">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -43,6 +43,18 @@
                 <button id="btn-export-text" class="btn btn-secondary" onclick="exportTextReport()" disabled title="Run tests first">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3M5 7h4M5 9.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                     Export Text
+                </button>
+                <button id="btn-export-json" class="btn btn-secondary" onclick="exportJsonReport()" disabled title="Run tests first">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 1C2.9 1 2 1.9 2 3v2c0 .6-.4 1-1 1v2c.6 0 1 .4 1 1v2c0 1.1.9 2 2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M10 1c1.1 0 2 .9 2 2v2c0 .6.4 1 1 1v2c-.6 0-1 .4-1 1v2c0 1.1-.9 2-2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                    Export JSON
+                </button>
+                <button id="btn-copy-link" class="btn btn-secondary" onclick="copyShareLink()" disabled title="Run tests first">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M6 8a3 3 0 004.24 0l2-2a3 3 0 00-4.24-4.24l-1 1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M8 6a3 3 0 00-4.24 0l-2 2a3 3 0 004.24 4.24l1-1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                    Copy Link
+                </button>
+                <button id="btn-retest" class="btn btn-secondary" onclick="retestFailedItems()" disabled title="No failed tests" style="display:none">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 7a6 6 0 0111.6-2M13 7a6 6 0 01-11.6 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M13 1v4h-4M1 13V9h4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                    Re-test Failed
                 </button>
                 <button id="btn-ai-analysis" class="btn btn-ai" onclick="launchAiAnalysis()" disabled title="Run tests first">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L1 4l6 3 6-3-6-3z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M1 10l6 3 6-3M1 7l6 3 6-3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
@@ -77,6 +89,19 @@
                 <span class="summary-count" id="summary-pending">0</span>
                 <span class="summary-label">Needs Local Scan</span>
             </div>
+        </div>
+
+        <!-- History Bar -->
+        <div id="history-bar" class="history-bar hidden">
+            <div class="history-header">
+                <span class="history-icon">📊</span>
+                <span class="history-title">Previous Results</span>
+                <select id="history-select" class="history-select" onchange="loadHistoryEntry(this.value)">
+                    <option value="">Select a previous scan...</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="clearHistory()" title="Clear saved history">Clear</button>
+            </div>
+            <div id="history-diff" class="history-diff hidden"></div>
         </div>
 
         <!-- Progress Bar -->
@@ -582,11 +607,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=112"></script>
-    <script src="js/browser-tests.js?v=112"></script>
-    <script src="js/ui.js?v=112"></script>
-    <script src="js/map.js?v=112"></script>
-    <script src="js/ai-analysis.js?v=112"></script>
-    <script src="js/app.js?v=112"></script>
+    <script src="js/config.js?v=113"></script>
+    <script src="js/browser-tests.js?v=113"></script>
+    <script src="js/ui.js?v=113"></script>
+    <script src="js/map.js?v=113"></script>
+    <script src="js/ai-analysis.js?v=113"></script>
+    <script src="js/app.js?v=113"></script>
 </body>
 </html>

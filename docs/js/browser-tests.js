@@ -66,6 +66,21 @@ const ALL_TESTS = [
         description: 'Validates Teams AV redirect / media optimization settings (requires Local Scanner)',
         category: 'local', source: 'local'
     },
+    {
+        id: 'L-LE-10', name: 'Windows Firewall Audit',
+        description: 'Checks for firewall rules blocking W365 required ports and endpoints (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
+    {
+        id: 'L-LE-11', name: 'RDP Group Policy Check',
+        description: 'Checks for GP/registry settings that disable UDP transport or restrict RDP (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
+    {
+        id: 'L-LE-12', name: 'WiFi Channel Congestion',
+        description: 'Scans nearby WiFi networks to detect channel congestion (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
 
     // ── TCP Based RDP Connectivity ──
     {

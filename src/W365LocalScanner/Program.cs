@@ -895,6 +895,9 @@ class Program
             new("L-LE-07", "Bandwidth Estimation", "Estimates available bandwidth", "local", RunBandwidthTest),
             new("L-LE-08", "Machine Performance", "Checks CPU, RAM, disk", "local", RunMachinePerformance),
             new("L-LE-09", "Teams Optimization", "Validates Teams AV redirect settings", "local", RunTeamsOptimization),
+            new("L-LE-10", "Windows Firewall Audit", "Checks for firewall rules blocking W365 ports", "local", RunFirewallAudit),
+            new("L-LE-11", "RDP Group Policy Check", "Checks for GP/registry settings affecting RDP", "local", RunRdpGroupPolicyCheck),
+            new("L-LE-12", "WiFi Channel Congestion", "Scans nearby WiFi networks for channel congestion", "local", RunWifiChannelCongestion),
 
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
@@ -1361,6 +1364,407 @@ class Program
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return Task.FromResult(result);
+    }
+
+    // ═══════════════════════════════════════════
+    //  WINDOWS FIREWALL AUDIT
+    // ═══════════════════════════════════════════
+
+    static async Task<TestResult> RunFirewallAudit()
+    {
+        var result = new TestResult { Id = "L-LE-10", Name = "Windows Firewall Audit", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            var issues = new List<string>();
+
+            // Check if firewall is enabled
+            var psi = new ProcessStartInfo("netsh", "advfirewall show allprofiles state")
+            {
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            var fwOutput = await proc!.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+            sb.AppendLine("═══ Firewall Profile State ═══");
+            sb.AppendLine(fwOutput.Trim());
+            sb.AppendLine();
+
+            // Check for blocking rules on key ports
+            var portsToCheck = new[] {
+                (443, "TCP", "HTTPS (RDP gateway, AFD, auth)"),
+                (3478, "UDP", "TURN relay (UDP Shortpath)"),
+                (80, "TCP", "Certificate endpoints (CRL/OCSP)")
+            };
+
+            sb.AppendLine("═══ Outbound Blocking Rules ═══");
+            foreach (var (port, proto, desc) in portsToCheck)
+            {
+                var blockPsi = new ProcessStartInfo("netsh",
+                    $"advfirewall firewall show rule name=all dir=out | findstr /C:\"Block\" /C:\"LocalPort\" /C:\"Protocol\" /C:\"Rule Name\"")
+                {
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var blockProc = Process.Start(blockPsi);
+                var blockOutput = await blockProc!.StandardOutput.ReadToEndAsync();
+                await blockProc.WaitForExitAsync();
+
+                // Parse rule blocks — each rule is separated by blank lines
+                var rules = blockOutput.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var rule in rules)
+                {
+                    if (!rule.Contains("Block", StringComparison.OrdinalIgnoreCase)) continue;
+                    var ruleLines = rule.Split('\n');
+                    var localPort = ruleLines.FirstOrDefault(l => l.Trim().StartsWith("LocalPort:", StringComparison.OrdinalIgnoreCase))
+                        ?.Split(':').LastOrDefault()?.Trim();
+                    var protocol = ruleLines.FirstOrDefault(l => l.Trim().StartsWith("Protocol:", StringComparison.OrdinalIgnoreCase))
+                        ?.Split(':').LastOrDefault()?.Trim();
+                    var ruleName = ruleLines.FirstOrDefault(l => l.Trim().StartsWith("Rule Name:", StringComparison.OrdinalIgnoreCase))
+                        ?.Substring(ruleLines.FirstOrDefault(l => l.Trim().StartsWith("Rule Name:"))?.IndexOf(':') + 1 ?? 0).Trim();
+
+                    if (localPort == null || protocol == null) continue;
+
+                    // Check if this rule blocks our port
+                    bool matchesPort = localPort == "Any" || localPort == port.ToString()
+                        || localPort.Split(',').Any(p => p.Trim() == port.ToString());
+                    bool matchesProto = protocol.Equals("Any", StringComparison.OrdinalIgnoreCase)
+                        || protocol.Equals(proto, StringComparison.OrdinalIgnoreCase);
+
+                    if (matchesPort && matchesProto)
+                    {
+                        var issue = $"Outbound {proto} {port} ({desc}) blocked by rule: {ruleName}";
+                        issues.Add(issue);
+                        sb.AppendLine($"  ✗ {issue}");
+                    }
+                }
+            }
+
+            // Also check if msrdcw or mstsc is explicitly blocked
+            var appBlockPsi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | Where-Object { $_.DisplayName -match 'Remote Desktop|RDP|msrdc|mstsc' } | Select-Object -Property DisplayName,Profile | Format-List\"")
+            {
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var appBlockProc = Process.Start(appBlockPsi);
+            var appBlockOutput = await appBlockProc!.StandardOutput.ReadToEndAsync();
+            await appBlockProc.WaitForExitAsync();
+
+            if (!string.IsNullOrWhiteSpace(appBlockOutput))
+            {
+                sb.AppendLine();
+                sb.AppendLine("═══ RDP Application Block Rules ═══");
+                sb.AppendLine(appBlockOutput.Trim());
+                issues.Add("Outbound firewall rule explicitly blocks RDP client application");
+            }
+
+            if (issues.Count == 0)
+            {
+                sb.AppendLine("  ✓ No outbound blocking rules found for W365 required ports");
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            if (issues.Count == 0)
+            {
+                result.Status = "Passed";
+                result.ResultValue = "No firewall rules blocking W365 required ports (TCP 443, UDP 3478, TCP 80)";
+            }
+            else
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"{issues.Count} blocking rule{(issues.Count > 1 ? "s" : "")} found: {string.Join("; ", issues.Take(3))}";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+                result.RemediationText = "Review Windows Firewall outbound rules. Ensure TCP 443 and UDP 3478 are not blocked for W365 endpoints.";
+            }
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Error";
+            result.ResultValue = ex.Message;
+        }
+        return result;
+    }
+
+    // ═══════════════════════════════════════════
+    //  RDP GROUP POLICY CHECK
+    // ═══════════════════════════════════════════
+
+    static Task<TestResult> RunRdpGroupPolicyCheck()
+    {
+        var result = new TestResult { Id = "L-LE-11", Name = "RDP Group Policy Check", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            var issues = new List<string>();
+
+            // Check Terminal Services policies
+            string[] policyPaths = {
+                @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services",
+                @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client"
+            };
+
+            sb.AppendLine("═══ Terminal Services Group Policy ═══");
+
+            foreach (var path in policyPaths)
+            {
+                try
+                {
+                    using var key = Registry.LocalMachine.OpenSubKey(path);
+                    if (key == null) continue;
+
+                    sb.AppendLine($"  Registry: HKLM\\{path}");
+                    var valueNames = key.GetValueNames();
+                    foreach (var name in valueNames)
+                    {
+                        var value = key.GetValue(name);
+                        sb.AppendLine($"    {name} = {value}");
+                    }
+
+                    // Check for specific problematic policies
+                    // fClientDisableUDP = 1 disables UDP transport
+                    var udpDisabled = key.GetValue("fClientDisableUDP");
+                    if (udpDisabled != null && Convert.ToInt32(udpDisabled) == 1)
+                    {
+                        issues.Add("UDP transport disabled by Group Policy (fClientDisableUDP=1)");
+                    }
+
+                    // SelectTransport: 1 = UDP+TCP, 2 = TCP only
+                    var selectTransport = key.GetValue("SelectTransport");
+                    if (selectTransport != null && Convert.ToInt32(selectTransport) == 2)
+                    {
+                        issues.Add("Transport forced to TCP-only by Group Policy (SelectTransport=2)");
+                    }
+
+                    // fDenyTSConnections = 1 blocks all RDP
+                    var denyConn = key.GetValue("fDenyTSConnections");
+                    if (denyConn != null && Convert.ToInt32(denyConn) == 1)
+                    {
+                        issues.Add("Remote Desktop connections denied by policy (fDenyTSConnections=1)");
+                    }
+
+                    // SecurityLayer: 0=RDP, 1=Negotiate, 2=TLS
+                    var secLayer = key.GetValue("SecurityLayer");
+                    if (secLayer != null)
+                    {
+                        var secVal = Convert.ToInt32(secLayer);
+                        if (secVal == 0) issues.Add("RDP Security Layer set to 'RDP Security' (SecurityLayer=0) — less secure than TLS");
+                    }
+
+                    // MaxCompressionLevel
+                    var compression = key.GetValue("MaxCompressionLevel");
+                    if (compression != null && Convert.ToInt32(compression) == 0)
+                    {
+                        issues.Add("RDP compression disabled by policy (MaxCompressionLevel=0)");
+                    }
+
+                    // AVC444ModePreferred / AVCHardwareEncodePreferred
+                    var avc = key.GetValue("AVC444ModePreferred");
+                    if (avc != null) sb.AppendLine($"    → AVC 4:4:4 mode: {(Convert.ToInt32(avc) == 1 ? "Preferred" : "Not preferred")}");
+
+                    sb.AppendLine();
+                }
+                catch { /* registry path not accessible */ }
+            }
+
+            // Check RDP Shortpath policy (newer path for AVD/W365)
+            try
+            {
+                using var shortpathKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client");
+                if (shortpathKey != null)
+                {
+                    var useUdp = shortpathKey.GetValue("fClientDisableUDP");
+                    if (useUdp != null && Convert.ToInt32(useUdp) == 1)
+                    {
+                        if (!issues.Any(i => i.Contains("fClientDisableUDP")))
+                            issues.Add("Client UDP disabled by policy under Client subkey (fClientDisableUDP=1)");
+                    }
+                }
+            }
+            catch { }
+
+            // Check for RDP client autoupdate policy
+            try
+            {
+                using var msrdcKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\MSRDC\Policies");
+                if (msrdcKey != null)
+                {
+                    sb.AppendLine("═══ MSRDC Client Policies ═══");
+                    foreach (var name in msrdcKey.GetValueNames())
+                    {
+                        sb.AppendLine($"    {name} = {msrdcKey.GetValue(name)}");
+                    }
+                    sb.AppendLine();
+                }
+            }
+            catch { }
+
+            if (issues.Count == 0)
+            {
+                result.Status = "Passed";
+                result.ResultValue = "No restrictive RDP Group Policies detected";
+                sb.AppendLine("  ✓ No problematic Terminal Services policies found");
+            }
+            else
+            {
+                result.Status = "Warning";
+                result.ResultValue = string.Join("; ", issues);
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/configure-rdp-shortpath";
+                result.RemediationText = "Review Group Policy settings under Computer Configuration > Administrative Templates > Windows Components > Remote Desktop Services.";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return Task.FromResult(result);
+    }
+
+    // ═══════════════════════════════════════════
+    //  WIFI CHANNEL CONGESTION
+    // ═══════════════════════════════════════════
+
+    static async Task<TestResult> RunWifiChannelCongestion()
+    {
+        var result = new TestResult { Id = "L-LE-12", Name = "WiFi Channel Congestion", Category = "local" };
+        try
+        {
+            // First check if we're on WiFi at all
+            var ifPsi = new ProcessStartInfo("netsh", "wlan show interfaces")
+            {
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var ifProc = Process.Start(ifPsi);
+            var ifOutput = await ifProc!.StandardOutput.ReadToEndAsync();
+            await ifProc.WaitForExitAsync();
+
+            if (string.IsNullOrWhiteSpace(ifOutput) || ifOutput.Contains("not running"))
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "No wireless interface detected (wired connection)";
+                return result;
+            }
+
+            var stateLine = ifOutput.Split('\n').FirstOrDefault(l => l.Trim().StartsWith("State"))?.Split(':').LastOrDefault()?.Trim();
+            if (stateLine == null || !stateLine.Equals("connected", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "Not connected by WiFi";
+                return result;
+            }
+
+            // Get current channel and band
+            var ifLines = ifOutput.Split('\n');
+            var myChannel = ifLines.FirstOrDefault(l => l.Trim().StartsWith("Channel"))?.Split(':').LastOrDefault()?.Trim();
+            var myBand = ifLines.FirstOrDefault(l => l.Trim().StartsWith("Radio type"))?.Split(':').LastOrDefault()?.Trim();
+            var mySsid = ifLines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"))?.Split(':').LastOrDefault()?.Trim();
+            var myBssid = ifLines.FirstOrDefault(l => l.Trim().StartsWith("BSSID"))?.Split(new[] { ':' }, 2).LastOrDefault()?.Trim();
+
+            int currentChannel = int.TryParse(myChannel, out var ch) ? ch : 0;
+
+            // Scan nearby networks
+            var psi = new ProcessStartInfo("netsh", "wlan show networks mode=bssid")
+            {
+                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            var output = await proc!.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"═══ Your Connection ═══");
+            sb.AppendLine($"  SSID: {mySsid ?? "N/A"}");
+            sb.AppendLine($"  BSSID: {myBssid ?? "N/A"}");
+            sb.AppendLine($"  Channel: {myChannel ?? "N/A"}");
+            sb.AppendLine($"  Radio: {myBand ?? "N/A"}");
+            sb.AppendLine();
+
+            // Parse nearby networks — each BSSID block
+            var networks = new List<(string ssid, int channel, int signal, string band)>();
+            string currentSsid = "";
+            var bssidBlocks = output.Split(new[] { "BSSID" }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var block in bssidBlocks)
+            {
+                // SSID is in the line before BSSID
+                var blockLines = block.Split('\n');
+                // Try to find SSID from the block preamble
+                var ssidLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"));
+                if (ssidLine != null)
+                {
+                    var parts = ssidLine.Split(new[] { ':' }, 2);
+                    if (parts.Length > 1) currentSsid = parts[1].Trim();
+                }
+
+                var chLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("Channel"))?.Split(':').LastOrDefault()?.Trim();
+                var sigLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("Signal"))?.Split(':').LastOrDefault()?.Trim();
+                var radioLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("Radio type"))?.Split(':').LastOrDefault()?.Trim();
+
+                if (chLine != null && int.TryParse(chLine, out var c) && sigLine != null)
+                {
+                    var sig = int.TryParse(sigLine.Replace("%", ""), out var s) ? s : 0;
+                    networks.Add((currentSsid, c, sig, radioLine ?? ""));
+                }
+            }
+
+            // Count networks on same channel
+            int sameChannel = currentChannel > 0 ? networks.Count(n => n.channel == currentChannel) : 0;
+
+            // Count overlapping channels (2.4 GHz channels 1-13 overlap ±2)
+            int overlapping = 0;
+            bool is24Ghz = currentChannel > 0 && currentChannel <= 14;
+            if (is24Ghz)
+            {
+                overlapping = networks.Count(n => n.channel > 0 && n.channel <= 14 && Math.Abs(n.channel - currentChannel) <= 2 && n.channel != currentChannel);
+            }
+
+            // Channel usage histogram
+            var channelCounts = networks.GroupBy(n => n.channel).OrderBy(g => g.Key).ToList();
+            sb.AppendLine($"═══ Nearby Networks: {networks.Count} total ═══");
+            sb.AppendLine();
+            sb.AppendLine("Channel usage:");
+            foreach (var g in channelCounts)
+            {
+                var marker = g.Key == currentChannel ? " ← YOUR CHANNEL" : "";
+                sb.AppendLine($"  Ch {g.Key,3}: {g.Count()} network{(g.Count() > 1 ? "s" : "")} (strongest: {g.Max(n => n.signal)}%){marker}");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("Strongest networks on your channel:");
+            var sameChNetworks = networks.Where(n => n.channel == currentChannel).OrderByDescending(n => n.signal).Take(5);
+            foreach (var n in sameChNetworks)
+            {
+                sb.AppendLine($"  {n.ssid,-24} Signal: {n.signal}%  Radio: {n.band}");
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+
+            if (currentChannel == 0)
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "Could not determine WiFi channel";
+            }
+            else if (sameChannel >= 6)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"{sameChannel} networks on channel {currentChannel} — heavy congestion. {(is24Ghz ? $"{overlapping} additional overlapping networks." : "")}";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/troubleshoot-windows-365-boot#networking-checks";
+                result.RemediationText = is24Ghz
+                    ? "Consider switching to 5 GHz band or using channels 1, 6, or 11 (non-overlapping 2.4 GHz channels). A wired Ethernet connection eliminates WiFi congestion entirely."
+                    : "Consider using a less congested 5 GHz channel. Many routers have auto-channel selection that can be configured.";
+            }
+            else if (sameChannel >= 3)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"{sameChannel} networks on channel {currentChannel} — moderate density. {(is24Ghz ? $"{overlapping} overlapping." : "")} Total: {networks.Count} nearby networks.";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"{sameChannel} network{(sameChannel > 1 ? "s" : "")} on channel {currentChannel} — low congestion. Total: {networks.Count} nearby networks.";
+            }
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Error";
+            result.ResultValue = ex.Message;
+        }
+        return result;
     }
 
     // ═══════════════════════════════════════════

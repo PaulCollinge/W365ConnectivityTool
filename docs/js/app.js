@@ -931,16 +931,390 @@ async function exportTextReport() {
 
 // ── Enable the export button when results are available ──
 function updateExportButton() {
+    const hasResults = allResults.length > 0;
     const btn = document.getElementById('btn-export-text');
     if (btn) {
-        btn.disabled = allResults.length === 0;
-        btn.title = allResults.length === 0 ? 'Run tests first' : `Export ${allResults.length} results as text`;
+        btn.disabled = !hasResults;
+        btn.title = !hasResults ? 'Run tests first' : `Export ${allResults.length} results as text`;
+    }
+    const jsonBtn = document.getElementById('btn-export-json');
+    if (jsonBtn) {
+        jsonBtn.disabled = !hasResults;
+        jsonBtn.title = !hasResults ? 'Run tests first' : `Export ${allResults.length} results as JSON`;
+    }
+    const linkBtn = document.getElementById('btn-copy-link');
+    if (linkBtn) {
+        linkBtn.disabled = !hasResults;
+        linkBtn.title = !hasResults ? 'Run tests first' : 'Copy shareable link to clipboard';
     }
     const aiBtn = document.getElementById('btn-ai-analysis');
     if (aiBtn) {
-        aiBtn.disabled = allResults.length === 0;
-        aiBtn.title = allResults.length === 0 ? 'Run tests first' : 'Analyze results with Microsoft Copilot';
+        aiBtn.disabled = !hasResults;
+        aiBtn.title = !hasResults ? 'Run tests first' : 'Analyze results with Microsoft Copilot';
     }
+    // Show re-test button if there are failed/warned browser tests
+    const retestBtn = document.getElementById('btn-retest');
+    if (retestBtn) {
+        const failedBrowser = allResults.filter(r =>
+            r.source === 'browser' && (r.status === 'Failed' || r.status === 'Error' || r.status === 'Warning'));
+        if (failedBrowser.length > 0 && !isRunning) {
+            retestBtn.style.display = '';
+            retestBtn.disabled = false;
+            retestBtn.title = `Re-test ${failedBrowser.length} failed/warned browser tests`;
+        } else {
+            retestBtn.style.display = 'none';
+        }
+    }
+    // Auto-save to history when we have results
+    if (hasResults) saveResultsToHistory();
+    // Update history bar
+    updateHistoryBar();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  JSON Export
+// ═══════════════════════════════════════════════════════════════════
+function exportJsonReport() {
+    if (allResults.length === 0) return;
+    const output = {
+        timestamp: new Date().toISOString(),
+        userAgent: navigator.userAgent,
+        scannerTimestamp: _importedScanTimestamp || null,
+        results: allResults.map(r => ({
+            id: r.id,
+            name: r.name,
+            category: r.category,
+            source: r.source,
+            status: r.status,
+            resultValue: r.resultValue || '',
+            detailedInfo: r.detailedInfo || '',
+            duration: r.duration || 0,
+            remediationUrl: r.remediationUrl || '',
+            remediationText: r.remediationText || ''
+        }))
+    };
+    const json = JSON.stringify(output, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `W365-Diagnostics-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Copy Shareable Link
+// ═══════════════════════════════════════════════════════════════════
+async function copyShareLink() {
+    if (allResults.length === 0) return;
+    const btn = document.getElementById('btn-copy-link');
+    const origHtml = btn.innerHTML;
+
+    try {
+        btn.innerHTML = 'Compressing...';
+        btn.disabled = true;
+
+        // Build a compact payload (same format as the scanner)
+        const payload = {
+            timestamp: new Date().toISOString(),
+            machineName: 'WebExport',
+            results: allResults.map(r => ({
+                id: r.id, name: r.name, category: r.category,
+                status: r.status, resultValue: r.resultValue || '',
+                detailedInfo: r.detailedInfo || '', duration: r.duration || 0,
+                remediationUrl: r.remediationUrl || '', remediationText: r.remediationText || ''
+            }))
+        };
+        const json = JSON.stringify(payload);
+
+        // Compress with deflate-raw (same as scanner)
+        const cs = new CompressionStream('deflate-raw');
+        const writer = cs.writable.getWriter();
+        writer.write(new TextEncoder().encode(json));
+        writer.close();
+
+        const reader = cs.readable.getReader();
+        const chunks = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+        }
+        const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+        const compressed = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const chunk of chunks) { compressed.set(chunk, offset); offset += chunk.length; }
+
+        // Base64url encode
+        let b64 = btoa(String.fromCharCode(...compressed));
+        b64 = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+        const shareUrl = `${location.origin}${location.pathname}?zresults=${b64}`;
+
+        // Check URL length — most browsers support ~65k, but warn if very large
+        if (shareUrl.length > 60000) {
+            btn.innerHTML = 'Link too large — use Export instead';
+            btn.disabled = false;
+            setTimeout(() => { btn.innerHTML = origHtml; }, 3000);
+            return;
+        }
+
+        await navigator.clipboard.writeText(shareUrl);
+        btn.innerHTML = '\u2714 Link copied!';
+        btn.classList.add('btn-copied');
+        setTimeout(() => { btn.innerHTML = origHtml; btn.classList.remove('btn-copied'); btn.disabled = false; }, 2000);
+    } catch (e) {
+        console.error('Copy link failed:', e);
+        btn.innerHTML = 'Failed to copy';
+        btn.disabled = false;
+        setTimeout(() => { btn.innerHTML = origHtml; }, 2000);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Re-test Failed Items
+// ═══════════════════════════════════════════════════════════════════
+async function retestFailedItems() {
+    if (isRunning) return;
+    isRunning = true;
+
+    const retestBtn = document.getElementById('btn-retest');
+    if (retestBtn) { retestBtn.disabled = true; retestBtn.innerHTML = '<span class="btn-icon">\u27F3</span> Re-testing...'; }
+
+    // Find browser tests that failed or warned
+    const failedIds = new Set(
+        allResults
+            .filter(r => r.source === 'browser' && (r.status === 'Failed' || r.status === 'Error' || r.status === 'Warning'))
+            .map(r => r.id)
+    );
+
+    const testsToRerun = ALL_TESTS.filter(t => t.source === 'browser' && t.run && failedIds.has(t.id));
+    if (testsToRerun.length === 0) { isRunning = false; return; }
+
+    const total = testsToRerun.length;
+    let completed = 0;
+
+    updateProgress(0, total, testsToRerun[0]?.name);
+
+    for (const test of testsToRerun) {
+        setTestRunning(test.id);
+        updateProgress(completed, total, test.name);
+
+        // Remove old result
+        allResults = allResults.filter(r => r.id !== test.id);
+
+        try {
+            const result = await test.run(test);
+            result.source = 'browser';
+            allResults.push(result);
+            updateTestUI(test.id, result);
+            updateConnectivityMap(allResults);
+        } catch (err) {
+            const errorResult = {
+                id: test.id, name: test.name, category: test.category, source: 'browser',
+                status: 'Error', resultValue: `Error: ${err.message}`,
+                detailedInfo: err.stack || err.message, duration: 0
+            };
+            allResults.push(errorResult);
+            updateTestUI(test.id, errorResult);
+        }
+        completed++;
+        updateProgress(completed, total);
+    }
+
+    hideProgress();
+    updateSummary(allResults);
+    updateCategoryBadges(allResults);
+    updateConnectivityMap(allResults);
+    updateConnectivityOverview(allResults);
+    updateExportButton();
+
+    if (retestBtn) {
+        retestBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 7a6 6 0 0111.6-2M13 7a6 6 0 01-11.6 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M13 1v4h-4M1 13V9h4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg> Re-test Failed';
+    }
+    isRunning = false;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Historical Comparison (localStorage)
+// ═══════════════════════════════════════════════════════════════════
+const HISTORY_KEY = 'w365-results-history';
+const MAX_HISTORY = 10;
+
+function saveResultsToHistory() {
+    if (allResults.length === 0) return;
+    try {
+        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        const entry = {
+            timestamp: new Date().toISOString(),
+            scannerTimestamp: _importedScanTimestamp || null,
+            summary: {
+                total: allResults.length,
+                passed: allResults.filter(r => r.status === 'Passed').length,
+                warnings: allResults.filter(r => r.status === 'Warning').length,
+                failed: allResults.filter(r => r.status === 'Failed' || r.status === 'Error').length,
+            },
+            // Store key metrics for comparison (not full results to save space)
+            metrics: extractKeyMetrics(allResults)
+        };
+
+        // Don't save duplicate if last entry has same metric fingerprint
+        if (history.length > 0) {
+            const last = history[0];
+            if (JSON.stringify(last.metrics) === JSON.stringify(entry.metrics)) return;
+        }
+
+        history.unshift(entry);
+        if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    } catch (e) {
+        console.warn('Failed to save history:', e);
+    }
+}
+
+function extractKeyMetrics(results) {
+    const r = id => results.find(x => x.id === id);
+    const metrics = {};
+
+    // WiFi signal
+    const wifi = r('L-LE-04');
+    if (wifi && wifi.status !== 'Skipped') {
+        const m = (wifi.resultValue || '').match(/(\d+)%/);
+        if (m) metrics.wifiSignal = parseInt(m[1]);
+    }
+
+    // Gateway latency
+    const gw = r('L-LE-05');
+    if (gw) {
+        const m = (gw.resultValue || '').match(/([\d.]+)\s*ms/i);
+        if (m) metrics.gatewayLatency = parseFloat(m[1]);
+    }
+
+    // Bandwidth
+    const bw = r('L-LE-07') || r('B-LE-03');
+    if (bw) {
+        const m = (bw.resultValue || '').match(/([\d.]+)\s*Mbps/i);
+        if (m) metrics.bandwidth = parseFloat(m[1]);
+    }
+
+    // Session latency
+    const session = r('18');
+    if (session) {
+        const m = (session.resultValue || '').match(/([\d.]+)\s*ms/i);
+        if (m) metrics.sessionLatency = parseFloat(m[1]);
+    }
+
+    // Jitter
+    const jitter = r('20');
+    if (jitter) {
+        const m = (jitter.resultValue || '').match(/([\d.]+)\s*ms/i);
+        if (m) metrics.jitter = parseFloat(m[1]);
+    }
+
+    // Packet loss
+    const loss = r('21');
+    if (loss) {
+        const m = (loss.resultValue || '').match(/([\d.]+)%/);
+        if (m) metrics.packetLoss = parseFloat(m[1]);
+    }
+
+    // NAT type
+    const nat = r('L-UDP-05') || r('B-UDP-02');
+    if (nat) metrics.natType = nat.resultValue || '';
+
+    // Transport
+    const transport = r('17b');
+    if (transport) metrics.transport = transport.resultValue || '';
+
+    // Pass/fail counts
+    metrics.passed = results.filter(r => r.status === 'Passed').length;
+    metrics.failed = results.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+    metrics.warnings = results.filter(r => r.status === 'Warning').length;
+
+    return metrics;
+}
+
+function updateHistoryBar() {
+    const bar = document.getElementById('history-bar');
+    const select = document.getElementById('history-select');
+    if (!bar || !select) return;
+
+    try {
+        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        if (history.length < 2) { bar.classList.add('hidden'); return; }
+
+        // Show bar and populate dropdown (skip first entry = current)
+        bar.classList.remove('hidden');
+        select.innerHTML = '<option value="">Compare with previous scan...</option>';
+        for (let i = 1; i < history.length; i++) {
+            const h = history[i];
+            const date = new Date(h.timestamp).toLocaleString();
+            const summary = `${h.summary.passed}P / ${h.summary.warnings}W / ${h.summary.failed}F`;
+            const opt = document.createElement('option');
+            opt.value = i;
+            opt.textContent = `${date} — ${summary}`;
+            select.appendChild(opt);
+        }
+    } catch (e) {
+        bar.classList.add('hidden');
+    }
+}
+
+function loadHistoryEntry(index) {
+    const diffEl = document.getElementById('history-diff');
+    if (!diffEl || !index) { if (diffEl) diffEl.classList.add('hidden'); return; }
+
+    try {
+        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        const current = history[0];
+        const previous = history[parseInt(index)];
+        if (!current || !previous) return;
+
+        const diffs = [];
+        const cm = current.metrics;
+        const pm = previous.metrics;
+
+        function compareStat(label, currVal, prevVal, unit, lowerIsBetter) {
+            if (currVal == null || prevVal == null) return;
+            const delta = currVal - prevVal;
+            if (Math.abs(delta) < 0.1) return;
+            const improved = lowerIsBetter ? delta < 0 : delta > 0;
+            const arrow = improved ? '\u2193' : '\u2191';
+            const cls = improved ? 'diff-improved' : 'diff-degraded';
+            const sign = delta > 0 ? '+' : '';
+            diffs.push(`<div class="diff-item ${cls}"><span class="diff-arrow">${arrow}</span>${label}: ${prevVal}${unit} \u2192 ${currVal}${unit} <span class="diff-delta">(${sign}${delta.toFixed(1)}${unit})</span></div>`);
+        }
+
+        compareStat('WiFi Signal', cm.wifiSignal, pm.wifiSignal, '%', false);
+        compareStat('Gateway Latency', cm.gatewayLatency, pm.gatewayLatency, ' ms', true);
+        compareStat('Bandwidth', cm.bandwidth, pm.bandwidth, ' Mbps', false);
+        compareStat('Session Latency', cm.sessionLatency, pm.sessionLatency, ' ms', true);
+        compareStat('Jitter', cm.jitter, pm.jitter, ' ms', true);
+        compareStat('Packet Loss', cm.packetLoss, pm.packetLoss, '%', true);
+
+        // Pass/fail counts
+        if (cm.passed !== pm.passed || cm.failed !== pm.failed || cm.warnings !== pm.warnings) {
+            diffs.push(`<div class="diff-item diff-neutral">Overall: ${pm.passed}P/${pm.warnings}W/${pm.failed}F \u2192 ${cm.passed}P/${cm.warnings}W/${cm.failed}F</div>`);
+        }
+
+        if (diffs.length === 0) {
+            diffEl.innerHTML = '<div class="diff-item diff-neutral">No significant changes detected.</div>';
+        } else {
+            diffEl.innerHTML = diffs.join('');
+        }
+        diffEl.classList.remove('hidden');
+    } catch (e) {
+        diffEl.classList.add('hidden');
+    }
+}
+
+function clearHistory() {
+    localStorage.removeItem(HISTORY_KEY);
+    const bar = document.getElementById('history-bar');
+    if (bar) bar.classList.add('hidden');
 }
 
 // ── Connectivity Overview panel (quick-glance summary above the map) ──

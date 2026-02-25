@@ -409,7 +409,84 @@ function runAnalysisEngine(results) {
             'High encoding time (>33 ms per frame) indicates GPU or CPU overload on the Cloud PC. Check for GPU driver updates in the Cloud PC, reduce display resolution, or close GPU-intensive applications.'));
     }
 
-    // ── 23. Overall health summary (always add) ──
+    // ── 23. Windows Firewall blocking ──
+    const firewall = r('L-LE-10');
+    if (firewall && firewall.status === 'Warning') {
+        findings.push(finding(SEV.WARNING, 'Windows Firewall blocking W365 ports',
+            firewall.resultValue,
+            firewall.remediationText || 'Review Windows Firewall outbound rules. Ensure TCP 443 and UDP 3478 are not blocked.'));
+    }
+
+    // ── 24. RDP Group Policy restrictions ──
+    const gpo = r('L-LE-11');
+    if (gpo && gpo.status === 'Warning') {
+        findings.push(finding(SEV.WARNING, 'Restrictive RDP Group Policy detected',
+            gpo.resultValue,
+            gpo.remediationText || 'Review Terminal Services group policies. Ensure UDP transport is not disabled.'));
+    }
+
+    // ── 25. WiFi channel congestion ──
+    const wifiCh = r('L-LE-12');
+    if (wifiCh && wifiCh.status === 'Warning') {
+        findings.push(finding(SEV.WARNING, 'WiFi channel congestion',
+            wifiCh.resultValue,
+            wifiCh.remediationText || 'Switch to 5 GHz band or use a less congested channel. A wired connection eliminates WiFi congestion entirely.'));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Cross-rule correlation (only fire when multiple signals align)
+    // ═══════════════════════════════════════════════════════════════
+
+    // Correlation 1: Poor WiFi + high gateway latency = WiFi is the bottleneck
+    const wifiSig = wifi ? parseSignal(wifi.resultValue) : NaN;
+    const gwAvg = gwLat ? parseMs(gwLat.resultValue) : NaN;
+    if (!isNaN(wifiSig) && wifiSig < 60 && !isNaN(gwAvg) && gwAvg > 20) {
+        findings.push(finding(SEV.CRITICAL, 'WiFi is the network bottleneck',
+            `WiFi signal is ${wifiSig}% and gateway latency is ${gwAvg.toFixed(0)} ms. The weak wireless link is adding measurable delay to every Azure round-trip.`,
+            'Use a wired Ethernet connection, or move closer to the access point. This will reduce both gateway latency and jitter.'));
+    }
+
+    // Correlation 2: Symmetric NAT + TURN unreachable = no UDP path at all
+    const natVal = nat ? (nat.resultValue || '').toLowerCase() : '';
+    const turnFailed = turn && (turn.status === 'Failed' || turn.status === 'Error');
+    if (natVal.includes('symmetric') && turnFailed) {
+        findings.push(finding(SEV.CRITICAL, 'No UDP path available',
+            'NAT type is Symmetric and TURN relay is unreachable. There is no UDP path — the session will use TCP only, with higher latency and no Shortpath benefit.',
+            'Open outbound UDP 3478 to turn.azure.com. If behind CGNAT, contact your ISP. Consider a wired connection that bypasses the NAT.'));
+    }
+
+    // Correlation 3: GPO disabling UDP + TCP transport detected = policy-caused TCP fallback
+    const gpoUdpDisabled = gpo && gpo.status === 'Warning' && (gpo.resultValue || '').toLowerCase().includes('udp');
+    const transportVal = transport ? (transport.resultValue || '').toLowerCase() : '';
+    if (gpoUdpDisabled && transportVal.includes('tcp')) {
+        findings.push(finding(SEV.CRITICAL, 'Group Policy forcing TCP transport',
+            'A Group Policy setting is disabling UDP transport, and the active session is confirmed using TCP. This is a policy-caused degradation.',
+            'Remove the fClientDisableUDP=1 or SelectTransport=2 policy. See https://learn.microsoft.com/azure/virtual-desktop/configure-rdp-shortpath'));
+    }
+
+    // Correlation 4: High latency + non-local egress = traffic routing issue
+    const sessionAvg = session ? parseMs(session.resultValue) : NaN;
+    const egressBad = egress && (egress.status === 'Failed' || egress.status === 'Warning');
+    if (!isNaN(sessionAvg) && sessionAvg > 100 && egressBad) {
+        findings.push(finding(SEV.CRITICAL, 'High latency due to non-local egress',
+            `Session latency is ${sessionAvg.toFixed(0)} ms and RDP traffic is not egressing locally. The indirect routing path is adding significant delay.`,
+            'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
+    }
+
+    // Correlation 5: Firewall blocking UDP 3478 + TURN unreachable
+    const fwBlocksUdp = firewall && firewall.status === 'Warning' && (firewall.resultValue || '').includes('3478');
+    if (fwBlocksUdp && turnFailed) {
+        findings.push(finding(SEV.CRITICAL, 'Local firewall blocking TURN relay',
+            'Windows Firewall has an outbound rule blocking UDP 3478, and TURN relay is unreachable. The local firewall is the root cause.',
+            'Remove or disable the outbound firewall rule blocking UDP 3478. Run: netsh advfirewall firewall add rule name="Allow W365 TURN" dir=out action=allow protocol=UDP remoteport=3478'));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Session Quality Score (0-100)
+    // ═══════════════════════════════════════════════════════════════
+    const qualityScore = computeQualityScore(results);
+
+    // ── 26. Overall health summary (always add) ──
     const failed = results.filter(x => x.status === 'Failed' || x.status === 'Error').length;
     const warned = results.filter(x => x.status === 'Warning').length;
     const passed = results.filter(x => x.status === 'Passed').length;
@@ -425,7 +502,74 @@ function runAnalysisEngine(results) {
     const order = { critical: 0, warning: 1, info: 2 };
     findings.sort((a, b) => order[a.severity] - order[b.severity]);
 
-    return findings;
+    return { findings, qualityScore };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Session Quality Score — weighted 0-100
+// ═══════════════════════════════════════════════════════════════════
+function computeQualityScore(results) {
+    const r = id => results.find(x => x.id === id);
+    let score = 100;
+    let hasData = false;
+
+    // Latency (weight: 35 points)
+    const session = r('18');
+    if (session) {
+        const avg = parseMs(session.resultValue);
+        if (!isNaN(avg)) {
+            hasData = true;
+            if (avg > 200) score -= 35;
+            else if (avg > 150) score -= 25;
+            else if (avg > 100) score -= 15;
+            else if (avg > 50) score -= 5;
+        }
+    }
+
+    // Jitter (weight: 20 points)
+    const jitter = r('20');
+    if (jitter) {
+        const j = parseMs(jitter.resultValue);
+        if (!isNaN(j)) {
+            hasData = true;
+            if (j > 60) score -= 20;
+            else if (j > 30) score -= 12;
+            else if (j > 15) score -= 5;
+        }
+    }
+
+    // Packet loss (weight: 25 points)
+    const loss = r('21');
+    if (loss) {
+        const pct = parsePct(loss.resultValue);
+        if (!isNaN(pct)) {
+            hasData = true;
+            if (pct > 15) score -= 25;
+            else if (pct > 5) score -= 15;
+            else if (pct > 1) score -= 5;
+        }
+    }
+
+    // Transport protocol (weight: 10 points)
+    const transport = r('17b');
+    if (transport) {
+        hasData = true;
+        const val = (transport.resultValue || '').toLowerCase();
+        if (val.includes('tcp')) score -= 10;
+    }
+
+    // Gateway latency (weight: 10 points — local network health)
+    const gw = r('L-LE-05');
+    if (gw) {
+        const avg = parseMs(gw.resultValue);
+        if (!isNaN(avg)) {
+            hasData = true;
+            if (avg > 50) score -= 10;
+            else if (avg > 20) score -= 5;
+        }
+    }
+
+    return { score: Math.max(0, score), hasData };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -437,11 +581,11 @@ function launchAiAnalysis() {
         return;
     }
 
-    const findings = runAnalysisEngine(allResults);
-    showAnalysisPanel(findings);
+    const { findings, qualityScore } = runAnalysisEngine(allResults);
+    showAnalysisPanel(findings, qualityScore);
 }
 
-function showAnalysisPanel(findings) {
+function showAnalysisPanel(findings, qualityScore) {
     // Remove any existing panel
     const existing = document.getElementById('analysis-panel-overlay');
     if (existing) existing.remove();
@@ -489,6 +633,33 @@ function showAnalysisPanel(findings) {
 
     const findingsHtml = findings.map(renderFinding).join('');
 
+    // Quality score ring HTML
+    let qualityHtml = '';
+    if (qualityScore && qualityScore.hasData) {
+        const s = qualityScore.score;
+        const color = s >= 80 ? '#22c55e' : s >= 50 ? '#eab308' : '#ef4444';
+        const label = s >= 80 ? 'Good' : s >= 50 ? 'Fair' : 'Poor';
+        const radius = 54;
+        const circumference = 2 * Math.PI * radius;
+        const dashoffset = circumference - (s / 100) * circumference;
+        qualityHtml = `
+            <div class="quality-score-section">
+                <div class="quality-ring">
+                    <svg width="128" height="128" viewBox="0 0 128 128">
+                        <circle class="quality-ring-bg" cx="64" cy="64" r="${radius}" />
+                        <circle class="quality-ring-fg" cx="64" cy="64" r="${radius}"
+                            stroke="${color}"
+                            stroke-dasharray="${circumference}"
+                            stroke-dashoffset="${dashoffset}"
+                            transform="rotate(-90 64 64)" />
+                    </svg>
+                    <div class="quality-ring-text" style="color:${color}">${s}</div>
+                </div>
+                <div class="quality-label">${label}</div>
+                <div class="quality-sublabel">Session Quality Score</div>
+            </div>`;
+    }
+
     overlay.innerHTML = `
         <div class="analysis-panel">
             <div class="analysis-panel-header">
@@ -501,6 +672,7 @@ function showAnalysisPanel(findings) {
                 </div>
                 <button class="analysis-close" onclick="closeAnalysisPanel()" title="Close">\u2715</button>
             </div>
+            ${qualityHtml}
             ${summaryHtml}
             <div class="analysis-findings">
                 ${findingsHtml}
@@ -537,7 +709,7 @@ function closeAnalysisPanel() {
 }
 
 function copyAnalysisText() {
-    const findings = runAnalysisEngine(allResults);
+    const { findings } = runAnalysisEngine(allResults);
     const lines = findings.map(f => {
         const sev = f.severity.toUpperCase();
         let text = `[${sev}] ${f.title}\n${f.detail}`;
