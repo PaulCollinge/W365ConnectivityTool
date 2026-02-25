@@ -232,31 +232,16 @@ async function launchAiAnalysis() {
     const prompt = buildAnalysisPrompt(allResults);
     if (!prompt) return;
 
-    // Show a brief toast
-    showAiToast('Building analysis prompt...');
-
-    // Encode for URL
-    const encoded = encodeURIComponent(prompt);
-
-    // Copilot URL: https://copilot.microsoft.com/?q=...
-    // Max URL length is ~8KB for most browsers, but Copilot supports ~4KB query reliably
-    const copilotUrl = `https://copilot.microsoft.com/?q=${encoded}`;
-
-    if (copilotUrl.length <= 8000) {
-        showAiToast('Opening Microsoft Copilot...');
-        window.open(copilotUrl, '_blank', 'noopener');
-    } else {
-        // Prompt too large for URL — copy to clipboard and open Copilot empty
-        try {
-            await navigator.clipboard.writeText(prompt);
-            showAiToast('Prompt copied to clipboard — paste it in Copilot');
-            setTimeout(() => {
-                window.open('https://copilot.microsoft.com/', '_blank', 'noopener');
-            }, 500);
-        } catch (e) {
-            // Clipboard failed — show modal with prompt
-            showAiPromptModal(prompt);
-        }
+    // Copy prompt to clipboard, then open Copilot
+    try {
+        await navigator.clipboard.writeText(prompt);
+        showAiToast('Prompt copied — paste into Copilot with Ctrl+V');
+        setTimeout(() => {
+            window.open('https://copilot.microsoft.com/', '_blank', 'noopener');
+        }, 600);
+    } catch (e) {
+        // Clipboard API failed (e.g. non-HTTPS or denied) — show modal
+        showAiPromptModal(prompt);
     }
 }
 
