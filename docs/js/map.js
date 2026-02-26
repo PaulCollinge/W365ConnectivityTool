@@ -228,23 +228,23 @@ function setBadge(elementId, text, cssClass) {
 
 function latencyClass(ms, isTcp) {
     if (isTcp) {
-        if (ms < 50) return 'latency-good';
-        if (ms < 150) return 'latency-medium';
+        if (ms < 100) return 'latency-good';
+        if (ms < 200) return 'latency-medium';
         return 'latency-bad';
     }
     // UDP thresholds
-    if (ms < 100) return 'latency-good';
+    if (ms < 150) return 'latency-good';
     if (ms < 300) return 'latency-medium';
     return 'latency-bad';
 }
 
 /** Return a human-friendly health word for a latency value. */
 function latencyLabel(ms, type) {
-    if (type === 'gw') return ms < 5 ? 'Healthy' : ms < 20 ? 'Moderate' : 'Poor';
-    if (type === 'udp') return ms < 100 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
-    if (type === 'dns') return ms < 50 ? 'Healthy' : ms < 150 ? 'Moderate' : 'Poor';
+    if (type === 'gw') return ms < 20 ? 'Healthy' : ms < 50 ? 'Moderate' : 'Poor';
+    if (type === 'udp') return ms < 150 ? 'Healthy' : ms < 300 ? 'Moderate' : 'Poor';
+    if (type === 'dns') return ms < 80 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
     // tcp default
-    return ms < 50 ? 'Healthy' : ms < 150 ? 'Moderate' : 'Poor';
+    return ms < 100 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
 }
 
 function worstStatus(a, b) {
@@ -707,9 +707,9 @@ function updateMapLatencyLabels(lookup) {
 }
 
 function latencyClassLine(ms, type) {
-    if (type === 'gw') return ms < 5 ? 'lat-good' : ms < 20 ? 'lat-warn' : 'lat-bad';
-    if (type === 'udp') return ms < 100 ? 'lat-good' : ms < 200 ? 'lat-warn' : 'lat-bad';
-    return ms < 50 ? 'lat-good' : ms < 150 ? 'lat-warn' : 'lat-bad';
+    if (type === 'gw') return ms < 20 ? 'lat-good' : ms < 50 ? 'lat-warn' : 'lat-bad';
+    if (type === 'udp') return ms < 150 ? 'lat-good' : ms < 300 ? 'lat-warn' : 'lat-bad';
+    return ms < 100 ? 'lat-good' : ms < 200 ? 'lat-warn' : 'lat-bad';
 }
 
 // ── Helper: extract location from gateway detailedInfo ──
