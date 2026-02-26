@@ -18,6 +18,13 @@ function updateConnectivityMap(results) {
     updateMapDnsCard(lookup);
     updateMapSecurityBar(lookup);
     updateMapLatencyLabels(lookup);
+
+    // Cloud PC right-side cards (only if Cloud PC data present)
+    const hasCloudPc = results.some(r => r.id && r.id.startsWith('C-'));
+    if (hasCloudPc) {
+        updateMapCloudPcCard(lookup);
+        updateMapAzureCard(lookup);
+    }
 }
 
 // ── Card helpers ──
@@ -855,5 +862,79 @@ function updateMapSecurityBar(lookup) {
     const anyBad = checks.some(t => t && t.status !== 'Passed' && t.status !== 'NotRun' && t.status !== 'Pending' && t.status !== 'Skipped');
     if (bar) {
         bar.className = 'map-security-bar' + (anyBad ? ' has-warning' : '');
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Cloud PC right-side map cards
+// ═══════════════════════════════════════════════════════════
+
+function updateMapCloudPcCard(lookup) {
+    const loc = lookup['C-LE-01'];
+    const net = lookup['C-LE-02'];
+    const imds = lookup['C-NET-01'];
+    const title = document.getElementById('map-cpc-title');
+    const locEl = document.getElementById('map-cpc-location');
+    const ipEl = document.getElementById('map-cpc-ip');
+    const dot = document.getElementById('device-cpc-dot');
+    const accent = document.getElementById('map-cpc-accent');
+
+    if (loc && loc.status === 'Passed' && loc.resultValue) {
+        if (locEl) locEl.textContent = loc.resultValue;
+        // Extract IP from detailed info
+        if (ipEl && loc.detailedInfo) {
+            const ipMatch = loc.detailedInfo.match(/Public IP:\s*([\d.]+)/);
+            if (ipMatch) ipEl.textContent = ipMatch[1];
+        }
+        if (dot) dot.setAttribute('fill', '#3fb950');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+    } else if (loc && loc.status === 'Error') {
+        if (locEl) locEl.textContent = 'Error detecting location';
+        if (dot) dot.setAttribute('fill', '#f85149');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
+    }
+
+    // Show VM name if available from IMDS
+    if (imds && imds.status === 'Passed' && imds.detailedInfo && title) {
+        const vmMatch = imds.detailedInfo.match(/VM Name:\s*(\S+)/);
+        if (vmMatch) title.textContent = vmMatch[1];
+    }
+}
+
+function updateMapAzureCard(lookup) {
+    const net = lookup['C-LE-02'];
+    const egress = lookup['C-NET-02'];
+    const imds = lookup['C-NET-01'];
+    const detail = document.getElementById('map-azure-detail');
+    const detail2 = document.getElementById('map-azure-detail2');
+    const dot = document.getElementById('device-azure-dot');
+    const accent = document.getElementById('map-azure-accent');
+
+    // Show Azure region from IMDS or location test
+    if (imds && imds.status === 'Passed' && imds.detailedInfo) {
+        const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
+        if (regionMatch && detail) detail.textContent = regionMatch[1];
+    }
+
+    // Show org/ISP info
+    if (net && net.status === 'Passed' && net.resultValue) {
+        if (detail2) detail2.textContent = net.resultValue;
+    }
+
+    // Overall status based on egress check
+    if (egress) {
+        if (egress.status === 'Passed') {
+            if (dot) dot.setAttribute('fill', '#3fb950');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+        } else if (egress.status === 'Warning') {
+            if (dot) dot.setAttribute('fill', '#d29922');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
+        } else if (egress.status === 'Failed' || egress.status === 'Error') {
+            if (dot) dot.setAttribute('fill', '#f85149');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
+        }
+    } else if (net && net.status === 'Passed') {
+        if (dot) dot.setAttribute('fill', '#3fb950');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
     }
 }

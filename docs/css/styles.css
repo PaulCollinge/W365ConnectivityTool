@@ -1266,6 +1266,70 @@ main {
 .map-g-dnsline { grid-column: 3; grid-row: 6; justify-self: center; align-self: stretch; z-index: 1; }
 .map-g-dns     { grid-column: 3; grid-row: 7; }
 
+/* ── Cloud PC right-side cards (hidden until .has-cloudpc) ── */
+.map-g-fanin   { grid-column: 8; grid-row: 1 / 6; align-self: stretch; display: none; }
+.map-g-azure   { grid-column: 9; grid-row: 1 / 6; align-self: center; display: none; }
+.map-g-arrow3  { grid-column: 10; grid-row: 1 / 6; align-self: center; justify-self: center; display: none; }
+.map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
+
+.map-diagram.has-cloudpc {
+    grid-template-columns: 1fr 60px 1fr 60px 1fr 50px 1.2fr 50px 1fr 60px 1fr;
+}
+.map-diagram.has-cloudpc .map-g-fanin,
+.map-diagram.has-cloudpc .map-g-azure,
+.map-diagram.has-cloudpc .map-g-arrow3,
+.map-diagram.has-cloudpc .map-g-cloudpc {
+    display: flex;
+}
+.map-fanin { position: relative; }
+.map-fanin .map-fanout-svg { width: 100%; height: 100%; }
+
+/* Reverse arrow and flow animation for Cloud PC side */
+.map-arrow-left { color: var(--accent); font-size: 14px; line-height: 1; margin-right: -4px; }
+.map-hline-left {
+    flex: 1;
+    height: 2px;
+    border-radius: 1px;
+    position: relative;
+    overflow: visible;
+    background: repeating-linear-gradient(90deg,
+        var(--accent) 0px, var(--accent) 8px,
+        transparent 8px, transparent 14px
+    );
+    animation: flowLeft 0.8s linear infinite;
+}
+@keyframes flowLeft {
+    from { background-position: 0 0; }
+    to { background-position: -14px 0; }
+}
+.map-hline-left::after {
+    content: '';
+    position: absolute;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent), 0 0 14px rgba(88,166,255,0.4);
+    top: 50%; right: 0;
+    transform: translateY(-50%);
+    animation: pingDotLeft 2.5s ease-in-out infinite;
+}
+@keyframes pingDotLeft {
+    0%, 100% { right: 0; opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    95% { right: 100%; opacity: 0; }
+}
+
+/* Fanin latency labels (mirror of fanout) */
+.map-ll-cpc-afd  { right: -4px; top: 16.5%; transform: translate(100%, -50%); }
+.map-ll-cpc-turn { right: -4px; top: 83.5%; transform: translate(100%, -50%); }
+
+/* Cloud PC source badge */
+.test-source-badge.cloudpc { background: rgba(88,166,255,0.15); color: #58a6ff; }
+
+/* Cloud PC header accent */
+.cloudpc-header { border-left: 3px solid #58a6ff; }
+
 .map-arrow-cell { display: flex; align-items: center; width: 100%; }
 .map-hline {
     flex: 1;
@@ -1614,6 +1678,7 @@ main {
     .map-diagram { display: flex; flex-direction: column; gap: 8px; }
     .map-arrow-cell { display: none; }
     .map-fanout { display: none; }
+    .map-fanin { display: none !important; }
     .map-dns-connector { display: none; }
     .map-card { width: 100%; }
 }

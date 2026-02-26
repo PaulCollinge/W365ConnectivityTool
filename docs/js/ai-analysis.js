@@ -433,6 +433,57 @@ function runAnalysisEngine(results) {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  Cloud PC server-side rules (C-* tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    // CPC-1: RDP egress leaving Azure backbone
+    const cpcEgress = r('C-NET-02');
+    if (cpcEgress && cpcEgress.status === 'Warning') {
+        findings.push(finding(SEV.WARNING, 'Cloud PC RDP egress leaving Azure',
+            cpcEgress.resultValue || 'RDP traffic from the Cloud PC is routed outside Azure backbone.',
+            'Check for VPN/proxy/SWG configuration on the Cloud PC that is routing RDP traffic outside Azure. RDP should stay within the Azure backbone for optimal performance.'));
+    } else if (cpcEgress && cpcEgress.status === 'Failed') {
+        findings.push(finding(SEV.CRITICAL, 'Cloud PC RDP egress outside Azure',
+            cpcEgress.resultValue || 'RDP traffic is leaving the Azure backbone — this adds latency and reduces reliability.',
+            'Remove VPN/proxy configuration that routes RDP traffic outside Azure. Configure split tunnelling to exempt RDP destinations.'));
+    }
+
+    // CPC-2: TLS inspection on Cloud PC outbound
+    const cpcTls = r('C-TCP-06');
+    if (cpcTls && (cpcTls.status === 'Warning' || cpcTls.status === 'Failed')) {
+        findings.push(finding(SEV.WARNING, 'TLS inspection on Cloud PC',
+            'TLS interception detected on the Cloud PC outbound path. This is not supported for RDP connections and degrades performance.',
+            'Exempt RDP gateway traffic (*.wvd.microsoft.com) from TLS inspection on any proxy/SWG configured on the Cloud PC.'));
+    }
+
+    // CPC-3: Proxy/VPN on Cloud PC affecting RDP
+    const cpcProxy = r('C-TCP-07');
+    if (cpcProxy && (cpcProxy.status === 'Warning' || cpcProxy.status === 'Failed')) {
+        findings.push(finding(SEV.WARNING, 'Proxy/VPN detected on Cloud PC',
+            cpcProxy.resultValue || 'A VPN, proxy, or SWG is active on the Cloud PC network path.',
+            'If this is Entra Private Access or Zscaler for general traffic, that is expected. Ensure RDP traffic to W365 gateways is excluded.'));
+    }
+
+    // CPC-4: DNS hijacking on Cloud PC
+    const cpcDns = r('C-TCP-08');
+    if (cpcDns && (cpcDns.status === 'Warning' || cpcDns.status === 'Failed')) {
+        findings.push(finding(SEV.WARNING, 'DNS hijacking on Cloud PC',
+            cpcDns.resultValue || 'DNS resolution on the Cloud PC is being intercepted.',
+            'Check the DNS configuration on the Cloud PC virtual network. Ensure it uses Azure DNS or corporate DNS without interception.'));
+    }
+
+    // CPC-5: Cloud PC network info — not Microsoft/Azure ISP
+    const cpcNet = r('C-LE-02');
+    if (cpcNet && cpcNet.status === 'Passed' && cpcNet.resultValue) {
+        const orgVal = cpcNet.resultValue.toLowerCase();
+        if (!orgVal.includes('microsoft') && !orgVal.includes('azure')) {
+            findings.push(finding(SEV.INFO, 'Cloud PC network is not Azure-native',
+                `Cloud PC network organization: ${cpcNet.resultValue}. This may indicate the VNet is peered to an external network.`,
+                'If this is expected (e.g., ExpressRoute/peering), no action needed. Otherwise verify the Cloud PC virtual network configuration.'));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     //  Cross-rule correlation (only fire when multiple signals align)
     // ═══════════════════════════════════════════════════════════════
 
@@ -478,6 +529,27 @@ function runAnalysisEngine(results) {
         findings.push(finding(SEV.CRITICAL, 'Local firewall blocking TURN relay',
             'Windows Firewall has an outbound rule blocking UDP 3478, and TURN relay is unreachable. The local firewall is the root cause.',
             'Remove or disable the outbound firewall rule blocking UDP 3478. Run: netsh advfirewall firewall add rule name="Allow W365 TURN" dir=out action=allow protocol=UDP remoteport=3478'));
+    }
+
+    // Correlation 6: Client gateway mismatch vs Cloud PC gateway
+    const clientGw = r('L-TCP-09');
+    const cpcGw = r('C-TCP-09');
+    if (clientGw && cpcGw && clientGw.status === 'Passed' && cpcGw.status === 'Passed') {
+        const clientGwVal = (clientGw.resultValue || '').toLowerCase();
+        const cpcGwVal = (cpcGw.resultValue || '').toLowerCase();
+        if (clientGwVal && cpcGwVal && clientGwVal !== cpcGwVal) {
+            findings.push(finding(SEV.INFO, 'Different gateways for Client and Cloud PC',
+                `Client connects to: ${clientGw.resultValue}\nCloud PC connects to: ${cpcGw.resultValue}\nThis is expected if they are in different regions.`,
+                null));
+        }
+    }
+
+    // Correlation 7: Both client and Cloud PC have proxy/VPN
+    const clientProxy = r('L-TCP-07');
+    if (clientProxy && cpcProxy && clientProxy.status !== 'Passed' && cpcProxy.status !== 'Passed') {
+        findings.push(finding(SEV.WARNING, 'Proxy/VPN on both client and Cloud PC',
+            'Both the client device and the Cloud PC have proxy or VPN detected. This means RDP traffic traverses two proxy layers, doubling overhead.',
+            'Review if both proxies are necessary. Typically only the client side needs web filtering — the Cloud PC should have direct Azure network access.'));
     }
 
     // ═══════════════════════════════════════════════════════════════

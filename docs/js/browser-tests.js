@@ -226,6 +226,73 @@ const ALL_TESTS = [
         id: '27', name: 'RDP Local Egress',
         description: 'Checks that traffic egresses locally to the nearest W365 gateway and TURN relay',
         category: 'cloud', source: 'local'
+    },
+
+    // ── Cloud PC tests (run from within the Cloud PC) ──
+    {
+        id: 'C-LE-01', name: 'Cloud PC Location',
+        description: 'Azure region and public IP location of the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-LE-02', name: 'Cloud PC Network Info',
+        description: 'Network adapters, ISP, and Azure hosting details',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-NET-01', name: 'IMDS Metadata',
+        description: 'Azure Instance Metadata Service — VM size, region, subscription',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-TCP-04', name: 'CPC Gateway Connectivity',
+        description: 'RD Gateway reachability from within the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-TCP-05', name: 'CPC DNS CNAME Chain',
+        description: 'DNS resolution chain for RD Gateway from the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-TCP-06', name: 'CPC TLS Inspection',
+        description: 'Checks for TLS interception on the Cloud PC outbound path',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-TCP-07', name: 'CPC Proxy/VPN Detection',
+        description: 'Detects VPN, proxy, or SWG on the Cloud PC network path',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-TCP-08', name: 'CPC DNS Hijacking',
+        description: 'Checks for DNS hijacking on the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-TCP-09', name: 'CPC Gateway Used',
+        description: 'Identifies the actual RD Gateway endpoint used by the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-NET-02', name: 'CPC RDP Egress Check',
+        description: 'Validates RDP traffic stays within Azure backbone (no unexpected egress)',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-UDP-03', name: 'CPC TURN Relay',
+        description: 'TURN relay reachability from the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-UDP-04', name: 'CPC TURN Location',
+        description: 'Geographic location of the TURN relay used by the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-UDP-07', name: 'CPC TURN Proxy/VPN',
+        description: 'Checks if TURN relay traffic from the Cloud PC is routed via VPN/proxy',
+        category: 'cloudpc', source: 'cloudpc'
     }
 ];
 

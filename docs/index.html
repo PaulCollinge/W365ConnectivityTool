@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=121">
+    <link rel="stylesheet" href="css/styles.css?v=122">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -438,6 +438,74 @@
                         <div class="map-card-badge hidden" id="map-dns-badge"></div>
                     </div>
                 </div>
+
+                <!-- ═══ Cloud PC right-side cards (hidden until Cloud PC data imported) ═══ -->
+                <div class="map-fanin map-g-fanin">
+                    <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
+                        <line class="fan-afd"  x1="60" y1="100" x2="30" y2="100" stroke-width="2"/>
+                        <line class="fan-afd"  x1="30" y1="100" x2="30" y2="33"  stroke-width="2"/>
+                        <line class="fan-turn" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
+                        <line class="fan-afd"  x1="30" y1="33"  x2="0" y2="33"  stroke-width="2"/>
+                        <line class="fan-rdgw" x1="30" y1="100" x2="0" y2="100" stroke-width="2"/>
+                        <line class="fan-turn" x1="30" y1="167" x2="0" y2="167" stroke-width="2"/>
+                    </svg>
+                    <span class="map-line-label map-ll-cpc-afd" id="map-lat-cpc-rdgw"></span>
+                    <span class="map-line-label map-ll-cpc-turn" id="map-lat-cpc-turn"></span>
+                </div>
+
+                <div class="map-client-device map-g-azure" id="map-azure">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Cloud shape (Azure) -->
+                            <ellipse cx="60" cy="42" rx="40" ry="28" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <ellipse cx="42" cy="50" rx="22" ry="16" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <ellipse cx="78" cy="50" rx="22" ry="16" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Fill interior -->
+                            <ellipse cx="60" cy="44" rx="36" ry="24" fill="#0d1117"/>
+                            <ellipse cx="42" cy="50" rx="18" ry="12" fill="#0d1117"/>
+                            <ellipse cx="78" cy="50" rx="18" ry="12" fill="#0d1117"/>
+                            <!-- Azure icon -->
+                            <text x="60" y="48" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="10" font-weight="700">Azure</text>
+                            <!-- Status dot -->
+                            <circle class="device-status-dot" id="device-azure-dot" cx="60" cy="58" r="3" fill="#484f58"/>
+                        </svg>
+                        <div class="device-accent" id="map-azure-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">Azure Network</div>
+                        <div class="device-detail" id="map-azure-detail">Awaiting results...</div>
+                        <div class="device-detail" id="map-azure-detail2"></div>
+                    </div>
+                </div>
+
+                <div class="map-arrow-cell map-g-arrow3"><span class="map-arrow map-arrow-left">◂</span><span class="map-hline map-hline-left"></span><span class="map-line-label" id="map-lat-cpc-gw"></span></div>
+
+                <div class="map-client-device map-g-cloudpc" id="map-cloudpc">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Monitor body -->
+                            <rect x="14" y="6" width="92" height="58" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Screen -->
+                            <rect x="20" y="12" width="80" height="46" rx="2" fill="#161b22"/>
+                            <!-- Cloud PC icon in screen -->
+                            <text x="60" y="32" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="8" font-weight="700">Cloud PC</text>
+                            <rect x="40" y="36" width="40" height="16" rx="2" fill="none" stroke="#58a6ff" stroke-width="1" opacity="0.4"/>
+                            <line x1="44" y1="42" x2="72" y2="42" stroke="#58a6ff" stroke-width="1" opacity="0.3"/>
+                            <line x1="44" y1="46" x2="64" y2="46" stroke="#58a6ff" stroke-width="1" opacity="0.3"/>
+                            <!-- Status dot -->
+                            <circle class="device-status-dot" id="device-cpc-dot" cx="60" cy="52" r="3" fill="#484f58"/>
+                            <!-- Stand -->
+                            <rect x="50" y="66" width="20" height="4" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <rect x="42" y="70" width="36" height="4" rx="2" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                        </svg>
+                        <div class="device-accent" id="map-cpc-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title" id="map-cpc-title">Cloud PC</div>
+                        <div class="device-detail" id="map-cpc-location">Awaiting results...</div>
+                        <div class="device-detail mono" id="map-cpc-ip"></div>
+                    </div>
+                </div>
             </div>
             <div class="map-security-bar" id="map-security-bar">
                 <div class="security-badge pending" id="sec-tls-badge">
@@ -533,6 +601,27 @@
             </div>
             <div class="test-list" id="tests-cloud"></div>
         </div>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- Cloud PC Diagnostics — server-side test results           -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <div id="cloudpc-diagnostics-section" class="live-diagnostics-section hidden">
+            <div class="live-header cloudpc-header">
+                <div class="live-header-left">
+                    <span class="live-icon">☁️</span>
+                    <div>
+                        <h2 class="live-title">Cloud PC Diagnostics</h2>
+                        <p class="live-subtitle">Connectivity tests run from within the Cloud PC (Azure VM)</p>
+                    </div>
+                </div>
+                <span class="category-badge" id="badge-cloudpc"></span>
+            </div>
+            <div class="live-info-bar" id="cloudpc-info-bar">
+                <span class="live-info-icon">ℹ️</span>
+                <span>Run the scanner inside the Cloud PC with <code>--cloudpc</code> or it will auto-detect Azure VMs. Import the results to see the server-side view.</span>
+            </div>
+            <div class="test-list" id="tests-cloudpc"></div>
+        </div>
     </main>
 
     <footer>
@@ -607,11 +696,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=121"></script>
-    <script src="js/browser-tests.js?v=121"></script>
-    <script src="js/ui.js?v=121"></script>
-    <script src="js/map.js?v=121"></script>
-    <script src="js/ai-analysis.js?v=121"></script>
-    <script src="js/app.js?v=121"></script>
+    <script src="js/config.js?v=122"></script>
+    <script src="js/browser-tests.js?v=122"></script>
+    <script src="js/ui.js?v=122"></script>
+    <script src="js/map.js?v=122"></script>
+    <script src="js/ai-analysis.js?v=122"></script>
+    <script src="js/app.js?v=122"></script>
 </body>
 </html>

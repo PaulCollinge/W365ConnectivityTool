@@ -20,6 +20,11 @@ namespace W365LocalScanner;
 
 class Program
 {
+    // ── Static field: are we running in Cloud PC mode? ──
+    static bool _isCloudPcMode = false;
+    static string? _azureVmRegion = null;
+    static string? _azureVmName = null;
+
     static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -40,19 +45,88 @@ class Program
             }
         }
 
-        Console.WriteLine("╔══════════════════════════════════════════════════════╗");
-        Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
-        Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-        Console.WriteLine("║   Runs tests requiring local OS access.             ║");
-        Console.WriteLine("║   Import results into the web diagnostics page.     ║");
-        Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+        // ── Cloud PC mode detection ──
+        // Explicit flag overrides auto-detection.
+        bool forceCloudPc = args.Any(a => a.Equals("--cloudpc", StringComparison.OrdinalIgnoreCase));
+        if (forceCloudPc)
+        {
+            _isCloudPcMode = true;
+        }
+        else
+        {
+            // Auto-detect: probe Azure IMDS (only available inside Azure VMs)
+            try
+            {
+                using var imdsClient = new HttpClient();
+                imdsClient.DefaultRequestHeaders.Add("Metadata", "true");
+                imdsClient.Timeout = TimeSpan.FromSeconds(3);
+                var imdsResp = await imdsClient.GetAsync(
+                    "http://169.254.169.254/metadata/instance?api-version=2021-02-01");
+                if (imdsResp.IsSuccessStatusCode)
+                {
+                    var imdsJson = await imdsResp.Content.ReadAsStringAsync();
+                    var imdsDoc = JsonDocument.Parse(imdsJson);
+                    var compute = imdsDoc.RootElement.GetProperty("compute");
+                    _azureVmRegion = compute.TryGetProperty("location", out var loc) ? loc.GetString() : null;
+                    _azureVmName = compute.TryGetProperty("name", out var vn) ? vn.GetString() : null;
+                    var vmSize = compute.TryGetProperty("vmSize", out var vs) ? vs.GetString() ?? "" : "";
+
+                    // Heuristic: if it's a Cloud PC-class VM size or name matches w365/cloudpc pattern,
+                    // auto-enable Cloud PC mode. Otherwise prompt.
+                    var isLikelyCloudPc = vmSize.Contains("_cpc", StringComparison.OrdinalIgnoreCase)
+                        || (_azureVmName?.Contains("cloudpc", StringComparison.OrdinalIgnoreCase) ?? false)
+                        || (_azureVmName?.Contains("w365", StringComparison.OrdinalIgnoreCase) ?? false);
+
+                    if (isLikelyCloudPc)
+                    {
+                        _isCloudPcMode = true;
+                    }
+                    else
+                    {
+                        Console.WriteLine("  Azure VM detected but not identified as Cloud PC.");
+                        Console.Write("  Run in Cloud PC mode? [Y/n]: ");
+                        var key = Console.ReadLine()?.Trim();
+                        _isCloudPcMode = string.IsNullOrEmpty(key) || key.StartsWith("y", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+            catch { /* Not in Azure — client mode */ }
+        }
+
+        if (_isCloudPcMode)
+        {
+            Console.WriteLine("╔══════════════════════════════════════════════════════╗");
+            Console.WriteLine("║   Windows 365 / AVD Cloud PC Connectivity Scanner   ║");
+            Console.WriteLine("╠══════════════════════════════════════════════════════╣");
+            Console.WriteLine("║   Running on Cloud PC — tests the server-side       ║");
+            Console.WriteLine("║   connectivity back to the RDP Gateway / TURN relay.║");
+            Console.WriteLine("║   Import results into the web dashboard alongside   ║");
+            Console.WriteLine("║   the client-side results for end-to-end view.      ║");
+            Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+            if (_azureVmRegion != null)
+                Console.WriteLine($"  Azure region: {_azureVmRegion}  VM: {_azureVmName ?? "unknown"}");
+        }
+        else
+        {
+            Console.WriteLine("╔══════════════════════════════════════════════════════╗");
+            Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
+            Console.WriteLine("╠══════════════════════════════════════════════════════╣");
+            Console.WriteLine("║   Runs tests requiring local OS access.             ║");
+            Console.WriteLine("║   Import results into the web diagnostics page.     ║");
+            Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+        }
         Console.WriteLine();
 
         // Determine whether to run Live Connection Diagnostics (cloud tests).
         // These take ~60s each to sample performance data.
+        // In Cloud PC mode, live connection diagnostics are skipped (no active RDP session on the server).
         // Can be controlled via --include-cloud / --skip-cloud flags, or interactive prompt.
         bool includeCloud;
-        if (args.Any(a => a.Equals("--include-cloud", StringComparison.OrdinalIgnoreCase)))
+        if (_isCloudPcMode)
+        {
+            includeCloud = false; // Cloud PC mode doesn't run live session tests
+        }
+        else if (args.Any(a => a.Equals("--include-cloud", StringComparison.OrdinalIgnoreCase)))
         {
             includeCloud = true;
         }
@@ -73,10 +147,15 @@ class Program
         }
 
         var results = new List<TestResult>();
-        var allTests = GetAllTests();
+        var allTests = _isCloudPcMode ? GetCloudPcTests() : GetAllTests();
         var tests = includeCloud ? allTests : allTests.Where(t => t.Category != "cloud").ToList();
 
-        if (!includeCloud)
+        if (_isCloudPcMode)
+        {
+            Console.WriteLine($"  Running {tests.Count} Cloud PC connectivity tests.");
+            Console.WriteLine();
+        }
+        else if (!includeCloud)
         {
             Console.WriteLine($"  Skipping {allTests.Count - tests.Count} Live Connection Diagnostics tests.");
             Console.WriteLine("  Run with --include-cloud to include them, or re-run and press Y.");
@@ -220,6 +299,8 @@ class Program
             MachineName = Environment.MachineName,
             OsVersion = Environment.OSVersion.ToString(),
             DotNetVersion = RuntimeInformation.FrameworkDescription,
+            ScanMode = _isCloudPcMode ? "cloudpc" : "client",
+            AzureRegion = _isCloudPcMode ? _azureVmRegion : null,
             Results = results
         };
 
@@ -931,6 +1012,34 @@ class Program
             new("25", "RDP TLS Inspection", "Checks for TLS interception on RDP gateway", "cloud", RunCloudTlsInspection),
             new("26", "RDP Traffic Routing", "Validates VPN/SWG bypass for RDP endpoints", "cloud", RunCloudTrafficRouting),
             new("27", "RDP Local Egress", "Checks traffic egresses locally to nearest gateway", "cloud", RunCloudLocalEgress),
+        ];
+    }
+
+    // ── Cloud PC test suite (runs on the Cloud PC itself) ──
+    static List<TestDefinition> GetCloudPcTests()
+    {
+        return
+        [
+            // ── Cloud PC Environment ──
+            new("C-LE-01", "Cloud PC Location", "Identifies Azure region and public IP of the Cloud PC", "cloudpc-env", RunCpcLocation),
+            new("C-LE-02", "Cloud PC Network Info", "Shows network adapters and ISP on the Cloud PC", "cloudpc-env", RunCpcNetworkInfo),
+
+            // ── Cloud PC → Gateway/TURN Connectivity ──
+            new("C-TCP-04", "Gateway Connectivity (Cloud PC)", "Tests RDP Gateway reachability from Cloud PC", "cloudpc-tcp", RunCpcGatewayConnectivity),
+            new("C-TCP-05", "DNS CNAME Chain (Cloud PC)", "Validates DNS chain from Cloud PC", "cloudpc-tcp", RunCpcDnsCnameChain),
+            new("C-TCP-06", "TLS Inspection (Cloud PC)", "Checks for TLS interception on Cloud PC", "cloudpc-tcp", RunCpcTlsInspection),
+            new("C-TCP-07", "Proxy / VPN / SWG (Cloud PC)", "Detects proxy, VPN, SWG on Cloud PC", "cloudpc-tcp", RunCpcProxyVpnDetection),
+            new("C-TCP-08", "DNS Hijacking (Cloud PC)", "Verifies gateway DNS resolves to Microsoft IPs from Cloud PC", "cloudpc-tcp", RunCpcDnsHijackingCheck),
+            new("C-TCP-09", "Gateway Used (Cloud PC)", "Shows gateway endpoint reached from Cloud PC", "cloudpc-tcp", RunCpcGatewayUsed),
+
+            // ── Cloud PC → TURN Relay ──
+            new("C-UDP-03", "TURN Relay (Cloud PC)", "Tests UDP to TURN relay from Cloud PC", "cloudpc-udp", RunCpcTurnRelay),
+            new("C-UDP-04", "TURN Relay Location (Cloud PC)", "Geolocates TURN relay from Cloud PC", "cloudpc-udp", RunCpcTurnRelayLocation),
+            new("C-UDP-07", "TURN Proxy/VPN (Cloud PC)", "Detects UDP-blocking proxy/VPN from Cloud PC", "cloudpc-udp", RunCpcTurnProxyVpn),
+
+            // ── Cloud PC RDP Egress Validation ──
+            new("C-NET-01", "Azure IMDS Metadata", "Reads VM metadata from Azure Instance Metadata Service", "cloudpc-env", RunCpcImdsMetadata),
+            new("C-NET-02", "RDP Egress in Azure", "Checks that RDP traffic to Gateway/TURN stays within Azure", "cloudpc-tcp", RunCpcRdpEgressInAzure),
         ];
     }
 
@@ -5990,6 +6099,414 @@ class Program
             return null;
         }
     }
+
+    // ═══════════════════════════════════════════
+    //  CLOUD PC TEST IMPLEMENTATIONS
+    // ═══════════════════════════════════════════
+
+    /// <summary>C-LE-01: Cloud PC Location — identifies Azure region and public IP.</summary>
+    static async Task<TestResult> RunCpcLocation()
+    {
+        var result = new TestResult { Id = "C-LE-01", Name = "Cloud PC Location", Category = "cloudpc-env" };
+        try
+        {
+            var sb = new StringBuilder();
+
+            // Azure region from IMDS (already fetched in Main)
+            if (_azureVmRegion != null)
+                sb.AppendLine($"Azure Region: {_azureVmRegion}");
+            if (_azureVmName != null)
+                sb.AppendLine($"VM Name: {_azureVmName}");
+
+            // Public IP via GeoIP
+            var geo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
+            string city = geo.TryGetProperty("city", out var c) ? c.GetString() ?? "" : "";
+            string region = geo.TryGetProperty("region", out var rn) ? rn.GetString() ?? "" : "";
+            string country = geo.TryGetProperty("country", out var co) ? co.GetString() ?? "" : "";
+            string ip = geo.TryGetProperty("ip", out var q) ? q.GetString() ?? "" : "";
+
+            sb.AppendLine($"Public IP: {ip}");
+            sb.AppendLine($"Location: {city}, {region}, {country}");
+            sb.AppendLine($"Source: GeoIP");
+
+            var locText = _azureVmRegion != null
+                ? $"{_azureVmRegion} ({city}, {country})"
+                : $"{city}, {region}, {country}";
+
+            result.Status = "Passed";
+            result.ResultValue = locText;
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>C-LE-02: Cloud PC Network Info — adapters and ISP.</summary>
+    static async Task<TestResult> RunCpcNetworkInfo()
+    {
+        var result = new TestResult { Id = "C-LE-02", Name = "Cloud PC Network Info", Category = "cloudpc-env" };
+        try
+        {
+            var sb = new StringBuilder();
+            var geo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
+            string org = geo.TryGetProperty("org", out var orgVal) ? orgVal.GetString() ?? "" : "";
+            string hostname = geo.TryGetProperty("hostname", out var hostVal) ? hostVal.GetString() ?? "" : "";
+            string ip = geo.TryGetProperty("ip", out var ipVal) ? ipVal.GetString() ?? "" : "";
+
+            sb.AppendLine($"Public IP: {ip}");
+            sb.AppendLine($"Organisation: {org}");
+            if (!string.IsNullOrEmpty(hostname))
+                sb.AppendLine($"Hostname: {hostname}");
+            sb.AppendLine();
+
+            // Network adapters
+            var nics = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up
+                    && n.NetworkInterfaceType != NetworkInterfaceType.Loopback);
+            foreach (var nic in nics)
+            {
+                sb.AppendLine($"Adapter: {nic.Name} ({nic.Description})");
+                sb.AppendLine($"  Type: {nic.NetworkInterfaceType}");
+                sb.AppendLine($"  Speed: {nic.Speed / 1_000_000} Mbps");
+                var ipProps = nic.GetIPProperties();
+                foreach (var addr in ipProps.UnicastAddresses.Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork))
+                    sb.AppendLine($"  IPv4: {addr.Address}");
+            }
+
+            bool isMicrosoft = org.Contains("Microsoft", StringComparison.OrdinalIgnoreCase)
+                || org.Contains("Azure", StringComparison.OrdinalIgnoreCase);
+
+            result.Status = "Passed";
+            result.ResultValue = org;
+            if (!isMicrosoft)
+            {
+                sb.AppendLine();
+                sb.AppendLine("Note: Network org is not Microsoft/Azure. General internet traffic may be routed via VPN/proxy — this is expected if Entra Private Access or similar is configured.");
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>C-TCP-04: Gateway Connectivity from Cloud PC — reuses existing RunGatewayConnectivity.</summary>
+    static async Task<TestResult> RunCpcGatewayConnectivity()
+    {
+        var r = await RunGatewayConnectivity();
+        r.Id = "C-TCP-04"; r.Name = "Gateway Connectivity (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    /// <summary>C-TCP-05: DNS CNAME Chain from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcDnsCnameChain()
+    {
+        var r = await RunDnsCnameChain();
+        r.Id = "C-TCP-05"; r.Name = "DNS CNAME Chain (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    /// <summary>C-TCP-06: TLS Inspection Detection from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcTlsInspection()
+    {
+        var r = await RunTlsInspection();
+        r.Id = "C-TCP-06"; r.Name = "TLS Inspection (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    /// <summary>C-TCP-07: Proxy / VPN / SWG Detection from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcProxyVpnDetection()
+    {
+        var r = await RunProxyVpnDetection();
+        r.Id = "C-TCP-07"; r.Name = "Proxy / VPN / SWG (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    /// <summary>C-TCP-08: DNS Hijacking Check from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcDnsHijackingCheck()
+    {
+        var r = await RunDnsHijackingCheck();
+        r.Id = "C-TCP-08"; r.Name = "DNS Hijacking (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    /// <summary>C-TCP-09: Gateway Used from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcGatewayUsed()
+    {
+        var r = await RunGatewayUsed();
+        r.Id = "C-TCP-09"; r.Name = "Gateway Used (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    /// <summary>C-UDP-03: TURN Relay from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcTurnRelay()
+    {
+        var r = await RunTurnRelay();
+        r.Id = "C-UDP-03"; r.Name = "TURN Relay (Cloud PC)"; r.Category = "cloudpc-udp";
+        return r;
+    }
+
+    /// <summary>C-UDP-04: TURN Relay Location from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcTurnRelayLocation()
+    {
+        var r = await RunTurnRelayLocation();
+        r.Id = "C-UDP-04"; r.Name = "TURN Relay Location (Cloud PC)"; r.Category = "cloudpc-udp";
+        return r;
+    }
+
+    /// <summary>C-UDP-07: TURN Proxy/VPN from Cloud PC — reuses existing.</summary>
+    static async Task<TestResult> RunCpcTurnProxyVpn()
+    {
+        var r = await RunTurnProxyVpn();
+        r.Id = "C-UDP-07"; r.Name = "TURN Proxy/VPN (Cloud PC)"; r.Category = "cloudpc-udp";
+        return r;
+    }
+
+    /// <summary>C-NET-01: Azure IMDS Metadata — reads VM metadata from the Instance Metadata Service.</summary>
+    static async Task<TestResult> RunCpcImdsMetadata()
+    {
+        var result = new TestResult { Id = "C-NET-01", Name = "Azure IMDS Metadata", Category = "cloudpc-env" };
+        try
+        {
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Add("Metadata", "true");
+            client.Timeout = TimeSpan.FromSeconds(5);
+            var resp = await client.GetAsync(
+                "http://169.254.169.254/metadata/instance?api-version=2021-02-01");
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"IMDS returned {resp.StatusCode}";
+                return result;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(json);
+            var compute = doc.RootElement.GetProperty("compute");
+            var network = doc.RootElement.GetProperty("network");
+
+            var sb = new StringBuilder();
+            string vmName = compute.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            string vmSize = compute.TryGetProperty("vmSize", out var s) ? s.GetString() ?? "" : "";
+            string location = compute.TryGetProperty("location", out var l) ? l.GetString() ?? "" : "";
+            string subId = compute.TryGetProperty("subscriptionId", out var sub) ? sub.GetString() ?? "" : "";
+            string rgName = compute.TryGetProperty("resourceGroupName", out var rg) ? rg.GetString() ?? "" : "";
+            string offer = compute.TryGetProperty("offer", out var of) ? of.GetString() ?? "" : "";
+            string sku = compute.TryGetProperty("sku", out var sk) ? sk.GetString() ?? "" : "";
+            string publisher = compute.TryGetProperty("publisher", out var pb) ? pb.GetString() ?? "" : "";
+
+            sb.AppendLine($"VM Name: {vmName}");
+            sb.AppendLine($"VM Size: {vmSize}");
+            sb.AppendLine($"Azure Region: {location}");
+            sb.AppendLine($"Resource Group: {rgName}");
+            sb.AppendLine($"Subscription: {subId}");
+            if (!string.IsNullOrEmpty(publisher))
+                sb.AppendLine($"Image: {publisher}/{offer}/{sku}");
+
+            // Extract private IP from network interface
+            try
+            {
+                var iface = network.GetProperty("interface");
+                if (iface.GetArrayLength() > 0)
+                {
+                    var ipv4 = iface[0].GetProperty("ipv4").GetProperty("ipAddress");
+                    if (ipv4.GetArrayLength() > 0)
+                    {
+                        string privateIp = ipv4[0].TryGetProperty("privateIpAddress", out var pip) ? pip.GetString() ?? "" : "";
+                        string publicIp = ipv4[0].TryGetProperty("publicIpAddress", out var pubip) ? pubip.GetString() ?? "" : "";
+                        sb.AppendLine($"Private IP: {privateIp}");
+                        if (!string.IsNullOrEmpty(publicIp))
+                            sb.AppendLine($"Public IP (IMDS): {publicIp}");
+                    }
+                }
+            }
+            catch { sb.AppendLine("Could not parse network interface data."); }
+
+            result.Status = "Passed";
+            result.ResultValue = $"{location} — {vmSize}";
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (HttpRequestException)
+        {
+            result.Status = "Warning";
+            result.ResultValue = "IMDS not available — may not be an Azure VM";
+            result.DetailedInfo = "Azure Instance Metadata Service (IMDS) at 169.254.169.254 was not reachable.\nThis endpoint is only available inside Azure VMs.";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>
+    /// C-NET-02: RDP Egress in Azure — checks that Cloud PC traffic to RDP Gateway
+    /// and TURN relay exits from an Azure IP range (not routed outside via VPN/SWG).
+    /// Only checks the RDP path, not general internet egress which may legitimately
+    /// go through on-prem proxies.
+    /// </summary>
+    static async Task<TestResult> RunCpcRdpEgressInAzure()
+    {
+        var result = new TestResult { Id = "C-NET-02", Name = "RDP Egress in Azure", Category = "cloudpc-tcp" };
+        try
+        {
+            var sb = new StringBuilder();
+            var concerns = new List<string>();
+            var knownAzureFirstOctets = new HashSet<byte> { 13, 20, 40, 51, 52, 65, 104, 131, 132, 134, 137, 138, 157, 168, 191, 204 };
+
+            // 1. Check RDP Gateway egress
+            sb.AppendLine("── RDP Gateway Egress ──");
+            string? gwHost = null;
+            try
+            {
+                var (discoveredHost, detail) = await DiscoverRdpGatewayFromAfd();
+                gwHost = discoveredHost ?? "rdweb.wvd.microsoft.com";
+                sb.AppendLine($"Gateway: {gwHost}");
+
+                var gwIps = await Dns.GetHostAddressesAsync(gwHost);
+                var gwIp = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (gwIp != null)
+                {
+                    sb.AppendLine($"Gateway IP: {gwIp}");
+                    bool isW365 = IsInW365Range(gwIp);
+                    var gwRegion = LookupGatewayRegion(gwIp);
+                    bool isKnownAzure = gwIp.GetAddressBytes().Length == 4 && knownAzureFirstOctets.Contains(gwIp.GetAddressBytes()[0]);
+
+                    if (isW365)
+                    {
+                        sb.AppendLine($"✓ Gateway IP is in W365 range{(gwRegion != null ? $" ({gwRegion})" : "")}");
+                    }
+                    else if (isKnownAzure)
+                    {
+                        sb.AppendLine("✓ Gateway IP is in known Azure range");
+                    }
+                    else
+                    {
+                        sb.AppendLine("⚠ Gateway IP is NOT in a known Azure range — traffic may be routed outside Azure");
+                        concerns.Add("Gateway");
+                    }
+
+                    // Check which local interface would route to this IP
+                    var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                        .Where(n => n.OperationalStatus == OperationalStatus.Up)
+                        .Where(n =>
+                        {
+                            var desc = n.Description?.ToLowerInvariant() ?? "";
+                            return desc.Contains("vpn") || desc.Contains("virtual private")
+                                || desc.Contains("cisco") || desc.Contains("palo alto")
+                                || desc.Contains("fortinet") || desc.Contains("wireguard")
+                                || desc.Contains("tap-windows") || desc.Contains("openvpn");
+                        }).ToList();
+
+                    if (vpnAdapters.Count > 0)
+                    {
+                        var (routedViaVpn, localIp, adapterName) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
+                        sb.AppendLine($"Local route: {localIp}");
+                        if (routedViaVpn)
+                        {
+                            sb.AppendLine($"⚠ Traffic to Gateway routes via VPN adapter: {adapterName}");
+                            concerns.Add("VPN-routed Gateway");
+                        }
+                        else
+                        {
+                            sb.AppendLine("✓ Traffic to Gateway does not route via VPN adapter");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { sb.AppendLine($"Gateway check failed: {ex.Message}"); }
+
+            sb.AppendLine();
+
+            // 2. Check TURN Relay egress
+            sb.AppendLine("── TURN Relay Egress ──");
+            try
+            {
+                var turnHost = "world.relay.avd.microsoft.com";
+                var turnIps = await Dns.GetHostAddressesAsync(turnHost);
+                var turnIp = turnIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                sb.AppendLine($"TURN Host: {turnHost}");
+
+                if (turnIp != null)
+                {
+                    sb.AppendLine($"TURN IP: {turnIp}");
+                    bool isW365 = IsInW365Range(turnIp);
+                    var turnRegion = LookupTurnRelayRegion(turnIp);
+                    bool isKnownAzure = turnIp.GetAddressBytes().Length == 4 && knownAzureFirstOctets.Contains(turnIp.GetAddressBytes()[0]);
+
+                    if (isW365)
+                    {
+                        sb.AppendLine($"✓ TURN IP is in W365 range{(turnRegion != null ? $" ({turnRegion})" : "")}");
+                    }
+                    else if (isKnownAzure)
+                    {
+                        sb.AppendLine("✓ TURN IP is in known Azure range");
+                    }
+                    else
+                    {
+                        sb.AppendLine("⚠ TURN IP is NOT in a known Azure range — traffic may be routed outside Azure");
+                        concerns.Add("TURN");
+                    }
+
+                    // VPN routing check
+                    var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                        .Where(n => n.OperationalStatus == OperationalStatus.Up)
+                        .Where(n =>
+                        {
+                            var desc = n.Description?.ToLowerInvariant() ?? "";
+                            return desc.Contains("vpn") || desc.Contains("virtual private")
+                                || desc.Contains("cisco") || desc.Contains("palo alto")
+                                || desc.Contains("fortinet") || desc.Contains("wireguard")
+                                || desc.Contains("tap-windows") || desc.Contains("openvpn");
+                        }).ToList();
+
+                    if (vpnAdapters.Count > 0)
+                    {
+                        var (routedViaVpn, localIp, adapterName) = CheckIfRoutedViaVpn(turnIp, vpnAdapters);
+                        sb.AppendLine($"Local route: {localIp}");
+                        if (routedViaVpn)
+                        {
+                            sb.AppendLine($"⚠ Traffic to TURN routes via VPN adapter: {adapterName}");
+                            concerns.Add("VPN-routed TURN");
+                        }
+                        else
+                        {
+                            sb.AppendLine("✓ Traffic to TURN does not route via VPN adapter");
+                        }
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("⚠ Could not resolve TURN relay address");
+                }
+            }
+            catch (Exception ex) { sb.AppendLine($"TURN check failed: {ex.Message}"); }
+
+            // 3. Compare Azure region of the Cloud PC with gateway/relay region
+            if (_azureVmRegion != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"── Region Comparison ──");
+                sb.AppendLine($"Cloud PC region: {_azureVmRegion}");
+                // The gateway/turn region lookups above will show nearby region info
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            if (concerns.Count > 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"RDP traffic may egress outside Azure: {string.Join(", ", concerns)}";
+                result.RemediationText = "RDP traffic from the Cloud PC appears to be routed outside Azure via VPN/SWG. " +
+                    "Ensure that 40.64.144.0/20 (Gateway) and 51.5.0.0/16 (TURN) are excluded from VPN tunnel on the Cloud PC. " +
+                    "These ranges should route directly within the Azure network.";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#3-local-network-egress";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = "RDP traffic stays within Azure — no VPN/SWG routing detected";
+            }
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
 }
 
 // ═══════════════════════════════════════════
@@ -6042,6 +6559,12 @@ class ScanOutput
 
     [JsonPropertyName("dotNetVersion")]
     public string DotNetVersion { get; set; } = string.Empty;
+
+    [JsonPropertyName("scanMode")]
+    public string ScanMode { get; set; } = "client";
+
+    [JsonPropertyName("azureRegion")]
+    public string? AzureRegion { get; set; }
 
     [JsonPropertyName("results")]
     public List<TestResult> Results { get; set; } = [];

@@ -373,7 +373,9 @@ async function decodeCompressedHash(raw) {
         const STATUS_EXPAND = { P:'Passed', F:'Failed', W:'Warning', I:'Info', N:'NotRun', E:'Pending', X:'Error' };
         parsed = {
             timestamp: parsed.ts,
-            machineName: 'SharedLink',
+            machineName: parsed.mn || 'SharedLink',
+            scanMode: parsed.sm || undefined,
+            azureRegion: parsed.ar || undefined,
             results: parsed.r.map(c => ({
                 id: c.i,
                 status: STATUS_EXPAND[c.s] || c.s,
@@ -401,7 +403,7 @@ function decodeUncompressedHash(raw) {
 // ── Shared import logic ──
 function processImportedData(data) {
     ilog('processImportedData called. data type=' + typeof data + ', has results=' + Array.isArray(data?.results) + ', count=' + (data?.results?.length ?? 'N/A'));
-    // The local scanner outputs: { timestamp, machineName, results: [...] }
+    // The local scanner outputs: { timestamp, machineName, scanMode, azureRegion, results: [...] }
     let localResults = [];
     if (Array.isArray(data.results)) {
         localResults = data.results;
@@ -410,6 +412,12 @@ function processImportedData(data) {
     } else {
         alert('Invalid results file. Expected JSON with a "results" array.');
         return;
+    }
+
+    // Detect Cloud PC mode
+    const isCloudPcImport = data.scanMode === 'cloudpc';
+    if (isCloudPcImport) {
+        ilog('Cloud PC scan detected. Azure region: ' + (data.azureRegion || 'unknown'));
     }
 
     // Remember when the scanner data was captured
@@ -455,7 +463,7 @@ function processImportedData(data) {
                 name: lr.name || lrId,
                 description: lr.description || '',
                 category: lr.category || mapCategoryFromId(lrId),
-                source: 'local',
+                source: isCloudPcImport ? 'cloudpc' : 'local',
                 status: lr.status || 'Passed',
                 resultValue: lr.resultValue || lr.result || '',
                 detailedInfo: lr.detailedInfo || lr.details || '',
@@ -463,6 +471,10 @@ function processImportedData(data) {
                 remediationUrl: lr.remediationUrl || '',
                 remediationText: lr.remediationText || ''
             };
+
+            // Normalize scanner's specific cloudpc sub-categories to dashboard 'cloudpc'
+            if (mapped.category && mapped.category.startsWith('cloudpc-'))
+                mapped.category = 'cloudpc';
 
             allResults.push(mapped);
 
@@ -503,27 +515,44 @@ function processImportedData(data) {
     info.classList.remove('hidden');
     const machineName = data.machineName ? escapeHtml(String(data.machineName)) : '';
     const scanTime = data.timestamp ? escapeHtml(new Date(data.timestamp).toLocaleString()) : '';
+    const importLabel = isCloudPcImport ? 'Cloud PC scan' : 'local scan';
     info.querySelector('.info-text').innerHTML =
-        `<strong>Imported ${importedCount} local scan results.</strong> ` +
+        `<strong>Imported ${importedCount} ${importLabel} results.</strong> ` +
         (machineName ? `Machine: ${machineName}. ` : '') +
+        (data.azureRegion ? `Azure Region: ${escapeHtml(data.azureRegion)}. ` : '') +
         (scanTime ? `Scanned: ${scanTime}. ` : '') +
         'Combined results are shown below.';
 
     // Hide download banner if we have local results
     if (importedCount > 0) hideDownloadBanner();
 
+    // Show Cloud PC section if we have any Cloud PC results
+    const hasCloudPcResults = allResults.some(r => r.category === 'cloudpc');
+    const cloudPcSection = document.getElementById('cloudpc-diagnostics-section');
+    if (cloudPcSection && hasCloudPcResults) {
+        cloudPcSection.classList.remove('hidden');
+        const cpcInfoBar = document.getElementById('cloudpc-info-bar');
+        if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+    }
+
+    // Show the extended map with Cloud PC cards if Cloud PC data present
+    if (hasCloudPcResults) {
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
+    }
+
     // Hide the cloud info bar if we imported any cloud results
-    const hasCloudResults = allResults.some(r => r.category === 'cloud' && r.source === 'local');
+    const hasCloudResults = allResults.some(r => r.category === 'cloud' && (r.source === 'local' || r.source === 'cloudpc'));
     if (hasCloudResults) {
         const cloudInfoBar = document.getElementById('cloud-info-bar');
         if (cloudInfoBar) cloudInfoBar.style.display = 'none';
     }
 
-    // Hide stale "Requires Local Scanner" cards whose IDs weren't in the import.
+    // Hide stale "Requires Local Scanner" / "Cloud PC" cards whose IDs weren't in the import.
     // This handles scanner versions that use different IDs (e.g. L-CS-01 vs 17).
     const importedIds = new Set(localResults.map(r => String(r.id)));
     for (const test of ALL_TESTS) {
-        if (test.source !== 'local') continue;
+        if (test.source !== 'local' && test.source !== 'cloudpc') continue;
         if (importedIds.has(String(test.id))) continue;
         // This test was NOT in the scanner output — hide the placeholder card
         const el = document.getElementById(`test-${test.id}`);
@@ -534,6 +563,8 @@ function processImportedData(data) {
 // ── Helpers ──
 function mapCategoryFromId(id) {
     if (!id) return 'local';
+    // Cloud PC tests (C-* prefix)
+    if (id.startsWith('C-')) return 'cloudpc';
     if (id.includes('-EP-')) return 'endpoint';
     if (id.includes('-LE-')) return 'local';
     if (id.includes('-TCP-')) return 'tcp';
@@ -899,9 +930,10 @@ async function generateExportText() {
         endpoint: 'Required Endpoints',
         tcp: 'TCP / Transport',
         udp: 'UDP / TURN / STUN',
-        cloud: 'Live Connection Diagnostics'
+        cloud: 'Live Connection Diagnostics',
+        cloudpc: 'Cloud PC Diagnostics'
     };
-    const categories = ['local', 'endpoint', 'tcp', 'udp', 'cloud'];
+    const categories = ['local', 'endpoint', 'tcp', 'udp', 'cloud', 'cloudpc'];
 
     for (const cat of categories) {
         const catResults = allResults.filter(r => r.category === cat);
@@ -918,7 +950,7 @@ async function generateExportText() {
                          r.status === 'Failed' || r.status === 'Error' ? '✗' :
                          r.status === 'Skipped' ? '—' : '?';
             const dur = r.duration ? ` (ran in ${r.duration}ms)` : '';
-            const src = r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
+            const src = r.source === 'cloudpc' ? ' [Cloud PC]' : r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
 
             lines.push(`  ${icon} [${r.status.toUpperCase()}] ${r.id} — ${r.name}${dur}${src}`);
             if (r.resultValue) {

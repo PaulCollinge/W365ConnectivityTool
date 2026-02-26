@@ -55,20 +55,23 @@ function renderTestList() {
         local: document.getElementById('tests-local'),
         tcp: document.getElementById('tests-tcp'),
         udp: document.getElementById('tests-udp'),
-        cloud: document.getElementById('tests-cloud')
+        cloud: document.getElementById('tests-cloud'),
+        cloudpc: document.getElementById('tests-cloudpc')
     };
 
     // Clear
     Object.values(containers).forEach(c => c.innerHTML = '');
 
     for (const test of ALL_TESTS) {
+        const container = containers[test.category];
+        if (!container) continue;   // Skip if category container missing
         const el = createTestElement(test, {
-            status: test.source === 'local' ? 'Pending' : 'NotRun',
-            resultValue: test.source === 'local' ? 'Requires Local Scanner' : 'Not tested',
+            status: test.source === 'local' || test.source === 'cloudpc' ? 'Pending' : 'NotRun',
+            resultValue: test.source === 'cloudpc' ? 'Requires Cloud PC Scanner' : test.source === 'local' ? 'Requires Local Scanner' : 'Not tested',
             detailedInfo: '',
             duration: 0
         });
-        containers[test.category].appendChild(el);
+        container.appendChild(el);
     }
 }
 
@@ -85,7 +88,9 @@ function createTestElement(test, result) {
 
     const sourceBadge = test.source === 'browser'
         ? '<span class="test-source-badge browser">Browser</span>'
-        : '<span class="test-source-badge local">Local</span>';
+        : test.source === 'cloudpc'
+            ? '<span class="test-source-badge cloudpc">Cloud PC</span>'
+            : '<span class="test-source-badge local">Local</span>';
 
     div.innerHTML = `
         <div class="test-status-icon ${statusClass}">${statusIcon}</div>
@@ -126,7 +131,9 @@ function updateTestUI(testId, result) {
 
     const sourceBadge = test.source === 'browser'
         ? '<span class="test-source-badge browser">Browser</span>'
-        : '<span class="test-source-badge local">Local</span>';
+        : test.source === 'cloudpc'
+            ? '<span class="test-source-badge cloudpc">Cloud PC</span>'
+            : '<span class="test-source-badge local">Local</span>';
 
     el.innerHTML = `
         <div class="test-status-icon ${statusClass}">${statusIcon}</div>
@@ -252,7 +259,7 @@ function hideDownloadBanner() {
  * Update category badges.
  */
 function updateCategoryBadges(results) {
-    const categories = { endpoint: [], local: [], tcp: [], udp: [], cloud: [] };
+    const categories = { endpoint: [], local: [], tcp: [], udp: [], cloud: [], cloudpc: [] };
     results.forEach(r => {
         if (categories[r.category]) categories[r.category].push(r);
     });
