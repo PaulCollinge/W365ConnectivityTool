@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=136">
+    <link rel="stylesheet" href="css/styles.css?v=137">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -448,14 +448,19 @@
                 <!-- ═══ Cloud PC right-side cards (hidden until Cloud PC data imported) ═══ -->
                 <div class="map-fanin map-g-fanin">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
-                        <line class="fan-afd"  x1="60" y1="100" x2="30" y2="100" stroke-width="2"/>
-                        <line class="fan-afd"  x1="30" y1="100" x2="30" y2="33"  stroke-width="2"/>
-                        <line class="fan-turn" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
+                        <!-- Central horizontal entry from Azure -->
+                        <line class="fan-entry" x1="60" y1="100" x2="30" y2="100" stroke-width="2"/>
+                        <!-- Vertical trunk -->
+                        <line class="fan-afd"  x1="30" y1="33"  x2="30" y2="100" stroke-width="2"/>
+                        <line class="fan-trunk" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
+                        <!-- AFD branch (hidden in CPC mode) -->
                         <line class="fan-afd"  x1="30" y1="33"  x2="0" y2="33"  stroke-width="2"/>
+                        <!-- RDGw branch -->
                         <line class="fan-rdgw" x1="30" y1="100" x2="0" y2="100" stroke-width="2"/>
+                        <!-- TURN branch -->
                         <line class="fan-turn" x1="30" y1="167" x2="0" y2="167" stroke-width="2"/>
                     </svg>
-                    <span class="map-line-label map-ll-cpc-afd" id="map-lat-cpc-rdgw"></span>
+                    <span class="map-line-label map-ll-cpc-rdgw" id="map-lat-cpc-rdgw"></span>
                     <span class="map-line-label map-ll-cpc-turn" id="map-lat-cpc-turn"></span>
                 </div>
 
@@ -489,16 +494,35 @@
                 <div class="map-client-device map-g-nat" id="map-nat">
                     <div class="device-laptop">
                         <svg class="device-svg" viewBox="0 0 120 70" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <!-- Router body -->
-                            <rect x="14" y="12" width="92" height="40" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
-                            <!-- Inner panel -->
-                            <rect x="20" y="18" width="80" height="28" rx="3" fill="#161b22"/>
-                            <!-- Arrows indicating NAT translation -->
-                            <path d="M36 28 L50 32 L36 36" fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.7"/>
-                            <path d="M84 28 L70 32 L84 36" fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.7"/>
-                            <text x="60" y="36" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="7" font-weight="700">NAT</text>
-                            <!-- Status dot -->
-                            <circle class="device-status-dot" id="device-nat-dot" cx="60" cy="46" r="2.5" fill="#484f58"/>
+                            <!-- Switch body (flat 1U rack-mount style) -->
+                            <rect x="8" y="14" width="104" height="36" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Front panel inset -->
+                            <rect x="14" y="20" width="92" height="24" rx="2" fill="#161b22"/>
+                            <!-- Ethernet ports row (6 ports) -->
+                            <rect x="18" y="24" width="8" height="10" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <rect x="28" y="24" width="8" height="10" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <rect x="38" y="24" width="8" height="10" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <rect x="48" y="24" width="8" height="10" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <rect x="58" y="24" width="8" height="10" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <rect x="68" y="24" width="8" height="10" rx="1" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+                            <!-- Port link LEDs -->
+                            <circle cx="22" cy="22" r="1.5" fill="#21262d"/>
+                            <circle cx="32" cy="22" r="1.5" fill="#21262d"/>
+                            <circle cx="42" cy="22" r="1.5" fill="#21262d"/>
+                            <circle cx="52" cy="22" r="1.5" fill="#21262d"/>
+                            <circle cx="62" cy="22" r="1.5" fill="#21262d"/>
+                            <circle cx="72" cy="22" r="1.5" fill="#21262d"/>
+                            <!-- Uplink port (right side, highlighted) -->
+                            <rect x="82" y="24" width="14" height="10" rx="1" fill="#0d1117" stroke="#58a6ff" stroke-width="1" opacity="0.6"/>
+                            <!-- NAT label -->
+                            <text x="50" y="42" font-family="monospace" font-size="5" fill="#484f58" font-weight="700">NAT</text>
+                            <!-- Status / power LED -->
+                            <circle class="device-status-dot" id="device-nat-dot" cx="22" cy="40" r="2.5" fill="#484f58"/>
+                            <!-- Rack ears -->
+                            <rect x="2" y="18" width="6" height="6" rx="1" fill="none" stroke="#21262d" stroke-width="1"/>
+                            <circle cx="5" cy="21" r="1.5" fill="none" stroke="#21262d" stroke-width="0.5"/>
+                            <rect x="112" y="18" width="6" height="6" rx="1" fill="none" stroke="#21262d" stroke-width="1"/>
+                            <circle cx="115" cy="21" r="1.5" fill="none" stroke="#21262d" stroke-width="0.5"/>
                         </svg>
                         <div class="device-accent" id="map-nat-accent"></div>
                     </div>
@@ -727,11 +751,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=136"></script>
-    <script src="js/browser-tests.js?v=136"></script>
-    <script src="js/ui.js?v=136"></script>
-    <script src="js/map.js?v=136"></script>
-    <script src="js/ai-analysis.js?v=136"></script>
-    <script src="js/app.js?v=136"></script>
+    <script src="js/config.js?v=137"></script>
+    <script src="js/browser-tests.js?v=137"></script>
+    <script src="js/ui.js?v=137"></script>
+    <script src="js/map.js?v=137"></script>
+    <script src="js/ai-analysis.js?v=137"></script>
+    <script src="js/app.js?v=137"></script>
 </body>
 </html>

@@ -720,6 +720,44 @@ function updateMapLatencyLabels(lookup) {
         if (m) turnMs = parseInt(m[1]);
     }
     setLL('map-lat-turn', turnMs, 'udp');
+
+    // ── CPC mode latency labels (Cloud PC → gateway services) ──
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
+    if (isCpcMode) {
+        // CPC RD Gateway: C-TCP-04 (mapped from B-TCP-02) — "Latency: avg Nms"
+        const cpcGw = lookup['C-TCP-04'] || lookup['B-TCP-02'];
+        let cpcGwMs = null;
+        if (cpcGw && cpcGw.detailedInfo) {
+            const latLine = cpcGw.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+            if (latLine) {
+                const m = latLine.match(/avg\s+(\d+)ms/);
+                if (m) cpcGwMs = parseInt(m[1]);
+            }
+        }
+        if (cpcGwMs == null && cpcGw && cpcGw.resultValue) {
+            const m = cpcGw.resultValue.match(/(\d+)\s*ms/);
+            if (m) cpcGwMs = parseInt(m[1]);
+        }
+        setLL('map-lat-cpc-rdgw', cpcGwMs, 'tcp');
+
+        // CPC TURN: In CPC mode, STUN test (C-UDP-03 / B-UDP-01) runs but doesn't
+        // measure explicit latency. Use the same gateway latency as a proxy for now,
+        // or leave empty if no TURN-specific latency data.
+        // For scanner imports, L-UDP-03 may be available as C-UDP-03.
+        const cpcTurn = lookup['C-UDP-03'];
+        let cpcTurnMs = null;
+        if (cpcTurn && cpcTurn.detailedInfo) {
+            const latLine = cpcTurn.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+            if (latLine) {
+                const m = latLine.match(/(\d+)\s*ms/);
+                if (m) cpcTurnMs = parseInt(m[1]);
+            }
+        }
+        setLL('map-lat-cpc-turn', cpcTurnMs, 'udp');
+
+        // CPC arrow3 label (overall gateway latency)
+        setLL('map-lat-cpc-gw', cpcGwMs, 'tcp');
+    }
 }
 
 function latencyClassLine(ms, type) {

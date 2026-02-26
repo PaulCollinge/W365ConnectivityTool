@@ -1356,8 +1356,11 @@ main {
 }
 
 /* Fanin latency labels (mirror of fanout) */
-.map-ll-cpc-afd  { right: -4px; top: 16.5%; transform: translate(100%, -50%); }
+.map-ll-cpc-rdgw { right: -4px; top: 50%; transform: translate(100%, -50%); }
 .map-ll-cpc-turn { right: -4px; top: 83.5%; transform: translate(100%, -50%); }
+/* CPC mode: reposition fanin labels for 2-line fan (no AFD) — RDGw at 33%, TURN at 67% */
+.map-diagram.cpc-mode .map-ll-cpc-rdgw { top: 33%; }
+.map-diagram.cpc-mode .map-ll-cpc-turn { top: 67%; }
 
 /* Cloud PC source badge */
 .test-source-badge.cloudpc { background: rgba(88,166,255,0.15); color: #58a6ff; }
@@ -1614,6 +1617,16 @@ main {
 .map-fanout-svg { width: 100%; height: 100%; }
 
 /* ── Animated SVG fanout lines (color per destination) ── */
+.fan-entry {
+    stroke: #58a6ff;
+    stroke-dasharray: 8 5;
+    animation: flowFan 0.8s linear infinite;
+}
+.fan-trunk {
+    stroke: #f0883e;
+    stroke-dasharray: 6 4;
+    animation: flowFan 0.7s linear infinite;
+}
 .fan-afd {
     stroke: #3fb950;
     stroke-dasharray: 8 5;
@@ -1650,7 +1663,7 @@ main {
 /* Respect reduced-motion preference */
 @media (prefers-reduced-motion: reduce) {
     .map-hline, .map-vline { animation: none !important; }
-    .fan-afd, .fan-rdgw, .fan-turn { animation: none !important; }
+    .fan-entry, .fan-trunk, .fan-afd, .fan-rdgw, .fan-turn { animation: none !important; }
     .map-hline::after      { display: none; }
     .map-hline { background: linear-gradient(90deg, var(--accent-border), var(--accent)); }
     .map-vline { background: var(--accent); }
