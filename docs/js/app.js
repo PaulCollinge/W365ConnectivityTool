@@ -201,6 +201,9 @@ function toggleCloudPcMode(enabled) {
         }
         // Keep left-side as 'This Device'; Cloud PC identity goes on the right
         if (mapContainer) mapContainer.classList.add('cpc-only-active');
+        // Show CPC detected badge in map header
+        const cpcBadge = document.getElementById('cpc-detected-badge');
+        if (cpcBadge) cpcBadge.classList.remove('hidden');
         // Extend map to show right-side Cloud PC + Azure cards
         const mapDiagram = document.querySelector('.map-diagram');
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
@@ -221,6 +224,9 @@ function toggleCloudPcMode(enabled) {
         if (cpcSection && !hasImportedCpc) cpcSection.classList.add('hidden');
         // Restore map
         if (mapContainer) mapContainer.classList.remove('cpc-only-active');
+        // Hide CPC detected badge
+        const cpcBadge = document.getElementById('cpc-detected-badge');
+        if (cpcBadge) cpcBadge.classList.add('hidden');
         // Remove right-side cards unless imported CPC data exists
         const hasImportedCpcData = allResults.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
         if (!hasImportedCpcData) {
