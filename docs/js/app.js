@@ -31,22 +31,6 @@ window.addEventListener('unhandledrejection', function(event) {
 let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
-let detectedCloudPc = false;       // auto-detected after browser tests complete
-
-// ── Browser-test → Cloud-PC-test ID mapping ──
-// When running from a Cloud PC, browser results are cloned with C-* IDs
-// so they also appear in the Cloud PC Diagnostics section and right-side map cards.
-const BROWSER_TO_CPC_ID = {
-    'B-LE-01': 'C-LE-01',   // User Location → Cloud PC Location
-    'B-LE-02': 'C-LE-02',   // ISP Detection → Cloud PC Network Info
-    'B-LE-03': 'C-LE-03',   // Connection Speed (new CPC ID)
-    'B-EP-01': 'C-EP-01',   // Endpoint Reachability (new CPC ID)
-    'B-TCP-02': 'C-TCP-04', // AFD Connectivity → CPC Gateway Connectivity
-    'B-TCP-03': 'C-TCP-05', // DNS Resolution → CPC DNS CNAME Chain
-    'B-TCP-04': 'C-TCP-09', // DNS & Routing → CPC Gateway Used
-    'B-UDP-01': 'C-UDP-03', // STUN Connectivity → CPC TURN Relay
-    'B-UDP-02': 'C-UDP-04'  // NAT Type → CPC TURN Location
-};
 
 // ── Cross-tab communication (bidirectional sync) ──
 // When the scanner opens a NEW tab with results, both tabs exchange data:
@@ -147,50 +131,6 @@ function setupDragDrop() {
     });
 }
 
-// ── Auto-detect Cloud PC from browser test results ──
-// Checks ISP/org result for Azure/Microsoft hosting indicators.
-function detectCloudPcFromResults(results) {
-    const isp = results.find(r => r.id === 'B-LE-02');
-    if (!isp || !isp.detailedInfo) return false;
-    const info = (isp.resultValue + ' ' + isp.detailedInfo).toLowerCase();
-    return info.includes('microsoft') || info.includes('azure');
-}
-
-// ── Apply Cloud PC layout after detection ──
-function applyCloudPcLayout(isCloudPc) {
-    detectedCloudPc = isCloudPc;
-    const clientTitle = document.getElementById('map-client-title');
-    const cpcSection = document.getElementById('cloudpc-diagnostics-section');
-    const mapDiagram = document.querySelector('.map-diagram');
-    const cpcInfoBar = document.getElementById('cloudpc-info-bar');
-
-    if (isCloudPc) {
-        // Cloud PC detected — update labels and extend map
-        if (clientTitle) clientTitle.textContent = 'Cloud PC (This device)';
-        if (cpcSection) cpcSection.classList.remove('hidden');
-        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
-        if (cpcInfoBar) cpcInfoBar.style.display = 'none';
-
-        // Clone browser results to C-* IDs for the Cloud PC section
-        const existingCpcIds = new Set(allResults.filter(r => r.id && r.id.startsWith('C-')).map(r => r.id));
-        for (const r of [...allResults]) {
-            const cpcId = BROWSER_TO_CPC_ID[r.id];
-            if (cpcId && !existingCpcIds.has(cpcId)) {
-                const cpcResult = Object.assign({}, r, {
-                    id: cpcId,
-                    source: 'cloudpc',
-                    category: 'cloudpc',
-                    name: (ALL_TESTS.find(t => t.id === cpcId) || r).name
-                });
-                allResults.push(cpcResult);
-                updateTestUI(cpcId, cpcResult);
-            }
-        }
-    } else {
-        // Standard client — keep default labels
-        if (clientTitle) clientTitle.textContent = 'Client (This device)';
-    }
-}
 
 // ── Run all browser tests ──
 async function runAllBrowserTests() {
@@ -210,9 +150,8 @@ async function runAllBrowserTests() {
     const total = browserTests.length;
     let completed = 0;
 
-    // Reset browser + cloudpc-browser results (keep imported local/scanner results)
-    allResults = allResults.filter(r => r.source === 'local');
-    detectedCloudPc = false;
+    // Reset browser results (keep imported local/scanner results)
+    allResults = allResults.filter(r => r.source === 'local' || r.source === 'cloudpc');
 
     // Clear GeoIP and user-location caches so location is re-fetched fresh
     if (typeof resetGeoCache === 'function') resetGeoCache();
@@ -251,11 +190,7 @@ async function runAllBrowserTests() {
 
     hideProgress();
 
-    // ── Auto-detect Cloud PC from results ──
-    const isCloudPc = detectCloudPcFromResults(allResults);
-    applyCloudPcLayout(isCloudPc);
-
-    // Now reveal the map with the correct layout
+    // Reveal the map now that we have results
     if (mapContainer) mapContainer.classList.remove('hidden');
     updateSummary(allResults);
     updateCategoryBadges(allResults);
@@ -265,7 +200,7 @@ async function runAllBrowserTests() {
 
     // Only show download banner if no scanner results have been imported
     const hasLocalResults = allResults.some(r => r.source === 'local');
-    if (!hasLocalResults && !isCloudPc) showDownloadBanner();
+    if (!hasLocalResults) showDownloadBanner();
 
     btn.disabled = false;
     btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';

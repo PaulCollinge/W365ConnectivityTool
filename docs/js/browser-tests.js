@@ -240,16 +240,6 @@ const ALL_TESTS = [
         category: 'cloudpc', source: 'cloudpc'
     },
     {
-        id: 'C-LE-03', name: 'Cloud PC Connection Speed',
-        description: 'Download throughput measured from within the Cloud PC',
-        category: 'cloudpc', source: 'cloudpc'
-    },
-    {
-        id: 'C-EP-01', name: 'CPC Endpoint Reachability',
-        description: 'Required endpoint accessibility from the Cloud PC network',
-        category: 'cloudpc', source: 'cloudpc'
-    },
-    {
         id: 'C-NET-01', name: 'IMDS Metadata',
         description: 'Azure Instance Metadata Service — VM size, region, subscription',
         category: 'cloudpc', source: 'cloudpc'
