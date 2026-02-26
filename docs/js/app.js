@@ -120,6 +120,17 @@ document.addEventListener('DOMContentLoaded', () => {
     ilog('renderTestList done, ' + ALL_TESTS.length + ' tests rendered');
     checkForAutoImport();
     setupDragDrop();
+
+    // Auto-detect Cloud PC environment (IMDS probe)
+    detectCloudPcEnvironment().then(isCloudPc => {
+        if (isCloudPc) {
+            const toggle = document.getElementById('cpc-mode-toggle');
+            if (toggle) toggle.checked = true;
+            toggleCloudPcMode(true);
+            ilog('Cloud PC Mode auto-enabled');
+        }
+    });
+
     ilog('Init complete');
 });
 
@@ -146,12 +157,35 @@ function setupDragDrop() {
 }
 
 
+// ── Cloud PC environment auto-detection ──
+// Probes the Azure IMDS endpoint (169.254.169.254) which is only reachable from
+// Azure VMs / Cloud PCs. Uses no-cors mode so we can detect reachability even
+// though the browser can't read the response body.
+async function detectCloudPcEnvironment() {
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        await fetch('http://169.254.169.254/metadata/instance?api-version=2021-02-01', {
+            mode: 'no-cors',
+            signal: controller.signal
+        });
+        clearTimeout(timeout);
+        // If fetch resolved, IMDS is reachable → we're on an Azure VM / Cloud PC
+        ilog('IMDS reachable — Cloud PC environment detected');
+        return true;
+    } catch {
+        ilog('IMDS not reachable — not a Cloud PC environment');
+        return false;
+    }
+}
+
 // ── Cloud PC Mode toggle ──
 function toggleCloudPcMode(enabled) {
     cloudPcMode = enabled;
     const clientSections = ['cat-endpoint', 'cat-local', 'cat-tcp', 'cat-udp'];
     const cpcSection = document.getElementById('cloudpc-diagnostics-section');
     const mapTitle = document.getElementById('map-client-title');
+    const mapDiagram = document.querySelector('.map-diagram');
     const btn = document.getElementById('btn-run-all');
 
     if (enabled) {
@@ -166,8 +200,9 @@ function toggleCloudPcMode(enabled) {
             const cpcInfoBar = document.getElementById('cloudpc-info-bar');
             if (cpcInfoBar) cpcInfoBar.style.display = 'none';
         }
-        // Update map title
+        // Update map: show right-side Cloud PC cards
         if (mapTitle) mapTitle.textContent = 'Cloud PC (This device)';
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         // Update button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
@@ -183,8 +218,9 @@ function toggleCloudPcMode(enabled) {
         // Hide CPC section (unless imported Cloud PC data exists)
         const hasImportedCpc = allResults.some(r => r.source === 'cloudpc' && r.category === 'cloudpc');
         if (cpcSection && !hasImportedCpc) cpcSection.classList.add('hidden');
-        // Restore map title
+        // Restore map
         if (mapTitle) mapTitle.textContent = 'This Device';
+        if (mapDiagram && !hasImportedCpc) mapDiagram.classList.remove('has-cloudpc');
         // Restore button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'browser');
@@ -268,6 +304,13 @@ async function runAllBrowserTests() {
 
     // Reveal the map now that we have results
     if (mapContainer) mapContainer.classList.remove('hidden');
+
+    // In Cloud PC mode, ensure the right-side map cards are visible
+    if (cloudPcMode) {
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
+    }
+
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);

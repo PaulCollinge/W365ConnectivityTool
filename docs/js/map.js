@@ -19,9 +19,11 @@ function updateConnectivityMap(results) {
     updateMapSecurityBar(lookup);
     updateMapLatencyLabels(lookup);
 
-    // Cloud PC right-side cards (only if Cloud PC data present)
+    // Cloud PC right-side cards (show if C-* data present OR Cloud PC Mode is on)
     const hasCloudPc = results.some(r => r.id && r.id.startsWith('C-'));
-    if (hasCloudPc) {
+    if (hasCloudPc || (typeof cloudPcMode !== 'undefined' && cloudPcMode)) {
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram && hasCloudPc) mapDiagram.classList.add('has-cloudpc');
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
     }
