@@ -238,6 +238,15 @@ function latencyClass(ms, isTcp) {
     return 'latency-bad';
 }
 
+/** Return a human-friendly health word for a latency value. */
+function latencyLabel(ms, type) {
+    if (type === 'gw') return ms < 5 ? 'Healthy' : ms < 20 ? 'Moderate' : 'Poor';
+    if (type === 'udp') return ms < 100 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
+    if (type === 'dns') return ms < 50 ? 'Healthy' : ms < 150 ? 'Moderate' : 'Poor';
+    // tcp default
+    return ms < 50 ? 'Healthy' : ms < 150 ? 'Moderate' : 'Poor';
+}
+
 function worstStatus(a, b) {
     const order = { 'Failed': 0, 'Error': 0, 'Warning': 1, 'Running': 2, 'Passed': 3, 'NotRun': 4, 'Pending': 5 };
     const aVal = order[a] ?? 5;
@@ -448,7 +457,8 @@ function updateMapAfdCard(lookup) {
         const match = latency.resultValue.match(/(\d+)\s*ms/);
         if (match) {
             const ms = parseInt(match[1]);
-            setBadge('map-afd-badge', `⏱ ${ms}ms`, latencyClass(ms, true));
+            const health = latencyLabel(ms, 'tcp');
+            setBadge('map-afd-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
         }
     }
 
@@ -494,7 +504,8 @@ function updateMapRdGwCard(lookup) {
         const match = latency.resultValue.match(/(\d+)\s*ms/);
         if (match) {
             const ms = parseInt(match[1]);
-            setBadge('map-rdgw-badge', `⏱ ${ms}ms`, latencyClass(ms, true));
+            const health = latencyLabel(ms, 'tcp');
+            setBadge('map-rdgw-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
         }
     }
 
@@ -611,7 +622,8 @@ function updateMapDnsCard(lookup) {
         const match = (dnsPerf.resultValue || '').match(/(\d+)\s*ms/);
         if (match) {
             const ms = parseInt(match[1]);
-            setBadge('map-dns-badge', `⏱ ${ms}ms`, latencyClass(ms, true));
+            const health = latencyLabel(ms, 'dns');
+            setBadge('map-dns-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
         }
     }
 
@@ -630,7 +642,9 @@ function updateMapLatencyLabels(lookup) {
         const el = document.getElementById(id);
         if (!el) return;
         if (ms == null || isNaN(ms)) { el.textContent = ''; return; }
-        el.textContent = ms < 1 ? '<1ms' : ms + 'ms';
+        const msText = ms < 1 ? '<1ms' : ms + 'ms';
+        const health = latencyLabel(ms, type);
+        el.textContent = `${msText} · ${health}`;
         el.classList.remove('lat-good', 'lat-warn', 'lat-bad');
         el.classList.add(latencyClassLine(ms, type));
     }
