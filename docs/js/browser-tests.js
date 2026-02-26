@@ -230,6 +230,11 @@ const ALL_TESTS = [
 
     // ── Cloud PC tests (run from within the Cloud PC) ──
     {
+        id: 'C-EP-01', name: 'CPC Endpoint Reachability',
+        description: 'Required endpoint reachability from within the Cloud PC',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
         id: 'C-LE-01', name: 'Cloud PC Location',
         description: 'Azure region and public IP location of the Cloud PC',
         category: 'cloudpc', source: 'cloudpc'
@@ -237,6 +242,11 @@ const ALL_TESTS = [
     {
         id: 'C-LE-02', name: 'Cloud PC Network Info',
         description: 'Network adapters, ISP, and Azure hosting details',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-LE-03', name: 'CPC Connection Speed',
+        description: 'Network throughput estimate from within the Cloud PC',
         category: 'cloudpc', source: 'cloudpc'
     },
     {

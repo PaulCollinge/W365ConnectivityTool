@@ -31,6 +31,20 @@ window.addEventListener('unhandledrejection', function(event) {
 let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
+let cloudPcMode = false;           // true when user toggles Cloud PC Mode
+
+// Map browser test IDs to their Cloud PC equivalents
+const BROWSER_TO_CPC_ID = {
+    'B-EP-01': 'C-EP-01',
+    'B-LE-01': 'C-LE-01',
+    'B-LE-02': 'C-LE-02',
+    'B-LE-03': 'C-LE-03',
+    'B-TCP-02': 'C-TCP-04',
+    'B-TCP-03': 'C-TCP-05',
+    'B-TCP-04': 'C-TCP-09',
+    'B-UDP-01': 'C-UDP-03',
+    'B-UDP-02': 'C-UDP-04'
+};
 
 // ── Cross-tab communication (bidirectional sync) ──
 // When the scanner opens a NEW tab with results, both tabs exchange data:
@@ -132,6 +146,55 @@ function setupDragDrop() {
 }
 
 
+// ── Cloud PC Mode toggle ──
+function toggleCloudPcMode(enabled) {
+    cloudPcMode = enabled;
+    const clientSections = ['cat-endpoint', 'cat-local', 'cat-tcp', 'cat-udp'];
+    const cpcSection = document.getElementById('cloudpc-diagnostics-section');
+    const mapTitle = document.getElementById('map-client-title');
+    const btn = document.getElementById('btn-run-all');
+
+    if (enabled) {
+        // Hide client-side test sections
+        clientSections.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.add('hidden');
+        });
+        // Show Cloud PC diagnostics section
+        if (cpcSection) {
+            cpcSection.classList.remove('hidden');
+            const cpcInfoBar = document.getElementById('cloudpc-info-bar');
+            if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+        }
+        // Update map title
+        if (mapTitle) mapTitle.textContent = 'Cloud PC (This device)';
+        // Update button text
+        if (btn && !isRunning) {
+            const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
+            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg> ' +
+                (hasResults ? 'Re-run Cloud PC Tests' : 'Run Cloud PC Tests');
+        }
+    } else {
+        // Show client-side test sections
+        clientSections.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.remove('hidden');
+        });
+        // Hide CPC section (unless imported Cloud PC data exists)
+        const hasImportedCpc = allResults.some(r => r.source === 'cloudpc' && r.category === 'cloudpc');
+        if (cpcSection && !hasImportedCpc) cpcSection.classList.add('hidden');
+        // Restore map title
+        if (mapTitle) mapTitle.textContent = 'This Device';
+        // Restore button text
+        if (btn && !isRunning) {
+            const hasResults = allResults.some(r => r.source === 'browser');
+            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg> ' +
+                (hasResults ? 'Re-run Browser Tests' : 'Run Browser Tests');
+        }
+    }
+}
+
+
 // ── Run all browser tests ──
 async function runAllBrowserTests() {
     if (isRunning) return;
@@ -151,7 +214,12 @@ async function runAllBrowserTests() {
     let completed = 0;
 
     // Reset browser results (keep imported local/scanner results)
-    allResults = allResults.filter(r => r.source === 'local' || r.source === 'cloudpc');
+    // In CPC mode, also keep any existing browser results; in normal mode, keep cloudpc
+    if (cloudPcMode) {
+        allResults = allResults.filter(r => r.source === 'local' || r.source === 'browser');
+    } else {
+        allResults = allResults.filter(r => r.source === 'local' || r.source === 'cloudpc');
+    }
 
     // Clear GeoIP and user-location caches so location is re-fetched fresh
     if (typeof resetGeoCache === 'function') resetGeoCache();
@@ -161,27 +229,35 @@ async function runAllBrowserTests() {
     updateProgress(0, total, browserTests[0]?.name);
 
     for (const test of browserTests) {
-        setTestRunning(test.id);
+        // In Cloud PC mode, map B-* IDs to C-* IDs
+        const targetId = cloudPcMode ? (BROWSER_TO_CPC_ID[test.id] || test.id) : test.id;
+        setTestRunning(targetId);
         updateProgress(completed, total, test.name);
 
         try {
             const result = await test.run(test);
-            result.source = 'browser';
+            if (cloudPcMode) {
+                result.id = targetId;
+                result.source = 'cloudpc';
+                result.category = 'cloudpc';
+            } else {
+                result.source = 'browser';
+            }
             allResults.push(result);
-            updateTestUI(test.id, result);
+            updateTestUI(targetId, result);
         } catch (err) {
             const errorResult = {
-                id: test.id,
+                id: targetId,
                 name: test.name,
-                category: test.category,
-                source: 'browser',
+                category: cloudPcMode ? 'cloudpc' : test.category,
+                source: cloudPcMode ? 'cloudpc' : 'browser',
                 status: 'Error',
                 resultValue: `Error: ${err.message}`,
                 detailedInfo: err.stack || err.message,
                 duration: 0
             };
             allResults.push(errorResult);
-            updateTestUI(test.id, errorResult);
+            updateTestUI(targetId, errorResult);
         }
 
         completed++;
@@ -203,7 +279,11 @@ async function runAllBrowserTests() {
     if (!hasLocalResults) showDownloadBanner();
 
     btn.disabled = false;
-    btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';
+    if (cloudPcMode) {
+        btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Cloud PC Tests';
+    } else {
+        btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';
+    }
     isRunning = false;
 }
 

@@ -301,7 +301,7 @@ function updateMapClientCard(lookup) {
     let publicIp = '';
     let status = 'NotRun';
 
-    const userLoc = lookup['B-LE-01'];
+    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
     if (userLoc && userLoc.status !== 'NotRun') {
         location = userLoc.resultValue || '';
         status = userLoc.status;
@@ -398,7 +398,7 @@ function setIspLogo(ispName) {
 
 // ── ISP Card ──
 function updateMapIspCard(lookup) {
-    const isp = lookup['B-LE-02'];
+    const isp = lookup['B-LE-02'] || lookup['C-LE-02'];
     if (!isp || isp.status === 'NotRun') {
         setText('map-isp-detail', 'Awaiting results...');
         setText('map-isp-detail2', '');
@@ -413,7 +413,7 @@ function updateMapIspCard(lookup) {
     setText('map-isp-detail2', asInfo);
 
     // Show egress city from GeoIP
-    const userLoc = lookup['B-LE-01'];
+    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
     const egressCity = userLoc ? userLoc.resultValue : '';
     setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
 
@@ -424,9 +424,9 @@ function updateMapIspCard(lookup) {
 
 // ── AFD Edge Card ──
 function updateMapAfdCard(lookup) {
-    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'];
-    const latency = lookup['B-TCP-02'];
-    const gwUsed = lookup['L-TCP-09'];
+    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    const latency = lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -475,8 +475,8 @@ function updateMapAfdCard(lookup) {
 // ── RD Gateway Card ──
 function updateMapRdGwCard(lookup) {
     const tcpPorts = lookup['L-TCP-04'];
-    const latency = lookup['B-TCP-02'];
-    const gwUsed = lookup['L-TCP-09'];
+    const latency = lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -522,9 +522,9 @@ function updateMapRdGwCard(lookup) {
 
 // ── TURN Relay Card ──
 function updateMapTurnCard(lookup) {
-    const stunTest = lookup['B-UDP-01'];
+    const stunTest = lookup['B-UDP-01'] || lookup['C-UDP-03'];
     const turnReach = lookup['L-UDP-03'];
-    const turnLoc = lookup['L-UDP-04'];
+    const turnLoc = lookup['L-UDP-04'] || lookup['C-UDP-04'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -614,7 +614,7 @@ async function geolocateTurnRelay() {
 
 // ── DNS Card ──
 function updateMapDnsCard(lookup) {
-    const dnsPerf = lookup['B-TCP-03'];
+    const dnsPerf = lookup['B-TCP-03'] || lookup['C-TCP-05'];
     const dnsCname = lookup['L-TCP-05'];
 
     let status = 'NotRun';
@@ -666,7 +666,7 @@ function updateMapLatencyLabels(lookup) {
     setLL('map-lat-gw', gwMs, 'gw');
 
     // AFD Edge: B-TCP-02 "Latency: avg Nms" or resultValue "— Nms"
-    const afd02 = lookup['B-TCP-02'];
+    const afd02 = lookup['B-TCP-02'] || lookup['C-TCP-04'];
     let afdMs = null;
     if (afd02 && afd02.detailedInfo) {
         const latLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
