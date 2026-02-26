@@ -26,6 +26,7 @@ function updateConnectivityMap(results) {
         // CPC mode uses cpc-mode class (already set by toggle), just update cards
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
+        updateMapNatCard(lookup);
     } else if (hasImportedCpc) {
         // Imported scanner data — extend the normal map with right-side cards
         const mapDiagram = document.querySelector('.map-diagram');
@@ -986,6 +987,34 @@ function updateMapCloudPcCard(lookup) {
     if (imds && imds.status === 'Passed' && imds.detailedInfo && title) {
         const vmMatch = imds.detailedInfo.match(/VM Name:\s*(\S+)/);
         if (vmMatch) title.textContent = vmMatch[1];
+    }
+}
+
+function updateMapNatCard(lookup) {
+    // NAT card shows the public IP from STUN reflexive address (CPC mode only)
+    const stun = lookup['C-UDP-03'] || lookup['B-UDP-01'];
+    const detail = document.getElementById('map-nat-detail');
+    const ipEl = document.getElementById('map-nat-ip');
+    const dot = document.getElementById('device-nat-dot');
+    const accent = document.getElementById('map-nat-accent');
+
+    if (stun && stun.status === 'Passed') {
+        if (detail) detail.textContent = 'Public IP detected';
+        // Extract reflexive IP from detailedInfo
+        if (ipEl && stun.detailedInfo) {
+            const ipMatch = stun.detailedInfo.match(/Reflexive IP:\s*([\d.]+)/);
+            if (ipMatch) ipEl.textContent = ipMatch[1];
+        }
+        if (dot) dot.setAttribute('fill', '#3fb950');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+    } else if (stun && (stun.status === 'Failed' || stun.status === 'Error')) {
+        if (detail) detail.textContent = 'STUN failed';
+        if (dot) dot.setAttribute('fill', '#f85149');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
+    } else if (stun && stun.status === 'Warning') {
+        if (detail) detail.textContent = 'NAT restricted';
+        if (dot) dot.setAttribute('fill', '#d29922');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
     }
 }
 

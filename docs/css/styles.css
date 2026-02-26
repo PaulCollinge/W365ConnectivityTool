@@ -1273,6 +1273,7 @@ main {
 .map-g-fanin   { grid-column: 8; grid-row: 1 / 6; align-self: stretch; display: none; }
 .map-g-azure   { grid-column: 9; grid-row: 1 / 6; align-self: center; display: none; }
 .map-g-arrow3  { grid-column: 10; grid-row: 1 / 6; align-self: center; justify-self: center; display: none; }
+.map-g-nat     { display: none; }
 .map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
 
 .map-diagram.has-cloudpc {
@@ -1285,29 +1286,32 @@ main {
     display: flex;
 }
 
-/* CPC-only mode: hide left side (Client/LocalGW/ISP), keep gateway services + right-side */
+/* CPC-only mode: hide left side + AFD, keep RDGw/TURN + right-side with NAT */
 .map-diagram.cpc-mode {
-    grid-template-columns: 1.2fr 50px 1fr 60px 1fr;
-    grid-template-rows: auto 8px auto 8px auto 36px auto;
+    grid-template-columns: 1.2fr 50px 1fr 1fr 60px 1fr;
+    grid-template-rows: auto 8px auto 36px auto;
 }
 .map-diagram.cpc-mode .map-g-client,
 .map-diagram.cpc-mode .map-g-arrow1,
 .map-diagram.cpc-mode .map-g-localgw,
 .map-diagram.cpc-mode .map-g-arrow2,
-.map-diagram.cpc-mode .map-g-isp {
+.map-diagram.cpc-mode .map-g-isp,
+.map-diagram.cpc-mode .map-g-afd {
     display: none !important;
 }
-/* Reposition gateway services, fanin/fanout, Azure and CPC into the 5-column grid */
+/* Reposition into 6-column grid: RDGw/TURN | fanin | Azure | NAT | arrow | CloudPC */
 .map-diagram.cpc-mode .map-g-fanout  { display: none !important; }
-.map-diagram.cpc-mode .map-g-afd     { grid-column: 1; grid-row: 1; }
-.map-diagram.cpc-mode .map-g-rdgw    { grid-column: 1; grid-row: 3; }
-.map-diagram.cpc-mode .map-g-turn    { grid-column: 1; grid-row: 5; }
-.map-diagram.cpc-mode .map-g-dnsline { grid-column: 3; grid-row: 6; }
-.map-diagram.cpc-mode .map-g-dns     { grid-column: 3; grid-row: 7; }
-.map-diagram.cpc-mode .map-g-fanin   { display: flex; grid-column: 2; grid-row: 1 / 6; align-self: stretch; }
-.map-diagram.cpc-mode .map-g-azure   { display: flex; grid-column: 3; grid-row: 1 / 6; align-self: center; }
-.map-diagram.cpc-mode .map-g-arrow3  { display: flex; grid-column: 4; grid-row: 1 / 6; align-self: center; justify-self: center; }
-.map-diagram.cpc-mode .map-g-cloudpc { display: flex; grid-column: 5; grid-row: 1 / 6; align-self: center; }
+.map-diagram.cpc-mode .map-g-rdgw    { grid-column: 1; grid-row: 1; }
+.map-diagram.cpc-mode .map-g-turn    { grid-column: 1; grid-row: 3; }
+.map-diagram.cpc-mode .map-g-dnsline { grid-column: 3; grid-row: 4; }
+.map-diagram.cpc-mode .map-g-dns     { grid-column: 3; grid-row: 5; }
+.map-diagram.cpc-mode .map-g-fanin   { display: flex; grid-column: 2; grid-row: 1 / 4; align-self: stretch; }
+.map-diagram.cpc-mode .map-g-azure   { display: flex; grid-column: 3; grid-row: 1 / 4; align-self: center; }
+.map-diagram.cpc-mode .map-g-nat     { display: flex; grid-column: 4; grid-row: 1 / 4; align-self: center; }
+.map-diagram.cpc-mode .map-g-arrow3  { display: flex; grid-column: 5; grid-row: 1 / 4; align-self: center; justify-self: center; }
+.map-diagram.cpc-mode .map-g-cloudpc { display: flex; grid-column: 6; grid-row: 1 / 4; align-self: center; }
+/* CPC mode fanin: hide AFD lines, show only RDGw + TURN */
+.map-diagram.cpc-mode .map-g-fanin .fan-afd { display: none; }
 /* Hide security bar when in CPC-only mode (it shows client-side scanner data) */
 .connectivity-map.cpc-only-active .map-security-bar {
     display: none;

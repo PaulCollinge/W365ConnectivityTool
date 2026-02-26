@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=135">
+    <link rel="stylesheet" href="css/styles.css?v=136">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -470,8 +470,9 @@
                             <ellipse cx="60" cy="44" rx="36" ry="24" fill="#0d1117"/>
                             <ellipse cx="42" cy="50" rx="18" ry="12" fill="#0d1117"/>
                             <ellipse cx="78" cy="50" rx="18" ry="12" fill="#0d1117"/>
-                            <!-- Azure icon -->
-                            <text x="60" y="48" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="10" font-weight="700">Azure</text>
+                            <!-- Azure logo (simplified triangle) -->
+                            <path d="M46 54 L56 30 L66 30 L54 54 Z" fill="#0078d4" opacity="0.9"/>
+                            <path d="M54 54 L66 30 L76 54 L62 48 Z" fill="#50e6ff" opacity="0.8"/>
                             <!-- Status dot -->
                             <circle class="device-status-dot" id="device-azure-dot" cx="60" cy="58" r="3" fill="#484f58"/>
                         </svg>
@@ -481,6 +482,30 @@
                         <div class="device-title">Azure Network</div>
                         <div class="device-detail" id="map-azure-detail">Awaiting results...</div>
                         <div class="device-detail" id="map-azure-detail2"></div>
+                    </div>
+                </div>
+
+                <!-- NAT Gateway card (shown in CPC mode between Azure and Cloud PC) -->
+                <div class="map-client-device map-g-nat" id="map-nat">
+                    <div class="device-laptop">
+                        <svg class="device-svg" viewBox="0 0 120 70" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Router body -->
+                            <rect x="14" y="12" width="92" height="40" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <!-- Inner panel -->
+                            <rect x="20" y="18" width="80" height="28" rx="3" fill="#161b22"/>
+                            <!-- Arrows indicating NAT translation -->
+                            <path d="M36 28 L50 32 L36 36" fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.7"/>
+                            <path d="M84 28 L70 32 L84 36" fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.7"/>
+                            <text x="60" y="36" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="7" font-weight="700">NAT</text>
+                            <!-- Status dot -->
+                            <circle class="device-status-dot" id="device-nat-dot" cx="60" cy="46" r="2.5" fill="#484f58"/>
+                        </svg>
+                        <div class="device-accent" id="map-nat-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">Azure NAT</div>
+                        <div class="device-detail" id="map-nat-detail">Awaiting results...</div>
+                        <div class="device-detail mono" id="map-nat-ip"></div>
                     </div>
                 </div>
 
@@ -702,11 +727,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=135"></script>
-    <script src="js/browser-tests.js?v=135"></script>
-    <script src="js/ui.js?v=135"></script>
-    <script src="js/map.js?v=135"></script>
-    <script src="js/ai-analysis.js?v=135"></script>
-    <script src="js/app.js?v=135"></script>
+    <script src="js/config.js?v=136"></script>
+    <script src="js/browser-tests.js?v=136"></script>
+    <script src="js/ui.js?v=136"></script>
+    <script src="js/map.js?v=136"></script>
+    <script src="js/ai-analysis.js?v=136"></script>
+    <script src="js/app.js?v=136"></script>
 </body>
 </html>
