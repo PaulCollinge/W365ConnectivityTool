@@ -196,6 +196,77 @@ header {
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
+    align-items: center;
+}
+
+/* ── Cloud PC Mode Toggle ── */
+.cpc-toggle-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    transition: all var(--transition);
+    cursor: pointer;
+    user-select: none;
+}
+.cpc-toggle-wrapper:hover {
+    border-color: #58a6ff;
+    background: rgba(88,166,255,0.06);
+}
+.cpc-toggle-wrapper.active {
+    border-color: #58a6ff;
+    background: rgba(88,166,255,0.12);
+    box-shadow: 0 0 0 1px rgba(88,166,255,0.3);
+}
+.cpc-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.cpc-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.cpc-toggle-slider {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--border);
+    border-radius: 10px;
+    transition: all 0.25s ease;
+    cursor: pointer;
+}
+.cpc-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    transition: all 0.25s ease;
+}
+.cpc-toggle input:checked + .cpc-toggle-slider {
+    background: #58a6ff;
+}
+.cpc-toggle input:checked + .cpc-toggle-slider::before {
+    transform: translateX(16px);
+    background: #fff;
+}
+.cpc-toggle-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    transition: color var(--transition);
+}
+.cpc-toggle-wrapper.active .cpc-toggle-label {
+    color: #58a6ff;
 }
 
 /* ════════════════════════════════════════

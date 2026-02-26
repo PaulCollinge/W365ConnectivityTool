@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=122">
+    <link rel="stylesheet" href="css/styles.css?v=123">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -36,6 +36,13 @@
                 </div>
             </div>
             <div class="header-actions">
+                <div class="cpc-toggle-wrapper" id="cpc-toggle-wrapper" title="Enable when running browser tests from inside a Cloud PC">
+                    <label class="cpc-toggle">
+                        <input type="checkbox" id="cpc-mode-toggle" onchange="toggleCloudPcMode(this.checked)">
+                        <span class="cpc-toggle-slider"></span>
+                    </label>
+                    <span class="cpc-toggle-label" id="cpc-toggle-label">Cloud PC Mode</span>
+                </div>
                 <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
                     Run Browser Tests
@@ -696,11 +703,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=122"></script>
-    <script src="js/browser-tests.js?v=122"></script>
-    <script src="js/ui.js?v=122"></script>
-    <script src="js/map.js?v=122"></script>
-    <script src="js/ai-analysis.js?v=122"></script>
-    <script src="js/app.js?v=122"></script>
+    <script src="js/config.js?v=123"></script>
+    <script src="js/browser-tests.js?v=123"></script>
+    <script src="js/ui.js?v=123"></script>
+    <script src="js/map.js?v=123"></script>
+    <script src="js/ai-analysis.js?v=123"></script>
+    <script src="js/app.js?v=123"></script>
 </body>
 </html>
