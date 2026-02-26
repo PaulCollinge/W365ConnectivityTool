@@ -203,6 +203,9 @@ function toggleCloudPcMode(enabled) {
         // Update map title for Cloud PC context
         if (mapTitle) mapTitle.textContent = 'Cloud PC (This device)';
         if (mapContainer) mapContainer.classList.add('cpc-only-active');
+        // Extend map to show Cloud PC right-side cards
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         // Update button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
@@ -221,6 +224,12 @@ function toggleCloudPcMode(enabled) {
         // Restore map
         if (mapTitle) mapTitle.textContent = 'This Device';
         if (mapContainer) mapContainer.classList.remove('cpc-only-active');
+        // Remove Cloud PC right-side cards unless imported CPC data exists
+        const hasImportedCpcData = allResults.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
+        if (!hasImportedCpcData) {
+            const mapDiagram = document.querySelector('.map-diagram');
+            if (mapDiagram) mapDiagram.classList.remove('has-cloudpc');
+        }
         // Restore button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'browser');
