@@ -22,7 +22,12 @@ function updateConnectivityMap(results) {
     // Cloud PC right-side cards — show when CPC mode active OR imported scanner data
     const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
     const hasImportedCpc = results.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
-    if (hasImportedCpc || isCpcMode) {
+    if (isCpcMode) {
+        // CPC mode uses cpc-mode class (already set by toggle), just update cards
+        updateMapCloudPcCard(lookup);
+        updateMapAzureCard(lookup);
+    } else if (hasImportedCpc) {
+        // Imported scanner data — extend the normal map with right-side cards
         const mapDiagram = document.querySelector('.map-diagram');
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         updateMapCloudPcCard(lookup);

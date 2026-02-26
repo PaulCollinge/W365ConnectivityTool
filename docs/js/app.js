@@ -199,14 +199,19 @@ function toggleCloudPcMode(enabled) {
             const cpcInfoBar = document.getElementById('cloudpc-info-bar');
             if (cpcInfoBar) cpcInfoBar.style.display = 'none';
         }
-        // Keep left-side as 'This Device'; Cloud PC identity goes on the right
         if (mapContainer) mapContainer.classList.add('cpc-only-active');
         // Show CPC detected badge in map header
         const cpcBadge = document.getElementById('cpc-detected-badge');
         if (cpcBadge) cpcBadge.classList.remove('hidden');
-        // Extend map to show right-side Cloud PC + Azure cards
+        // Switch map to CPC layout: hide left-side, show right-side Cloud PC + Azure
         const mapDiagram = document.querySelector('.map-diagram');
-        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
+        if (mapDiagram) {
+            mapDiagram.classList.add('cpc-mode');
+            mapDiagram.classList.remove('has-cloudpc');
+        }
+        // Label Cloud PC card as "(this device)"
+        const cpcTitle = document.getElementById('map-cpc-title');
+        if (cpcTitle) cpcTitle.textContent = 'Cloud PC (this device)';
         // Update button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
@@ -227,10 +232,15 @@ function toggleCloudPcMode(enabled) {
         // Hide CPC detected badge
         const cpcBadge = document.getElementById('cpc-detected-badge');
         if (cpcBadge) cpcBadge.classList.add('hidden');
+        // Restore normal map layout
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.remove('cpc-mode');
+        // Restore Cloud PC card title
+        const cpcTitle = document.getElementById('map-cpc-title');
+        if (cpcTitle) cpcTitle.textContent = 'Cloud PC';
         // Remove right-side cards unless imported CPC data exists
         const hasImportedCpcData = allResults.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
         if (!hasImportedCpcData) {
-            const mapDiagram = document.querySelector('.map-diagram');
             if (mapDiagram) mapDiagram.classList.remove('has-cloudpc');
         }
         // Restore button text
