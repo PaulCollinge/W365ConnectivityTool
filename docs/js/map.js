@@ -19,11 +19,10 @@ function updateConnectivityMap(results) {
     updateMapSecurityBar(lookup);
     updateMapLatencyLabels(lookup);
 
-    // Cloud PC right-side cards — show when CPC mode active OR imported scanner CPC data
-    const hasCloudPc = results.some(r => r.id && r.id.startsWith('C-'));
-    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
-    const hasImportedCpc = results.some(r => r.source === 'cloudpc' && r.id && r.id.startsWith('C-') && r.id === 'C-NET-01');
-    if (hasImportedCpc || (isCpcMode && hasCloudPc)) {
+    // Cloud PC right-side cards — only when imported scanner CPC data present
+    // (In browser CPC mode the left side already shows Cloud PC as "This Device")
+    const hasImportedCpc = results.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
+    if (hasImportedCpc) {
         const mapDiagram = document.querySelector('.map-diagram');
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         updateMapCloudPcCard(lookup);
