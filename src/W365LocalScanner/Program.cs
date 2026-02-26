@@ -70,12 +70,20 @@ class Program
                     _azureVmRegion = compute.TryGetProperty("location", out var loc) ? loc.GetString() : null;
                     _azureVmName = compute.TryGetProperty("name", out var vn) ? vn.GetString() : null;
                     var vmSize = compute.TryGetProperty("vmSize", out var vs) ? vs.GetString() ?? "" : "";
+                    var resourceGroup = compute.TryGetProperty("resourceGroupName", out var rg) ? rg.GetString() ?? "" : "";
+                    var provider = compute.TryGetProperty("provider", out var pv) ? pv.GetString() ?? "" : "";
+                    var tags = compute.TryGetProperty("tags", out var tg) ? tg.GetString() ?? "" : "";
 
-                    // Heuristic: if it's a Cloud PC-class VM size or name matches w365/cloudpc pattern,
-                    // auto-enable Cloud PC mode. Otherwise prompt.
+                    // Heuristic: Cloud PC-class VM sizes contain "_cpc", or resource group / tags
+                    // may reference W365/CloudPC/AVD, or the name pattern matches.
                     var isLikelyCloudPc = vmSize.Contains("_cpc", StringComparison.OrdinalIgnoreCase)
                         || (_azureVmName?.Contains("cloudpc", StringComparison.OrdinalIgnoreCase) ?? false)
-                        || (_azureVmName?.Contains("w365", StringComparison.OrdinalIgnoreCase) ?? false);
+                        || (_azureVmName?.Contains("w365", StringComparison.OrdinalIgnoreCase) ?? false)
+                        || resourceGroup.Contains("cloudpc", StringComparison.OrdinalIgnoreCase)
+                        || resourceGroup.Contains("w365", StringComparison.OrdinalIgnoreCase)
+                        || resourceGroup.Contains("wvd", StringComparison.OrdinalIgnoreCase)
+                        || tags.Contains("CloudPC", StringComparison.OrdinalIgnoreCase)
+                        || tags.Contains("Windows365", StringComparison.OrdinalIgnoreCase);
 
                     if (isLikelyCloudPc)
                     {
@@ -83,7 +91,8 @@ class Program
                     }
                     else
                     {
-                        Console.WriteLine("  Azure VM detected but not identified as Cloud PC.");
+                        // Any Azure VM — default to Y since user likely ran it here intentionally
+                        Console.WriteLine($"  Azure VM detected: {_azureVmName ?? "unknown"} ({vmSize}) in {_azureVmRegion ?? "unknown"}");
                         Console.Write("  Run in Cloud PC mode? [Y/n]: ");
                         var key = Console.ReadLine()?.Trim();
                         _isCloudPcMode = string.IsNullOrEmpty(key) || key.StartsWith("y", StringComparison.OrdinalIgnoreCase);
