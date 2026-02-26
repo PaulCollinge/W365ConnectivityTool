@@ -21,9 +21,13 @@ function updateConnectivityMap(results) {
 
     // Cloud PC right-side cards (show if C-* data present OR Cloud PC Mode is on)
     const hasCloudPc = results.some(r => r.id && r.id.startsWith('C-'));
-    if (hasCloudPc || (typeof cloudPcMode !== 'undefined' && cloudPcMode)) {
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
+    if (hasCloudPc || isCpcMode) {
         const mapDiagram = document.querySelector('.map-diagram');
-        if (mapDiagram && hasCloudPc) mapDiagram.classList.add('has-cloudpc');
+        if (mapDiagram && hasCloudPc) {
+            mapDiagram.classList.add('has-cloudpc');
+            if (isCpcMode) mapDiagram.classList.add('cpc-only');
+        }
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
     }
@@ -303,7 +307,7 @@ function updateMapClientCard(lookup) {
     let publicIp = '';
     let status = 'NotRun';
 
-    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+    const userLoc = lookup['B-LE-01'];
     if (userLoc && userLoc.status !== 'NotRun') {
         location = userLoc.resultValue || '';
         status = userLoc.status;
@@ -400,7 +404,7 @@ function setIspLogo(ispName) {
 
 // ── ISP Card ──
 function updateMapIspCard(lookup) {
-    const isp = lookup['B-LE-02'] || lookup['C-LE-02'];
+    const isp = lookup['B-LE-02'];
     if (!isp || isp.status === 'NotRun') {
         setText('map-isp-detail', 'Awaiting results...');
         setText('map-isp-detail2', '');
@@ -415,7 +419,7 @@ function updateMapIspCard(lookup) {
     setText('map-isp-detail2', asInfo);
 
     // Show egress city from GeoIP
-    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+    const userLoc = lookup['B-LE-01'];
     const egressCity = userLoc ? userLoc.resultValue : '';
     setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
 
@@ -426,9 +430,9 @@ function updateMapIspCard(lookup) {
 
 // ── AFD Edge Card ──
 function updateMapAfdCard(lookup) {
-    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'] || lookup['C-TCP-04'];
-    const latency = lookup['B-TCP-02'] || lookup['C-TCP-04'];
-    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'];
+    const latency = lookup['B-TCP-02'];
+    const gwUsed = lookup['L-TCP-09'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -477,8 +481,8 @@ function updateMapAfdCard(lookup) {
 // ── RD Gateway Card ──
 function updateMapRdGwCard(lookup) {
     const tcpPorts = lookup['L-TCP-04'];
-    const latency = lookup['B-TCP-02'] || lookup['C-TCP-04'];
-    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+    const latency = lookup['B-TCP-02'];
+    const gwUsed = lookup['L-TCP-09'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -524,9 +528,9 @@ function updateMapRdGwCard(lookup) {
 
 // ── TURN Relay Card ──
 function updateMapTurnCard(lookup) {
-    const stunTest = lookup['B-UDP-01'] || lookup['C-UDP-03'];
+    const stunTest = lookup['B-UDP-01'];
     const turnReach = lookup['L-UDP-03'];
-    const turnLoc = lookup['L-UDP-04'] || lookup['C-UDP-04'];
+    const turnLoc = lookup['L-UDP-04'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -616,7 +620,7 @@ async function geolocateTurnRelay() {
 
 // ── DNS Card ──
 function updateMapDnsCard(lookup) {
-    const dnsPerf = lookup['B-TCP-03'] || lookup['C-TCP-05'];
+    const dnsPerf = lookup['B-TCP-03'];
     const dnsCname = lookup['L-TCP-05'];
 
     let status = 'NotRun';
@@ -668,7 +672,7 @@ function updateMapLatencyLabels(lookup) {
     setLL('map-lat-gw', gwMs, 'gw');
 
     // AFD Edge: B-TCP-02 "Latency: avg Nms" or resultValue "— Nms"
-    const afd02 = lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    const afd02 = lookup['B-TCP-02'];
     let afdMs = null;
     if (afd02 && afd02.detailedInfo) {
         const latLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
@@ -916,11 +920,20 @@ function updateMapAzureCard(lookup) {
     if (imds && imds.status === 'Passed' && imds.detailedInfo) {
         const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
         if (regionMatch && detail) detail.textContent = regionMatch[1];
+    } else if (net && net.status === 'Passed' && net.detailedInfo) {
+        // No IMDS — infer from ISP detection data (browser CPC mode)
+        const orgLine = net.detailedInfo.match(/Organisation:\s*(.+)/);
+        if (orgLine && detail) detail.textContent = orgLine[1].trim();
     }
 
     // Show org/ISP info
     if (net && net.status === 'Passed' && net.resultValue) {
         if (detail2) detail2.textContent = net.resultValue;
+        // Set status from ISP data when no egress check available
+        if (!egress) {
+            if (dot) dot.setAttribute('fill', '#3fb950');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+        }
     }
 
     // Overall status based on egress check
@@ -935,8 +948,5 @@ function updateMapAzureCard(lookup) {
             if (dot) dot.setAttribute('fill', '#f85149');
             if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
         }
-    } else if (net && net.status === 'Passed') {
-        if (dot) dot.setAttribute('fill', '#3fb950');
-        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
     }
 }
