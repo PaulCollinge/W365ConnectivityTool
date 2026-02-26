@@ -184,7 +184,6 @@ function toggleCloudPcMode(enabled) {
     cloudPcMode = enabled;
     const clientSections = ['cat-endpoint', 'cat-local', 'cat-tcp', 'cat-udp'];
     const cpcSection = document.getElementById('cloudpc-diagnostics-section');
-    const mapTitle = document.getElementById('map-client-title');
     const mapContainer = document.getElementById('connectivity-map');
     const btn = document.getElementById('btn-run-all');
 
@@ -200,9 +199,11 @@ function toggleCloudPcMode(enabled) {
             const cpcInfoBar = document.getElementById('cloudpc-info-bar');
             if (cpcInfoBar) cpcInfoBar.style.display = 'none';
         }
-        // Update map title for Cloud PC context
-        if (mapTitle) mapTitle.textContent = 'Cloud PC (This device)';
+        // Keep left-side as 'This Device'; Cloud PC identity goes on the right
         if (mapContainer) mapContainer.classList.add('cpc-only-active');
+        // Extend map to show right-side Cloud PC + Azure cards
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         // Update button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
@@ -219,8 +220,13 @@ function toggleCloudPcMode(enabled) {
         const hasImportedCpc = allResults.some(r => r.source === 'cloudpc' && r.category === 'cloudpc');
         if (cpcSection && !hasImportedCpc) cpcSection.classList.add('hidden');
         // Restore map
-        if (mapTitle) mapTitle.textContent = 'This Device';
         if (mapContainer) mapContainer.classList.remove('cpc-only-active');
+        // Remove right-side cards unless imported CPC data exists
+        const hasImportedCpcData = allResults.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
+        if (!hasImportedCpcData) {
+            const mapDiagram = document.querySelector('.map-diagram');
+            if (mapDiagram) mapDiagram.classList.remove('has-cloudpc');
+        }
         // Restore button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'browser');

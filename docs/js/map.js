@@ -19,10 +19,10 @@ function updateConnectivityMap(results) {
     updateMapSecurityBar(lookup);
     updateMapLatencyLabels(lookup);
 
-    // Cloud PC right-side cards — only when imported scanner CPC data present
-    // (In browser CPC mode the left side already shows Cloud PC as "This Device")
+    // Cloud PC right-side cards — show when CPC mode active OR imported scanner data
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
     const hasImportedCpc = results.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
-    if (hasImportedCpc) {
+    if (hasImportedCpc || isCpcMode) {
         const mapDiagram = document.querySelector('.map-diagram');
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         updateMapCloudPcCard(lookup);
@@ -869,12 +869,85 @@ function updateMapSecurityBar(lookup) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  Azure region inference from geo-IP coordinates
+// ═══════════════════════════════════════════════════════════
+const AZURE_REGIONS = [
+    { name: 'UK South',             code: 'uksouth',             lat: 51.51, lon: -0.13 },
+    { name: 'UK West',              code: 'ukwest',              lat: 51.48, lon: -3.18 },
+    { name: 'North Europe',         code: 'northeurope',         lat: 53.35, lon: -6.26 },
+    { name: 'West Europe',          code: 'westeurope',          lat: 52.37, lon:  4.89 },
+    { name: 'France Central',       code: 'francecentral',       lat: 48.86, lon:  2.35 },
+    { name: 'France South',         code: 'francesouth',         lat: 43.30, lon:  5.37 },
+    { name: 'Germany West Central', code: 'germanywestcentral',  lat: 50.11, lon:  8.68 },
+    { name: 'Switzerland North',    code: 'switzerlandnorth',    lat: 47.38, lon:  8.54 },
+    { name: 'Switzerland West',     code: 'switzerlandwest',     lat: 46.20, lon:  6.14 },
+    { name: 'Norway East',          code: 'norwayeast',          lat: 59.91, lon: 10.75 },
+    { name: 'Sweden Central',       code: 'swedencentral',       lat: 60.67, lon: 17.14 },
+    { name: 'Italy North',          code: 'italynorth',          lat: 45.46, lon:  9.19 },
+    { name: 'Poland Central',       code: 'polandcentral',       lat: 52.23, lon: 21.01 },
+    { name: 'Spain Central',        code: 'spaincentral',        lat: 40.42, lon: -3.70 },
+    { name: 'East US',              code: 'eastus',              lat: 37.43, lon:-79.07 },
+    { name: 'East US 2',            code: 'eastus2',             lat: 36.68, lon:-78.17 },
+    { name: 'Central US',           code: 'centralus',           lat: 41.88, lon:-93.10 },
+    { name: 'North Central US',     code: 'northcentralus',      lat: 41.88, lon:-87.63 },
+    { name: 'South Central US',     code: 'southcentralus',      lat: 29.42, lon:-98.49 },
+    { name: 'West US',              code: 'westus',              lat: 37.78, lon:-122.42 },
+    { name: 'West US 2',            code: 'westus2',             lat: 47.23, lon:-119.85 },
+    { name: 'West US 3',            code: 'westus3',             lat: 33.45, lon:-112.07 },
+    { name: 'Canada Central',       code: 'canadacentral',       lat: 43.65, lon:-79.38 },
+    { name: 'Canada East',          code: 'canadaeast',          lat: 46.82, lon:-71.22 },
+    { name: 'Brazil South',         code: 'brazilsouth',         lat:-23.55, lon:-46.63 },
+    { name: 'East Asia',            code: 'eastasia',            lat: 22.40, lon: 114.11 },
+    { name: 'Southeast Asia',       code: 'southeastasia',       lat:  1.35, lon: 103.82 },
+    { name: 'Japan East',           code: 'japaneast',           lat: 35.69, lon: 139.69 },
+    { name: 'Japan West',           code: 'japanwest',           lat: 34.69, lon: 135.50 },
+    { name: 'Korea Central',        code: 'koreacentral',        lat: 37.57, lon: 126.98 },
+    { name: 'Korea South',          code: 'koreasouth',          lat: 35.18, lon: 129.08 },
+    { name: 'Central India',        code: 'centralindia',        lat: 18.52, lon:  73.86 },
+    { name: 'South India',          code: 'southindia',          lat: 13.08, lon:  80.27 },
+    { name: 'West India',           code: 'westindia',           lat: 19.08, lon:  72.88 },
+    { name: 'Australia East',       code: 'australiaeast',       lat:-33.87, lon: 151.21 },
+    { name: 'Australia Southeast',  code: 'australiasoutheast',  lat:-37.81, lon: 144.96 },
+    { name: 'Australia Central',    code: 'australiacentral',    lat:-35.28, lon: 149.13 },
+    { name: 'UAE North',            code: 'uaenorth',            lat: 25.28, lon:  55.30 },
+    { name: 'South Africa North',   code: 'southafricanorth',    lat:-26.20, lon:  28.05 },
+    { name: 'Qatar Central',        code: 'qatarcentral',        lat: 25.29, lon:  51.53 },
+    { name: 'Israel Central',       code: 'israelcentral',       lat: 31.77, lon:  35.22 },
+];
+
+/**
+ * Given lat/lon (from geo-IP), find the nearest Azure region.
+ * Returns { name, code } or null if coordinates are missing.
+ */
+function inferAzureRegion(lat, lon) {
+    if (lat == null || lon == null || (lat === 0 && lon === 0)) return null;
+    let best = null, bestDist = Infinity;
+    for (const r of AZURE_REGIONS) {
+        const dLat = r.lat - lat, dLon = r.lon - lon;
+        const dist = dLat * dLat + dLon * dLon; // squared Euclidean is fine for nearest
+        if (dist < bestDist) { bestDist = dist; best = r; }
+    }
+    return best;
+}
+
+/**
+ * Extract coordinates from a C-LE-01 / B-LE-01 detailedInfo string.
+ * Expected format: "Coordinates: 51.4500, -0.9500"
+ */
+function extractCoords(detailedInfo) {
+    if (!detailedInfo) return null;
+    const m = detailedInfo.match(/Coordinates:\s*([-\d.]+),\s*([-\d.]+)/);
+    if (!m) return null;
+    return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Cloud PC right-side map cards
 // ═══════════════════════════════════════════════════════════
 
 function updateMapCloudPcCard(lookup) {
-    const loc = lookup['C-LE-01'];
-    const net = lookup['C-LE-02'];
+    const loc = lookup['C-LE-01'] || lookup['B-LE-01'];
+    const net = lookup['C-LE-02'] || lookup['B-LE-02'];
     const imds = lookup['C-NET-01'];
     const title = document.getElementById('map-cpc-title');
     const locEl = document.getElementById('map-cpc-location');
@@ -883,7 +956,14 @@ function updateMapCloudPcCard(lookup) {
     const accent = document.getElementById('map-cpc-accent');
 
     if (loc && loc.status === 'Passed' && loc.resultValue) {
-        if (locEl) locEl.textContent = loc.resultValue;
+        // Prefer Azure region inferred from coordinates over raw geo-IP city
+        const coords = extractCoords(loc.detailedInfo);
+        const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
+        if (azRegion) {
+            if (locEl) locEl.textContent = azRegion.name;
+        } else {
+            if (locEl) locEl.textContent = loc.resultValue;
+        }
         // Extract IP from detailed info
         if (ipEl && loc.detailedInfo) {
             const ipMatch = loc.detailedInfo.match(/Public IP:\s*([\d.]+)/);
@@ -905,7 +985,8 @@ function updateMapCloudPcCard(lookup) {
 }
 
 function updateMapAzureCard(lookup) {
-    const net = lookup['C-LE-02'];
+    const loc = lookup['C-LE-01'] || lookup['B-LE-01'];
+    const net = lookup['C-LE-02'] || lookup['B-LE-02'];
     const egress = lookup['C-NET-02'];
     const imds = lookup['C-NET-01'];
     const detail = document.getElementById('map-azure-detail');
@@ -913,14 +994,15 @@ function updateMapAzureCard(lookup) {
     const dot = document.getElementById('device-azure-dot');
     const accent = document.getElementById('map-azure-accent');
 
-    // Show Azure region from IMDS or location test
+    // Show Azure region from IMDS, or infer from geo-IP coordinates
     if (imds && imds.status === 'Passed' && imds.detailedInfo) {
         const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
         if (regionMatch && detail) detail.textContent = regionMatch[1];
-    } else if (net && net.status === 'Passed' && net.detailedInfo) {
-        // No IMDS — infer from ISP detection data (browser CPC mode)
-        const orgLine = net.detailedInfo.match(/Organisation:\s*(.+)/);
-        if (orgLine && detail) detail.textContent = orgLine[1].trim();
+    } else if (loc && loc.detailedInfo) {
+        // Infer Azure region from geo-IP coordinates
+        const coords = extractCoords(loc.detailedInfo);
+        const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
+        if (azRegion && detail) detail.textContent = azRegion.name;
     }
 
     // Show org/ISP info
