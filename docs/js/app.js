@@ -185,7 +185,6 @@ function toggleCloudPcMode(enabled) {
     const clientSections = ['cat-endpoint', 'cat-local', 'cat-tcp', 'cat-udp'];
     const cpcSection = document.getElementById('cloudpc-diagnostics-section');
     const mapTitle = document.getElementById('map-client-title');
-    const mapDiagram = document.querySelector('.map-diagram');
     const mapContainer = document.getElementById('connectivity-map');
     const btn = document.getElementById('btn-run-all');
 
@@ -201,12 +200,8 @@ function toggleCloudPcMode(enabled) {
             const cpcInfoBar = document.getElementById('cloudpc-info-bar');
             if (cpcInfoBar) cpcInfoBar.style.display = 'none';
         }
-        // Update map: show right-side Cloud PC cards, hide left side
+        // Update map title for Cloud PC context
         if (mapTitle) mapTitle.textContent = 'Cloud PC (This device)';
-        if (mapDiagram) {
-            mapDiagram.classList.add('has-cloudpc');
-            mapDiagram.classList.add('cpc-only');
-        }
         if (mapContainer) mapContainer.classList.add('cpc-only-active');
         // Update button text
         if (btn && !isRunning) {
@@ -225,10 +220,6 @@ function toggleCloudPcMode(enabled) {
         if (cpcSection && !hasImportedCpc) cpcSection.classList.add('hidden');
         // Restore map
         if (mapTitle) mapTitle.textContent = 'This Device';
-        if (mapDiagram) {
-            if (!hasImportedCpc) mapDiagram.classList.remove('has-cloudpc');
-            mapDiagram.classList.remove('cpc-only');
-        }
         if (mapContainer) mapContainer.classList.remove('cpc-only-active');
         // Restore button text
         if (btn && !isRunning) {
@@ -313,15 +304,6 @@ async function runAllBrowserTests() {
 
     // Reveal the map now that we have results
     if (mapContainer) mapContainer.classList.remove('hidden');
-
-    // In Cloud PC mode, ensure the right-side map cards are visible and left side hidden
-    if (cloudPcMode) {
-        const mapDiagram = document.querySelector('.map-diagram');
-        if (mapDiagram) {
-            mapDiagram.classList.add('has-cloudpc');
-            mapDiagram.classList.add('cpc-only');
-        }
-    }
 
     updateSummary(allResults);
     updateCategoryBadges(allResults);
