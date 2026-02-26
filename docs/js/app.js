@@ -31,11 +31,11 @@ window.addEventListener('unhandledrejection', function(event) {
 let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
-let cloudPcMode = false;           // true when browser tests should be tagged as Cloud PC
+let detectedCloudPc = false;       // auto-detected after browser tests complete
 
 // ── Browser-test → Cloud-PC-test ID mapping ──
-// When Cloud PC Mode is ON, browser test results are re-tagged with C-* IDs
-// so they appear in the Cloud PC Diagnostics section and on the right side of the map.
+// When running from a Cloud PC, browser results are cloned with C-* IDs
+// so they also appear in the Cloud PC Diagnostics section and right-side map cards.
 const BROWSER_TO_CPC_ID = {
     'B-LE-01': 'C-LE-01',   // User Location → Cloud PC Location
     'B-LE-02': 'C-LE-02',   // ISP Detection → Cloud PC Network Info
@@ -147,51 +147,48 @@ function setupDragDrop() {
     });
 }
 
-// ── Cloud PC Mode toggle ──
-function toggleCloudPcMode(enabled) {
-    cloudPcMode = enabled;
-    const wrapper = document.getElementById('cpc-toggle-wrapper');
-    const btn = document.getElementById('btn-run-all');
+// ── Auto-detect Cloud PC from browser test results ──
+// Checks ISP/org result for Azure/Microsoft hosting indicators.
+function detectCloudPcFromResults(results) {
+    const isp = results.find(r => r.id === 'B-LE-02');
+    if (!isp || !isp.detailedInfo) return false;
+    const info = (isp.resultValue + ' ' + isp.detailedInfo).toLowerCase();
+    return info.includes('microsoft') || info.includes('azure');
+}
+
+// ── Apply Cloud PC layout after detection ──
+function applyCloudPcLayout(isCloudPc) {
+    detectedCloudPc = isCloudPc;
+    const clientTitle = document.getElementById('map-client-title');
     const cpcSection = document.getElementById('cloudpc-diagnostics-section');
     const mapDiagram = document.querySelector('.map-diagram');
-    const clientTitle = document.getElementById('map-client-title');
+    const cpcInfoBar = document.getElementById('cloudpc-info-bar');
 
-    if (enabled) {
-        if (wrapper) wrapper.classList.add('active');
-        if (btn) {
-            const svg = btn.querySelector('svg');
-            btn.innerHTML = '';
-            if (svg) btn.appendChild(svg);
-            btn.appendChild(document.createTextNode(' Run Cloud PC Tests'));
-        }
-        // Update map label to reflect Cloud PC context
+    if (isCloudPc) {
+        // Cloud PC detected — update labels and extend map
         if (clientTitle) clientTitle.textContent = 'Cloud PC (This device)';
-        // Show Cloud PC section and extend map
         if (cpcSection) cpcSection.classList.remove('hidden');
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
-        // Update info bar to explain browser CPC mode
-        const cpcInfoBar = document.getElementById('cloudpc-info-bar');
-        if (cpcInfoBar) {
-            cpcInfoBar.style.display = '';
-            cpcInfoBar.querySelector('span:last-child').innerHTML =
-                'Cloud PC Mode is <strong>ON</strong> — browser tests will run from this Cloud PC\'s perspective. Click <strong>Run Cloud PC Tests</strong> to start.';
+        if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+
+        // Clone browser results to C-* IDs for the Cloud PC section
+        const existingCpcIds = new Set(allResults.filter(r => r.id && r.id.startsWith('C-')).map(r => r.id));
+        for (const r of [...allResults]) {
+            const cpcId = BROWSER_TO_CPC_ID[r.id];
+            if (cpcId && !existingCpcIds.has(cpcId)) {
+                const cpcResult = Object.assign({}, r, {
+                    id: cpcId,
+                    source: 'cloudpc',
+                    category: 'cloudpc',
+                    name: (ALL_TESTS.find(t => t.id === cpcId) || r).name
+                });
+                allResults.push(cpcResult);
+                updateTestUI(cpcId, cpcResult);
+            }
         }
     } else {
-        if (wrapper) wrapper.classList.remove('active');
-        if (btn) {
-            const svg = btn.querySelector('svg');
-            btn.innerHTML = '';
-            if (svg) btn.appendChild(svg);
-            btn.appendChild(document.createTextNode(' Run Browser Tests'));
-        }
-        // Restore map label
+        // Standard client — keep default labels
         if (clientTitle) clientTitle.textContent = 'Client (This device)';
-        // Only hide Cloud PC section if there are no imported Cloud PC results
-        const hasImportedCpc = allResults.some(r => r.source === 'cloudpc' || (r.id && r.id.startsWith('C-')));
-        if (!hasImportedCpc) {
-            if (cpcSection) cpcSection.classList.add('hidden');
-            if (mapDiagram) mapDiagram.classList.remove('has-cloudpc');
-        }
     }
 }
 
@@ -200,20 +197,22 @@ async function runAllBrowserTests() {
     if (isRunning) return;
     isRunning = true;
 
-    const isCpc = cloudPcMode;
     const btn = document.getElementById('btn-run-all');
     btn.disabled = true;
     btn.innerHTML = '<span class="btn-icon">\u27F3</span> Running...';
 
-    // Hide info banner
+    // Hide info banner and map (map reveals after tests finish)
     document.getElementById('info-banner').classList.add('hidden');
+    const mapContainer = document.getElementById('connectivity-map');
+    if (mapContainer) mapContainer.classList.add('hidden');
 
     const browserTests = ALL_TESTS.filter(t => t.source === 'browser' && t.run);
     const total = browserTests.length;
     let completed = 0;
 
-    // Reset browser + cloudpc browser results (keep imported local/scanner results)
+    // Reset browser + cloudpc-browser results (keep imported local/scanner results)
     allResults = allResults.filter(r => r.source === 'local');
+    detectedCloudPc = false;
 
     // Clear GeoIP and user-location caches so location is re-fetched fresh
     if (typeof resetGeoCache === 'function') resetGeoCache();
@@ -222,47 +221,15 @@ async function runAllBrowserTests() {
     // Show progress
     updateProgress(0, total, browserTests[0]?.name);
 
-    // In Cloud PC mode, show/extend the Cloud PC UI and update labels
-    if (isCpc) {
-        const cpcSection = document.getElementById('cloudpc-diagnostics-section');
-        if (cpcSection) cpcSection.classList.remove('hidden');
-        const mapDiagram = document.querySelector('.map-diagram');
-        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
-        const cpcInfoBar = document.getElementById('cloudpc-info-bar');
-        if (cpcInfoBar) cpcInfoBar.style.display = 'none';
-        // Update map client card label
-        const clientTitle = document.getElementById('map-client-title');
-        if (clientTitle) clientTitle.textContent = 'Cloud PC (This device)';
-    } else {
-        const clientTitle = document.getElementById('map-client-title');
-        if (clientTitle) clientTitle.textContent = 'Client (This device)';
-    }
-
     for (const test of browserTests) {
         setTestRunning(test.id);
         updateProgress(completed, total, test.name);
 
         try {
             const result = await test.run(test);
-            // Always push the browser result (populates left-side map cards)
             result.source = 'browser';
             allResults.push(result);
             updateTestUI(test.id, result);
-
-            // In CPC mode, also create a Cloud PC copy for the CPC section + right-side map
-            if (isCpc && BROWSER_TO_CPC_ID[test.id]) {
-                const cpcId = BROWSER_TO_CPC_ID[test.id];
-                const cpcResult = Object.assign({}, result, {
-                    id: cpcId,
-                    source: 'cloudpc',
-                    category: 'cloudpc',
-                    name: (ALL_TESTS.find(t => t.id === cpcId) || test).name
-                });
-                allResults.push(cpcResult);
-                updateTestUI(cpcId, cpcResult);
-            }
-
-            updateConnectivityMap(allResults);
         } catch (err) {
             const errorResult = {
                 id: test.id,
@@ -276,21 +243,6 @@ async function runAllBrowserTests() {
             };
             allResults.push(errorResult);
             updateTestUI(test.id, errorResult);
-
-            // CPC copy for errors too
-            if (isCpc && BROWSER_TO_CPC_ID[test.id]) {
-                const cpcId = BROWSER_TO_CPC_ID[test.id];
-                const cpcError = Object.assign({}, errorResult, {
-                    id: cpcId,
-                    source: 'cloudpc',
-                    category: 'cloudpc',
-                    name: (ALL_TESTS.find(t => t.id === cpcId) || test).name
-                });
-                allResults.push(cpcError);
-                updateTestUI(cpcId, cpcError);
-            }
-
-            updateConnectivityMap(allResults);
         }
 
         completed++;
@@ -298,6 +250,13 @@ async function runAllBrowserTests() {
     }
 
     hideProgress();
+
+    // ── Auto-detect Cloud PC from results ──
+    const isCloudPc = detectCloudPcFromResults(allResults);
+    applyCloudPcLayout(isCloudPc);
+
+    // Now reveal the map with the correct layout
+    if (mapContainer) mapContainer.classList.remove('hidden');
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
@@ -306,11 +265,10 @@ async function runAllBrowserTests() {
 
     // Only show download banner if no scanner results have been imported
     const hasLocalResults = allResults.some(r => r.source === 'local');
-    if (!hasLocalResults && !isCpc) showDownloadBanner();
+    if (!hasLocalResults && !isCloudPc) showDownloadBanner();
 
     btn.disabled = false;
-    const btnLabel = isCpc ? 'Re-run Cloud PC Tests' : 'Re-run Browser Tests';
-    btn.innerHTML = '<span class="btn-icon">\u25B6</span> ' + btnLabel;
+    btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';
     isRunning = false;
 }
 
@@ -619,6 +577,11 @@ function processImportedData(data) {
     // Update summary and badges
     updateSummary(allResults);
     updateCategoryBadges(allResults);
+
+    // Reveal the map (hidden until first test run or import)
+    const mapContainer = document.getElementById('connectivity-map');
+    if (mapContainer) mapContainer.classList.remove('hidden');
+
     updateConnectivityMap(allResults);
     updateConnectivityOverview(allResults);
     updateExportButton();
