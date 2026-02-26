@@ -154,6 +154,7 @@ function toggleCloudPcMode(enabled) {
     const btn = document.getElementById('btn-run-all');
     const cpcSection = document.getElementById('cloudpc-diagnostics-section');
     const mapDiagram = document.querySelector('.map-diagram');
+    const clientTitle = document.getElementById('map-client-title');
 
     if (enabled) {
         if (wrapper) wrapper.classList.add('active');
@@ -163,6 +164,8 @@ function toggleCloudPcMode(enabled) {
             if (svg) btn.appendChild(svg);
             btn.appendChild(document.createTextNode(' Run Cloud PC Tests'));
         }
+        // Update map label to reflect Cloud PC context
+        if (clientTitle) clientTitle.textContent = 'Cloud PC (This device)';
         // Show Cloud PC section and extend map
         if (cpcSection) cpcSection.classList.remove('hidden');
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
@@ -171,7 +174,7 @@ function toggleCloudPcMode(enabled) {
         if (cpcInfoBar) {
             cpcInfoBar.style.display = '';
             cpcInfoBar.querySelector('span:last-child').innerHTML =
-                'Cloud PC Mode is <strong>ON</strong> — browser tests will be tagged as Cloud PC diagnostics. Click <strong>Run Cloud PC Tests</strong> to start.';
+                'Cloud PC Mode is <strong>ON</strong> — browser tests will run from this Cloud PC\'s perspective. Click <strong>Run Cloud PC Tests</strong> to start.';
         }
     } else {
         if (wrapper) wrapper.classList.remove('active');
@@ -181,6 +184,8 @@ function toggleCloudPcMode(enabled) {
             if (svg) btn.appendChild(svg);
             btn.appendChild(document.createTextNode(' Run Browser Tests'));
         }
+        // Restore map label
+        if (clientTitle) clientTitle.textContent = 'Client (This device)';
         // Only hide Cloud PC section if there are no imported Cloud PC results
         const hasImportedCpc = allResults.some(r => r.source === 'cloudpc' || (r.id && r.id.startsWith('C-')));
         if (!hasImportedCpc) {
@@ -207,14 +212,8 @@ async function runAllBrowserTests() {
     const total = browserTests.length;
     let completed = 0;
 
-    // Reset results: keep imported local results and keep results from the OTHER mode
-    if (isCpc) {
-        // Cloud PC mode: keep local + browser results, clear previous cloudpc browser results
-        allResults = allResults.filter(r => r.source === 'local' || r.source === 'browser');
-    } else {
-        // Client mode: keep local + cloudpc results, clear previous browser results
-        allResults = allResults.filter(r => r.source === 'local' || r.source === 'cloudpc');
-    }
+    // Reset browser + cloudpc browser results (keep imported local/scanner results)
+    allResults = allResults.filter(r => r.source === 'local');
 
     // Clear GeoIP and user-location caches so location is re-fetched fresh
     if (typeof resetGeoCache === 'function') resetGeoCache();
@@ -223,7 +222,7 @@ async function runAllBrowserTests() {
     // Show progress
     updateProgress(0, total, browserTests[0]?.name);
 
-    // In Cloud PC mode, show/extend the Cloud PC UI
+    // In Cloud PC mode, show/extend the Cloud PC UI and update labels
     if (isCpc) {
         const cpcSection = document.getElementById('cloudpc-diagnostics-section');
         if (cpcSection) cpcSection.classList.remove('hidden');
@@ -231,41 +230,66 @@ async function runAllBrowserTests() {
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         const cpcInfoBar = document.getElementById('cloudpc-info-bar');
         if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+        // Update map client card label
+        const clientTitle = document.getElementById('map-client-title');
+        if (clientTitle) clientTitle.textContent = 'Cloud PC (This device)';
+    } else {
+        const clientTitle = document.getElementById('map-client-title');
+        if (clientTitle) clientTitle.textContent = 'Client (This device)';
     }
 
     for (const test of browserTests) {
-        const targetId = isCpc ? (BROWSER_TO_CPC_ID[test.id] || test.id) : test.id;
-        const targetSource = isCpc ? 'cloudpc' : 'browser';
-        const targetCategory = isCpc ? 'cloudpc' : test.category;
-
-        // Show running state on the correct test card
-        setTestRunning(isCpc ? targetId : test.id);
-        // Also show running on the browser card in CPC mode so user sees progress
-        if (isCpc) setTestRunning(test.id);
+        setTestRunning(test.id);
         updateProgress(completed, total, test.name);
 
         try {
             const result = await test.run(test);
-            result.id = targetId;
-            result.source = targetSource;
-            result.category = targetCategory;
-            if (isCpc) result.name = (ALL_TESTS.find(t => t.id === targetId) || test).name;
+            // Always push the browser result (populates left-side map cards)
+            result.source = 'browser';
             allResults.push(result);
-            updateTestUI(targetId, result);
+            updateTestUI(test.id, result);
+
+            // In CPC mode, also create a Cloud PC copy for the CPC section + right-side map
+            if (isCpc && BROWSER_TO_CPC_ID[test.id]) {
+                const cpcId = BROWSER_TO_CPC_ID[test.id];
+                const cpcResult = Object.assign({}, result, {
+                    id: cpcId,
+                    source: 'cloudpc',
+                    category: 'cloudpc',
+                    name: (ALL_TESTS.find(t => t.id === cpcId) || test).name
+                });
+                allResults.push(cpcResult);
+                updateTestUI(cpcId, cpcResult);
+            }
+
             updateConnectivityMap(allResults);
         } catch (err) {
             const errorResult = {
-                id: targetId,
-                name: (isCpc ? (ALL_TESTS.find(t => t.id === targetId) || test).name : test.name),
-                category: targetCategory,
-                source: targetSource,
+                id: test.id,
+                name: test.name,
+                category: test.category,
+                source: 'browser',
                 status: 'Error',
                 resultValue: `Error: ${err.message}`,
                 detailedInfo: err.stack || err.message,
                 duration: 0
             };
             allResults.push(errorResult);
-            updateTestUI(targetId, errorResult);
+            updateTestUI(test.id, errorResult);
+
+            // CPC copy for errors too
+            if (isCpc && BROWSER_TO_CPC_ID[test.id]) {
+                const cpcId = BROWSER_TO_CPC_ID[test.id];
+                const cpcError = Object.assign({}, errorResult, {
+                    id: cpcId,
+                    source: 'cloudpc',
+                    category: 'cloudpc',
+                    name: (ALL_TESTS.find(t => t.id === cpcId) || test).name
+                });
+                allResults.push(cpcError);
+                updateTestUI(cpcId, cpcError);
+            }
+
             updateConnectivityMap(allResults);
         }
 
