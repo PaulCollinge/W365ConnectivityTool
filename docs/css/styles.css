@@ -1269,12 +1269,12 @@ main {
 .map-g-dnsline { grid-column: 3; grid-row: 6; justify-self: center; align-self: stretch; z-index: 1; }
 .map-g-dns     { grid-column: 3; grid-row: 7; }
 
-/* ── Cloud PC right-side cards (hidden until .has-cloudpc) ── */
-.map-g-fanin   { grid-column: 8; grid-row: 1 / 6; align-self: stretch; display: none; }
-.map-g-azure   { grid-column: 9; grid-row: 1 / 6; align-self: center; display: none; }
-.map-g-arrow3  { grid-column: 10; grid-row: 1 / 6; align-self: center; justify-self: center; display: none; }
-.map-g-nat     { display: none; }
-.map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
+/* ── Cloud PC right-side cards (hidden until .has-cloudpc or .cpc-mode) ── */
+.map-diagram .map-g-fanin   { grid-column: 8; grid-row: 1 / 6; align-self: stretch; display: none; }
+.map-diagram .map-g-azure   { grid-column: 9; grid-row: 1 / 6; align-self: center; display: none; }
+.map-diagram .map-g-arrow3  { grid-column: 10; grid-row: 1 / 6; align-self: center; justify-self: center; display: none; }
+.map-diagram .map-g-nat     { display: none; }
+.map-diagram .map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
 
 .map-diagram.has-cloudpc {
     grid-template-columns: 1fr 60px 1fr 60px 1fr 50px 1.2fr 50px 1fr 60px 1fr;
@@ -1432,10 +1432,10 @@ main {
 .map-arrow-cell { position: relative; }
 .map-arrow-cell .map-line-label { bottom: -2px; left: 50%; transform: translate(-50%, 100%); }
 
-/* Fanout latency: to the right of each branch (toward the service cards) */
-.map-ll-afd  { right: -4px; top: 16.5%; transform: translate(100%, -50%); }
-.map-ll-rdgw { right: -4px; top: 50%; transform: translate(100%, -50%); }
-.map-ll-turn { right: -4px; top: 83.5%; transform: translate(100%, -50%); }
+/* Fanout latency: centered above each branch line */
+.map-ll-afd  { left: 50%; top: 16.5%; transform: translate(-50%, calc(-100% - 4px)); }
+.map-ll-rdgw { left: 50%; top: 50%; transform: translate(-50%, calc(-100% - 4px)); }
+.map-ll-turn { left: 50%; top: 83.5%; transform: translate(-50%, calc(-100% - 4px)); }
 
 /* ── Client PC / Laptop device visual ── */
 .map-client-device {
