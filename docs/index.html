@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=152">
+    <link rel="stylesheet" href="css/styles.css?v=153">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -36,11 +36,15 @@
                 </div>
             </div>
             <div class="header-actions">
-                <label class="cpc-toggle" title="Enable when running this page from within a Cloud PC">
+                <label class="cpc-toggle" title="Enable when running this page from within a Cloud PC or AVD session host">
                     <input type="checkbox" id="cpc-mode-toggle" onchange="toggleCloudPcMode(this.checked)">
                     <span class="cpc-toggle-slider"></span>
                     <span class="cpc-toggle-label" id="cpc-toggle-label">Cloud PC Mode</span>
                 </label>
+                <select id="host-type-select" class="host-type-select hidden" onchange="onHostTypeChanged(this.value)" title="Select host type">
+                    <option value="cloudpc">Cloud PC (W365)</option>
+                    <option value="avd">AVD Session Host</option>
+                </select>
                 <button id="btn-run-all" class="btn btn-primary" onclick="runAllBrowserTests()">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
                     Run Browser Tests
@@ -766,11 +770,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=152"></script>
-    <script src="js/browser-tests.js?v=152"></script>
-    <script src="js/ui.js?v=152"></script>
-    <script src="js/map.js?v=152"></script>
-    <script src="js/ai-analysis.js?v=152"></script>
-    <script src="js/app.js?v=152"></script>
+    <script src="js/config.js?v=153"></script>
+    <script src="js/browser-tests.js?v=153"></script>
+    <script src="js/ui.js?v=153"></script>
+    <script src="js/map.js?v=153"></script>
+    <script src="js/ai-analysis.js?v=153"></script>
+    <script src="js/app.js?v=153"></script>
 </body>
 </html>

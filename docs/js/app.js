@@ -124,11 +124,18 @@ document.addEventListener('DOMContentLoaded', () => {
     setupDragDrop();
 
     // Auto-detect Cloud PC environment (IMDS probe)
-    detectCloudPcEnvironment().then(isCloudPc => {
-        if (isCloudPc) {
+    detectCloudPcEnvironment().then(result => {
+        if (result.detected) {
+            if (result.hostType) {
+                hostType = result.hostType;
+                ilog(`Auto-detected host type: ${result.hostType}`);
+            }
             const toggle = document.getElementById('cpc-mode-toggle');
             if (toggle) toggle.checked = true;
             toggleCloudPcMode(true);
+            // Update host-type selector to match detected value
+            const sel = document.getElementById('host-type-select');
+            if (sel && result.hostType) sel.value = result.hostType;
             ilog('Cloud PC Mode auto-enabled');
         }
     });
@@ -160,24 +167,43 @@ function setupDragDrop() {
 
 
 // ── Cloud PC environment auto-detection ──
-// Probes the Azure IMDS endpoint (169.254.169.254) which is only reachable from
-// Azure VMs / Cloud PCs. Uses no-cors mode so we can detect reachability even
-// though the browser can't read the response body.
+// Probes the Azure IMDS endpoint (169.254.169.254). First tries to read the full
+// response (to distinguish Cloud PC vs AVD). Falls back to no-cors reachability.
 async function detectCloudPcEnvironment() {
+    // First, try full CORS read with Metadata header (works from file:// or relaxed envs)
     try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 3000);
+        const resp = await fetch('http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01', {
+            headers: { 'Metadata': 'true' },
+            signal: ctrl.signal
+        });
+        clearTimeout(t);
+        if (resp.ok) {
+            const meta = await resp.json();
+            const offer = (meta.offer || '').toLowerCase();
+            const sku   = (meta.sku   || '').toLowerCase();
+            const vmSz  = (meta.vmSize || '').toLowerCase();
+            const isCpc = offer.includes('cpc') || sku.includes('cpc') || vmSz.includes('_cpc');
+            const ht = isCpc ? 'cloudpc' : 'avd';  // If IMDS is reachable but no CPC indicators → AVD
+            ilog(`IMDS metadata read — offer=${meta.offer}, sku=${meta.sku}, vmSize=${meta.vmSize} → hostType=${ht}`);
+            return { detected: true, hostType: ht, meta };
+        }
+    } catch { /* CORS or mixed content blocked — expected from https:// pages */ }
+    // Fallback: opaque no-cors probe (just reachability)
+    try {
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 3000);
         await fetch('http://169.254.169.254/metadata/instance?api-version=2021-02-01', {
             mode: 'no-cors',
-            signal: controller.signal
+            signal: ctrl2.signal
         });
-        clearTimeout(timeout);
-        // If fetch resolved, IMDS is reachable → we're on an Azure VM / Cloud PC / AVD Session Host
-        ilog('IMDS reachable — Azure VM environment detected (Cloud PC or AVD)');
-        return true;
+        clearTimeout(t2);
+        ilog('IMDS reachable (opaque) — Azure VM detected, hostType unknown');
+        return { detected: true, hostType: null };
     } catch {
         ilog('IMDS not reachable — not an Azure VM environment');
-        return false;
+        return { detected: false, hostType: null };
     }
 }
 
@@ -187,6 +213,17 @@ function hostLabel() {
 }
 function hostLabelShort() {
     return hostType === 'avd' ? 'AVD Host' : 'Cloud PC';
+}
+
+// ── Host-type dropdown handler ──
+function onHostTypeChanged(value) {
+    hostType = value; // 'cloudpc' or 'avd'
+    ilog('Host type changed to: ' + value);
+    updateHostTypeLabels();
+    // Re-render key findings if we have results
+    if (allResults.length > 0) {
+        updateKeyFindings(allResults);
+    }
 }
 
 // ── Update all host-type-sensitive labels in the UI ──
@@ -207,6 +244,15 @@ function updateHostTypeLabels() {
     if (cpcSectionTitle) cpcSectionTitle.textContent = `${label} Diagnostics`;
     const cpcSectionSub = document.querySelector('.cloudpc-header .live-subtitle');
     if (cpcSectionSub) cpcSectionSub.textContent = `Connectivity tests run from within the ${label} (Azure VM)`;
+    // CPC diagnostics info bar
+    const cpcInfoBar = document.querySelector('#cloudpc-info-bar span:last-child');
+    if (cpcInfoBar) cpcInfoBar.innerHTML = `Run the scanner inside the ${label} with <code>--cloudpc</code> or it will auto-detect Azure VMs. Import the results to see the server-side view.`;
+    // Live Connection subtitle
+    const liveSub = document.querySelector('#live-diagnostics-section .live-subtitle');
+    if (liveSub) liveSub.textContent = `Real-time analysis of your active ${label} session`;
+    // Live Connection info bar
+    const liveInfo = document.querySelector('#cloud-info-bar span:last-child');
+    if (liveInfo) liveInfo.textContent = `Run the desktop tool while connected to your ${label}, or from within the ${label} session itself.`;
     // SVG label inside Cloud PC card
     const svgText = document.querySelector('#map-cloudpc .device-svg text');
     if (svgText) svgText.textContent = short;
@@ -233,6 +279,12 @@ function toggleCloudPcMode(enabled) {
             const el = document.getElementById(id);
             if (el) el.classList.add('hidden');
         });
+        // Show host-type selector
+        const htSel = document.getElementById('host-type-select');
+        if (htSel) {
+            htSel.classList.remove('hidden');
+            if (hostType) htSel.value = hostType;
+        }
         // Show Cloud PC diagnostics section
         if (cpcSection) {
             cpcSection.classList.remove('hidden');
@@ -272,6 +324,9 @@ function toggleCloudPcMode(enabled) {
         // Hide CPC detected badge
         const cpcBadge = document.getElementById('cpc-detected-badge');
         if (cpcBadge) cpcBadge.classList.add('hidden');
+        // Hide host-type selector
+        const htSel = document.getElementById('host-type-select');
+        if (htSel) htSel.classList.add('hidden');
         // Restore normal map layout
         const mapDiagram = document.querySelector('.map-diagram');
         if (mapDiagram) {
@@ -384,7 +439,7 @@ async function runAllBrowserTests() {
 
     btn.disabled = false;
     if (cloudPcMode) {
-        btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Cloud PC Tests';
+        btn.innerHTML = `<span class="btn-icon">\u25B6</span> Re-run ${hostLabelShort()} Tests`;
     } else {
         btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';
     }
@@ -628,6 +683,9 @@ function processImportedData(data) {
             }
         }
         updateHostTypeLabels();
+        // Sync host-type dropdown
+        const htSel = document.getElementById('host-type-select');
+        if (htSel) htSel.value = hostType;
     }
 
     // Remember when the scanner data was captured
@@ -731,7 +789,7 @@ function processImportedData(data) {
     info.classList.remove('hidden');
     const machineName = data.machineName ? escapeHtml(String(data.machineName)) : '';
     const scanTime = data.timestamp ? escapeHtml(new Date(data.timestamp).toLocaleString()) : '';
-    const importLabel = isCloudPcImport ? 'Cloud PC scan' : 'local scan';
+    const importLabel = isCloudPcImport ? `${hostLabelShort()} scan` : 'local scan';
     info.querySelector('.info-text').innerHTML =
         `<strong>Imported ${importedCount} ${importLabel} results.</strong> ` +
         (machineName ? `Machine: ${machineName}. ` : '') +
@@ -1147,7 +1205,7 @@ async function generateExportText() {
         tcp: 'TCP / Transport',
         udp: 'UDP / TURN / STUN',
         cloud: 'Live Connection Diagnostics',
-        cloudpc: 'Cloud PC Diagnostics'
+        cloudpc: `${hostLabel()} Diagnostics`
     };
     const categories = ['local', 'endpoint', 'tcp', 'udp', 'cloud', 'cloudpc'];
 
@@ -1166,7 +1224,7 @@ async function generateExportText() {
                          r.status === 'Failed' || r.status === 'Error' ? '✗' :
                          r.status === 'Skipped' ? '—' : '?';
             const dur = r.duration ? ` (ran in ${r.duration}ms)` : '';
-            const src = r.source === 'cloudpc' ? ' [Cloud PC]' : r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
+            const src = r.source === 'cloudpc' ? ` [${hostLabelShort()}]` : r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
 
             lines.push(`  ${icon} [${r.status.toUpperCase()}] ${r.id} — ${r.name}${dur}${src}`);
             if (r.resultValue) {

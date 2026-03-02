@@ -2288,3 +2288,25 @@ footer {
 .cpc-toggle input:checked ~ .cpc-toggle-label {
     color: var(--accent);
 }
+
+/* Host-type dropdown (shown when CPC mode is active) */
+.host-type-select {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--glass-bg);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 4px 8px;
+    cursor: pointer;
+    backdrop-filter: blur(10px);
+    outline: none;
+    transition: all 0.2s;
+}
+.host-type-select:hover {
+    background: rgba(88, 166, 255, 0.12);
+}
+.host-type-select option {
+    background: var(--bg);
+    color: var(--text-primary);
+}
