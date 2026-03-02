@@ -707,6 +707,38 @@ class Program
     // ── Shared helpers ──────────────────────────────────────────────
 
     /// <summary>
+    /// Finds all active network adapters that appear to be VPN connections.
+    /// Detects PPP adapters (Azure VPN, Always-On VPN, SSTP, IKEv2, L2TP, PPTP),
+    /// keyword-matched adapters (name or description), and known vendor adapters.
+    /// </summary>
+    static List<NetworkInterface> FindVpnAdapters()
+    {
+        var keywords = new[] {
+            "VPN", "Virtual Private", "Cisco", "AnyConnect", "Palo Alto", "GlobalProtect",
+            "Fortinet", "FortiClient", "WireGuard", "TAP-Windows", "OpenVPN", "TUN",
+            "Pulse Secure", "Juniper", "SonicWall", "Check Point", "NetMotion",
+            "Zscaler", "Cloudflare WARP", "NordVPN", "Tailscale", "ZeroTier",
+            "Wintun", "PANGP", "SoftEther", "Tunnel"
+        };
+
+        return NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+            .Where(n =>
+            {
+                // PPP adapters are almost always VPN connections (Azure VPN, SSTP, IKEv2, L2TP, PPTP, RAS)
+                if (n.NetworkInterfaceType == NetworkInterfaceType.Ppp) return true;
+
+                // Check both Name and Description for known VPN keywords
+                var desc = n.Description ?? "";
+                var name = n.Name ?? "";
+                return keywords.Any(k =>
+                    desc.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+                    name.Contains(k, StringComparison.OrdinalIgnoreCase));
+            })
+            .ToList();
+    }
+
+    /// <summary>
     /// Determines the local IP the OS would use to reach a given target, then checks
     /// whether that IP belongs to any of the supplied VPN adapter interfaces.
     /// Returns (routedViaVpn, localIp, matchedAdapterName).
@@ -2763,17 +2795,7 @@ class Program
             }
 
             // VPN adapters — detect presence, then check if RDP traffic actually routes through them
-            var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
-                           (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Virtual Private", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Cisco", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("OpenVPN", StringComparison.OrdinalIgnoreCase)))
-                .ToList();
+            var vpnAdapters = FindVpnAdapters();
 
             if (vpnAdapters.Count > 0)
             {
@@ -3644,15 +3666,7 @@ class Program
             var detected = new List<string>();    // Present on system but UDP/TURN bypasses them
 
             // Check for VPN adapters — then verify if TURN traffic actually routes through them
-            var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up &&
-                           (n.Description.Contains("VPN", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Cisco", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Palo Alto", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("Fortinet", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("WireGuard", StringComparison.OrdinalIgnoreCase) ||
-                            n.Description.Contains("TAP-Windows", StringComparison.OrdinalIgnoreCase)))
-                .ToList();
+            var vpnAdapters = FindVpnAdapters();
 
             if (vpnAdapters.Count > 0)
             {
@@ -6488,16 +6502,7 @@ class Program
                     }
 
                     // Check which local interface would route to this IP
-                    var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
-                        .Where(n => n.OperationalStatus == OperationalStatus.Up)
-                        .Where(n =>
-                        {
-                            var desc = n.Description?.ToLowerInvariant() ?? "";
-                            return desc.Contains("vpn") || desc.Contains("virtual private")
-                                || desc.Contains("cisco") || desc.Contains("palo alto")
-                                || desc.Contains("fortinet") || desc.Contains("wireguard")
-                                || desc.Contains("tap-windows") || desc.Contains("openvpn");
-                        }).ToList();
+                    var vpnAdapters = FindVpnAdapters();
 
                     if (vpnAdapters.Count > 0)
                     {
@@ -6550,16 +6555,7 @@ class Program
                     }
 
                     // VPN routing check
-                    var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
-                        .Where(n => n.OperationalStatus == OperationalStatus.Up)
-                        .Where(n =>
-                        {
-                            var desc = n.Description?.ToLowerInvariant() ?? "";
-                            return desc.Contains("vpn") || desc.Contains("virtual private")
-                                || desc.Contains("cisco") || desc.Contains("palo alto")
-                                || desc.Contains("fortinet") || desc.Contains("wireguard")
-                                || desc.Contains("tap-windows") || desc.Contains("openvpn");
-                        }).ToList();
+                    var vpnAdapters = FindVpnAdapters();
 
                     if (vpnAdapters.Count > 0)
                     {
