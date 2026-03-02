@@ -1419,6 +1419,56 @@ main {
 .map-diagram.cpc-mode .map-g-fanin .fan-rdgw,
 .map-diagram.cpc-mode .map-g-fanin .fan-turn { display: none; }
 .map-diagram.cpc-mode .map-g-fanin .fan-cpc { display: inline; }
+
+/* ── VPN / Proxy overlay on map ── */
+.map-vpn-badge {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(210, 153, 34, 0.15);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.3);
+    margin-top: 4px;
+    line-height: 1.3;
+    text-align: center;
+}
+.map-vpn-badge.vpn-active {
+    display: block;
+    animation: vpnPulse 2.5s ease-in-out infinite;
+}
+@keyframes vpnPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(210,153,34,0.3); }
+    50% { box-shadow: 0 0 8px 2px rgba(210,153,34,0.25); }
+}
+/* When VPN is detected, tint the Azure card border */
+#map-azure.vpn-detected {
+    border-color: rgba(210, 153, 34, 0.5) !important;
+}
+#map-azure.vpn-detected .device-accent {
+    background: linear-gradient(180deg, rgba(210,153,34,0.5), transparent) !important;
+}
+#map-azure.vpn-detected .map-card-dot {
+    fill: #d29922 !important;
+}
+/* Warning-coloured flow lines when VPN is in path */
+.map-diagram.vpn-path .map-hline-left {
+    background: repeating-linear-gradient(90deg,
+        #d29922 0px, #d29922 8px,
+        transparent 8px, transparent 14px
+    ) !important;
+}
+.map-diagram.vpn-path .map-hline-left::after {
+    background: #d29922 !important;
+    box-shadow: 0 0 8px #d29922, 0 0 14px rgba(210,153,34,0.4) !important;
+}
+/* Tint CPC fan lines orange when VPN is detected */
+.map-diagram.vpn-path .fan-cpc line {
+    stroke: #d29922 !important;
+}
+.map-diagram.vpn-path .fan-cpc circle {
+    fill: #d29922 !important;
+}
 /* Hide security bar when in CPC-only mode (it shows client-side scanner data) */
 .connectivity-map.cpc-only-active .map-security-bar {
     display: none;

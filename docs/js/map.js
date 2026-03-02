@@ -27,6 +27,7 @@ function updateConnectivityMap(results) {
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
         updateMapNatCard(lookup);
+        updateMapVpnOverlay(lookup);
         // Reveal infrastructure cards once any CPC result has data
         const hasAnyResult = results.some(r =>
             r.status && r.status !== 'NotRun' && r.status !== 'Pending'
@@ -41,6 +42,7 @@ function updateConnectivityMap(results) {
         if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
+        updateMapVpnOverlay(lookup);
     }
 }
 
@@ -1107,5 +1109,86 @@ function updateMapAzureCard(lookup) {
             if (dot) dot.setAttribute('fill', '#f85149');
             if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
         }
+    }
+}
+
+// ── VPN / Proxy overlay on the network path map ──
+function updateMapVpnOverlay(lookup) {
+    const badge = document.getElementById('map-vpn-badge');
+    const title = document.getElementById('map-azure-title');
+    const azureCard = document.getElementById('map-azure');
+    if (!badge) return;
+
+    // Check all VPN/proxy test results — scanner L-TCP-07, CPC C-TCP-07, browser B-TCP-04
+    const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
+    const udpVpn = lookup['C-UDP-07'] || lookup['L-UDP-07'];
+    const routeAnalysis = lookup['B-TCP-04'];
+
+    // Determine if VPN/proxy is in the path  
+    let vpnDetected = false;
+    let vpnLabel = '';
+    let vpnDetail = '';
+
+    if (tcpVpn && tcpVpn.status === 'Warning') {
+        vpnDetected = true;
+        // Parse VPN adapter name from detailedInfo
+        const vpnLine = (tcpVpn.detailedInfo || '').split('\n')
+            .find(l => l.includes('VPN adapter detected') || l.includes('routes through VPN'));
+        const proxyLine = (tcpVpn.detailedInfo || '').split('\n')
+            .find(l => l.includes('proxy detected') || l.includes('Proxy Server'));
+        const swgLine = (tcpVpn.detailedInfo || '').split('\n')
+            .find(l => /Zscaler|Netskope|GlobalProtect|CiscoAnyConnect|NordVPN|OpenVPN|SWG/i.test(l));
+
+        if (swgLine) {
+            const swgMatch = swgLine.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN)/i);
+            vpnLabel = swgMatch ? swgMatch[1] : 'SWG';
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        } else if (vpnLine) {
+            const nameMatch = vpnLine.match(/VPN adapter detected:\s*(.+?)(?:\s*\(|$)/);
+            vpnLabel = nameMatch ? nameMatch[1].trim() : 'VPN';
+            vpnDetail = `⚠ Traffic routed via VPN tunnel`;
+        } else if (proxyLine) {
+            const proxyMatch = proxyLine.match(/proxy.*?:\s*(.+)/i);
+            vpnLabel = proxyMatch ? proxyMatch[1].trim() : 'Proxy';
+            vpnDetail = `⚠ Traffic routed via proxy`;
+        } else {
+            vpnLabel = tcpVpn.resultValue || 'VPN/Proxy';
+            vpnDetail = '⚠ RDP traffic not going direct';
+        }
+    }
+
+    // Also check browser-level route analysis for SWG indicators
+    if (!vpnDetected && routeAnalysis && routeAnalysis.status === 'Warning') {
+        const info = routeAnalysis.detailedInfo || '';
+        if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
+            vpnDetected = true;
+            const match = info.match(/Routed via:\s*(.+)/i);
+            vpnLabel = match ? match[1].trim() : 'Security Proxy';
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        }
+    }
+
+    if (vpnDetected) {
+        // Show VPN badge
+        badge.innerHTML = `🛡️ ${vpnDetail}`;
+        badge.classList.remove('hidden');
+        badge.className = 'map-vpn-badge vpn-active';
+
+        // Update card title
+        if (title) title.textContent = 'Via VPN / Proxy';
+
+        // Add warning class to the Azure card for CSS styling
+        if (azureCard) azureCard.classList.add('vpn-detected');
+
+        // Also mark the map diagram for line color changes
+        const diagram = document.querySelector('.map-diagram');
+        if (diagram) diagram.classList.add('vpn-path');
+    } else {
+        badge.classList.add('hidden');
+        badge.className = 'map-vpn-badge hidden';
+        if (title) title.textContent = 'Azure Network';
+        if (azureCard) azureCard.classList.remove('vpn-detected');
+        const diagram = document.querySelector('.map-diagram');
+        if (diagram) diagram.classList.remove('vpn-path');
     }
 }
