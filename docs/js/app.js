@@ -2080,6 +2080,7 @@ function updateKeyFindings(results) {
     }
 
     // ── 7. VPN / Proxy / SWG ──
+    const rdpOptLink = '<a href="https://learn.microsoft.com/en-us/windows-365/enterprise/optimization-of-rdp" target="_blank" rel="noopener">RDP optimization guide</a>';
     const vpnTcp = r('L-TCP-07') || r('C-TCP-07');
     const vpnUdp = r('L-UDP-07') || r('C-UDP-07');
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
@@ -2095,8 +2096,9 @@ function updateKeyFindings(results) {
             const which = [];
             if (vpnTcp.status !== 'Passed') which.push('TCP');
             if (vpnUdp && vpnUdp.status !== 'Passed') which.push('UDP');
-            add('kf-issue', 'VPN / Proxy', `Detected on ${which.join(' & ')} path — extra hops likely`,
-                detail ? esc(detail) : '');
+            add('kf-error', 'VPN / Proxy',
+                `🔺 Detected on ${which.join(' & ')} path — causes higher latency, reduced performance &amp; reliability`,
+                (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
         }
     }
 
@@ -2112,7 +2114,9 @@ function updateKeyFindings(results) {
             const paths = [];
             if (!tcpClean) paths.push('TCP');
             if (tlsUdp && tlsUdp.status !== 'Passed' && tlsUdp.status !== 'NotRun') paths.push('UDP');
-            add('kf-error', 'TLS Inspection', `Detected on ${paths.join(' & ')} — proxy intercepting traffic`);
+            add('kf-error', 'TLS Inspection',
+                `🔺 Detected on ${paths.join(' & ')} — decrypting/re-encrypting adds latency and degrades reliability`,
+                `See ${rdpOptLink}`);
         }
     }
 

@@ -651,6 +651,12 @@ main {
     color: var(--text-muted);
     font-size: var(--text-xs);
 }
+.kf-sub a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.kf-sub a:hover { color: #79c0ff; }
 .kf-row-val .kf-tag {
     display: inline-block;
     padding: 1px 6px;
