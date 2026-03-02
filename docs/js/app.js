@@ -84,6 +84,7 @@ scannerChannel.onmessage = (event) => {
         updateCategoryBadges(allResults);
         updateConnectivityMap(allResults);
         updateConnectivityOverview(allResults);
+        updateKeyFindings(allResults);
         updateExportButton();
         // Show confirmation
         const info = document.getElementById('info-banner');
@@ -335,6 +336,7 @@ async function runAllBrowserTests() {
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
     updateConnectivityOverview(allResults);
+    updateKeyFindings(allResults);
     updateExportButton();
 
     // Only show download banner if no scanner results have been imported
@@ -662,6 +664,7 @@ function processImportedData(data) {
 
     updateConnectivityMap(allResults);
     updateConnectivityOverview(allResults);
+    updateKeyFindings(allResults);
     updateExportButton();
     const info = document.getElementById('info-banner');
     info.classList.remove('hidden');
@@ -1352,6 +1355,7 @@ async function retestFailedItems() {
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
     updateConnectivityOverview(allResults);
+    updateKeyFindings(allResults);
     updateExportButton();
 
     if (retestBtn) {
@@ -1924,4 +1928,196 @@ function buildCheckLine(label, result) {
     } else {
         return `<div class="ov-check-line"><span class="ov-status-icon ov-fail">✗</span>${label} detected</div>`;
     }
+}
+
+// ── Key Findings panel (prominent at-a-glance RDP optimization summary) ──
+function updateKeyFindings(results) {
+    const panel = document.getElementById('key-findings');
+    const grid = document.getElementById('kf-grid');
+    if (!panel || !grid) return;
+
+    const r = id => results.find(x => x.id === id);
+    const hasAny = results.some(x => x.status && x.status !== 'NotRun' && x.status !== 'Pending');
+    if (!hasAny) return;
+
+    const items = [];
+    let issues = 0;
+    let warnings = 0;
+
+    function add(cls, icon, title, detail) {
+        items.push({ cls, icon, title, detail });
+        if (cls === 'kf-error') issues++;
+        else if (cls === 'kf-issue') warnings++;
+    }
+
+    // ── 1. RDP Gateway Reachability + Latency ──
+    const afd = r('B-TCP-02') || r('C-TCP-04');
+    const tcp04 = r('L-TCP-04');
+    if (afd && afd.status !== 'NotRun' && afd.status !== 'Pending') {
+        let latMs = null;
+        if (afd.detailedInfo) {
+            const latLine = afd.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+            if (latLine) { const m = latLine.match(/avg\s+(\d+)ms/); if (m) latMs = parseInt(m[1]); }
+        }
+        if (latMs == null && afd.resultValue) {
+            const m = afd.resultValue.match(/(\d+)\s*ms/); if (m) latMs = parseInt(m[1]);
+        }
+        if (afd.status === 'Passed' || afd.status === 'Warning') {
+            const latStr = latMs != null ? `${latMs}ms` : '';
+            if (latMs != null && latMs >= 200) {
+                add('kf-issue', '⚠', 'RDP Gateway — High Latency', `Reachable but ${latStr} round-trip (>200ms may cause lag)`);
+            } else if (latMs != null && latMs >= 100) {
+                add('kf-issue', '⚠', 'RDP Gateway — Moderate Latency', `Reachable at ${latStr} (aim for <100ms for best experience)`);
+            } else {
+                add('kf-pass', '✓', 'RDP Gateway Reachable', latStr ? `Connected at ${latStr} — good` : 'TCP 443 connectivity confirmed');
+            }
+        } else {
+            add('kf-error', '✗', 'RDP Gateway Unreachable', 'TCP 443 to Azure Front Door failed — RDP sessions cannot connect');
+        }
+    } else if (tcp04 && tcp04.status !== 'NotRun') {
+        if (tcp04.status === 'Passed') {
+            add('kf-pass', '✓', 'RDP Gateway Reachable', 'All required TCP ports open');
+        } else {
+            add('kf-error', '✗', 'RDP Gateway Connectivity Issue', tcp04.resultValue || 'Some ports unreachable');
+        }
+    }
+
+    // ── 2. UDP Shortpath / NAT Type ──
+    const stun = r('B-UDP-01') || r('C-UDP-03');
+    const natType = r('L-UDP-05') || r('B-UDP-02');
+    if (natType && natType.status !== 'NotRun' && natType.status !== 'Pending') {
+        const val = (natType.resultValue || '').toLowerCase();
+        if (val.includes('cone') || val.includes('open internet')) {
+            add('kf-pass', '✓', 'UDP Shortpath Ready', 'Cone NAT detected — direct P2P connection available for lowest latency');
+        } else if (val.includes('symmetric')) {
+            add('kf-issue', '⚠', 'Symmetric NAT Detected', 'Direct STUN hole-punching unlikely — RDP Shortpath will use TURN relay');
+        } else if (val.includes('blocked') || val.includes('failed')) {
+            add('kf-error', '✗', 'UDP Blocked', 'STUN/TURN on UDP 3478 is unreachable — no RDP Shortpath available');
+        } else if (val.includes('stun ok') || val.includes('partial')) {
+            add('kf-pass', '✓', 'UDP Connectivity OK', 'STUN succeeded — UDP path available');
+        } else {
+            add('kf-info', 'ℹ', 'NAT Type: ' + (natType.resultValue || 'Unknown'), 'Check UDP path optimization');
+        }
+    } else if (stun && stun.status !== 'NotRun') {
+        if (stun.status === 'Passed') {
+            add('kf-pass', '✓', 'UDP Connectivity OK', 'STUN succeeded on UDP 3478');
+        } else {
+            add('kf-error', '✗', 'STUN Failed', 'UDP 3478 unreachable — RDP Shortpath unavailable');
+        }
+    }
+
+    // ── 3. TURN Relay ──
+    const turn03 = r('L-UDP-03');
+    if (turn03 && turn03.status !== 'NotRun' && turn03.status !== 'Pending') {
+        if (turn03.status === 'Passed') {
+            let latStr = '';
+            if (turn03.detailedInfo) {
+                const ll = turn03.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+                if (ll) { const m = ll.match(/(\d+)\s*ms/); if (m) latStr = ` at ${m[1]}ms`; }
+            }
+            add('kf-pass', '✓', 'TURN Relay Reachable', `UDP 3478 relay available${latStr} — fallback path ready`);
+        } else {
+            add('kf-error', '✗', 'TURN Relay Unreachable', 'UDP 3478 blocked — if STUN fails, no UDP path exists');
+        }
+    }
+
+    // ── 4. TLS Inspection ──
+    const tlsTcp = r('L-TCP-06');
+    const tlsUdp = r('L-UDP-06');
+    if (tlsTcp && tlsTcp.status !== 'NotRun' && tlsTcp.status !== 'Pending') {
+        if (tlsTcp.status === 'Passed' && (!tlsUdp || tlsUdp.status === 'Passed')) {
+            add('kf-pass', '✓', 'No TLS Inspection', 'TLS certificates are direct from Microsoft — no MITM proxy');
+        } else if (tlsTcp.status !== 'Passed') {
+            add('kf-error', '✗', 'TLS Inspection Detected (TCP)', 'A proxy is intercepting RDP traffic — this adds latency and may break features');
+        }
+        if (tlsUdp && tlsUdp.status !== 'Passed' && tlsUdp.status !== 'NotRun') {
+            add('kf-error', '✗', 'TLS Inspection Detected (UDP)', 'UDP/TURN traffic is being intercepted — Shortpath performance degraded');
+        }
+    }
+
+    // ── 5. Proxy / VPN / SWG ──
+    const vpnTcp = r('L-TCP-07');
+    const vpnUdp = r('L-UDP-07');
+    if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
+        if (vpnTcp.status === 'Passed' && (!vpnUdp || vpnUdp.status === 'Passed')) {
+            add('kf-pass', '✓', 'No Proxy / VPN Detected', 'Traffic is routing directly — no extra hops');
+        } else {
+            const which = [];
+            if (vpnTcp.status !== 'Passed') which.push('TCP');
+            if (vpnUdp && vpnUdp.status !== 'Passed') which.push('UDP');
+            add('kf-issue', '⚠', `Proxy/VPN Detected (${which.join(' & ')})`, 'Traffic may route through extra hops — increased latency expected');
+        }
+    }
+
+    // ── 6. DNS ──
+    const dns03 = r('B-TCP-03');
+    const dnsHijack = r('L-TCP-08');
+    if (dns03 && dns03.status !== 'NotRun' && dns03.status !== 'Pending') {
+        let dnsLatMs = null;
+        if (dns03.detailedInfo) {
+            const m = dns03.detailedInfo.match(/avg\s+(\d+)ms/i) || dns03.detailedInfo.match(/(\d+)\s*ms/);
+            if (m) dnsLatMs = parseInt(m[1]);
+        }
+        const hijacked = dnsHijack && dnsHijack.status !== 'Passed' && dnsHijack.status !== 'NotRun';
+        if (hijacked) {
+            add('kf-error', '✗', 'DNS Hijacking Detected', 'DNS responses are being altered — RDP may connect to wrong endpoints');
+        } else if (dnsLatMs != null && dnsLatMs > 100) {
+            add('kf-issue', '⚠', 'DNS Slow', `Avg ${dnsLatMs}ms — slow DNS delays initial RDP connection setup`);
+        } else if (dns03.status === 'Passed') {
+            const latDetail = dnsLatMs != null ? `Avg ${dnsLatMs}ms` : 'Resolution OK';
+            add('kf-pass', '✓', 'DNS Healthy', latDetail);
+        } else {
+            add('kf-issue', '⚠', 'DNS Issue', dns03.resultValue || 'Resolution problems detected');
+        }
+    }
+
+    // ── 7. Local Network (Gateway latency + WiFi) ──
+    const gw05 = r('L-LE-05');
+    const wifi = r('L-LE-04');
+    const wifiCh = r('L-LE-12');
+    if (gw05 && gw05.status !== 'NotRun' && gw05.status !== 'Pending') {
+        let gwMs = null;
+        if (gw05.resultValue) { const m = gw05.resultValue.match(/avg\s+(\d+)ms/); if (m) gwMs = parseInt(m[1]); }
+        if (gwMs != null && gwMs >= 50) {
+            add('kf-issue', '⚠', 'High Local Gateway Latency', `${gwMs}ms to your router — check local network / WiFi`);
+        } else if (gwMs != null) {
+            add('kf-pass', '✓', 'Local Network OK', `${gwMs}ms to gateway`);
+        }
+    }
+    if (wifi && wifi.status === 'Warning') {
+        add('kf-issue', '⚠', 'Weak WiFi Signal', wifi.resultValue || 'Poor signal strength may cause packet loss');
+    }
+    if (wifiCh && wifiCh.status === 'Warning') {
+        add('kf-issue', '⚠', 'WiFi Channel Congestion', wifiCh.resultValue || 'Competing networks on your WiFi channel');
+    }
+
+    // ── Render ──
+    if (items.length === 0) return;
+
+    grid.innerHTML = items.map(it =>
+        `<div class="kf-item ${it.cls}">` +
+            `<div class="kf-status">${it.icon}</div>` +
+            `<div class="kf-body">` +
+                `<div class="kf-title">${it.title}</div>` +
+                `<div class="kf-detail">${it.detail}</div>` +
+            `</div>` +
+        `</div>`
+    ).join('');
+
+    // Overall verdict
+    const verdict = document.getElementById('kf-verdict');
+    if (verdict) {
+        if (issues > 0) {
+            verdict.textContent = `${issues} issue${issues > 1 ? 's' : ''} need attention`;
+            verdict.className = 'kf-verdict kf-fail';
+        } else if (warnings > 0) {
+            verdict.textContent = `${warnings} warning${warnings > 1 ? 's' : ''}`;
+            verdict.className = 'kf-verdict kf-warn';
+        } else {
+            verdict.textContent = 'Looking good';
+            verdict.className = 'kf-verdict kf-good';
+        }
+    }
+
+    panel.classList.remove('hidden');
 }

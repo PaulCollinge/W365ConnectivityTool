@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=147">
+    <link rel="stylesheet" href="css/styles.css?v=148">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -94,6 +94,16 @@
                 <span class="summary-count" id="summary-pending">0</span>
                 <span class="summary-label">Needs Local Scan</span>
             </div>
+        </div>
+
+        <!-- Key Findings (shown after tests run) -->
+        <div id="key-findings" class="key-findings hidden">
+            <div class="kf-header">
+                <span class="kf-icon">🎯</span>
+                <h2>Key Findings</h2>
+                <span class="kf-verdict" id="kf-verdict"></span>
+            </div>
+            <div class="kf-grid" id="kf-grid"></div>
         </div>
 
         <!-- History Bar -->
@@ -755,11 +765,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=147"></script>
-    <script src="js/browser-tests.js?v=147"></script>
-    <script src="js/ui.js?v=147"></script>
-    <script src="js/map.js?v=147"></script>
-    <script src="js/ai-analysis.js?v=147"></script>
-    <script src="js/app.js?v=147"></script>
+    <script src="js/config.js?v=148"></script>
+    <script src="js/browser-tests.js?v=148"></script>
+    <script src="js/ui.js?v=148"></script>
+    <script src="js/map.js?v=148"></script>
+    <script src="js/ai-analysis.js?v=148"></script>
+    <script src="js/app.js?v=148"></script>
 </body>
 </html>
