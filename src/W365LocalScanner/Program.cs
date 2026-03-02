@@ -24,6 +24,8 @@ class Program
     static bool _isCloudPcMode = false;
     static string? _azureVmRegion = null;
     static string? _azureVmName = null;
+    // "cloudpc", "avd", or null (unknown / client mode)
+    static string? _hostType = null;
 
     static async Task<int> Main(string[] args)
     {
@@ -45,12 +47,19 @@ class Program
             }
         }
 
-        // ── Cloud PC mode detection ──
+        // ── Cloud PC / AVD mode detection ──
         // Explicit flag overrides auto-detection.
         bool forceCloudPc = args.Any(a => a.Equals("--cloudpc", StringComparison.OrdinalIgnoreCase));
+        bool forceAvd = args.Any(a => a.Equals("--avd", StringComparison.OrdinalIgnoreCase));
         if (forceCloudPc)
         {
             _isCloudPcMode = true;
+            _hostType = "cloudpc";
+        }
+        else if (forceAvd)
+        {
+            _isCloudPcMode = true;
+            _hostType = "avd";
         }
         else
         {
@@ -74,28 +83,67 @@ class Program
                     var provider = compute.TryGetProperty("provider", out var pv) ? pv.GetString() ?? "" : "";
                     var tags = compute.TryGetProperty("tags", out var tg) ? tg.GetString() ?? "" : "";
 
-                    // Heuristic: Cloud PC-class VM sizes contain "_cpc", or resource group / tags
-                    // may reference W365/CloudPC/AVD, or the name pattern matches.
-                    var isLikelyCloudPc = vmSize.Contains("_cpc", StringComparison.OrdinalIgnoreCase)
+                    // Read image offer & SKU for definitive Cloud PC vs AVD detection
+                    var offer = compute.TryGetProperty("offer", out var ofVal) ? ofVal.GetString() ?? "" : "";
+                    var sku = compute.TryGetProperty("sku", out var skVal) ? skVal.GetString() ?? "" : "";
+
+                    // 1. IMDS offer/sku containing "cpc" is definitive Cloud PC signal
+                    // 2. VM size "_cpc" or name/RG/tags patterns are strong Cloud PC signals
+                    // 3. Registry HKLM\SOFTWARE\Microsoft\Windows 365 is definitive
+                    var isLikelyCloudPc = offer.Contains("cpc", StringComparison.OrdinalIgnoreCase)
+                        || sku.Contains("cpc", StringComparison.OrdinalIgnoreCase)
+                        || vmSize.Contains("_cpc", StringComparison.OrdinalIgnoreCase)
                         || (_azureVmName?.Contains("cloudpc", StringComparison.OrdinalIgnoreCase) ?? false)
                         || (_azureVmName?.Contains("w365", StringComparison.OrdinalIgnoreCase) ?? false)
                         || resourceGroup.Contains("cloudpc", StringComparison.OrdinalIgnoreCase)
                         || resourceGroup.Contains("w365", StringComparison.OrdinalIgnoreCase)
-                        || resourceGroup.Contains("wvd", StringComparison.OrdinalIgnoreCase)
                         || tags.Contains("CloudPC", StringComparison.OrdinalIgnoreCase)
                         || tags.Contains("Windows365", StringComparison.OrdinalIgnoreCase);
 
-                    if (isLikelyCloudPc)
+                    // Check W365 registry key as additional definitive signal
+                    bool hasW365Registry = false;
+                    try
+                    {
+                        using var w365Key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows 365");
+                        hasW365Registry = w365Key != null;
+                    }
+                    catch { /* Registry access may be restricted */ }
+
+                    if (isLikelyCloudPc || hasW365Registry)
                     {
                         _isCloudPcMode = true;
+                        _hostType = "cloudpc";
+                    }
+                    else if (resourceGroup.Contains("wvd", StringComparison.OrdinalIgnoreCase)
+                          || resourceGroup.Contains("avd", StringComparison.OrdinalIgnoreCase)
+                          || tags.Contains("AVD", StringComparison.OrdinalIgnoreCase)
+                          || tags.Contains("WVD", StringComparison.OrdinalIgnoreCase)
+                          || tags.Contains("SessionHost", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Looks like an AVD session host — still run server-side tests
+                        _isCloudPcMode = true;
+                        _hostType = "avd";
                     }
                     else
                     {
-                        // Any Azure VM — default to Y since user likely ran it here intentionally
+                        // Azure VM but can't determine type — ask user
                         Console.WriteLine($"  Azure VM detected: {_azureVmName ?? "unknown"} ({vmSize}) in {_azureVmRegion ?? "unknown"}");
-                        Console.Write("  Run in Cloud PC mode? [Y/n]: ");
+                        Console.Write("  Is this a Cloud PC (C) or AVD Session Host (A)? [C/a/skip]: ");
                         var key = Console.ReadLine()?.Trim();
-                        _isCloudPcMode = string.IsNullOrEmpty(key) || key.StartsWith("y", StringComparison.OrdinalIgnoreCase);
+                        if (key != null && key.StartsWith("a", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _isCloudPcMode = true;
+                            _hostType = "avd";
+                        }
+                        else if (key != null && key.StartsWith("s", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _isCloudPcMode = false;
+                        }
+                        else
+                        {
+                            _isCloudPcMode = true;
+                            _hostType = "cloudpc";
+                        }
                     }
                 }
             }
@@ -104,16 +152,17 @@ class Program
 
         if (_isCloudPcMode)
         {
+            var hostLabel = _hostType == "avd" ? "AVD Session Host" : "Cloud PC";
             Console.WriteLine("╔══════════════════════════════════════════════════════╗");
-            Console.WriteLine("║   Windows 365 / AVD Cloud PC Connectivity Scanner   ║");
+            Console.WriteLine($"║   {hostLabel,-18} Connectivity Scanner           ║");
             Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-            Console.WriteLine("║   Running on Cloud PC — tests the server-side       ║");
-            Console.WriteLine("║   connectivity back to the RDP Gateway / TURN relay.║");
-            Console.WriteLine("║   Import results into the web dashboard alongside   ║");
-            Console.WriteLine("║   the client-side results for end-to-end view.      ║");
+            Console.WriteLine($"║   Running on {hostLabel,-20} — tests the        ║");
+            Console.WriteLine("║   server-side connectivity back to the RDP Gateway  ║");
+            Console.WriteLine("║   and TURN relay. Import results into the web       ║");
+            Console.WriteLine("║   dashboard alongside client-side results.          ║");
             Console.WriteLine("╚══════════════════════════════════════════════════════╝");
             if (_azureVmRegion != null)
-                Console.WriteLine($"  Azure region: {_azureVmRegion}  VM: {_azureVmName ?? "unknown"}");
+                Console.WriteLine($"  Azure region: {_azureVmRegion}  VM: {_azureVmName ?? "unknown"}  Type: {hostLabel}");
         }
         else
         {
@@ -161,7 +210,8 @@ class Program
 
         if (_isCloudPcMode)
         {
-            Console.WriteLine($"  Running {tests.Count} Cloud PC connectivity tests.");
+            var testLabel = _hostType == "avd" ? "AVD session host" : "Cloud PC";
+            Console.WriteLine($"  Running {tests.Count} {testLabel} connectivity tests.");
             Console.WriteLine();
         }
         else if (!includeCloud)
@@ -309,6 +359,7 @@ class Program
             OsVersion = Environment.OSVersion.ToString(),
             DotNetVersion = RuntimeInformation.FrameworkDescription,
             ScanMode = _isCloudPcMode ? "cloudpc" : "client",
+            HostType = _isCloudPcMode ? (_hostType ?? "cloudpc") : null,
             AzureRegion = _isCloudPcMode ? _azureVmRegion : null,
             Results = results
         };
@@ -6312,6 +6363,10 @@ class Program
             if (!string.IsNullOrEmpty(publisher))
                 sb.AppendLine($"Image: {publisher}/{offer}/{sku}");
 
+            // Cloud PC vs AVD detection summary
+            var typeLabel = _hostType == "avd" ? "AVD Session Host" : _hostType == "cloudpc" ? "Cloud PC" : "Unknown";
+            sb.AppendLine($"Host Type: {typeLabel}");
+
             // Extract private IP from network interface
             try
             {
@@ -6332,7 +6387,8 @@ class Program
             catch { sb.AppendLine("Could not parse network interface data."); }
 
             result.Status = "Passed";
-            result.ResultValue = $"{location} — {vmSize}";
+            var typeTag = _hostType == "avd" ? "AVD" : "W365";
+            result.ResultValue = $"{typeTag} — {location} — {vmSize}";
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (HttpRequestException)
@@ -6571,6 +6627,9 @@ class ScanOutput
 
     [JsonPropertyName("scanMode")]
     public string ScanMode { get; set; } = "client";
+
+    [JsonPropertyName("hostType")]
+    public string? HostType { get; set; }
 
     [JsonPropertyName("azureRegion")]
     public string? AzureRegion { get; set; }

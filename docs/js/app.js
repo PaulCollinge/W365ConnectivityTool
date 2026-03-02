@@ -32,6 +32,7 @@ let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
 let cloudPcMode = false;           // true when user toggles Cloud PC Mode
+let hostType = null;               // 'cloudpc', 'avd', or null (determines labels)
 
 // Map browser test IDs to their Cloud PC equivalents
 const BROWSER_TO_CPC_ID = {
@@ -171,12 +172,50 @@ async function detectCloudPcEnvironment() {
             signal: controller.signal
         });
         clearTimeout(timeout);
-        // If fetch resolved, IMDS is reachable → we're on an Azure VM / Cloud PC
-        ilog('IMDS reachable — Cloud PC environment detected');
+        // If fetch resolved, IMDS is reachable → we're on an Azure VM / Cloud PC / AVD Session Host
+        ilog('IMDS reachable — Azure VM environment detected (Cloud PC or AVD)');
         return true;
     } catch {
-        ilog('IMDS not reachable — not a Cloud PC environment');
+        ilog('IMDS not reachable — not an Azure VM environment');
         return false;
+    }
+}
+
+// ── Host label helper ──
+function hostLabel() {
+    return hostType === 'avd' ? 'AVD Session Host' : 'Cloud PC';
+}
+function hostLabelShort() {
+    return hostType === 'avd' ? 'AVD Host' : 'Cloud PC';
+}
+
+// ── Update all host-type-sensitive labels in the UI ──
+function updateHostTypeLabels() {
+    const label = hostLabel();
+    const short = hostLabelShort();
+    // Map card title
+    const cpcTitle = document.getElementById('map-cpc-title');
+    if (cpcTitle) cpcTitle.textContent = cloudPcMode ? `${short} (this device)` : short;
+    // Map CPC badge
+    const cpcBadge = document.getElementById('cpc-detected-badge');
+    if (cpcBadge) cpcBadge.textContent = `☁ ${label} Detected`;
+    // CPC toggle label
+    const toggleLabel = document.getElementById('cpc-toggle-label');
+    if (toggleLabel) toggleLabel.textContent = `${short} Mode`;
+    // CPC diagnostics section header
+    const cpcSectionTitle = document.querySelector('.cloudpc-header .live-title');
+    if (cpcSectionTitle) cpcSectionTitle.textContent = `${label} Diagnostics`;
+    const cpcSectionSub = document.querySelector('.cloudpc-header .live-subtitle');
+    if (cpcSectionSub) cpcSectionSub.textContent = `Connectivity tests run from within the ${label} (Azure VM)`;
+    // SVG label inside Cloud PC card
+    const svgText = document.querySelector('#map-cloudpc .device-svg text');
+    if (svgText) svgText.textContent = short;
+    // Run button
+    const btn = document.getElementById('btn-run-all');
+    if (btn && !isRunning && cloudPcMode) {
+        const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg> ' +
+            (hasResults ? `Re-run ${short} Tests` : `Run ${short} Tests`);
     }
 }
 
@@ -210,15 +249,15 @@ function toggleCloudPcMode(enabled) {
             mapDiagram.classList.add('cpc-mode');
             mapDiagram.classList.remove('has-cloudpc');
         }
-        // Label Cloud PC card as "(this device)"
-        const cpcTitle = document.getElementById('map-cpc-title');
-        if (cpcTitle) cpcTitle.textContent = 'Cloud PC (this device)';
         // Update button text
         if (btn && !isRunning) {
             const hasResults = allResults.some(r => r.source === 'cloudpc' || r.source === 'browser');
+            const label = hostLabelShort();
             btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg> ' +
-                (hasResults ? 'Re-run Cloud PC Tests' : 'Run Cloud PC Tests');
+                (hasResults ? `Re-run ${label} Tests` : `Run ${label} Tests`);
         }
+        // Apply host-type-aware labels
+        updateHostTypeLabels();
     } else {
         // Show client-side test sections
         clientSections.forEach(id => {
@@ -242,7 +281,7 @@ function toggleCloudPcMode(enabled) {
         }
         // Restore Cloud PC card title
         const cpcTitle = document.getElementById('map-cpc-title');
-        if (cpcTitle) cpcTitle.textContent = 'Cloud PC';
+        if (cpcTitle) cpcTitle.textContent = hostLabelShort();
         // Remove right-side cards unless imported CPC data exists
         const hasImportedCpcData = allResults.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
         if (!hasImportedCpcData) {
@@ -563,10 +602,32 @@ function processImportedData(data) {
         return;
     }
 
-    // Detect Cloud PC mode
+    // Detect Cloud PC vs AVD session host
     const isCloudPcImport = data.scanMode === 'cloudpc';
     if (isCloudPcImport) {
-        ilog('Cloud PC scan detected. Azure region: ' + (data.azureRegion || 'unknown'));
+        // Read hostType from scanner output (cloudpc, avd, or absent for older builds)
+        if (data.hostType === 'avd') {
+            hostType = 'avd';
+            ilog('AVD Session Host scan detected. Azure region: ' + (data.azureRegion || 'unknown'));
+        } else {
+            hostType = 'cloudpc';
+            ilog('Cloud PC scan detected. Azure region: ' + (data.azureRegion || 'unknown'));
+        }
+        // Also try to infer from C-NET-01 IMDS result if hostType wasn't in the JSON
+        if (!data.hostType) {
+            const imdsResult = localResults.find(r => r.id === 'C-NET-01');
+            if (imdsResult) {
+                const rv = (imdsResult.resultValue || '').toLowerCase();
+                const di = (imdsResult.detailedInfo || '').toLowerCase();
+                if (rv.startsWith('avd') || di.includes('host type: avd')) {
+                    hostType = 'avd';
+                } else if (!rv.includes('cpc') && !di.includes('cpc') && !di.includes('host type: cloud pc')) {
+                    // IMDS exists but no CPC indicators — likely AVD
+                    if (di.includes('host type:')) hostType = di.includes('avd') ? 'avd' : 'cloudpc';
+                }
+            }
+        }
+        updateHostTypeLabels();
     }
 
     // Remember when the scanner data was captured
@@ -1964,6 +2025,24 @@ function updateKeyFindings(results) {
         const ip = extractLine(loc.detailedInfo, 'Public IP:');
         add('kf-info', 'Your Location',
             flagImg(loc.resultValue) + esc(loc.resultValue) + (ip ? ` · <span class="kf-sub">${esc(ip)}</span>` : ''));
+    }
+
+    // ── 1b. Host Type (Cloud PC vs AVD — only when running on session host) ──
+    if (cloudPcMode) {
+        const imds = r('C-NET-01');
+        const label = hostType === 'avd' ? 'AVD Session Host' : 'Cloud PC (Windows 365)';
+        let detail = '';
+        if (imds && imds.detailedInfo) {
+            const vmSize = extractLine(imds.detailedInfo, 'VM Size:');
+            const region = extractLine(imds.detailedInfo, 'Azure Region:');
+            const image = extractLine(imds.detailedInfo, 'Image:');
+            const parts = [];
+            if (region) parts.push(region);
+            if (vmSize) parts.push(vmSize);
+            if (image) parts.push(`<span class="kf-sub">${esc(image)}</span>`);
+            detail = parts.join(' · ');
+        }
+        add('kf-info', 'Host Type', label + (detail ? ` · ${detail}` : ''));
     }
 
     // ── 2. RDP Egress ──
