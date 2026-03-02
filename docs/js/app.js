@@ -1918,8 +1918,31 @@ async function updateKeyFindings(results) {
     const vpnTcp = r('L-TCP-07') || r('C-TCP-07');
     const vpnUdp = r('L-UDP-07') || r('C-UDP-07');
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
-        if (vpnTcp.status === 'Passed' && (!vpnUdp || vpnUdp.status === 'Passed')) {
-            add('kf-pass', 'VPN / Proxy', 'None detected — direct routing');
+        const tcpPass = vpnTcp.status === 'Passed';
+        const udpPass = !vpnUdp || vpnUdp.status === 'Passed';
+        if (tcpPass && udpPass) {
+            // Check if VPN/SWG was detected but RDP correctly bypasses it
+            const bypassed = /bypassed|split-tunnel/i.test(vpnTcp.resultValue) ||
+                             (vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue));
+            if (bypassed) {
+                // Extract what was detected from detailedInfo
+                let detLines = [];
+                [vpnTcp, vpnUdp].forEach(t => {
+                    if (t && t.detailedInfo) {
+                        t.detailedInfo.split('\n')
+                            .filter(l => /VPN adapter|SWG.*process/i.test(l))
+                            .forEach(l => {
+                                const clean = l.replace(/^[\s\u2139\u26A0]+/, '').trim();
+                                if (clean && !detLines.includes(clean)) detLines.push(clean);
+                            });
+                    }
+                });
+                add('kf-pass', 'VPN / Proxy',
+                    '✓ Detected but RDP correctly bypassed — split-tunnel configured',
+                    (detLines.length ? detLines.map(d => esc(d)).join('<br>') + '<br>' : '') + `See ${rdpOptLink}`);
+            } else {
+                add('kf-pass', 'VPN / Proxy', 'None detected — direct routing');
+            }
         } else {
             let detail = '';
             if (vpnTcp.detailedInfo) {
@@ -1927,11 +1950,14 @@ async function updateKeyFindings(results) {
                     .find(l => /VPN adapter|proxy.*:|Zscaler|Netskope|GlobalProtect|Cisco|WireGuard|NordVPN/i.test(l));
                 if (vpnLine) detail = vpnLine.trim();
             }
+            // Check if one path is bypassed but the other isn't
+            const tcpBypassed = tcpPass && /bypassed|split-tunnel/i.test(vpnTcp.resultValue);
+            const udpBypassed = vpnUdp && vpnUdp.status === 'Passed' && /bypassed|split-tunnel/i.test(vpnUdp.resultValue);
             const which = [];
-            if (vpnTcp.status !== 'Passed') which.push('TCP');
-            if (vpnUdp && vpnUdp.status !== 'Passed') which.push('UDP');
+            if (!tcpPass) which.push('TCP' + (udpBypassed ? ' (UDP bypassed ✓)' : ''));
+            if (vpnUdp && vpnUdp.status !== 'Passed') which.push('UDP' + (tcpBypassed ? ' (TCP bypassed ✓)' : ''));
             add('kf-error', 'VPN / Proxy',
-                `🔺 Detected on ${which.join(' & ')} path — causes higher latency, reduced performance &amp; reliability`,
+                `🔺 Intercepting ${which.join(' & ')} path — causes higher latency, reduced performance &amp; reliability`,
                 (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
         }
     }

@@ -2705,7 +2705,8 @@ class Program
         try
         {
             var sb = new StringBuilder();
-            var issues = new List<string>();
+            var issues = new List<string>();     // Confirmed to intercept RDP traffic
+            var detected = new List<string>();   // Present on system but RDP bypasses them
 
             // Discover the actual RDP gateway for accurate probing
             var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
@@ -2776,10 +2777,11 @@ class Program
 
             if (vpnAdapters.Count > 0)
             {
-                // List VPN adapters found
+                // List VPN adapters found — tracked as detections, promoted to issues only if routing confirms interception
                 foreach (var vpn in vpnAdapters)
                 {
                     var vpnIpList = GetAdapterIps(vpn);
+                    detected.Add($"VPN: {vpn.Name} ({vpn.Description})");
                     sb.AppendLine($"ℹ VPN adapter detected: {vpn.Name} ({vpn.Description})");
                     if (!string.IsNullOrEmpty(vpnIpList))
                         sb.AppendLine($"    Adapter IPs: {vpnIpList}");
@@ -2791,6 +2793,7 @@ class Program
                     issues.Add($"W365/AVD range {range} routes through VPN tunnel");
 
                 // Probe the actual discovered RDP gateway for VPN routing
+                bool rdpGwDirect = false;
                 try
                 {
                     var gwIps = Dns.GetHostAddresses(probeHost);
@@ -2804,38 +2807,52 @@ class Program
                             issues.Add($"RDP gateway {probeHost} routes through VPN");
                         }
                         else
+                        {
                             sb.AppendLine($"\n  ✓ RDP gateway {gwIp} ({probeHost}) routes direct via {localIp}");
+                            rdpGwDirect = true;
+                        }
                     }
                 }
                 catch { /* DNS or probe failed — non-critical since routing table already checked */ }
+
+                // Summary: if VPN detected but all W365 ranges and RDP gateway route direct
+                if (caught.Count == 0 && rdpGwDirect)
+                    sb.AppendLine("\n  ✓ VPN is active but RDP traffic correctly bypasses it (split-tunnel)");
             }
             else
             {
                 sb.AppendLine("✓ No VPN adapters detected");
             }
 
-            // SWG / security processes
+            // SWG / security processes — tracked as detections; only routing/proxy evidence promotes to issues
             var swgProcesses = new[] { "ZscalerService", "netskope", "iboss", "forcepoint", "mcafee", "symantec", "crowdstrike" };
             foreach (var name in swgProcesses)
             {
                 var procs = Process.GetProcessesByName(name);
                 if (procs.Length > 0)
                 {
-                    issues.Add($"SWG process: {name}");
-                    sb.AppendLine($"⚠ SWG/Security process running: {name} (PID: {procs[0].Id})");
+                    detected.Add($"SWG: {name}");
+                    sb.AppendLine($"ℹ SWG/Security process running: {name} (PID: {procs[0].Id})");
                 }
             }
 
-            if (issues.Count == 0)
+            if (issues.Count == 0 && detected.Count == 0)
             {
                 result.ResultValue = "No proxy, VPN, or SWG detected";
                 result.Status = "Passed";
             }
+            else if (issues.Count == 0 && detected.Count > 0)
+            {
+                result.ResultValue = $"VPN/SWG detected — RDP correctly bypassed (split-tunnel)";
+                result.Status = "Passed";
+            }
             else
             {
-                result.ResultValue = $"{issues.Count} proxy/VPN/SWG item(s) detected";
+                result.ResultValue = $"{issues.Count} item(s) intercepting RDP traffic";
                 result.Status = "Warning";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#proxy-configuration";
+                if (detected.Count > 0)
+                    sb.AppendLine($"\n  ℹ Also present but not intercepting RDP: {string.Join("; ", detected)}");
             }
             result.DetailedInfo = sb.ToString().Trim();
         }
@@ -3623,7 +3640,8 @@ class Program
         try
         {
             var sb = new StringBuilder();
-            var issues = new List<string>();
+            var issues = new List<string>();      // Confirmed to intercept UDP/TURN traffic
+            var detected = new List<string>();    // Present on system but UDP/TURN bypasses them
 
             // Check for VPN adapters — then verify if TURN traffic actually routes through them
             var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
@@ -3638,10 +3656,11 @@ class Program
 
             if (vpnAdapters.Count > 0)
             {
-                // List VPN adapters found
+                // List VPN adapters found — tracked as detections, promoted to issues only if routing confirms interception
                 foreach (var vpn in vpnAdapters)
                 {
                     var vpnIpList = GetAdapterIps(vpn);
+                    detected.Add($"VPN: {vpn.Name} ({vpn.Description})");
                     sb.AppendLine($"\u2139 VPN adapter detected: {vpn.Name} ({vpn.Description})");
                     if (!string.IsNullOrEmpty(vpnIpList))
                         sb.AppendLine($"    Adapter IPs: {vpnIpList}");
@@ -3653,6 +3672,7 @@ class Program
                     issues.Add($"W365/AVD range {range} routes through VPN tunnel");
 
                 // Also show single-IP probe as informational context
+                bool turnDirect = false;
                 try
                 {
                     var turnIps = Dns.GetHostAddresses("world.relay.avd.microsoft.com");
@@ -3663,10 +3683,17 @@ class Program
                         if (routedViaVpn)
                             sb.AppendLine($"\n  \u26A0 Note: TURN relay {turnIp} (world.relay.avd.microsoft.com) routes via VPN interface {localIp}");
                         else
+                        {
                             sb.AppendLine($"\n  \u2714 TURN relay {turnIp} (world.relay.avd.microsoft.com) routes direct via {localIp}");
+                            turnDirect = true;
+                        }
                     }
                 }
                 catch { /* DNS or probe failed — non-critical since routing table already checked */ }
+
+                // Summary: if VPN detected but all W365 ranges and TURN relay route direct
+                if (caught.Count == 0 && turnDirect)
+                    sb.AppendLine("\n  \u2714 VPN is active but UDP/TURN traffic correctly bypasses it (split-tunnel)");
             }
 
             // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall
@@ -3705,13 +3732,25 @@ class Program
             }
             catch { sb.AppendLine("Could not check Windows Firewall rules"); }
 
-            result.ResultValue = issues.Count == 0
-                ? "No UDP-blocking proxy/VPN detected"
-                : $"{issues.Count} potential UDP blocker(s) detected";
-            result.Status = issues.Count == 0 ? "Passed" : "Warning";
-            result.DetailedInfo = sb.ToString().Trim();
-            if (issues.Count > 0)
+            if (issues.Count == 0 && detected.Count == 0)
+            {
+                result.ResultValue = "No UDP-blocking proxy/VPN detected";
+                result.Status = "Passed";
+            }
+            else if (issues.Count == 0 && detected.Count > 0)
+            {
+                result.ResultValue = "VPN detected — UDP/TURN correctly bypassed (split-tunnel)";
+                result.Status = "Passed";
+            }
+            else
+            {
+                result.ResultValue = $"{issues.Count} potential UDP blocker(s) detected";
+                result.Status = "Warning";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                if (detected.Count > 0)
+                    sb.AppendLine($"\n  \u2139 Also present but not intercepting UDP: {string.Join("; ", detected)}");
+            }
+            result.DetailedInfo = sb.ToString().Trim();
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return Task.FromResult(result);
