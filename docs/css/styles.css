@@ -1301,15 +1301,25 @@ main {
 }
 /* Reposition into 6-column grid: RDGw/TURN | fanin | Azure | NAT | arrow | CloudPC */
 .map-diagram.cpc-mode .map-g-fanout  { display: none !important; }
-.map-diagram.cpc-mode .map-g-rdgw    { grid-column: 1; grid-row: 1; }
-.map-diagram.cpc-mode .map-g-turn    { grid-column: 1; grid-row: 3; }
-.map-diagram.cpc-mode .map-g-dnsline { grid-column: 3; grid-row: 4; }
-.map-diagram.cpc-mode .map-g-dns     { grid-column: 3; grid-row: 5; }
-.map-diagram.cpc-mode .map-g-fanin   { display: flex; grid-column: 2; grid-row: 1 / 4; align-self: stretch; }
-.map-diagram.cpc-mode .map-g-azure   { display: flex; grid-column: 3; grid-row: 1 / 4; align-self: center; }
-.map-diagram.cpc-mode .map-g-nat     { display: flex; grid-column: 4; grid-row: 1 / 4; align-self: center; }
-.map-diagram.cpc-mode .map-g-arrow3  { display: flex; grid-column: 5; grid-row: 1 / 4; align-self: center; justify-self: center; }
+.map-diagram.cpc-mode .map-g-rdgw    { grid-column: 1; grid-row: 1; display: none; }
+.map-diagram.cpc-mode .map-g-turn    { grid-column: 1; grid-row: 3; display: none; }
+.map-diagram.cpc-mode .map-g-dnsline { grid-column: 3; grid-row: 4; display: none; }
+.map-diagram.cpc-mode .map-g-dns     { grid-column: 3; grid-row: 5; display: none; }
+/* These elements start hidden; JS adds .cpc-revealed when results arrive */
+.map-diagram.cpc-mode .map-g-fanin   { grid-column: 2; grid-row: 1 / 4; align-self: stretch; }
+.map-diagram.cpc-mode .map-g-azure   { grid-column: 3; grid-row: 1 / 4; align-self: center; }
+.map-diagram.cpc-mode .map-g-nat     { grid-column: 4; grid-row: 1 / 4; align-self: center; }
+.map-diagram.cpc-mode .map-g-arrow3  { grid-column: 5; grid-row: 1 / 4; align-self: center; justify-self: center; }
 .map-diagram.cpc-mode .map-g-cloudpc { display: flex; grid-column: 6; grid-row: 1 / 4; align-self: center; }
+/* Reveal CPC infrastructure cards once results arrive */
+.map-diagram.cpc-mode .map-g-fanin.cpc-revealed,
+.map-diagram.cpc-mode .map-g-azure.cpc-revealed,
+.map-diagram.cpc-mode .map-g-nat.cpc-revealed,
+.map-diagram.cpc-mode .map-g-arrow3.cpc-revealed,
+.map-diagram.cpc-mode .map-g-rdgw.cpc-revealed,
+.map-diagram.cpc-mode .map-g-turn.cpc-revealed,
+.map-diagram.cpc-mode .map-g-dnsline.cpc-revealed { display: block; }
+.map-diagram.cpc-mode .map-g-dns.cpc-revealed { display: flex; }
 /* CPC mode fanin: hide AFD lines, show only RDGw + TURN */
 .map-diagram.cpc-mode .map-g-fanin .fan-afd { display: none; }
 /* Hide security bar when in CPC-only mode (it shows client-side scanner data) */
@@ -1422,10 +1432,10 @@ main {
 .map-arrow-cell { position: relative; }
 .map-arrow-cell .map-line-label { bottom: -2px; left: 50%; transform: translate(-50%, 100%); }
 
-/* Fanout latency: to the left of each branch, not over the lines */
-.map-ll-afd  { left: -4px; top: 16.5%; transform: translate(-100%, -50%); }
-.map-ll-rdgw { left: -4px; top: 50%; transform: translate(-100%, -50%); }
-.map-ll-turn { left: -4px; top: 83.5%; transform: translate(-100%, -50%); }
+/* Fanout latency: to the right of each branch (toward the service cards) */
+.map-ll-afd  { right: -4px; top: 16.5%; transform: translate(100%, -50%); }
+.map-ll-rdgw { right: -4px; top: 50%; transform: translate(100%, -50%); }
+.map-ll-turn { right: -4px; top: 83.5%; transform: translate(100%, -50%); }
 
 /* ── Client PC / Laptop device visual ── */
 .map-client-device {

@@ -27,6 +27,14 @@ function updateConnectivityMap(results) {
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
         updateMapNatCard(lookup);
+        // Reveal infrastructure cards once any CPC result has data
+        const hasAnyResult = results.some(r =>
+            r.status && r.status !== 'NotRun' && r.status !== 'Pending'
+        );
+        if (hasAnyResult) {
+            document.querySelectorAll('.map-g-fanin, .map-g-azure, .map-g-nat, .map-g-arrow3, .map-g-rdgw, .map-g-turn, .map-g-dnsline, .map-g-dns')
+                .forEach(el => el.classList.add('cpc-revealed'));
+        }
     } else if (hasImportedCpc) {
         // Imported scanner data — extend the normal map with right-side cards
         const mapDiagram = document.querySelector('.map-diagram');

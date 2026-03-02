@@ -234,7 +234,11 @@ function toggleCloudPcMode(enabled) {
         if (cpcBadge) cpcBadge.classList.add('hidden');
         // Restore normal map layout
         const mapDiagram = document.querySelector('.map-diagram');
-        if (mapDiagram) mapDiagram.classList.remove('cpc-mode');
+        if (mapDiagram) {
+            mapDiagram.classList.remove('cpc-mode');
+            // Remove CPC reveal markers
+            mapDiagram.querySelectorAll('.cpc-revealed').forEach(el => el.classList.remove('cpc-revealed'));
+        }
         // Restore Cloud PC card title
         const cpcTitle = document.getElementById('map-cpc-title');
         if (cpcTitle) cpcTitle.textContent = 'Cloud PC';
