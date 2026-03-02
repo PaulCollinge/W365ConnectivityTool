@@ -1365,9 +1365,9 @@ main {
     95% { right: 100%; opacity: 0; }
 }
 
-/* Fanin latency labels (mirror of fanout) */
-.map-ll-cpc-rdgw { right: -4px; top: 50%; transform: translate(100%, -50%); }
-.map-ll-cpc-turn { right: -4px; top: 83.5%; transform: translate(100%, -50%); }
+/* Fanin latency labels — centred on fan lines */
+.map-ll-cpc-rdgw { left: 50%; right: auto; top: 50%; transform: translate(-50%, -50%); }
+.map-ll-cpc-turn { left: 50%; right: auto; top: 83.5%; transform: translate(-50%, -50%); }
 /* CPC mode: reposition fanin labels for 2-line fan (no AFD) — RDGw at 33%, TURN at 67% */
 .map-diagram.cpc-mode .map-ll-cpc-rdgw { top: 33%; }
 .map-diagram.cpc-mode .map-ll-cpc-turn { top: 67%; }
