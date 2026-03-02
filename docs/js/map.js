@@ -32,7 +32,7 @@ function updateConnectivityMap(results) {
             r.status && r.status !== 'NotRun' && r.status !== 'Pending'
         );
         if (hasAnyResult) {
-            document.querySelectorAll('.map-g-fanin, .map-g-azure, .map-g-nat, .map-g-arrow3, .map-g-rdgw, .map-g-turn, .map-g-dnsline, .map-g-dns')
+            document.querySelectorAll('.map-g-fanin, .map-g-azure, .map-g-arrow4, .map-g-nat, .map-g-arrow3, .map-g-rdgw, .map-g-turn, .map-g-dnsline, .map-g-dns')
                 .forEach(el => el.classList.add('cpc-revealed'));
         }
     } else if (hasImportedCpc) {

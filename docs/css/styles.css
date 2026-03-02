@@ -1273,6 +1273,7 @@ main {
 .map-diagram .map-g-fanin   { grid-column: 8; grid-row: 1 / 6; align-self: stretch; display: none; }
 .map-diagram .map-g-azure   { grid-column: 9; grid-row: 1 / 6; align-self: center; display: none; }
 .map-diagram .map-g-arrow3  { grid-column: 10; grid-row: 1 / 6; align-self: center; justify-self: center; display: none; }
+.map-diagram .map-g-arrow4  { display: none; }
 .map-diagram .map-g-nat     { display: none; }
 .map-diagram .map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
 
@@ -1288,7 +1289,7 @@ main {
 
 /* CPC-only mode: hide left side + AFD, keep RDGw/TURN + right-side with NAT */
 .map-diagram.cpc-mode {
-    grid-template-columns: 1.2fr 50px 1fr 1fr 60px 1fr;
+    grid-template-columns: 1.2fr 50px 1fr 40px 1fr 60px 1fr;
     grid-template-rows: auto 8px auto 36px auto;
 }
 .map-diagram.cpc-mode .map-g-client,
@@ -1305,21 +1306,24 @@ main {
 .map-diagram.cpc-mode .map-g-turn    { grid-column: 1; grid-row: 3; display: none; }
 .map-diagram.cpc-mode .map-g-dnsline { grid-column: 3; grid-row: 4; display: none; }
 .map-diagram.cpc-mode .map-g-dns     { grid-column: 3; grid-row: 5; display: none; }
+.map-diagram.cpc-mode .map-g-arrow4  { display: none; }
 /* These elements start hidden; JS adds .cpc-revealed when results arrive */
 .map-diagram.cpc-mode .map-g-fanin   { grid-column: 2; grid-row: 1 / 4; align-self: stretch; }
 .map-diagram.cpc-mode .map-g-azure   { grid-column: 3; grid-row: 1 / 4; align-self: center; }
-.map-diagram.cpc-mode .map-g-nat     { grid-column: 4; grid-row: 1 / 4; align-self: center; }
-.map-diagram.cpc-mode .map-g-arrow3  { grid-column: 5; grid-row: 1 / 4; align-self: center; justify-self: center; }
-.map-diagram.cpc-mode .map-g-cloudpc { display: flex; grid-column: 6; grid-row: 1 / 4; align-self: center; }
+.map-diagram.cpc-mode .map-g-arrow4  { grid-column: 4; grid-row: 1 / 4; align-self: center; justify-self: center; }
+.map-diagram.cpc-mode .map-g-nat     { grid-column: 5; grid-row: 1 / 4; align-self: center; }
+.map-diagram.cpc-mode .map-g-arrow3  { grid-column: 6; grid-row: 1 / 4; align-self: center; justify-self: center; }
+.map-diagram.cpc-mode .map-g-cloudpc { display: flex; grid-column: 7; grid-row: 1 / 4; align-self: center; }
 /* Reveal CPC infrastructure cards once results arrive */
 .map-diagram.cpc-mode .map-g-fanin.cpc-revealed,
-.map-diagram.cpc-mode .map-g-azure.cpc-revealed,
-.map-diagram.cpc-mode .map-g-nat.cpc-revealed,
-.map-diagram.cpc-mode .map-g-dns.cpc-revealed { display: flex; }
 .map-diagram.cpc-mode .map-g-arrow3.cpc-revealed,
+.map-diagram.cpc-mode .map-g-arrow4.cpc-revealed,
 .map-diagram.cpc-mode .map-g-rdgw.cpc-revealed,
 .map-diagram.cpc-mode .map-g-turn.cpc-revealed,
 .map-diagram.cpc-mode .map-g-dnsline.cpc-revealed { display: block; }
+.map-diagram.cpc-mode .map-g-azure.cpc-revealed,
+.map-diagram.cpc-mode .map-g-nat.cpc-revealed,
+.map-diagram.cpc-mode .map-g-dns.cpc-revealed { display: flex; }
 /* CPC mode fanin: hide normal 3-branch lines, show CPC 2-branch lines */
 .map-diagram.cpc-mode .map-g-fanin .fan-entry,
 .map-diagram.cpc-mode .map-g-fanin .fan-afd,
