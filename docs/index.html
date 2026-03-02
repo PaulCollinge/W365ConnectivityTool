@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=154">
+    <link rel="stylesheet" href="css/styles.css?v=155">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -165,81 +165,6 @@
                    class="btn btn-download">
                     <span class="btn-icon">⬇️</span> Download Scanner (.exe)
                 </a>
-            </div>
-        </div>
-
-        <!-- Connectivity Overview (quick-glance summary — shown after tests run) -->
-        <div id="connectivity-overview" class="connectivity-overview hidden">
-            <div class="overview-header">
-                <span class="overview-icon">📊</span>
-                <h2>Connectivity Overview</h2>
-                <span class="overview-verdict" id="overview-verdict"></span>
-            </div>
-
-            <!-- Section 1: Location & Egress -->
-            <div class="ov-section">
-                <div class="ov-section-header">
-                    <span class="ov-section-icon">📍</span>
-                    <span class="ov-section-title">Location &amp; Egress</span>
-                </div>
-                <div class="ov-section-body">
-                    <div class="overview-row" id="ov-user-location">
-                        <span class="overview-label">Your Location</span>
-                        <span class="overview-value" id="ov-user-location-val">—</span>
-                    </div>
-                    <div class="overview-row" id="ov-rdp-egress">
-                        <span class="overview-label">RDP Egress</span>
-                        <span class="overview-value" id="ov-rdp-egress-val">—</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Section 2: RDP Connectivity -->
-            <div class="ov-section">
-                <div class="ov-section-header">
-                    <span class="ov-section-icon">🔗</span>
-                    <span class="ov-section-title">RDP Connectivity</span>
-                    <a class="ov-section-link" href="https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic" target="_blank" rel="noopener" title="Understanding RDP traffic">Learn more ↗</a>
-                </div>
-                <div class="ov-section-body ov-connectivity-grid">
-                    <div class="ov-conn-card ov-conn-afd" id="ov-afd-card">
-                        <div class="ov-conn-label">AFD Edge</div>
-                        <div class="ov-conn-flag" id="ov-afd-flag"></div>
-                        <div class="ov-conn-location" id="ov-afd-pop-val">—</div>
-                        <div class="ov-conn-latency" id="ov-afd-latency-val"></div>
-                    </div>
-                    <div class="ov-conn-card ov-conn-tcp" id="ov-gateway-card">
-                        <div class="ov-conn-label">RDP Gateway <span class="ov-proto-tag ov-tag-tcp">TCP</span></div>
-                        <div class="ov-conn-flag" id="ov-gateway-flag"></div>
-                        <div class="ov-conn-location" id="ov-rdp-gateway-val">—</div>
-                        <div class="ov-conn-latency" id="ov-rdp-gateway-latency-val"></div>
-                    </div>
-                    <div class="ov-conn-card ov-conn-udp" id="ov-turn-card">
-                        <div class="ov-conn-label">TURN Relay <span class="ov-proto-tag ov-tag-udp">UDP</span></div>
-                        <div class="ov-conn-flag" id="ov-turn-flag"></div>
-                        <div class="ov-conn-location" id="ov-turn-relay-val">—</div>
-                        <div class="ov-conn-latency" id="ov-turn-relay-latency-val"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Section 3: Path Optimization -->
-            <div class="ov-section">
-                <div class="ov-section-header">
-                    <span class="ov-section-icon">🛡️</span>
-                    <span class="ov-section-title">Path Optimization</span>
-                    <a class="ov-section-link" href="https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp" target="_blank" rel="noopener" title="Learn more about RDP optimization">Learn more ↗</a>
-                </div>
-                <div class="ov-section-body ov-optim-grid">
-                    <div class="ov-optim-col">
-                        <div class="ov-optim-heading">TCP <span class="ov-dim">(RDP Reverse Connect)</span></div>
-                        <div class="ov-optim-checks" id="ov-tcp-path-val">—</div>
-                    </div>
-                    <div class="ov-optim-col">
-                        <div class="ov-optim-heading">UDP <span class="ov-dim">(RDP Shortpath)</span></div>
-                        <div class="ov-optim-checks" id="ov-udp-path-val">—</div>
-                    </div>
-                </div>
             </div>
         </div>
 
@@ -779,11 +704,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=154"></script>
-    <script src="js/browser-tests.js?v=154"></script>
-    <script src="js/ui.js?v=154"></script>
-    <script src="js/map.js?v=154"></script>
-    <script src="js/ai-analysis.js?v=154"></script>
-    <script src="js/app.js?v=154"></script>
+    <script src="js/config.js?v=155"></script>
+    <script src="js/browser-tests.js?v=155"></script>
+    <script src="js/ui.js?v=155"></script>
+    <script src="js/map.js?v=155"></script>
+    <script src="js/ai-analysis.js?v=155"></script>
+    <script src="js/app.js?v=155"></script>
 </body>
 </html>

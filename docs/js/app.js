@@ -84,7 +84,6 @@ scannerChannel.onmessage = (event) => {
         updateSummary(allResults);
         updateCategoryBadges(allResults);
         updateConnectivityMap(allResults);
-        updateConnectivityOverview(allResults);
         updateKeyFindings(allResults);
         updateExportButton();
         // Show confirmation
@@ -456,7 +455,6 @@ async function runAllBrowserTests() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
-    updateConnectivityOverview(allResults);
     updateKeyFindings(allResults);
     updateExportButton();
 
@@ -811,7 +809,6 @@ function processImportedData(data) {
     if (mapContainer) mapContainer.classList.remove('hidden');
 
     updateConnectivityMap(allResults);
-    updateConnectivityOverview(allResults);
     updateKeyFindings(allResults);
     updateExportButton();
     const info = document.getElementById('info-banner');
@@ -1502,7 +1499,6 @@ async function retestFailedItems() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
-    updateConnectivityOverview(allResults);
     updateKeyFindings(allResults);
     updateExportButton();
 
@@ -1691,395 +1687,8 @@ function clearHistory() {
     if (bar) bar.classList.add('hidden');
 }
 
-// ── Connectivity Overview panel (quick-glance summary above the map) ──
-async function updateConnectivityOverview(results) {
-    const panel = document.getElementById('connectivity-overview');
-    if (!panel || results.length === 0) return;
-
-    const r = id => results.find(x => x.id === id);
-    const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
-
-    // Use shared resolveCountryCode from map.js (handles ", XX", AFD PoP codes,
-    // Azure region names, and prefixed TURN/Gateway strings)
-    const getCountryCode = resolveCountryCode;
-
-    // Set a large flag image in a dedicated flag element
-    function setCardFlag(flagElId, countryCode) {
-        const el = document.getElementById(flagElId);
-        if (!el || !countryCode) { if (el) el.innerHTML = ''; return; }
-        el.innerHTML = `<img src="https://flagcdn.com/40x30/${countryCode}.png" alt="${countryCode.toUpperCase()}" width="40" height="30" onerror="this.style.display='none'">`;
-    }
-
-    // Helper: build an HTML string with a country-flag <img> prepended if a 2-letter code is found
-    function flagHtml(locationStr) {
-        const code = resolveCountryCode(locationStr || '');
-        if (!code) return '';
-        return `<img src="https://flagcdn.com/20x15/${code}.png" alt="${code.toUpperCase()}" width="20" height="15" class="country-flag" onerror="this.style.display='none'"> `;
-    }
-
-    // setVal that prepends a flag when the value looks like a location string
-    const setVal = (elId, html, locationStr) => {
-        const el = document.getElementById(elId);
-        if (!el) return;
-        el.innerHTML = (locationStr ? flagHtml(locationStr) : '') + html;
-    };
-
-    let hasContent = false;
-
-    // 1. User Location — prefer existing B-LE-01 result (already resolved by
-    //    testUserLocation with browser geolocation).  Only fetch fresh when
-    //    no B-LE-01 result exists (e.g. scanner-only import).
-    const existingLoc = r('B-LE-01');
-    if (existingLoc && existingLoc.status === 'Passed' && existingLoc.resultValue && !existingLoc.resultValue.includes('Unknown')) {
-        const ip = extractLine(existingLoc.detailedInfo, 'Public IP:');
-        setVal('ov-user-location-val',
-            esc(existingLoc.resultValue) + (ip ? `  <span class="ov-dim">(IP: ${esc(ip)})</span>` : ''),
-            existingLoc.resultValue);
-        hasContent = true;
-    } else {
-        // No good B-LE-01 — fetch fresh (scanner-only import path)
-        const freshLoc = await fetchUserLocation();
-        if (freshLoc) {
-            const locStr = freshLoc.source === 'browser'
-                ? `${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}`
-                : `${freshLoc.region}, ${freshLoc.country}`;
-            const existing = allResults.find(x => x.id === 'B-LE-01');
-            if (existing) {
-                existing.resultValue = locStr;
-                existing.detailedInfo = `Public IP: ${freshLoc.ip}\nLocation: ${freshLoc.city}, ${freshLoc.region}, ${freshLoc.country}\nCoordinates: ${freshLoc.lat}, ${freshLoc.lon}\nSource: ${freshLoc.source}`;
-                existing.status = 'Passed';
-                updateTestUI('B-LE-01', existing);
-                updateConnectivityMap(allResults);
-            }
-            setVal('ov-user-location-val',
-                esc(locStr) + `  <span class="ov-dim">(IP: ${esc(freshLoc.ip)})</span>`,
-                locStr);
-            hasContent = true;
-        }
-    }
-
-    // 2. RDP Egress (test 27, fallback to L-TCP-09 "Your location:")
-    const egress27 = r('27');
-    if (egress27 && egress27.detailedInfo) {
-        const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
-        const egressVal = eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue;
-        setVal('ov-rdp-egress-val', esc(egressVal), egressVal);
-        hasContent = true;
-    } else {
-        const gw09f = r('L-TCP-09');
-        if (gw09f && gw09f.detailedInfo) {
-            const locLine = gw09f.detailedInfo.split('\n').find(l => l.trim().startsWith('Your location:'));
-            if (locLine) {
-                const locVal = locLine.replace(/.*Your location:\s*/i, '').trim();
-                setVal('ov-rdp-egress-val', esc(locVal) + ' <span class="ov-dim">(scanner GeoIP)</span>', locVal);
-                hasContent = true;
-            } else {
-                setVal('ov-rdp-egress-val', '<span class="ov-dim">Requires Local Scanner</span>');
-            }
-        } else {
-            setVal('ov-rdp-egress-val', '<span class="ov-dim">Requires Local Scanner</span>');
-        }
-    }
-
-    // 3. AFD Edge PoP (L-TCP-09 or B-TCP-02)
-    const gw09 = r('L-TCP-09');
-    const afd02 = r('B-TCP-02');
-    let afdPopStr = '';
-
-    // Helper: extract clean AFD PoP string from B-TCP-02 detailedInfo or resultValue
-    function getAfdPopFromBrowser(test) {
-        if (!test) return '';
-        if (test.detailedInfo) {
-            const popLine = test.detailedInfo.split('\n').find(l => l.trim().startsWith('AFD PoP:'));
-            if (popLine) return popLine.replace(/.*AFD PoP:\s*/i, '').trim();
-        }
-        // Strip "✓ " prefix and " — Nms" suffix from resultValue
-        return (test.resultValue || '').replace(/^[✓✗⚠]\s*/, '').replace(/\s*[—–-]\s*\d+ms$/, '').trim();
-    }
-
-    if (gw09 && gw09.detailedInfo) {
-        const popLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('AFD PoP:'));
-        if (popLine) {
-            afdPopStr = popLine.replace(/.*AFD PoP:\s*/i, '').trim();
-            setVal('ov-afd-pop-val', esc(afdPopStr));
-            hasContent = true;
-        } else if (afd02) {
-            afdPopStr = getAfdPopFromBrowser(afd02);
-            setVal('ov-afd-pop-val', esc(afdPopStr));
-            hasContent = true;
-        }
-    } else if (afd02 && afd02.status !== 'NotRun') {
-        afdPopStr = getAfdPopFromBrowser(afd02);
-        setVal('ov-afd-pop-val', esc(afdPopStr));
-        hasContent = true;
-    }
-    // Set AFD card flag from PoP airport code
-    setCardFlag('ov-afd-flag', getCountryCode(afdPopStr));
-    // AFD latency from B-TCP-02
-    if (afd02 && afd02.detailedInfo) {
-        const afdLatLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
-        if (afdLatLine) {
-            const avgMatch = afdLatLine.match(/avg\s+(\d+)ms/);
-            if (avgMatch) setVal('ov-afd-latency-val', `${avgMatch[1]}ms`);
-        } else {
-            const statusLine = afd02.detailedInfo.split('\n').find(l => l.includes('Connected'));
-            if (statusLine) {
-                const msMatch = statusLine.match(/(\d+)ms/);
-                if (msMatch) setVal('ov-afd-latency-val', `${msMatch[1]}ms`);
-            }
-        }
-    }
-
-    // 4. RDP Gateway Location & Latency
-    if (gw09 && gw09.detailedInfo) {
-        const regionVal = extractLine(gw09.detailedInfo, 'Azure Region:');
-        const geoVal = extractLine(gw09.detailedInfo, 'GeoIP Location:');
-        const distVal = extractLine(gw09.detailedInfo, 'Distance from you:');
-        let gwLocHtml = esc(regionVal || geoVal || gw09.resultValue);
-        const gwLoc = geoVal || regionVal || '';  // for flag
-        if (geoVal && regionVal) gwLocHtml = `${esc(regionVal)} <span class="ov-dim">(${esc(geoVal)})</span>`;
-        if (distVal) gwLocHtml += `<br><span class="ov-dim">${esc(distVal)}</span>`;
-
-        setVal('ov-rdp-gateway-val', gwLocHtml);
-        setCardFlag('ov-gateway-flag', getCountryCode(gwLoc));
-
-        // TCP latency from L-TCP-04
-        const gw04 = r('L-TCP-04');
-        if (gw04 && gw04.detailedInfo) {
-            const tcpLine = gw04.detailedInfo.split('\n').find(l => l.includes('[RDP Gateway]'));
-            if (tcpLine) {
-                const latLine = gw04.detailedInfo.split('\n')
-                    .slice(gw04.detailedInfo.split('\n').indexOf(tcpLine))
-                    .find(l => l.trim().match(/TCP connected in \d+ms/));
-                if (latLine) {
-                    const ms = latLine.match(/(\d+)ms/);
-                    if (ms) setVal('ov-rdp-gateway-latency-val', `${ms[1]}ms TCP`);
-                }
-            }
-        }
-        hasContent = true;
-    } else {
-        setVal('ov-rdp-gateway-val', '<span class="ov-dim">Requires Local Scanner</span>');
-    }
-
-    // 5. TURN Relay Location & Latency
-    const turn04 = r('L-UDP-04');
-    if (turn04 && turn04.status !== 'Skipped') {
-        const turnLoc = turn04.resultValue || 'Unknown';
-        setVal('ov-turn-relay-val', esc(turnLoc));
-        setCardFlag('ov-turn-flag', getCountryCode(turnLoc));
-
-        const turn03 = r('L-UDP-03');
-        if (turn03 && turn03.status === 'Passed') {
-            let latMs = '';
-            if (turn03.detailedInfo) {
-                const latLine = turn03.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
-                if (latLine) latMs = latLine.replace(/.*Latency:\s*/i, '').trim();
-            }
-            if (!latMs) {
-                const rttMatch = (turn03.resultValue || '').match(/(\d+)\s*ms\s*RTT/i);
-                if (rttMatch) latMs = `${rttMatch[1]}ms`;
-            }
-            if (latMs) setVal('ov-turn-relay-latency-val', `${esc(latMs)} RTT`);
-        }
-        hasContent = true;
-    } else {
-        setVal('ov-turn-relay-val', '<span class="ov-dim">Requires Local Scanner</span>');
-    }
-
-    // 6. TCP-based RDP Path Optimization
-    // Browser-native split-path detection: compare HTTP egress IP vs STUN reflexive IP.
-    // HTTP fetch goes through the browser's proxy stack (TCP); STUN uses raw UDP.
-    // If the two IPs differ AND geolocate to different countries,
-    // an HTTP proxy/SWG is routing TCP traffic differently from UDP.
-    // Note: CGNAT (common on French ISPs etc.) can assign different public IPs
-    // to TCP vs UDP from the same ISP — that's NOT a proxy.
-    // This is distinct from L-TCP-07/L-UDP-07 which check the specific RDP path
-    // from the scanner side; this check uses browser-level egress comparison.
-    let splitPathTcpHtml = '';
-    let splitPathUdpHtml = '';
-    // Derive HTTP egress info from B-LE-01 result (always in scope)
-    let httpEgressIp = '';
-    let httpCountry = '';
-    let httpCity = '';
-    {
-        const locResult = r('B-LE-01');
-        if (locResult?.detailedInfo) {
-            const mIp = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
-            if (mIp) httpEgressIp = mIp[1];
-            const mSrc = locResult.detailedInfo.match(/Source:\s*(.+)/);
-            const isBrowser = mSrc && mSrc[1].includes('GPS');
-            // Country from resultValue tail e.g. "London, England, GB"
-            const rvParts = (locResult.resultValue || '').split(',').map(s => s.trim());
-            if (rvParts.length >= 2) httpCountry = rvParts[rvParts.length - 1];
-            if (isBrowser && rvParts.length >= 3) httpCity = rvParts[0];
-        }
-    }
-    let stunReflexiveIp = '';
-    const stunResult = r('B-UDP-01');
-    if (stunResult?.detailedInfo) {
-        const m = stunResult.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
-        if (m) stunReflexiveIp = m[1];
-    }
-    let isCgnat = false;
-    let isSplitPath = false;
-    if (httpEgressIp && stunReflexiveIp) {
-        if (httpEgressIp === stunReflexiveIp) {
-            splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
-            splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
-        } else {
-            // IPs differ — could be CGNAT or a real proxy. GeoIP the STUN IP to compare.
-            let stunCountry = '';
-            let stunCity = '';
-            try {
-                const geoResp = await fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
-                    signal: AbortSignal.timeout(5000), cache: 'no-store'
-                });
-                if (geoResp.ok) {
-                    const geoData = await geoResp.json();
-                    stunCountry = geoData.country || '';
-                    stunCity = geoData.city || '';
-                }
-            } catch (e) { /* GeoIP lookup failed — fall through */ }
-
-            if (stunCountry && httpCountry &&
-                stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                // Same country — CGNAT, not a proxy
-                isCgnat = true;
-                splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
-                splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>Split-path routing not detected</div>`;
-            } else if (stunCountry && httpCountry) {
-                // Different countries — likely a proxy/VPN/SWG
-                isSplitPath = true;
-                const detail = `<span class="ov-dim">(HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}])</span>`;
-                splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Split-path routing detected ${detail}</div>`;
-                splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>UDP bypasses HTTP proxy (direct egress) ${detail}</div>`;
-            } else {
-                // Couldn't GeoIP the STUN IP — show informational only
-                const detail = `<span class="ov-dim">(HTTP: ${esc(httpEgressIp)}, STUN: ${esc(stunReflexiveIp)} — may be CGNAT)</span>`;
-                splitPathTcpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-dim">ℹ</span>Different egress IPs ${detail}</div>`;
-                splitPathUdpHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-dim">ℹ</span>Different egress IPs ${detail}</div>`;
-            }
-        }
-    }
-
-    const tcpTls = r('L-TCP-06');
-    const tcpDns = r('L-TCP-08');
-    const tcpVpn = r('L-TCP-07');
-    if (tcpTls || tcpDns || tcpVpn || splitPathTcpHtml) {
-        const items = [];
-        if (tcpTls) items.push(buildCheckLine('TLS inspection', tcpTls));
-        if (tcpDns) items.push(buildCheckLine('DNS hijacking', tcpDns));
-        if (tcpVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', tcpVpn));
-        if (splitPathTcpHtml) items.push(splitPathTcpHtml);
-        setVal('ov-tcp-path-val', items.join(''));
-        hasContent = true;
-    } else {
-        setVal('ov-tcp-path-val', '<span class="ov-dim">Requires Local Scanner or STUN test</span>');
-    }
-
-    // 7. UDP-based RDP Path Optimization
-    const turnTls = r('L-UDP-06');
-    const turnVpn = r('L-UDP-07');
-
-    // NAT type line — prefer scanner L-UDP-05 (accurate), fall back to browser B-UDP-02
-    let natTypeHtml = '';
-    const scannerNat = r('L-UDP-05');
-    const browserNat = r('B-UDP-02');
-    const natSource = scannerNat || browserNat;
-    if (natSource) {
-        const val = natSource.resultValue || '';
-        const lc = val.toLowerCase();
-        const src = scannerNat ? 'Scanner' : 'Browser';
-        let icon, cls, label;
-        if (lc.includes('cone') || lc.includes('open internet')) {
-            icon = '✓'; cls = 'ov-pass';
-            label = lc.includes('open internet') ? 'Open Internet (No NAT)'
-                  : 'Cone NAT — Shortpath ready';
-        } else if (lc.includes('symmetric')) {
-            icon = '✗'; cls = 'ov-fail';
-            label = 'Symmetric NAT — STUN hole-punching unlikely';
-        } else if (lc.includes('stun ok')) {
-            icon = '✓'; cls = 'ov-pass';
-            label = 'STUN OK — UDP connectivity confirmed';
-        } else if (lc.includes('partial')) {
-            icon = '⚠'; cls = 'ov-warn';
-            label = 'Partial STUN — NAT type undetermined';
-        } else if (lc.includes('blocked') || lc.includes('failed')) {
-            icon = '✗'; cls = 'ov-fail';
-            label = 'STUN blocked — UDP 3478 unreachable';
-        } else {
-            icon = '⚠'; cls = 'ov-warn';
-            label = val;
-        }
-        natTypeHtml = `<div class="ov-check-line"><span class="ov-status-icon ${cls}">${icon}</span>NAT Type: ${esc(label)} <span class="ov-dim">[${src}]</span></div>`;
-    }
-
-    // Build CGNAT warning for UDP if detected
-    let cgnatHtml = '';
-    if (isCgnat) {
-        // Cross-reference with NAT type result
-        const natResult = browserNat;
-        const natType = natResult?.resultValue || '';
-        const isSymmetric = natType.toLowerCase().includes('symmetric');
-        if (isSymmetric) {
-            cgnatHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Carrier-Grade NAT (CGNAT) detected — Symmetric NAT confirmed</div>`
-                + `<div class="ov-check-line ov-dim" style="padding-left:1.4em;">STUN hole-punching unavailable; RDP Shortpath will use TURN relay</div>`;
-        } else if (natResult && natResult.status === 'Passed') {
-            cgnatHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>CGNAT detected but NAT is Cone — STUN should work</div>`;
-        } else {
-            cgnatHtml = `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>Carrier-Grade NAT (CGNAT) detected — may limit STUN connectivity</div>`
-                + `<div class="ov-check-line ov-dim" style="padding-left:1.4em;">RDP Shortpath may fall back to TURN relay</div>`;
-        }
-    }
-
-    if (natTypeHtml || turnTls || turnVpn || splitPathUdpHtml || cgnatHtml) {
-        const items = [];
-        if (natTypeHtml) items.push(natTypeHtml);
-        if (turnTls) items.push(buildCheckLine('TLS inspection', turnTls));
-        if (turnVpn) items.push(buildCheckLine('VPN / SWG / Proxy use', turnVpn));
-        if (splitPathUdpHtml) items.push(splitPathUdpHtml);
-        if (cgnatHtml) items.push(cgnatHtml);
-        setVal('ov-udp-path-val', items.join(''));
-        hasContent = true;
-    } else {
-        setVal('ov-udp-path-val', '<span class="ov-dim">Requires Local Scanner or STUN test</span>');
-    }
-
-    // Overall verdict
-    if (hasContent) {
-        panel.classList.remove('hidden');
-        const failed = results.filter(r => r.status === 'Failed' || r.status === 'Error').length;
-        const warnings = results.filter(r => r.status === 'Warning').length;
-        const verdictEl = document.getElementById('overview-verdict');
-        if (verdictEl) {
-            if (failed > 0) {
-                verdictEl.textContent = `${failed} issue${failed > 1 ? 's' : ''} found`;
-                verdictEl.className = 'overview-verdict verdict-fail';
-            } else if (warnings > 0) {
-                verdictEl.textContent = `${warnings} warning${warnings > 1 ? 's' : ''}`;
-                verdictEl.className = 'overview-verdict verdict-warn';
-            } else {
-                verdictEl.textContent = 'All checks passed';
-                verdictEl.className = 'overview-verdict verdict-good';
-            }
-        }
-    }
-}
-
-/** Build a descriptive check line like "✓ TLS inspection not detected" */
-function buildCheckLine(label, result) {
-    if (result.status === 'Passed') {
-        return `<div class="ov-check-line"><span class="ov-status-icon ov-pass">✓</span>${label} not detected</div>`;
-    } else if (result.status === 'Warning') {
-        return `<div class="ov-check-line"><span class="ov-status-icon ov-warn">⚠</span>${label} detected</div>`;
-    } else {
-        return `<div class="ov-check-line"><span class="ov-status-icon ov-fail">✗</span>${label} detected</div>`;
-    }
-}
-
 // ── Key Findings panel (prominent at-a-glance RDP optimization summary) ──
-function updateKeyFindings(results) {
+async function updateKeyFindings(results) {
     const panel = document.getElementById('key-findings');
     const grid = document.getElementById('kf-grid');
     if (!panel || !grid) return;
@@ -2242,6 +1851,65 @@ function updateKeyFindings(results) {
             add('kf-pass', 'NAT Type', esc(natType.resultValue || 'STUN OK'), `Source: ${src}`);
         } else {
             add('kf-info', 'NAT Type', esc(natType.resultValue || 'Unknown'), `Source: ${src}`);
+        }
+    }
+
+    // ── 6b. Split-path Routing (HTTP TCP egress vs STUN UDP egress) ──
+    {
+        let httpEgressIp = '', httpCountry = '', httpCity = '';
+        const locResult = r('B-LE-01');
+        if (locResult?.detailedInfo) {
+            const mIp = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
+            if (mIp) httpEgressIp = mIp[1];
+            const rvParts = (locResult.resultValue || '').split(',').map(s => s.trim());
+            if (rvParts.length >= 2) httpCountry = rvParts[rvParts.length - 1];
+            if (rvParts.length >= 3) httpCity = rvParts[0];
+        }
+        let stunReflexiveIp = '';
+        const stunResult = r('B-UDP-01');
+        if (stunResult?.detailedInfo) {
+            const m = stunResult.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
+            if (m) stunReflexiveIp = m[1];
+        }
+        if (httpEgressIp && stunReflexiveIp) {
+            if (httpEgressIp === stunReflexiveIp) {
+                // Same IP — no split-path (don't show, it's noise when everything is fine)
+            } else {
+                // IPs differ — GeoIP the STUN IP to distinguish CGNAT vs proxy
+                let stunCountry = '', stunCity = '';
+                try {
+                    const geoResp = await fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
+                        signal: AbortSignal.timeout(5000), cache: 'no-store'
+                    });
+                    if (geoResp.ok) {
+                        const geoData = await geoResp.json();
+                        stunCountry = geoData.country || '';
+                        stunCity = geoData.city || '';
+                    }
+                } catch { /* GeoIP lookup failed */ }
+
+                if (stunCountry && httpCountry &&
+                    stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
+                    // Same country — CGNAT
+                    const natVal = (natType?.resultValue || '').toLowerCase();
+                    if (natVal.includes('symmetric')) {
+                        add('kf-issue', 'CGNAT', 'Carrier-Grade NAT detected — Symmetric NAT confirmed',
+                            'STUN hole-punching unavailable; RDP Shortpath will use TURN relay');
+                    } else {
+                        add('kf-info', 'CGNAT', 'Carrier-Grade NAT detected — NAT traversal still possible',
+                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)} (same country)`);
+                    }
+                } else if (stunCountry && httpCountry) {
+                    // Different countries — split-path proxy
+                    add('kf-error', 'Split Routing',
+                        `🔺 TCP/UDP taking different paths — HTTP proxy or SWG likely`,
+                        `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
+                } else if (httpEgressIp !== stunReflexiveIp) {
+                    add('kf-info', 'Split Routing',
+                        `Different egress IPs detected (may be CGNAT)`,
+                        `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}`);
+                }
+            }
         }
     }
 
