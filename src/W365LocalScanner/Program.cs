@@ -294,7 +294,7 @@ class Program
         {
             var sw = Stopwatch.StartNew();
             var testTask = test.Run();
-            var testTimeout = test.Category == "cloud" ? 90 : test.Id == "L-TCP-10" ? 120 : 60;
+            var testTimeout = test.Category == "cloud" ? 90 : test.Id is "L-TCP-10" ? 120 : test.Id is "L-TCP-07" or "L-UDP-07" ? 120 : 60;
             var timeoutTask = Task.Delay(TimeSpan.FromSeconds(testTimeout));
 
             if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
@@ -2749,20 +2749,37 @@ class Program
                 sb.AppendLine("⚠ Could not discover RDP gateway — probing rdweb.wvd.microsoft.com as fallback\n");
 
             // System proxy — check against the actual RDP gateway
-            var proxy = WebRequest.GetSystemWebProxy();
+            // Wrapped in Task.Run with timeout because GetProxy() can trigger slow WPAD
+            // auto-discovery through VPN tunnels (e.g. resolving wpad.corp.microsoft.com)
             var testUri = new Uri($"https://{probeHost}");
-            var proxyUri = proxy.GetProxy(testUri);
-            if (proxyUri != null && proxyUri != testUri)
+            try
             {
-                issues.Add($"System proxy: {proxyUri}");
-                sb.AppendLine($"⚠ System proxy detected for {probeHost}: {proxyUri}");
+                var proxyCheckTask = Task.Run(() =>
+                {
+                    var p = WebRequest.GetSystemWebProxy();
+                    return p.GetProxy(testUri);
+                });
+                if (await Task.WhenAny(proxyCheckTask, Task.Delay(10000)) == proxyCheckTask)
+                {
+                    var proxyUri = proxyCheckTask.Result;
+                    if (proxyUri != null && proxyUri != testUri)
+                    {
+                        issues.Add($"System proxy: {proxyUri}");
+                        sb.AppendLine($"⚠ System proxy detected for {probeHost}: {proxyUri}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"✓ No system proxy configured for {probeHost}");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine($"⚠ System proxy check timed out (WPAD auto-discovery may be slow through VPN)");
+                }
             }
-            else
-            {
-                sb.AppendLine($"✓ No system proxy configured for {probeHost}");
-            }
+            catch { sb.AppendLine("Could not check system proxy"); }
 
-            // WinHTTP proxy
+            // WinHTTP proxy (with 10s timeout)
             try
             {
                 var psi = new ProcessStartInfo("netsh", "winhttp show proxy")
@@ -2770,14 +2787,23 @@ class Program
                     RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
                 };
                 using var proc = Process.Start(psi);
-                var output = proc!.StandardOutput.ReadToEnd();
-                proc.WaitForExit();
-                if (output.Contains("Direct access"))
-                    sb.AppendLine("✓ WinHTTP: Direct access (no proxy)");
+                var readTask = proc!.StandardOutput.ReadToEndAsync();
+                if (await Task.WhenAny(readTask, Task.Delay(10000)) == readTask)
+                {
+                    var output = readTask.Result;
+                    proc.WaitForExit(1000);
+                    if (output.Contains("Direct access"))
+                        sb.AppendLine("✓ WinHTTP: Direct access (no proxy)");
+                    else
+                    {
+                        issues.Add("WinHTTP proxy configured");
+                        sb.AppendLine($"⚠ WinHTTP proxy configured:\n{output.Trim()}");
+                    }
+                }
                 else
                 {
-                    issues.Add("WinHTTP proxy configured");
-                    sb.AppendLine($"⚠ WinHTTP proxy configured:\n{output.Trim()}");
+                    try { proc.Kill(); } catch { }
+                    sb.AppendLine("⚠ WinHTTP proxy check timed out");
                 }
             }
             catch { sb.AppendLine("Could not check WinHTTP proxy"); }
@@ -3656,7 +3682,7 @@ class Program
         return result;
     }
 
-    static Task<TestResult> RunTurnProxyVpn()
+    static async Task<TestResult> RunTurnProxyVpn()
     {
         var result = new TestResult { Id = "L-UDP-07", Name = "TURN Proxy/VPN Detection", Category = "udp" };
         try
@@ -3710,7 +3736,7 @@ class Program
                     sb.AppendLine("\n  \u2714 VPN is active but UDP/TURN traffic correctly bypasses it (split-tunnel)");
             }
 
-            // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall
+            // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall (30s timeout)
             try
             {
                 var psi = new ProcessStartInfo("netsh", "advfirewall firewall show rule name=all dir=out")
@@ -3718,30 +3744,39 @@ class Program
                     RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
                 };
                 using var proc = Process.Start(psi);
-                var output = proc!.StandardOutput.ReadToEnd();
-                proc.WaitForExit();
+                var fwReadTask = proc!.StandardOutput.ReadToEndAsync();
+                if (await Task.WhenAny(fwReadTask, Task.Delay(30000)) == fwReadTask)
+                {
+                    var output = fwReadTask.Result;
+                    proc.WaitForExit(1000);
 
-                // Parse rule blocks and check for specific UDP 3478 block rules
-                var ruleBlocks = output.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-                bool found3478Block = false;
-                foreach (var block in ruleBlocks)
-                {
-                    if (block.Contains("3478") &&
-                        block.Contains("Block", StringComparison.OrdinalIgnoreCase) &&
-                        block.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                    // Parse rule blocks and check for specific UDP 3478 block rules
+                    var ruleBlocks = output.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+                    bool found3478Block = false;
+                    foreach (var block in ruleBlocks)
                     {
-                        found3478Block = true;
-                        break;
+                        if (block.Contains("3478") &&
+                            block.Contains("Block", StringComparison.OrdinalIgnoreCase) &&
+                            block.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                        {
+                            found3478Block = true;
+                            break;
+                        }
                     }
-                }
-                if (found3478Block)
-                {
-                    issues.Add("Firewall rule blocks UDP 3478");
-                    sb.AppendLine("\u26A0 Windows Firewall rule found that may block UDP 3478");
+                    if (found3478Block)
+                    {
+                        issues.Add("Firewall rule blocks UDP 3478");
+                        sb.AppendLine("\u26A0 Windows Firewall rule found that may block UDP 3478");
+                    }
+                    else
+                    {
+                        sb.AppendLine("\u2714 No Windows Firewall rules blocking UDP 3478 detected");
+                    }
                 }
                 else
                 {
-                    sb.AppendLine("\u2714 No Windows Firewall rules blocking UDP 3478 detected");
+                    try { proc.Kill(); } catch { }
+                    sb.AppendLine("\u2714 Firewall rule check timed out (30s) — skipped (too many rules to enumerate)");
                 }
             }
             catch { sb.AppendLine("Could not check Windows Firewall rules"); }
@@ -3767,7 +3802,7 @@ class Program
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
-        return Task.FromResult(result);
+        return result;
     }
 
     // ═══════════════════════════════════════════

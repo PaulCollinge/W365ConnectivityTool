@@ -1920,7 +1920,30 @@ async function updateKeyFindings(results) {
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
         const tcpPass = vpnTcp.status === 'Passed';
         const udpPass = !vpnUdp || vpnUdp.status === 'Passed';
-        if (tcpPass && udpPass) {
+        const tcpTimedOut = !tcpPass && /timed out/i.test(vpnTcp.resultValue);
+        const udpTimedOut = vpnUdp && vpnUdp.status !== 'Passed' && /timed out/i.test(vpnUdp.resultValue);
+        if (tcpTimedOut && udpPass) {
+            // TCP test timed out but UDP is clean — infer VPN status from UDP
+            const udpBypassed = vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue);
+            if (udpBypassed) {
+                let detLines = [];
+                if (vpnUdp && vpnUdp.detailedInfo) {
+                    vpnUdp.detailedInfo.split('\n')
+                        .filter(l => /VPN adapter|SWG.*process/i.test(l))
+                        .forEach(l => {
+                            const clean = l.replace(/^[\s\u2139\u26A0]+/, '').trim();
+                            if (clean && !detLines.includes(clean)) detLines.push(clean);
+                        });
+                }
+                add('kf-pass', 'VPN / Proxy',
+                    '✓ Detected but RDP correctly bypassed — split-tunnel configured',
+                    (detLines.length ? detLines.map(d => esc(d)).join('<br>') + '<br>' : '') +
+                    'TCP test timed out (slow WPAD auto-discovery) — UDP path confirmed clean<br>' + `See ${rdpOptLink}`);
+            } else {
+                add('kf-pass', 'VPN / Proxy', 'None detected — direct routing',
+                    'Note: TCP test timed out (slow WPAD auto-discovery) — UDP path confirmed clean');
+            }
+        } else if (tcpPass && udpPass) {
             // Check if VPN/SWG was detected but RDP correctly bypasses it
             const bypassed = /bypassed|split-tunnel/i.test(vpnTcp.resultValue) ||
                              (vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue));
@@ -1950,15 +1973,28 @@ async function updateKeyFindings(results) {
                     .find(l => /VPN adapter|proxy.*:|Zscaler|Netskope|GlobalProtect|Cisco|WireGuard|NordVPN/i.test(l));
                 if (vpnLine) detail = vpnLine.trim();
             }
-            // Check if one path is bypassed but the other isn't
-            const tcpBypassed = tcpPass && /bypassed|split-tunnel/i.test(vpnTcp.resultValue);
-            const udpBypassed = vpnUdp && vpnUdp.status === 'Passed' && /bypassed|split-tunnel/i.test(vpnUdp.resultValue);
-            const which = [];
-            if (!tcpPass) which.push('TCP' + (udpBypassed ? ' (UDP bypassed ✓)' : ''));
-            if (vpnUdp && vpnUdp.status !== 'Passed') which.push('UDP' + (tcpBypassed ? ' (TCP bypassed ✓)' : ''));
-            add('kf-error', 'VPN / Proxy',
-                `🔺 Intercepting ${which.join(' & ')} path — causes higher latency, reduced performance &amp; reliability`,
-                (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
+            // If both tests timed out (not a proxy/VPN issue — just slow checks)
+            if (tcpTimedOut && udpTimedOut) {
+                add('kf-pass', 'VPN / Proxy', '⚠ Tests timed out — could not determine',
+                    'Both TCP and UDP VPN/proxy detection tests timed out. This typically indicates slow WPAD auto-discovery or firewall rule enumeration.<br>' + `See ${rdpOptLink}`);
+            } else {
+                // Check if one path is bypassed but the other isn't
+                const tcpBypassed = tcpPass && /bypassed|split-tunnel/i.test(vpnTcp.resultValue);
+                const udpBypassed = vpnUdp && vpnUdp.status === 'Passed' && /bypassed|split-tunnel/i.test(vpnUdp.resultValue);
+                const which = [];
+                if (!tcpPass && !tcpTimedOut) which.push('TCP' + (udpBypassed ? ' (UDP bypassed ✓)' : ''));
+                if (vpnUdp && vpnUdp.status !== 'Passed' && !udpTimedOut) which.push('UDP' + (tcpBypassed ? ' (TCP bypassed ✓)' : ''));
+                if (which.length > 0) {
+                    add('kf-error', 'VPN / Proxy',
+                        `🔺 Intercepting ${which.join(' & ')} path — causes higher latency, reduced performance &amp; reliability`,
+                        (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
+                } else {
+                    // One timed out but the other has real issues — show generic warning
+                    add('kf-error', 'VPN / Proxy',
+                        '⚠ Proxy/VPN/SWG issues detected',
+                        (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
+                }
+            }
         }
     }
 
