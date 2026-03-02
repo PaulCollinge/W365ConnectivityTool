@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=143">
+    <link rel="stylesheet" href="css/styles.css?v=144">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -448,17 +448,19 @@
                 <!-- ═══ Cloud PC right-side cards (hidden until Cloud PC data imported) ═══ -->
                 <div class="map-fanin map-g-fanin">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
-                        <!-- Central horizontal entry from Azure -->
+                        <!-- Normal mode: 3-branch fan (AFD / RDGw / TURN at 33/100/167) -->
                         <line class="fan-entry" x1="60" y1="100" x2="30" y2="100" stroke-width="2"/>
-                        <!-- Vertical trunk -->
                         <line class="fan-afd"  x1="30" y1="33"  x2="30" y2="100" stroke-width="2"/>
                         <line class="fan-trunk" x1="30" y1="100" x2="30" y2="167" stroke-width="2"/>
-                        <!-- AFD branch (hidden in CPC mode) -->
                         <line class="fan-afd"  x1="30" y1="33"  x2="0" y2="33"  stroke-width="2"/>
-                        <!-- RDGw branch -->
                         <line class="fan-rdgw" x1="30" y1="100" x2="0" y2="100" stroke-width="2"/>
-                        <!-- TURN branch -->
                         <line class="fan-turn" x1="30" y1="167" x2="0" y2="167" stroke-width="2"/>
+                        <!-- CPC mode: 2-branch fan (RDGw / TURN at 50/150, hidden by default) -->
+                        <line class="fan-cpc fan-cpc-entry" x1="60" y1="100" x2="30" y2="100" stroke-width="2"/>
+                        <line class="fan-cpc fan-cpc-up"    x1="30" y1="50"  x2="30" y2="100" stroke-width="2"/>
+                        <line class="fan-cpc fan-cpc-down"  x1="30" y1="100" x2="30" y2="150" stroke-width="2"/>
+                        <line class="fan-cpc fan-cpc-rdgw"  x1="30" y1="50"  x2="0"  y2="50"  stroke-width="2"/>
+                        <line class="fan-cpc fan-cpc-turn"  x1="30" y1="150" x2="0"  y2="150" stroke-width="2"/>
                     </svg>
                     <span class="map-line-label map-ll-cpc-rdgw" id="map-lat-cpc-rdgw"></span>
                     <span class="map-line-label map-ll-cpc-turn" id="map-lat-cpc-turn"></span>
@@ -751,11 +753,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=143"></script>
-    <script src="js/browser-tests.js?v=143"></script>
-    <script src="js/ui.js?v=143"></script>
-    <script src="js/map.js?v=143"></script>
-    <script src="js/ai-analysis.js?v=143"></script>
-    <script src="js/app.js?v=143"></script>
+    <script src="js/config.js?v=144"></script>
+    <script src="js/browser-tests.js?v=144"></script>
+    <script src="js/ui.js?v=144"></script>
+    <script src="js/map.js?v=144"></script>
+    <script src="js/ai-analysis.js?v=144"></script>
+    <script src="js/app.js?v=144"></script>
 </body>
 </html>
