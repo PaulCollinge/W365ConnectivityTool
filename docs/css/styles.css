@@ -1315,11 +1315,11 @@ main {
 .map-diagram.cpc-mode .map-g-fanin.cpc-revealed,
 .map-diagram.cpc-mode .map-g-azure.cpc-revealed,
 .map-diagram.cpc-mode .map-g-nat.cpc-revealed,
+.map-diagram.cpc-mode .map-g-dns.cpc-revealed { display: flex; }
 .map-diagram.cpc-mode .map-g-arrow3.cpc-revealed,
 .map-diagram.cpc-mode .map-g-rdgw.cpc-revealed,
 .map-diagram.cpc-mode .map-g-turn.cpc-revealed,
 .map-diagram.cpc-mode .map-g-dnsline.cpc-revealed { display: block; }
-.map-diagram.cpc-mode .map-g-dns.cpc-revealed { display: flex; }
 /* CPC mode fanin: hide normal 3-branch lines, show CPC 2-branch lines */
 .map-diagram.cpc-mode .map-g-fanin .fan-entry,
 .map-diagram.cpc-mode .map-g-fanin .fan-afd,
