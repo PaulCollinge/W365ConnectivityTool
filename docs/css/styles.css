@@ -1432,10 +1432,10 @@ main {
 .map-arrow-cell { position: relative; }
 .map-arrow-cell .map-line-label { bottom: -2px; left: 50%; transform: translate(-50%, 100%); }
 
-/* Fanout latency: centered above each branch line */
-.map-ll-afd  { left: 50%; top: 16.5%; transform: translate(-50%, calc(-100% - 4px)); }
-.map-ll-rdgw { left: 50%; top: 50%; transform: translate(-50%, calc(-100% - 4px)); }
-.map-ll-turn { left: 50%; top: 83.5%; transform: translate(-50%, calc(-100% - 4px)); }
+/* Fanout latency: below each branch line, centered on fanout column */
+.map-ll-afd  { left: 50%; top: 16.5%; transform: translate(-50%, 2px); }
+.map-ll-rdgw { left: 50%; top: 50%; transform: translate(-50%, 2px); }
+.map-ll-turn { left: 50%; top: 83.5%; transform: translate(-50%, 2px); }
 
 /* ── Client PC / Laptop device visual ── */
 .map-client-device {
