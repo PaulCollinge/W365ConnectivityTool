@@ -10,7 +10,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=153">
+    <link rel="stylesheet" href="css/styles.css?v=154">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -101,6 +101,15 @@
         </div>
 
         <!-- Key Findings (shown after tests run) -->
+
+        <!-- Host-type picker (shown when Azure VM detected but type unknown) -->
+        <div id="host-type-picker" class="host-type-picker hidden">
+            <span class="htp-icon">☁️</span>
+            <span class="htp-text">Azure VM detected — what type of host is this?</span>
+            <button class="htp-btn htp-btn-cpc" onclick="pickHostType('cloudpc')">Cloud PC <span class="htp-hint">(Windows 365)</span></button>
+            <button class="htp-btn htp-btn-avd" onclick="pickHostType('avd')">AVD Session Host</button>
+        </div>
+
         <div id="key-findings" class="key-findings hidden">
             <div class="kf-header">
                 <span class="kf-icon">🎯</span>
@@ -770,11 +779,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=153"></script>
-    <script src="js/browser-tests.js?v=153"></script>
-    <script src="js/ui.js?v=153"></script>
-    <script src="js/map.js?v=153"></script>
-    <script src="js/ai-analysis.js?v=153"></script>
-    <script src="js/app.js?v=153"></script>
+    <script src="js/config.js?v=154"></script>
+    <script src="js/browser-tests.js?v=154"></script>
+    <script src="js/ui.js?v=154"></script>
+    <script src="js/map.js?v=154"></script>
+    <script src="js/ai-analysis.js?v=154"></script>
+    <script src="js/app.js?v=154"></script>
 </body>
 </html>

@@ -136,7 +136,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // Update host-type selector to match detected value
             const sel = document.getElementById('host-type-select');
             if (sel && result.hostType) sel.value = result.hostType;
-            ilog('Cloud PC Mode auto-enabled');
+            // If we couldn't determine type, show the picker banner
+            if (!result.hostType) {
+                const picker = document.getElementById('host-type-picker');
+                if (picker) picker.classList.remove('hidden');
+                ilog('Host type unknown — showing picker banner');
+            }
+            ilog('CPC Mode auto-enabled');
         }
     });
 
@@ -219,6 +225,27 @@ function hostLabelShort() {
 function onHostTypeChanged(value) {
     hostType = value; // 'cloudpc' or 'avd'
     ilog('Host type changed to: ' + value);
+    // Hide picker banner if showing
+    const picker = document.getElementById('host-type-picker');
+    if (picker) picker.classList.add('hidden');
+    updateHostTypeLabels();
+    // Re-render key findings if we have results
+    if (allResults.length > 0) {
+        updateKeyFindings(allResults);
+    }
+}
+
+// ── Host-type picker (shown when IMDS detected but type unknown) ──
+function pickHostType(type) {
+    hostType = type;
+    ilog('User selected host type: ' + type);
+    // Hide the picker banner
+    const picker = document.getElementById('host-type-picker');
+    if (picker) picker.classList.add('hidden');
+    // Sync the dropdown
+    const sel = document.getElementById('host-type-select');
+    if (sel) sel.value = type;
+    // Update all labels
     updateHostTypeLabels();
     // Re-render key findings if we have results
     if (allResults.length > 0) {
@@ -683,9 +710,11 @@ function processImportedData(data) {
             }
         }
         updateHostTypeLabels();
-        // Sync host-type dropdown
+        // Sync host-type dropdown and hide picker banner
         const htSel = document.getElementById('host-type-select');
         if (htSel) htSel.value = hostType;
+        const picker = document.getElementById('host-type-picker');
+        if (picker) picker.classList.add('hidden');
     }
 
     // Remember when the scanner data was captured
