@@ -877,6 +877,33 @@ function mapCategoryFromId(id) {
     return 'local';
 }
 
+// Helper: extract VPN/SWG names from resultValue "VPN detected (Name) — ..." or detailedInfo
+function extractVpnNames(tests) {
+    const names = new Set();
+    for (const t of tests) {
+        if (!t) continue;
+        // Try resultValue first: "VPN/SWG detected (Name1, Name2) — ..."
+        const rvMatch = (t.resultValue || '').match(/detected\s*\(([^)]+)\)/i);
+        if (rvMatch) {
+            rvMatch[1].split(',').map(s => s.trim()).filter(Boolean).forEach(n => names.add(n));
+        }
+        // Also check detailedInfo for "VPN adapter detected: Name (Desc)" or "SWG process running: Name (PID: ...)"
+        if (t.detailedInfo) {
+            t.detailedInfo.split('\n')
+                .filter(l => /VPN adapter detected:|SWG.*process running:/i.test(l))
+                .forEach(l => {
+                    const m = l.match(/(?:detected|running):\s*([^\s(]+(?:\s+[^\s(]+)*)/i);
+                    if (m) {
+                        let name = m[1].trim();
+                        name = name.replace(/\s*\(.*$/, '').trim();
+                        if (name) names.add(name);
+                    }
+                });
+        }
+    }
+    return [...names];
+}
+
 // ── Export results as a text report ──
 async function generateExportText() {
     if (allResults.length === 0) return '';
@@ -1938,36 +1965,6 @@ async function updateKeyFindings(results) {
     const rdpOptLink = '<a href="https://learn.microsoft.com/en-us/windows-365/enterprise/optimization-of-rdp" target="_blank" rel="noopener">RDP optimization guide</a>';
     const vpnTcp = r('L-TCP-07') || r('C-TCP-07');
     const vpnUdp = r('L-UDP-07') || r('C-UDP-07');
-
-    // Helper: extract VPN/SWG names from resultValue "VPN detected (Name) — ..." or detailedInfo
-    function extractVpnNames(tests) {
-        const names = new Set();
-        for (const t of tests) {
-            if (!t) continue;
-            // Try resultValue first: "VPN/SWG detected (Name1, Name2) — ..."
-            const rvMatch = (t.resultValue || '').match(/detected\s*\(([^)]+)\)/i);
-            if (rvMatch) {
-                rvMatch[1].split(',').map(s => s.trim()).filter(Boolean).forEach(n => names.add(n));
-            }
-            // Also check detailedInfo for "VPN adapter detected: Name (Desc)" or "SWG process running: Name (PID: ...)"
-            if (t.detailedInfo) {
-                t.detailedInfo.split('\n')
-                    .filter(l => /VPN adapter detected:|SWG.*process running:/i.test(l))
-                    .forEach(l => {
-                        // "ℹ VPN adapter detected: MSFT-AzVPN-Auto (MSFT-AzVPN-Auto)"
-                        // "ℹ SWG/Security process running: ZscalerService (PID: 1234)"
-                        const m = l.match(/(?:detected|running):\s*([^\s(]+(?:\s+[^\s(]+)*)/i);
-                        if (m) {
-                            let name = m[1].trim();
-                            // Remove trailing parenthesized description if present
-                            name = name.replace(/\s*\(.*$/, '').trim();
-                            if (name) names.add(name);
-                        }
-                    });
-            }
-        }
-        return [...names];
-    }
 
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
         const tcpPass = vpnTcp.status === 'Passed';
