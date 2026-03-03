@@ -1917,28 +1917,45 @@ async function updateKeyFindings(results) {
     const rdpOptLink = '<a href="https://learn.microsoft.com/en-us/windows-365/enterprise/optimization-of-rdp" target="_blank" rel="noopener">RDP optimization guide</a>';
     const vpnTcp = r('L-TCP-07') || r('C-TCP-07');
     const vpnUdp = r('L-UDP-07') || r('C-UDP-07');
+
+    // Helper: extract VPN/SWG names from resultValue "VPN detected (Name) — ..." or detailedInfo
+    function extractVpnNames(tests) {
+        const names = new Set();
+        for (const t of tests) {
+            if (!t) continue;
+            // Try resultValue first: "VPN/SWG detected (Name1, Name2) — ..."
+            const rvMatch = (t.resultValue || '').match(/detected\s*\(([^)]+)\)/i);
+            if (rvMatch) {
+                rvMatch[1].split(',').map(s => s.trim()).filter(Boolean).forEach(n => names.add(n));
+            }
+            // Also check detailedInfo for "VPN adapter detected: Name (Desc)"
+            if (t.detailedInfo) {
+                t.detailedInfo.split('\n')
+                    .filter(l => /VPN adapter detected:|SWG.*process running:/i.test(l))
+                    .forEach(l => {
+                        const m = l.match(/(?:detected|running):\s*(.+?)(?:\s*\(PID:|\s*$)/i);
+                        if (m) names.add(m[1].trim());
+                    });
+            }
+        }
+        return [...names];
+    }
+
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
         const tcpPass = vpnTcp.status === 'Passed';
         const udpPass = !vpnUdp || vpnUdp.status === 'Passed';
         const tcpTimedOut = !tcpPass && /timed out/i.test(vpnTcp.resultValue);
         const udpTimedOut = vpnUdp && vpnUdp.status !== 'Passed' && /timed out/i.test(vpnUdp.resultValue);
+        const vpnNames = extractVpnNames([vpnTcp, vpnUdp]);
+        const vpnNameStr = vpnNames.length ? vpnNames.map(n => esc(n)).join(', ') : '';
         if (tcpTimedOut && udpPass) {
             // TCP test timed out but UDP is clean — infer VPN status from UDP
             const udpBypassed = vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue);
             if (udpBypassed) {
-                let detLines = [];
-                if (vpnUdp && vpnUdp.detailedInfo) {
-                    vpnUdp.detailedInfo.split('\n')
-                        .filter(l => /VPN adapter|SWG.*process/i.test(l))
-                        .forEach(l => {
-                            const clean = l.replace(/^[\s\u2139\u26A0]+/, '').trim();
-                            if (clean && !detLines.includes(clean)) detLines.push(clean);
-                        });
-                }
                 add('kf-pass', 'VPN / Proxy',
-                    '✓ Detected but RDP correctly bypassed — split-tunnel configured',
-                    (detLines.length ? detLines.map(d => esc(d)).join('<br>') + '<br>' : '') +
-                    'TCP test timed out (slow WPAD auto-discovery) — UDP path confirmed clean<br>' + `See ${rdpOptLink}`);
+                    `✓ ${vpnNameStr ? vpnNameStr + ' — ' : ''}RDP correctly bypassed (split-tunnel)`,
+                    (vpnNameStr ? `VPN detected: ${vpnNameStr}<br>` : '') +
+                    'TCP test timed out (slow WPAD auto-discovery) — UDP path confirmed split-tunnel<br>' + `See ${rdpOptLink}`);
             } else {
                 add('kf-pass', 'VPN / Proxy', 'None detected — direct routing',
                     'Note: TCP test timed out (slow WPAD auto-discovery) — UDP path confirmed clean');
@@ -1948,31 +1965,15 @@ async function updateKeyFindings(results) {
             const bypassed = /bypassed|split-tunnel/i.test(vpnTcp.resultValue) ||
                              (vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue));
             if (bypassed) {
-                // Extract what was detected from detailedInfo
-                let detLines = [];
-                [vpnTcp, vpnUdp].forEach(t => {
-                    if (t && t.detailedInfo) {
-                        t.detailedInfo.split('\n')
-                            .filter(l => /VPN adapter|SWG.*process/i.test(l))
-                            .forEach(l => {
-                                const clean = l.replace(/^[\s\u2139\u26A0]+/, '').trim();
-                                if (clean && !detLines.includes(clean)) detLines.push(clean);
-                            });
-                    }
-                });
                 add('kf-pass', 'VPN / Proxy',
-                    '✓ Detected but RDP correctly bypassed — split-tunnel configured',
-                    (detLines.length ? detLines.map(d => esc(d)).join('<br>') + '<br>' : '') + `See ${rdpOptLink}`);
+                    `✓ ${vpnNameStr ? vpnNameStr + ' — ' : ''}RDP correctly bypassed (split-tunnel)`,
+                    (vpnNameStr ? `VPN/SWG detected: ${vpnNameStr}<br>` : '') +
+                    `Both TCP and UDP paths bypass VPN — split-tunnel working correctly<br>See ${rdpOptLink}`);
             } else {
                 add('kf-pass', 'VPN / Proxy', 'None detected — direct routing');
             }
         } else {
-            let detail = '';
-            if (vpnTcp.detailedInfo) {
-                const vpnLine = vpnTcp.detailedInfo.split('\n')
-                    .find(l => /VPN adapter|proxy.*:|Zscaler|Netskope|GlobalProtect|Cisco|WireGuard|NordVPN/i.test(l));
-                if (vpnLine) detail = vpnLine.trim();
-            }
+            const vpnDetail = vpnNameStr ? `Detected: ${vpnNameStr}` : '';
             // If both tests timed out (not a proxy/VPN issue — just slow checks)
             if (tcpTimedOut && udpTimedOut) {
                 add('kf-pass', 'VPN / Proxy', '⚠ Tests timed out — could not determine',
@@ -1987,12 +1988,12 @@ async function updateKeyFindings(results) {
                 if (which.length > 0) {
                     add('kf-error', 'VPN / Proxy',
                         `🔺 Intercepting ${which.join(' & ')} path — causes higher latency, reduced performance &amp; reliability`,
-                        (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
+                        (vpnDetail ? vpnDetail + '<br>' : '') + `See ${rdpOptLink}`);
                 } else {
                     // One timed out but the other has real issues — show generic warning
                     add('kf-error', 'VPN / Proxy',
                         '⚠ Proxy/VPN/SWG issues detected',
-                        (detail ? esc(detail) + '<br>' : '') + `See ${rdpOptLink}`);
+                        (vpnDetail ? vpnDetail + '<br>' : '') + `See ${rdpOptLink}`);
                 }
             }
         }

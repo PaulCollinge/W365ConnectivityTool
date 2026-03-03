@@ -2891,7 +2891,14 @@ class Program
             }
             else if (issues.Count == 0 && detected.Count > 0)
             {
-                result.ResultValue = $"VPN/SWG detected — RDP correctly bypassed (split-tunnel)";
+                // Include adapter/process names in the result value so the dashboard can display them
+                var names = detected.Select(d => d.Contains(':') ? d.Substring(d.IndexOf(':') + 1).Trim() : d).ToList();
+                // Extract just the adapter name (first part before the parenthesised description)
+                var shortNames = names.Select(n => {
+                    var pIdx = n.IndexOf('(');
+                    return pIdx > 0 ? n.Substring(0, pIdx).Trim() : n;
+                }).ToList();
+                result.ResultValue = $"VPN/SWG detected ({string.Join(", ", shortNames)}) — RDP correctly bypassed (split-tunnel)";
                 result.Status = "Passed";
             }
             else
@@ -3788,7 +3795,13 @@ class Program
             }
             else if (issues.Count == 0 && detected.Count > 0)
             {
-                result.ResultValue = "VPN detected — UDP/TURN correctly bypassed (split-tunnel)";
+                // Include adapter names in the result value
+                var names = detected.Select(d => d.Contains(':') ? d.Substring(d.IndexOf(':') + 1).Trim() : d).ToList();
+                var shortNames = names.Select(n => {
+                    var pIdx = n.IndexOf('(');
+                    return pIdx > 0 ? n.Substring(0, pIdx).Trim() : n;
+                }).ToList();
+                result.ResultValue = $"VPN detected ({string.Join(", ", shortNames)}) — UDP/TURN correctly bypassed (split-tunnel)";
                 result.Status = "Passed";
             }
             else
