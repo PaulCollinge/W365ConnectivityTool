@@ -1169,22 +1169,19 @@ function updateMapVpnOverlay(lookup) {
     }
 
     if (vpnDetected) {
-        // Show VPN badge
-        badge.innerHTML = `🛡️ ${vpnDetail}`;
-        badge.classList.remove('hidden');
-        badge.className = 'map-vpn-badge vpn-active';
-
-        // Update card title
-        if (title) title.textContent = 'Via VPN / Proxy';
-
-        // Add warning class to the Azure card for CSS styling
-        if (azureCard) azureCard.classList.add('vpn-detected');
-
-        // Also mark the map diagram for line color changes
+        // Mark the map diagram for VPN-path CSS (swaps grid positions, colours lines)
         const diagram = document.querySelector('.map-diagram');
         if (diagram) diagram.classList.add('vpn-path');
 
-        // ── Transform NAT card into VPN Exit when VPN is active ──
+        // ── Azure card: keep as "Azure Network" — CPC lives here ──
+        // Don't change the title; Azure is just the VNet, not the VPN itself.
+        // Hide the VPN badge on the Azure card (we'll show info on the VPN Endpoint card).
+        badge.classList.add('hidden');
+        badge.className = 'map-vpn-badge hidden';
+        if (title) title.textContent = 'Azure Network';
+        if (azureCard) azureCard.classList.remove('vpn-detected');
+
+        // ── Transform NAT card → VPN Endpoint (swapped to col 3 near services via CSS) ──
         const natTitle = document.querySelector('#map-nat .device-title');
         const natDetail = document.getElementById('map-nat-detail');
         const natIp = document.getElementById('map-nat-ip');
@@ -1193,30 +1190,45 @@ function updateMapVpnOverlay(lookup) {
         const natSvgLabel = document.querySelector('#map-nat .device-svg text');
         const natCard = document.getElementById('map-nat');
 
-        if (natTitle) natTitle.textContent = 'VPN Exit';
+        if (natTitle) natTitle.textContent = 'VPN Endpoint';
         if (natSvgLabel) natSvgLabel.textContent = 'VPN';
         if (natCard) natCard.classList.add('vpn-exit-mode');
 
-        // Show ISP name in NAT detail
+        // Show ISP name + exit IP on the VPN Endpoint card
         const isp = lookup['C-LE-02'] || lookup['B-LE-02'];
         if (natDetail && isp && isp.resultValue) {
             natDetail.textContent = isp.resultValue;
         } else if (natDetail) {
-            natDetail.textContent = 'VPN endpoint';
+            natDetail.textContent = vpnLabel || 'VPN endpoint';
         }
 
-        // Status: warning (orange) since traffic hairpins through VPN
+        // Status: warning (orange) — traffic hairpins through VPN
         if (natDot) natDot.setAttribute('fill', '#d29922');
         if (natAccent) natAccent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
 
-        // Add tunnel label on the arrow between Cloud PC and VPN exit
-        const arrow3 = document.querySelector('.map-g-arrow3');
-        if (arrow3 && !arrow3.querySelector('.tunnel-label')) {
+        // Add VPN detail badge under the VPN Endpoint card
+        const natBadgeContainer = natCard;
+        if (natBadgeContainer && !natBadgeContainer.querySelector('.map-vpn-endpoint-badge')) {
+            const epBadge = document.createElement('div');
+            epBadge.className = 'map-vpn-badge vpn-active map-vpn-endpoint-badge';
+            epBadge.innerHTML = `🛡️ ${vpnDetail}`;
+            natBadgeContainer.querySelector('.device-info').appendChild(epBadge);
+        } else {
+            const existing = natBadgeContainer && natBadgeContainer.querySelector('.map-vpn-endpoint-badge');
+            if (existing) existing.innerHTML = `🛡️ ${vpnDetail}`;
+        }
+
+        // Add tunnel label on arrow4 (between Azure and VPN Endpoint after CSS swap)
+        const arrow4 = document.querySelector('.map-g-arrow4');
+        if (arrow4 && !arrow4.querySelector('.tunnel-label')) {
             const lbl = document.createElement('span');
             lbl.className = 'tunnel-label';
             lbl.textContent = '🔒 VPN Tunnel';
-            arrow3.appendChild(lbl);
+            arrow4.appendChild(lbl);
         }
+        // Remove any stale tunnel label from arrow3
+        const staleLabel3 = document.querySelector('.map-g-arrow3 .tunnel-label');
+        if (staleLabel3) staleLabel3.remove();
     } else {
         badge.classList.add('hidden');
         badge.className = 'map-vpn-badge hidden';
@@ -1233,8 +1245,11 @@ function updateMapVpnOverlay(lookup) {
         if (natSvgLabel) natSvgLabel.textContent = 'NAT';
         if (natCard) natCard.classList.remove('vpn-exit-mode');
 
-        // Remove tunnel label if present
-        const tunnelLabel = document.querySelector('.map-g-arrow3 .tunnel-label');
-        if (tunnelLabel) tunnelLabel.remove();
+        // Remove VPN endpoint badge if present
+        const epBadge = natCard && natCard.querySelector('.map-vpn-endpoint-badge');
+        if (epBadge) epBadge.remove();
+
+        // Remove tunnel labels
+        document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
     }
 }
