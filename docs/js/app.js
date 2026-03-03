@@ -1128,8 +1128,23 @@ async function generateExportText() {
             lines.push(`    ${icon} DNS Hijacking:    ${tcpDns.resultValue}`);
         }
         if (tcpVpn) {
-            const icon = tcpVpn.status === 'Passed' ? '✓' : '⚠';
-            lines.push(`    ${icon} Proxy/VPN/SWG:    ${tcpVpn.resultValue}`);
+            // Smart display: prefer showing VPN detection status over raw resultValue
+            const turnVpnRef = r('L-UDP-07') || r('C-UDP-07');
+            const vpnNamesReport = extractVpnNames([tcpVpn, turnVpnRef]);
+            const tcpTimedOutR = /timed out/i.test(tcpVpn.resultValue);
+            if (tcpTimedOutR && vpnNamesReport.length > 0) {
+                // TCP timed out but VPN detected via UDP — show the VPN name
+                lines.push(`    ✓ Proxy/VPN/SWG:    VPN detected (${vpnNamesReport.join(', ')}) — RDP correctly bypassed (split-tunnel)`);
+                lines.push(`                        (TCP test timed out — VPN status inferred from UDP test)`);
+            } else if (tcpTimedOutR) {
+                lines.push(`    ⚠ Proxy/VPN/SWG:    ${tcpVpn.resultValue}`);
+            } else if (tcpVpn.status === 'Passed' && vpnNamesReport.length > 0 && !/detected/i.test(tcpVpn.resultValue)) {
+                // Passed but resultValue doesn't mention VPN (old scanner) — fill in from detailedInfo
+                lines.push(`    ✓ Proxy/VPN/SWG:    VPN detected (${vpnNamesReport.join(', ')}) — RDP correctly bypassed`);
+            } else {
+                const icon = tcpVpn.status === 'Passed' ? '✓' : '⚠';
+                lines.push(`    ${icon} Proxy/VPN/SWG:    ${tcpVpn.resultValue}`);
+            }
         }
         if (reportHttpIp && reportStunIp) {
             if (reportHttpIp === reportStunIp) {
@@ -1195,8 +1210,14 @@ async function generateExportText() {
             lines.push(`    ${icon} TLS Inspection:   ${turnTls.resultValue}`);
         }
         if (turnVpn) {
-            const icon = turnVpn.status === 'Passed' ? '✓' : '⚠';
-            lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
+            // Smart display: show VPN name even if resultValue uses old format
+            const vpnNamesUdpReport = extractVpnNames([turnVpn]);
+            if (turnVpn.status === 'Passed' && vpnNamesUdpReport.length > 0 && !/detected/i.test(turnVpn.resultValue)) {
+                lines.push(`    ✓ Proxy/VPN/SWG:    VPN detected (${vpnNamesUdpReport.join(', ')}) — UDP correctly bypassed`);
+            } else {
+                const icon = turnVpn.status === 'Passed' ? '✓' : '⚠';
+                lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
+            }
         }
         if (reportIsSplitPath) {
             lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
@@ -1928,13 +1949,20 @@ async function updateKeyFindings(results) {
             if (rvMatch) {
                 rvMatch[1].split(',').map(s => s.trim()).filter(Boolean).forEach(n => names.add(n));
             }
-            // Also check detailedInfo for "VPN adapter detected: Name (Desc)"
+            // Also check detailedInfo for "VPN adapter detected: Name (Desc)" or "SWG process running: Name (PID: ...)"
             if (t.detailedInfo) {
                 t.detailedInfo.split('\n')
                     .filter(l => /VPN adapter detected:|SWG.*process running:/i.test(l))
                     .forEach(l => {
-                        const m = l.match(/(?:detected|running):\s*(.+?)(?:\s*\(PID:|\s*$)/i);
-                        if (m) names.add(m[1].trim());
+                        // "ℹ VPN adapter detected: MSFT-AzVPN-Auto (MSFT-AzVPN-Auto)"
+                        // "ℹ SWG/Security process running: ZscalerService (PID: 1234)"
+                        const m = l.match(/(?:detected|running):\s*([^\s(]+(?:\s+[^\s(]+)*)/i);
+                        if (m) {
+                            let name = m[1].trim();
+                            // Remove trailing parenthesized description if present
+                            name = name.replace(/\s*\(.*$/, '').trim();
+                            if (name) names.add(name);
+                        }
                     });
             }
         }
@@ -1948,9 +1976,13 @@ async function updateKeyFindings(results) {
         const udpTimedOut = vpnUdp && vpnUdp.status !== 'Passed' && /timed out/i.test(vpnUdp.resultValue);
         const vpnNames = extractVpnNames([vpnTcp, vpnUdp]);
         const vpnNameStr = vpnNames.length ? vpnNames.map(n => esc(n)).join(', ') : '';
+        // If VPN names were found in any test data (resultValue or detailedInfo) and tests passed,
+        // the VPN is present but RDP is being correctly bypassed (otherwise status would be Warning).
+        const vpnDetectedAnywhere = vpnNames.length > 0;
         if (tcpTimedOut && udpPass) {
             // TCP test timed out but UDP is clean — infer VPN status from UDP
-            const udpBypassed = vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue);
+            const udpBypassed = vpnDetectedAnywhere ||
+                (vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue));
             if (udpBypassed) {
                 add('kf-pass', 'VPN / Proxy',
                     `✓ ${vpnNameStr ? vpnNameStr + ' — ' : ''}RDP correctly bypassed (split-tunnel)`,
@@ -1962,7 +1994,8 @@ async function updateKeyFindings(results) {
             }
         } else if (tcpPass && udpPass) {
             // Check if VPN/SWG was detected but RDP correctly bypasses it
-            const bypassed = /bypassed|split-tunnel/i.test(vpnTcp.resultValue) ||
+            const bypassed = vpnDetectedAnywhere ||
+                /bypassed|split-tunnel/i.test(vpnTcp.resultValue) ||
                              (vpnUdp && /bypassed|split-tunnel/i.test(vpnUdp.resultValue));
             if (bypassed) {
                 add('kf-pass', 'VPN / Proxy',
