@@ -1207,6 +1207,47 @@ main {
 .map-diagram.vpn-path .fan-cpc circle {
     fill: #d29922 !important;
 }
+
+/* ── VPN Tunnel depiction ── */
+/* NAT card in VPN-exit mode: orange border accent */
+#map-nat.vpn-exit-mode {
+    border-color: rgba(210, 153, 34, 0.5) !important;
+}
+#map-nat.vpn-exit-mode .device-accent {
+    background: linear-gradient(180deg, rgba(210,153,34,0.5), transparent) !important;
+}
+
+/* Tunnel label on arrow between CPC and VPN exit */
+.tunnel-label {
+    display: block;
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: #d29922;
+    white-space: nowrap;
+    margin-top: 4px;
+    text-align: center;
+    letter-spacing: 0.5px;
+    animation: tunnelPulse 2.5s ease-in-out infinite;
+}
+@keyframes tunnelPulse {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 1; }
+}
+
+/* Dashed tunnel effect on arrows between CPC ↔ NAT/VPN-exit and NAT ↔ Azure */
+.map-diagram.vpn-path .map-g-arrow3 .map-hline-left,
+.map-diagram.vpn-path .map-g-arrow4 .map-hline-left {
+    background: repeating-linear-gradient(90deg,
+        #d29922 0px, #d29922 6px,
+        transparent 6px, transparent 12px
+    ) !important;
+    height: 3px !important;
+}
+.map-diagram.vpn-path .map-g-arrow3 .map-arrow-left,
+.map-diagram.vpn-path .map-g-arrow4 .map-arrow-left {
+    color: #d29922 !important;
+}
+
 /* Hide security bar when in CPC-only mode (it shows client-side scanner data) */
 .connectivity-map.cpc-only-active .map-security-bar {
     display: none;

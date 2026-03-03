@@ -1183,6 +1183,40 @@ function updateMapVpnOverlay(lookup) {
         // Also mark the map diagram for line color changes
         const diagram = document.querySelector('.map-diagram');
         if (diagram) diagram.classList.add('vpn-path');
+
+        // ── Transform NAT card into VPN Exit when VPN is active ──
+        const natTitle = document.querySelector('#map-nat .device-title');
+        const natDetail = document.getElementById('map-nat-detail');
+        const natIp = document.getElementById('map-nat-ip');
+        const natDot = document.getElementById('device-nat-dot');
+        const natAccent = document.getElementById('map-nat-accent');
+        const natSvgLabel = document.querySelector('#map-nat .device-svg text');
+        const natCard = document.getElementById('map-nat');
+
+        if (natTitle) natTitle.textContent = 'VPN Exit';
+        if (natSvgLabel) natSvgLabel.textContent = 'VPN';
+        if (natCard) natCard.classList.add('vpn-exit-mode');
+
+        // Show ISP name in NAT detail
+        const isp = lookup['C-LE-02'] || lookup['B-LE-02'];
+        if (natDetail && isp && isp.resultValue) {
+            natDetail.textContent = isp.resultValue;
+        } else if (natDetail) {
+            natDetail.textContent = 'VPN endpoint';
+        }
+
+        // Status: warning (orange) since traffic hairpins through VPN
+        if (natDot) natDot.setAttribute('fill', '#d29922');
+        if (natAccent) natAccent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
+
+        // Add tunnel label on the arrow between Cloud PC and VPN exit
+        const arrow3 = document.querySelector('.map-g-arrow3');
+        if (arrow3 && !arrow3.querySelector('.tunnel-label')) {
+            const lbl = document.createElement('span');
+            lbl.className = 'tunnel-label';
+            lbl.textContent = '🔒 VPN Tunnel';
+            arrow3.appendChild(lbl);
+        }
     } else {
         badge.classList.add('hidden');
         badge.className = 'map-vpn-badge hidden';
@@ -1190,5 +1224,17 @@ function updateMapVpnOverlay(lookup) {
         if (azureCard) azureCard.classList.remove('vpn-detected');
         const diagram = document.querySelector('.map-diagram');
         if (diagram) diagram.classList.remove('vpn-path');
+
+        // Reset NAT card if previously in VPN mode
+        const natTitle = document.querySelector('#map-nat .device-title');
+        const natSvgLabel = document.querySelector('#map-nat .device-svg text');
+        const natCard = document.getElementById('map-nat');
+        if (natTitle) natTitle.textContent = 'Azure NAT';
+        if (natSvgLabel) natSvgLabel.textContent = 'NAT';
+        if (natCard) natCard.classList.remove('vpn-exit-mode');
+
+        // Remove tunnel label if present
+        const tunnelLabel = document.querySelector('.map-g-arrow3 .tunnel-label');
+        if (tunnelLabel) tunnelLabel.remove();
     }
 }
