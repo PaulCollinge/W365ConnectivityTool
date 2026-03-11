@@ -925,6 +925,63 @@ main {
 }
 
 /* ════════════════════════════════════════
+   SATELLITE / AIRCRAFT WIFI BANNER
+   ════════════════════════════════════════ */
+.satellite-banner {
+    background: #1a1600;
+    border: 1px solid #5a4a00;
+    border-left: 4px solid #e3b341;
+    border-radius: var(--r-md);
+    padding: 16px 20px;
+    margin-bottom: var(--space-section);
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    position: relative;
+}
+.satellite-banner-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+    margin-top: 2px;
+    line-height: 1;
+}
+.satellite-banner-body {
+    flex: 1;
+    min-width: 0;
+}
+.satellite-banner-title {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    color: #e3b341;
+    margin-bottom: 4px;
+}
+.satellite-banner-detail {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+.satellite-banner-list {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.8;
+}
+.satellite-banner-list strong { color: var(--text-secondary); }
+.satellite-banner-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    flex-shrink: 0;
+    line-height: 1;
+    opacity: 0.6;
+}
+.satellite-banner-dismiss:hover { opacity: 1; color: var(--text-primary); }
+
+/* ════════════════════════════════════════
    DOWNLOAD BANNER
    ════════════════════════════════════════ */
 .download-banner {

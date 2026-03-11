@@ -334,7 +334,12 @@ function updateNatTypeBanner(results) {
     } else if (val.includes('cone')) {
         icon = '✓'; label = 'Cone NAT — RDP Shortpath via STUN is available'; cssClass = 'nat-cone';
     } else if (val.includes('symmetric')) {
-        icon = '✗'; label = 'Symmetric NAT — STUN hole-punching unlikely, TURN relay used'; cssClass = 'nat-symmetric';
+        const isSat = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
+        if (isSat) {
+            icon = 'ℹ'; label = 'Symmetric NAT — carrier-grade satellite NAT (expected), TURN relay active'; cssClass = 'nat-info';
+        } else {
+            icon = '✗'; label = 'Symmetric NAT — STUN hole-punching unlikely, TURN relay used'; cssClass = 'nat-symmetric';
+        }
     } else if (val.includes('stun ok')) {
         icon = '✓'; label = 'STUN OK — UDP connectivity confirmed'; cssClass = 'nat-cone';
     } else if (val.includes('partial')) {

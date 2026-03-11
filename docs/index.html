@@ -187,6 +187,22 @@
             </div>
         </div>
 
+        <!-- Aircraft / Satellite WiFi Banner -->
+        <div id="satellite-banner" class="satellite-banner hidden">
+            <div class="satellite-banner-icon">✈</div>
+            <div class="satellite-banner-body">
+                <div class="satellite-banner-title">Aircraft / Satellite WiFi detected</div>
+                <div class="satellite-banner-detail" id="satellite-banner-detail">Some results will differ from normal broadband — this is expected.</div>
+                <ul class="satellite-banner-list">
+                    <li><strong>High latency &amp; jitter</strong> — inherent to geostationary satellite links (~550–700 ms base RTT)</li>
+                    <li><strong>Symmetric / Carrier-Grade NAT</strong> — STUN hole-punching unavailable; TURN relay is used instead (works fine)</li>
+                    <li><strong>Gateway &amp; TURN relay distance</strong> — traffic exits through the provider's ground station, not your GPS location</li>
+                    <li><strong>Connectivity checks</strong> — some HTTPS probes may be blocked by CORS on this network</li>
+                </ul>
+            </div>
+            <button class="satellite-banner-dismiss" onclick="document.getElementById('satellite-banner').classList.add('hidden')" title="Dismiss">✕</button>
+        </div>
+
         <!-- Download Banner -->
         <div id="download-banner" class="download-banner hidden">
             <div class="download-content">

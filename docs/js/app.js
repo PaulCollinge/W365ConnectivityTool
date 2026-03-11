@@ -85,6 +85,7 @@ scannerChannel.onmessage = (event) => {
         updateSummary(allResults);
         updateCategoryBadges(allResults);
         updateConnectivityMap(allResults);
+        updateSatelliteBanner(allResults);
         updateKeyFindings(allResults);
         updateExportButton();
         // Show confirmation
@@ -462,6 +463,7 @@ async function runAllBrowserTests() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
+    updateSatelliteBanner(allResults);
     updateKeyFindings(allResults);
     updateExportButton();
 
@@ -830,6 +832,7 @@ function processImportedData(data) {
     if (mapContainer) mapContainer.classList.remove('hidden');
 
     updateConnectivityMap(allResults);
+    updateSatelliteBanner(allResults);
     updateKeyFindings(allResults);
     updateExportButton();
     const info = document.getElementById('info-banner');
@@ -1697,6 +1700,7 @@ async function retestFailedItems() {
             allResults.push(result);
             updateTestUI(test.id, result);
             updateConnectivityMap(allResults);
+            updateSatelliteBanner(allResults);
         } catch (err) {
             const errorResult = {
                 id: test.id, name: test.name, category: test.category, source: 'browser',
@@ -1714,6 +1718,7 @@ async function retestFailedItems() {
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
+    updateSatelliteBanner(allResults);
     updateKeyFindings(allResults);
     updateExportButton();
 
@@ -2126,6 +2131,34 @@ function clearHistory() {
     localStorage.removeItem(HISTORY_KEY);
     const bar = document.getElementById('history-bar');
     if (bar) bar.classList.add('hidden');
+}
+
+// ── Satellite / Aircraft WiFi banner ──
+function updateSatelliteBanner(results) {
+    const banner = document.getElementById('satellite-banner');
+    if (!banner) return;
+    // Re-show if previously auto-hidden (don't override manual dismiss)
+    if (typeof detectSatelliteConnection !== 'function') return;
+    if (detectSatelliteConnection(results)) {
+        // Populate the detail line with ISP name
+        const ispResult = results.find(r => r.id === 'B-LE-02' || r.id === 'C-LE-02');
+        const ispName = ispResult ? ispResult.resultValue.replace(/^AS\d+\s*/i, '') : '';
+        const wifiResult = results.find(r => r.id === 'L-LE-04');
+        const ssidMatch = wifiResult ? (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i) : null;
+        const ssid = ssidMatch ? ssidMatch[1].trim() : '';
+        const detail = document.getElementById('satellite-banner-detail');
+        if (detail) {
+            const parts = [];
+            if (ssid) parts.push(`SSID: ${ssid}`);
+            if (ispName) parts.push(`ISP: ${ispName}`);
+            detail.textContent = parts.length
+                ? parts.join('  ·  ') + ' — results contextualised below.'
+                : 'Some results will differ from normal broadband — this is expected.';
+        }
+        banner.classList.remove('hidden');
+    } else {
+        banner.classList.add('hidden');
+    }
 }
 
 // ── Key Findings panel (prominent at-a-glance RDP optimization summary) ──
