@@ -604,6 +604,24 @@ function updateMapTurnCard(lookup) {
         }
     }
 
+    // Latency badge — extract RTT from detailedInfo, resultValue, or duration field
+    let turnMs = null;
+    if (turnReach && turnReach.detailedInfo) {
+        const latLine = turnReach.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+        if (latLine) { const m = latLine.match(/(\d+)\s*ms/); if (m) turnMs = parseInt(m[1]); }
+    }
+    if (turnMs == null && turnReach && turnReach.resultValue) {
+        const m = turnReach.resultValue.match(/(\d+)\s*ms/);
+        if (m) turnMs = parseInt(m[1]);
+    }
+    if (turnMs == null && turnReach && turnReach.status === 'Passed' && turnReach.duration > 0) {
+        turnMs = turnReach.duration;
+    }
+    if (turnMs != null && !isNaN(turnMs)) {
+        const health = latencyLabel(turnMs, 'udp');
+        setBadge('map-turn-lat-badge', `⏱ ${turnMs}ms · ${health}`, latencyClass(turnMs, false));
+    }
+
     setText('map-turn-detail', detail1);
     setAccentStatus('map-turn-accent', status);
 }
