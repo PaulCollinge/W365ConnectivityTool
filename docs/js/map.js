@@ -737,7 +737,8 @@ function updateMapLatencyLabels(lookup) {
     }
     setLL('map-lat-rdgw', rdgwMs, 'tcp');
 
-    // TURN Relay: L-UDP-03 "Latency: Nms" or resultValue "Nms RTT"
+    // TURN Relay: L-UDP-03 "Latency: Nms" in detailedInfo, or "— Nms RTT" in resultValue,
+    // or fall back to the test duration field (which equals the STUN RTT for this test)
     const turn03 = lookup['L-UDP-03'];
     let turnMs = null;
     if (turn03 && turn03.detailedInfo) {
@@ -750,6 +751,10 @@ function updateMapLatencyLabels(lookup) {
     if (turnMs == null && turn03 && turn03.resultValue) {
         const m = turn03.resultValue.match(/(\d+)\s*ms/);
         if (m) turnMs = parseInt(m[1]);
+    }
+    // Older scanner builds don't embed RTT in text — use the test duration as the RTT
+    if (turnMs == null && turn03 && turn03.status === 'Passed' && turn03.duration > 0) {
+        turnMs = turn03.duration;
     }
     setLL('map-lat-turn', turnMs, 'udp');
 

@@ -649,7 +649,7 @@ async function testCaptivePortal(test) {
         // Try with standard CORS first so we can read and validate the body
         try {
             const resp = await fetch(NCSI_URL, {
-                signal: AbortSignal.timeout(8000),
+                signal: AbortSignal.timeout(15000),
                 cache: 'no-store',
                 redirect: 'follow'
             });
@@ -660,7 +660,7 @@ async function testCaptivePortal(test) {
             try {
                 await fetch(NCSI_URL, {
                     mode: 'no-cors',
-                    signal: AbortSignal.timeout(8000),
+                    signal: AbortSignal.timeout(15000),
                     cache: 'no-store'
                 });
                 // Opaque response means a server answered — HTTPS path is open
@@ -712,9 +712,9 @@ async function testCaptivePortal(test) {
         const isTimeout = err.name === 'TimeoutError' || errMsg.toLowerCase().includes('timeout') || errMsg.toLowerCase().includes('aborted');
 
         if (isTimeout) {
-            return makeResult(test, 'Warning',
-                'Captive portal check timed out',
-                `Connectivity check to ${NCSI_URL} timed out (8s).\nA captive portal may be intercepting and dropping the connection, or there is a general connectivity problem.`,
+            return makeResult(test, 'Info',
+                'Captive portal check inconclusive — slow connection',
+                `Connectivity check to ${NCSI_URL} timed out (15s).\nThis typically indicates a very slow or high-latency connection (e.g. satellite / aircraft WiFi) rather than a captive portal — captive portals respond immediately with a login redirect rather than dropping the connection.\nIf you cannot browse the web, try opening any HTTP website to trigger a portal login.`,
                 duration, '', REMEDIATION);
         }
         return makeResult(test, 'Passed',
