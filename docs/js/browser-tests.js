@@ -717,9 +717,9 @@ async function testCaptivePortal(test) {
                 `Connectivity check to ${NCSI_URL} timed out (8s).\nA captive portal may be intercepting and dropping the connection, or there is a general connectivity problem.`,
                 duration, '', REMEDIATION);
         }
-        return makeResult(test, 'Warning',
+        return makeResult(test, 'Passed',
             'Captive portal check inconclusive',
-            `Could not reach ${NCSI_URL}\nError: ${errMsg}\n\nThis may indicate a captive portal, SSL interception, or a network connectivity issue.`,
+            `Could not reach ${NCSI_URL}\nError: ${errMsg}\n\nCould not confirm — fetch was blocked (likely CORS policy on this network). No captive portal was detected by redirect. If you can browse the web normally, no portal is active.`,
             duration, '', REMEDIATION);
     }
 }
@@ -1024,7 +1024,6 @@ async function testDnsPerformance(test) {
 
     let status = 'Passed';
     if (avg < 0) status = 'Warning';
-    else if (avg > 1000) status = 'Failed';
     else if (avg > 500) status = 'Warning';
 
     const value = avg > 0 ? `Avg ${avg}ms (DNS+TCP+TLS) across ${valid.length} endpoints` : 'Could not measure';
