@@ -31,6 +31,7 @@ window.addEventListener('unhandledrejection', function(event) {
 let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
+let _importedMachineName = '';     // machine name from imported scanner data
 let cloudPcMode = false;           // true when user toggles Cloud PC Mode
 let hostType = null;               // 'cloudpc', 'avd', or null (determines labels)
 
@@ -311,9 +312,8 @@ function toggleCloudPcMode(enabled) {
             htSel.classList.remove('hidden');
             if (hostType) htSel.value = hostType;
         }
-        // Show Cloud PC diagnostics section
+        // Show Cloud PC diagnostics section (always visible — no longer toggled hidden)
         if (cpcSection) {
-            cpcSection.classList.remove('hidden');
             const cpcInfoBar = document.getElementById('cloudpc-info-bar');
             if (cpcInfoBar) cpcInfoBar.style.display = 'none';
         }
@@ -342,9 +342,12 @@ function toggleCloudPcMode(enabled) {
             const el = document.getElementById(id);
             if (el) el.classList.remove('hidden');
         });
-        // Hide CPC section (unless imported Cloud PC data exists)
+        // Hide CPC section info bar if we have imported CPC data
         const hasImportedCpc = allResults.some(r => r.source === 'cloudpc' && r.category === 'cloudpc');
-        if (cpcSection && !hasImportedCpc) cpcSection.classList.add('hidden');
+        if (cpcSection && hasImportedCpc) {
+            const cpcInfoBar = document.getElementById('cloudpc-info-bar');
+            if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+        }
         // Restore map
         if (mapContainer) mapContainer.classList.remove('cpc-only-active');
         // Hide CPC detected badge
@@ -396,12 +399,16 @@ async function runAllBrowserTests() {
     const total = browserTests.length;
     let completed = 0;
 
-    // Reset browser results (keep imported local/scanner results)
-    // In CPC mode, also keep any existing browser results; in normal mode, keep cloudpc
+    // Reset filter to 'all' at start of scan
+    setResultFilter('all');
+    const filterBar = document.getElementById('filter-bar');
+    if (filterBar) filterBar.classList.add('hidden');
+
+    // Reset browser results (keep imported scanner results — never drop _fromImport data)
     if (cloudPcMode) {
-        allResults = allResults.filter(r => r.source === 'local' || r.source === 'browser');
+        allResults = allResults.filter(r => r._fromImport || r.source === 'local' || r.source === 'browser');
     } else {
-        allResults = allResults.filter(r => r.source === 'local' || r.source === 'cloudpc');
+        allResults = allResults.filter(r => r._fromImport || r.source === 'local' || r.source === 'cloudpc');
     }
 
     // Clear GeoIP and user-location caches so location is re-fetched fresh
@@ -468,6 +475,10 @@ async function runAllBrowserTests() {
     } else {
         btn.innerHTML = '<span class="btn-icon">\u25B6</span> Re-run Browser Tests';
     }
+
+    // Restore CPC card visibility — browser tests can disturb state when cloudPcMode flipped mid-run
+    restoreCpcCards();
+
     isRunning = false;
 }
 
@@ -720,6 +731,11 @@ function processImportedData(data) {
         try { _importedScanTimestamp = new Date(data.timestamp).toLocaleString(); } catch { _importedScanTimestamp = String(data.timestamp); }
     }
 
+    // Remember machine name from imported data
+    if (data.machineName) {
+        _importedMachineName = String(data.machineName);
+    }
+
     // Legacy ID mapping: older scanner builds used L-CS-* IDs for cloud tests.
     // Remap them to the current numeric IDs so they match ALL_TESTS.
     const LEGACY_ID_MAP = {
@@ -758,7 +774,8 @@ function processImportedData(data) {
                 name: lr.name || lrId,
                 description: lr.description || '',
                 category: lr.category || mapCategoryFromId(lrId),
-                source: isCloudPcImport ? 'cloudpc' : 'local',
+                source: isCloudPcImport ? 'cloudpc' : (lr.source || 'local'),
+                _fromImport: true,
                 status: lr.status || 'Passed',
                 resultValue: lr.resultValue || lr.result || '',
                 detailedInfo: lr.detailedInfo || lr.details || '',
@@ -800,6 +817,10 @@ function processImportedData(data) {
     }
 
     ilog('Import done: ' + importedCount + ' total, ' + cloudCount + ' cloud tests matched ALL_TESTS');
+
+    // Build the set of imported IDs (used in stale-card loop below)
+    const importedIds = new Set(localResults.map(r => String(r.id)));
+
     // Update summary and badges
     updateSummary(allResults);
     updateCategoryBadges(allResults);
@@ -826,13 +847,12 @@ function processImportedData(data) {
     // Hide download banner if we have local results
     if (importedCount > 0) hideDownloadBanner();
 
-    // Show Cloud PC section if we have any Cloud PC results
-    const hasCloudPcResults = allResults.some(r => r.category === 'cloudpc');
+    // Cloud PC section is always visible — just manage the info bar
     const cloudPcSection = document.getElementById('cloudpc-diagnostics-section');
-    if (cloudPcSection && hasCloudPcResults) {
-        cloudPcSection.classList.remove('hidden');
+    const hasCloudPcResults = allResults.some(r => r.category === 'cloudpc');
+    if (cloudPcSection) {
         const cpcInfoBar = document.getElementById('cloudpc-info-bar');
-        if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+        if (cpcInfoBar) cpcInfoBar.style.display = hasCloudPcResults ? 'none' : '';
     }
 
     // Show the extended map with Cloud PC cards if Cloud PC data present
@@ -848,15 +868,33 @@ function processImportedData(data) {
         if (cloudInfoBar) cloudInfoBar.style.display = 'none';
     }
 
-    // Hide stale "Requires Local Scanner" / "Cloud PC" cards whose IDs weren't in the import.
-    // This handles scanner versions that use different IDs (e.g. L-CS-01 vs 17).
-    const importedIds = new Set(localResults.map(r => String(r.id)));
+    // Restore any C-* cards that were hidden by a previous stale-card pass
+    // (Section is always visible now, so individual card display matters)
     for (const test of ALL_TESTS) {
-        if (test.source !== 'local' && test.source !== 'cloudpc') continue;
+        if (test.source === 'cloudpc') {
+            const el = document.getElementById(`test-${test.id}`);
+            if (el) { el.style.display = ''; el.classList.remove('hidden'); }
+            continue;
+        }
+        if (test.source !== 'local') continue;
         if (importedIds.has(String(test.id))) continue;
-        // This test was NOT in the scanner output — hide the placeholder card
         const el = document.getElementById(`test-${test.id}`);
         if (el) el.style.display = 'none';
+    }
+
+    // Final pass: ensure all C-* cards are visible (belt-and-suspenders)
+    restoreCpcCards();
+}
+
+/**
+ * Ensure all Cloud PC test cards are visible in the DOM.
+ * Called after any operation that could inadvertently hide them.
+ */
+function restoreCpcCards() {
+    for (const test of ALL_TESTS) {
+        if (test.source !== 'cloudpc') continue;
+        const el = document.getElementById(`test-${test.id}`);
+        if (el) { el.style.display = ''; el.classList.remove('hidden'); }
     }
 }
 
@@ -1221,7 +1259,7 @@ async function generateExportText() {
             nLabel = 'STUN OK — UDP connectivity confirmed';
         } else if (nlc.includes('blocked') || nlc.includes('failed')) {
             nIcon = '✗';
-            nLabel = 'STUN blocked — UDP 3478 unreachable';
+            nLabel = 'STUN unavailable (typical in enterprise) — TURN relay will be used';
         } else {
             nIcon = '⚠';
             nLabel = nv;
@@ -1358,6 +1396,21 @@ function updateExportButton() {
         aiBtn.disabled = !hasResults;
         aiBtn.title = !hasResults ? 'Run tests first' : 'Analyze results with Microsoft Copilot';
     }
+    const sendItBtn = document.getElementById('btn-send-it');
+    if (sendItBtn) {
+        sendItBtn.disabled = !hasResults;
+        sendItBtn.title = !hasResults ? 'Run tests first' : 'Download results and open email to IT';
+    }
+    const csvBtn = document.getElementById('btn-export-csv');
+    if (csvBtn) {
+        csvBtn.disabled = !hasResults;
+        csvBtn.title = !hasResults ? 'Run tests first' : `Export ${allResults.length} results as CSV (Excel)`;
+    }
+    const compareBtn = document.getElementById('btn-compare');
+    if (compareBtn) {
+        compareBtn.disabled = !hasResults;
+        compareBtn.title = !hasResults ? 'Run tests first to enable comparison' : 'Load a baseline JSON file to compare before/after';
+    }
     // Show re-test button if there are failed/warned browser tests
     const retestBtn = document.getElementById('btn-retest');
     if (retestBtn) {
@@ -1375,11 +1428,125 @@ function updateExportButton() {
     if (hasResults) saveResultsToHistory();
     // Update history bar
     updateHistoryBar();
+    // Remediation checklist
+    updateRemediationPanel();
+    // Filter bar
+    updateFilterBar();
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  JSON Export
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+//  Send Results to IT (mailto: with JSON download)
+// ═══════════════════════════════════════════════════════════════════
+function sendResultsToIT() {
+    if (allResults.length === 0) return;
+
+    const critical = allResults.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+    const warnings = allResults.filter(r => r.status === 'Warning').length;
+    const passed   = allResults.filter(r => r.status === 'Passed').length;
+    const total    = allResults.length;
+
+    const machineName = _importedMachineName || 'Unknown Device';
+    const dateStr     = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const filename    = `W365-Diagnostics-${machineName.replace(/[^a-zA-Z0-9_-]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`;
+
+    // Build status label for subject line
+    let statusLabel = 'All Tests Passed';
+    if (critical > 0) statusLabel = `${critical} Critical Issue${critical > 1 ? 's' : ''}`;
+    else if (warnings > 0) statusLabel = `${warnings} Warning${warnings > 1 ? 's' : ''}`;
+
+    // Critical/warning details for the body
+    const issueLines = allResults
+        .filter(r => r.status === 'Failed' || r.status === 'Error' || r.status === 'Warning')
+        .map(r => `  [${r.status.toUpperCase()}] ${r.name}: ${r.resultValue || ''}`.trimEnd())
+        .join('\n');
+
+    const subject = encodeURIComponent(`W365 Connectivity Results — ${machineName} — ${statusLabel} — ${dateStr}`);
+    const body = encodeURIComponent(
+        `Hi IT Team,\n\n` +
+        `A Windows 365 connectivity scan has been completed on this device.\n\n` +
+        `Device:   ${machineName}\n` +
+        `Date:     ${dateStr}\n` +
+        `Results:  ${critical} Critical, ${warnings} Warning, ${passed} Passed (${total} total)\n\n` +
+        (issueLines ? `Issues found:\n${issueLines}\n\n` : '') +
+        `Please find the full diagnostic JSON report attached (${filename}).\n\n` +
+        `To view the results, import the JSON file into the W365 Connectivity Tool web dashboard.\n\n` +
+        `Regards`
+    );
+
+    // Download the JSON file first so the user can attach it
+    const output = {
+        timestamp: new Date().toISOString(),
+        machineName,
+        userAgent: navigator.userAgent,
+        scannerTimestamp: _importedScanTimestamp || null,
+        results: allResults.map(r => ({
+            id: r.id, name: r.name, category: r.category, source: r.source,
+            status: r.status, resultValue: r.resultValue || '',
+            detailedInfo: r.detailedInfo || '', duration: r.duration || 0,
+            remediationUrl: r.remediationUrl || '', remediationText: r.remediationText || ''
+        }))
+    };
+    const blob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    // Open mailto: after a short delay to let the download start
+    setTimeout(() => {
+        window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    }, 300);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  CSV Export
+// ═══════════════════════════════════════════════════════════════════
+function exportCsvReport() {
+    if (allResults.length === 0) return;
+
+    const machineName = _importedMachineName || 'Unknown';
+    const scanDate    = _importedScanTimestamp || new Date().toLocaleString();
+
+    // Wrap a value safely for CSV (quote and escape internal quotes)
+    const csv = val => {
+        const s = String(val ?? '').replace(/\r?\n/g, ' ').replace(/"/g, '""');
+        return `"${s}"`;
+    };
+
+    const headers = ['Machine', 'Scan Date', 'Test ID', 'Test Name', 'Category', 'Source', 'Status', 'Result', 'Detail', 'Remediation'];
+    const rows = allResults.map(r => [
+        csv(machineName),
+        csv(scanDate),
+        csv(r.id),
+        csv(r.name),
+        csv(r.category),
+        csv(r.source),
+        csv(r.status),
+        csv(r.resultValue),
+        csv(r.detailedInfo),
+        csv(r.remediationText)
+    ].join(','));
+
+    // Prepend UTF-8 BOM so Excel opens with correct encoding
+    const content = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `W365-Diagnostics-${machineName.replace(/[^a-zA-Z0-9_-]/g, '_')}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
 function exportJsonReport() {
     if (allResults.length === 0) return;
     const output = {
@@ -1561,6 +1728,232 @@ async function retestFailedItems() {
 // ═══════════════════════════════════════════════════════════════════
 const HISTORY_KEY = 'w365-results-history';
 const MAX_HISTORY = 10;
+
+// ═══════════════════════════════════════════════════════════════════
+//  Before / After Comparison
+// ═══════════════════════════════════════════════════════════════════
+async function importBaselineResults(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const baselineResults = Array.isArray(data.results) ? data.results : (Array.isArray(data) ? data : null);
+        if (!baselineResults) { alert('Invalid baseline file. Expected a W365 Connectivity JSON export.'); return; }
+        const baselineMachine = data.machineName || 'Baseline';
+        const baselineDate   = data.timestamp ? new Date(data.timestamp).toLocaleString() : file.name;
+        renderComparison(baselineResults, baselineMachine, baselineDate);
+    } catch (e) {
+        alert(`Error reading baseline file: ${e.message}`);
+    }
+    event.target.value = '';
+}
+
+function renderComparison(baselineResults, baselineMachine, baselineDate) {
+    const panel   = document.getElementById('compare-panel');
+    const metaEl  = document.getElementById('compare-meta');
+    const summaryEl = document.getElementById('compare-summary');
+    const gridEl  = document.getElementById('compare-grid');
+    if (!panel || !gridEl) return;
+
+    const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    // Status severity rank: lower = better
+    const rank = status => ({ Passed: 0, Info: 1, Warning: 2, Failed: 3, Error: 3 }[status] ?? 4);
+
+    const statusIcon = status => ({ Passed: '✓', Warning: '⚠', Failed: '✗', Error: '!', Skipped: '—' }[status] ?? '?');
+
+    // Index current results by test ID
+    const currentById = {};
+    for (const r of allResults) currentById[r.id] = r;
+
+    // Build comparison rows for tests that appear in both
+    let fixed = 0, regressed = 0, unchanged = 0;
+    const rows = [];
+
+    for (const before of baselineResults) {
+        const after = currentById[before.id];
+        if (!after) continue;
+        const rBefore = rank(before.status);
+        const rAfter  = rank(after.status);
+        let change = 'unchanged';
+        if (rAfter < rBefore) { change = 'fixed'; fixed++; }
+        else if (rAfter > rBefore) { change = 'regressed'; regressed++; }
+        else unchanged++;
+        rows.push({ before, after, change });
+    }
+
+    // Sort: regressions first, then fixed, then unchanged
+    const order = { regressed: 0, fixed: 1, unchanged: 2 };
+    rows.sort((a, b) => order[a.change] - order[b.change]);
+
+    // Meta line
+    const currentMachine = _importedMachineName || 'Current';
+    metaEl.textContent = `Baseline: ${baselineMachine} (${baselineDate})  →  Current: ${currentMachine}`;
+
+    // Summary chips
+    summaryEl.innerHTML = [
+        fixed      ? `<span class="compare-stat fixed">✓ ${fixed} Fixed</span>` : '',
+        regressed  ? `<span class="compare-stat regressed">↑ ${regressed} Regressed</span>` : '',
+        unchanged  ? `<span class="compare-stat unchanged">— ${unchanged} Unchanged</span>` : ''
+    ].join('');
+
+    // Table
+    const headerRow = `<div class="compare-row compare-head">
+        <span class="compare-name">Test</span>
+        <span class="compare-val">Before</span>
+        <span class="compare-val">After</span>
+        <span class="compare-badge">Change</span>
+    </div>`;
+
+    const dataRows = rows.map(({ before, after, change }) => {
+        const badgeHtml = change === 'fixed'
+            ? `<span class="compare-badge fixed">✓ Fixed</span>`
+            : change === 'regressed'
+                ? `<span class="compare-badge regressed">↑ Worse</span>`
+                : `<span class="compare-badge unchanged">—</span>`;
+        return `<div class="compare-row row-${change}">
+            <span class="compare-name">${esc(before.name)}</span>
+            <span class="compare-val">${statusIcon(before.status)} ${esc(before.resultValue)}</span>
+            <span class="compare-val">${statusIcon(after.status)} ${esc(after.resultValue)}</span>
+            ${badgeHtml}
+        </div>`;
+    }).join('');
+
+    gridEl.innerHTML = headerRow + dataRows;
+    panel.classList.remove('hidden');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function clearComparison() {
+    const panel = document.getElementById('compare-panel');
+    if (panel) panel.classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Result Filter Bar
+// ═══════════════════════════════════════════════════════════════════
+function updateFilterBar() {
+    const bar = document.getElementById('filter-bar');
+    const grid = document.getElementById('test-results');
+    if (!bar || !grid) return;
+
+    const hasResults = allResults.some(r => r.status && r.status !== 'NotRun' && r.status !== 'Pending');
+    if (!hasResults) { bar.classList.add('hidden'); return; }
+
+    bar.classList.remove('hidden');
+
+    // Auto-select 'failed' if there are any failures and the filter is currently 'all'
+    const currentFilter = grid.dataset.filter || 'all';
+    if (currentFilter === 'all') {
+        const hasFailures = allResults.some(r => r.status === 'Failed' || r.status === 'Error');
+        if (hasFailures) setResultFilter('failed');
+        else setResultFilter('all');
+    } else {
+        updateFilterCount();
+    }
+}
+
+function setResultFilter(filter) {
+    const grid = document.getElementById('test-results');
+    if (!grid) return;
+
+    grid.dataset.filter = filter;
+
+    // Update button active states
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filter === filter);
+    });
+
+    updateFilterCount();
+}
+
+function updateFilterCount() {
+    const countEl = document.getElementById('filter-count');
+    if (!countEl) return;
+    const grid = document.getElementById('test-results');
+    const filter = grid?.dataset.filter || 'all';
+    if (filter === 'all') { countEl.textContent = ''; return; }
+
+    const FILTER_STATUSES = {
+        failed:  ['failed', 'error'],
+        warning: ['warning'],
+        passed:  ['passed'],
+        pending: ['pending', 'not-run']
+    };
+    const statuses = FILTER_STATUSES[filter] || [];
+    const visible = document.querySelectorAll(`#test-results .test-item`);
+    let shown = 0;
+    visible.forEach(el => { if (statuses.includes(el.dataset.status)) shown++; });
+    countEl.textContent = `${shown} test${shown !== 1 ? 's' : ''}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Remediation Checklist
+// ═══════════════════════════════════════════════════════════════════
+function updateRemediationPanel() {
+    const panel   = document.getElementById('remediation-panel');
+    const listEl  = document.getElementById('rem-list');
+    const countEl = document.getElementById('rem-count');
+    if (!panel || !listEl) return;
+
+    const FAILED = ['Failed', 'Error'];
+
+    // Collect tests that have a problem status AND remediation text
+    const actionable = allResults.filter(r =>
+        (FAILED.includes(r.status) || r.status === 'Warning') &&
+        r.remediationText && r.remediationText.trim()
+    );
+
+    if (actionable.length === 0) {
+        panel.classList.add('hidden');
+        return;
+    }
+
+    // Deduplicate by remediation text; keep the worst-severity entry
+    const seen = new Map();
+    for (const r of actionable) {
+        const key = r.remediationText.trim();
+        const existing = seen.get(key);
+        if (!existing) {
+            seen.set(key, r);
+        } else if (FAILED.includes(r.status) && !FAILED.includes(existing.status)) {
+            seen.set(key, r); // upgrade Warning → Failed
+        }
+    }
+
+    // Sort: Failed/Error first, then Warning
+    const items = [...seen.values()].sort((a, b) =>
+        (FAILED.includes(a.status) ? 0 : 1) - (FAILED.includes(b.status) ? 0 : 1)
+    );
+
+    const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    listEl.innerHTML = items.map(r => {
+        const isFailed = FAILED.includes(r.status);
+        const badgeCls  = isFailed ? 'rem-badge-fail' : 'rem-badge-warn';
+        const badgeText = isFailed ? 'Failed' : 'Warning';
+        const anchorId  = `test-${r.id}`;
+        const scrollJs  = `document.getElementById('${esc(anchorId)}')?.scrollIntoView({behavior:'smooth',block:'center'})`;
+        return `<li class="rem-item" onclick="${scrollJs}" title="Click to jump to test">
+            <span class="rem-badge ${badgeCls}">${badgeText}</span>
+            <span class="rem-test-id">${esc(r.id)}</span>
+            <div class="rem-body">
+                <span class="rem-test-name">${esc(r.name || r.id)}</span>
+                <span class="rem-text">${esc(r.remediationText)}</span>
+            </div>
+            <span class="rem-arrow">→</span>
+        </li>`;
+    }).join('');
+
+    const failCount = items.filter(r => FAILED.includes(r.status)).length;
+    const warnCount = items.length - failCount;
+    const parts = [];
+    if (failCount) parts.push(`${failCount} failed`);
+    if (warnCount) parts.push(`${warnCount} warning${warnCount > 1 ? 's' : ''}`);
+    countEl.textContent = parts.join(', ');
+    panel.classList.remove('hidden');
+}
 
 function saveResultsToHistory() {
     if (allResults.length === 0) return;
@@ -1894,7 +2287,7 @@ async function updateKeyFindings(results) {
         } else if (val.includes('symmetric')) {
             add('kf-issue', 'NAT Type', 'Symmetric NAT ' + tag('warn', 'TURN Fallback'), `STUN hole-punching unlikely · Source: ${src}`);
         } else if (val.includes('blocked') || val.includes('failed')) {
-            add('kf-error', 'NAT Type', 'UDP Blocked ' + tag('fail', 'No Shortpath'), `Source: ${src}`);
+            add('kf-info', 'NAT Type', 'STUN unavailable ' + tag('info', 'TURN relay used'), `Source: ${src}`);
         } else if (val.includes('stun ok') || val.includes('partial')) {
             add('kf-pass', 'NAT Type', esc(natType.resultValue || 'STUN OK'), `Source: ${src}`);
         } else {

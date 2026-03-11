@@ -72,6 +72,57 @@ function detectLatencySpikes(sampleLine) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Satellite / aviation WiFi detector
+//  Returns true when results indicate the client is on a satellite or
+//  in-flight internet connection.  High jitter, symmetric NAT, and
+//  large gateway distances are expected and should not be flagged as
+//  network faults on these connections.
+// ═══════════════════════════════════════════════════════════════════
+const SATELLITE_ISP_KEYWORDS = [
+    'intelsat','viasat','ka-sat','panasonic avionics','anuvu',
+    'global eagle','gogo','smartsky','oneweb','starlink','telesat',
+    'ses network','eutelsat','iridium','Hughes network','hughesnet'
+];
+const INFLIGHT_SSID_PATTERNS = [
+    /^bawi-fi$/i, /^gogo\b/i, /inflight/i, /airborne/i,
+    /^ua[_ -]wifi$/i, /^aa[_ -]wifi/i, /^dl[_ -]wifi/i, /southwest.*wifi/i,
+    /^swa[_ -]wifi/i, /^jetblue/i, /^spirit.*wifi/i, /^_wifi.*airlines/i
+];
+
+function detectSatelliteConnection(results) {
+    const r = id => results.find(x => x.id === id);
+
+    // Check ISP name
+    const isp = r('B-LE-02') || r('C-LE-02');
+    if (isp && isp.resultValue) {
+        const ispLower = isp.resultValue.toLowerCase();
+        if (SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return true;
+    }
+
+    // Check WiFi SSID (L-LE-04 resultValue contains "SSID: <name>")
+    const wifi = r('L-LE-04');
+    if (wifi && wifi.resultValue) {
+        const ssidMatch = wifi.resultValue.match(/SSID:\s*([^,]+)/i);
+        if (ssidMatch) {
+            const ssid = ssidMatch[1].trim();
+            if (INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid))) return true;
+        }
+    }
+
+    // Check WiFi auth: open + no cipher is a strong signal of public/inflight WiFi
+    // combined with symmetric NAT (typical of carrier-grade satellite NAT)
+    const nat = r('L-UDP-05');
+    if (wifi && nat && nat.status === 'Warning' && nat.resultValue &&
+        nat.resultValue.toLowerCase().includes('symmetric') &&
+        wifi.detailedInfo && /authentication\s*:\s*open/i.test(wifi.detailedInfo) &&
+        /cipher\s*:\s*none/i.test(wifi.detailedInfo)) {
+        return true;
+    }
+
+    return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Core analysis engine
 // ═══════════════════════════════════════════════════════════════════
 function runAnalysisEngine(results) {
@@ -79,6 +130,17 @@ function runAnalysisEngine(results) {
 
     const r = id => results.find(x => x.id === id);
     const findings = [];
+
+    const isSatellite = detectSatelliteConnection(results);
+
+    // ── 0. Satellite / in-flight WiFi context ──
+    if (isSatellite) {
+        const ispResult = r('B-LE-02') || r('C-LE-02');
+        const ispName = ispResult ? ispResult.resultValue.replace(/^AS\d+\s*/i, '') : 'Satellite provider';
+        findings.push(finding(SEV.INFO, 'Satellite / in-flight internet detected',
+            `ISP identified as ${ispName}. Satellite and in-flight connections have inherent characteristics — high base latency (typically 500–700 ms RTT), symmetric NAT, and variable jitter — that are not network faults.`,
+            'For best Cloud PC experience on aircraft WiFi: ensure UDP 3478 is open for TURN relay fallback, avoid running bandwidth-heavy background apps, and expect occasional freezes during turbulence. TCP-based sessions (via RD Gateway) will be stable even when UDP/STUN fails.'));
+    }
 
     // ── 1. WiFi signal ──
     const wifi = r('L-LE-04');
@@ -218,16 +280,24 @@ function runAnalysisEngine(results) {
 
     // ── 9. NAT type ──
     const nat = r('L-UDP-05') || r('B-UDP-02');
-    if (nat) {
+    if (nat && !isSatellite) {
         const val = (nat.resultValue || '').toLowerCase();
         if (val.includes('symmetric')) {
-            findings.push(finding(SEV.WARNING, 'Symmetric NAT detected',
-                'Your network uses Symmetric NAT, which prevents direct UDP Shortpath connections. Traffic will fall back to TURN relay, adding 10\u201330 ms latency.',
-                'Symmetric NAT is common behind enterprise firewalls and CGNAT. If this is a home network, check if your router supports "Full Cone" or "Endpoint-Independent" NAT mode. If behind CGNAT, contact your ISP about getting a public IP.'));
+            findings.push(finding(SEV.INFO, 'Symmetric NAT (Standard Enterprise Security)',
+                'Your network uses Symmetric NAT, which is typical for enterprise environments and provides strong security. Windows 365 will use TURN relay for reliable UDP connectivity.',
+                'This is normal and expected behavior. TURN relay provides excellent performance and reliability. No action required.'));
         } else if (val.includes('blocked') || nat.status === 'Failed') {
-            findings.push(finding(SEV.CRITICAL, 'UDP / STUN blocked',
-                'UDP STUN connectivity is blocked. UDP Shortpath cannot be established, and TURN relay may also be impacted.',
-                'Ensure outbound UDP port 3478 is open to turn.azure.com and stun.azure.com. Check firewall rules and any network security appliances.'));
+            findings.push(finding(SEV.WARNING, 'UDP connectivity limited',
+                'UDP STUN is not available. Windows 365 requires TURN relay (UDP 3478) for optimal performance.',
+                'Ensure outbound UDP port 3478 to turn.azure.com is open. TURN relay is critical for good Windows 365 performance in all environments.'));
+        }
+    } else if (nat && isSatellite) {
+        // On satellite, symmetric NAT is standard CGN — only flag if STUN is fully blocked
+        const val = (nat.resultValue || '').toLowerCase();
+        if ((val.includes('blocked') || nat.status === 'Failed') && !val.includes('symmetric')) {
+            findings.push(finding(SEV.WARNING, 'UDP connectivity limited',
+                'UDP STUN is not available. Windows 365 requires TURN relay (UDP 3478) for optimal performance.',
+                'Ensure outbound UDP port 3478 to turn.azure.com is open. TURN relay is critical for good Windows 365 performance in all environments.'));
         }
     }
 
@@ -277,14 +347,24 @@ function runAnalysisEngine(results) {
     if (jitter) {
         const j = parseMs(jitter.resultValue);
         if (!isNaN(j)) {
-            if (j > 60) {
-                findings.push(finding(SEV.CRITICAL, 'Very high jitter',
-                    `Connection jitter is ${j.toFixed(1)} ms — far above the 30 ms warning threshold. This causes inconsistent frame delivery, visual stuttering, and audio glitches.`,
-                    'High jitter is usually caused by WiFi instability, network congestion, or a saturated uplink. Use a wired connection, reduce competing traffic, and check for QoS issues on the local network.'));
-            } else if (j > 30) {
-                findings.push(finding(SEV.WARNING, 'Elevated jitter',
-                    `Connection jitter is ${j.toFixed(1)} ms — above the 30 ms threshold for smooth experience.`,
-                    'Check for WiFi interference or competing bandwidth-intensive activities on the same network.'));
+            if (isSatellite) {
+                // Satellite / in-flight links have inherently high jitter — contextualise rather than alarm
+                if (j > 60) {
+                    findings.push(finding(SEV.WARNING, 'High jitter — expected on satellite/in-flight WiFi',
+                        `Connection jitter is ${j.toFixed(1)} ms. Satellite and in-flight internet links have inherently variable latency due to the long propagation path and shared bandwidth. This is expected and is not a network fault.`,
+                        'Jitter on satellite WiFi cannot be reduced at the endpoint. TURN relay fallback (UDP) will help absorb bursts. For critical sessions, connect via ground-based WiFi or cellular.'));
+                }
+                // Don't flag <60ms jitter at all on satellite — it would be noise
+            } else {
+                if (j > 60) {
+                    findings.push(finding(SEV.CRITICAL, 'Very high jitter',
+                        `Connection jitter is ${j.toFixed(1)} ms — far above the 30 ms warning threshold. This causes inconsistent frame delivery, visual stuttering, and audio glitches.`,
+                        'High jitter is usually caused by WiFi instability, network congestion, or a saturated uplink. Use a wired connection, reduce competing traffic, and check for QoS issues on the local network.'));
+                } else if (j > 30) {
+                    findings.push(finding(SEV.WARNING, 'Elevated jitter',
+                        `Connection jitter is ${j.toFixed(1)} ms — above the 30 ms threshold for smooth experience.`,
+                        'Check for WiFi interference or competing bandwidth-intensive activities on the same network.'));
+                }
             }
         }
     }
@@ -350,10 +430,18 @@ function runAnalysisEngine(results) {
     // ── 17. Egress analysis (Test 27) ──
     const egress = r('27');
     if (egress && egress.status !== 'Passed' && egress.status !== 'Skipped') {
-        findings.push(finding(egress.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING,
-            'Non-local egress detected',
-            `RDP traffic is not egressing locally: ${egress.resultValue}`,
-            'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
+        if (isSatellite) {
+            // Satellite gateway GeoIP is the ground-station location, not the user's physical
+            // location. Distance warnings between GPS location and satellite egress are expected.
+            findings.push(finding(SEV.INFO, 'Gateway distance — expected on satellite/in-flight WiFi',
+                `${egress.resultValue} — On satellite and in-flight internet, traffic exits through the provider's ground station, which may be far from the device's GPS location. This is normal and not a routing problem.`,
+                'No action needed. Satellite internet routes through fixed ground stations regardless of aircraft position.'));
+        } else {
+            findings.push(finding(egress.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING,
+                'Non-local egress detected',
+                `RDP traffic is not egressing locally: ${egress.resultValue}`,
+                'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
+        }
     }
 
     // ── 18. Endpoint reachability ──
@@ -369,16 +457,18 @@ function runAnalysisEngine(results) {
     }
 
     // ── 19. DNS performance ──
-    const dns = r('B-TCP-03');
+    // Prefer L-TCP-03 (scanner — pure DNS timing); fall back to B-TCP-03 (browser — DNS+TCP+TLS combined)
+    const dns = r('L-TCP-03') || r('B-TCP-03');
+    const dnsIsPure = !!r('L-TCP-03');
     if (dns) {
         const avg = parseMs(dns.resultValue);
         if (!isNaN(avg) && avg > 1000) {
             findings.push(finding(SEV.CRITICAL, 'Very slow DNS resolution',
-                `DNS resolution is averaging ${avg.toFixed(0)} ms — this delays every new connection and service discovery operation.`,
+                `DNS resolution is averaging ${avg.toFixed(0)} ms${dnsIsPure ? '' : ' (includes TCP+TLS overhead)'} — this delays every new connection and service discovery operation.`,
                 'Check DNS server responsiveness. Consider using a faster resolver or reducing DNS chain depth. Verify no DNS sinkhole or inspection is adding delay.'));
         } else if (!isNaN(avg) && avg > 500) {
             findings.push(finding(SEV.WARNING, 'Slow DNS resolution',
-                `DNS resolution averaging ${avg.toFixed(0)} ms — above the 500 ms target.`,
+                `DNS resolution averaging ${avg.toFixed(0)} ms${dnsIsPure ? '' : ' (includes TCP+TLS overhead)'} — above the 500 ms target.`,
                 'Check DNS server load and network path to the resolver.'));
         }
     }

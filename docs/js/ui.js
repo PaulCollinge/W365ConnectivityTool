@@ -82,6 +82,7 @@ function createTestElement(test, result) {
     const div = document.createElement('div');
     div.className = 'test-item';
     div.id = `test-${test.id}`;
+    div.dataset.status = 'not-run';
 
     const statusClass = STATUS_CLASSES[result.status] || 'not-run';
     const statusIcon = STATUS_ICONS[result.status] || '\u2014';
@@ -134,6 +135,9 @@ function updateTestUI(testId, result) {
         : test.source === 'cloudpc'
             ? '<span class="test-source-badge cloudpc">Cloud PC</span>'
             : '<span class="test-source-badge local">Local</span>';
+
+    // Tag with data-status for CSS filter
+    el.dataset.status = statusClass;
 
     el.innerHTML = `
         <div class="test-status-icon ${statusClass}">${statusIcon}</div>
@@ -336,7 +340,7 @@ function updateNatTypeBanner(results) {
     } else if (val.includes('partial')) {
         icon = '⚠'; label = 'Partial STUN — NAT type could not be determined'; cssClass = 'nat-warn';
     } else if (val.includes('blocked') || val.includes('failed')) {
-        icon = '✗'; label = 'STUN Blocked — UDP 3478 unreachable'; cssClass = 'nat-blocked';
+        icon = 'ⓘ'; label = 'STUN unavailable (standard enterprise) — TURN relay used'; cssClass = 'nat-info';
     } else {
         icon = '⚠'; label = natResult.resultValue || 'Unknown'; cssClass = 'nat-warn';
     }

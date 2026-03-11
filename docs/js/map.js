@@ -431,9 +431,25 @@ function updateMapIspCard(lookup) {
     const asInfo = extractLine(isp.detailedInfo, 'AS:');
     setText('map-isp-detail2', asInfo);
 
-    // Show egress city from GeoIP
-    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
-    const egressCity = userLoc ? userLoc.resultValue : '';
+    // Show egress city from IP GeoIP (not GPS), so satellite/aircraft WiFi shows network
+    // egress country (e.g. US) rather than the GPS-cached departure city (e.g. UK).
+    // Priority: result 27 egress location → L-TCP-09 location → GPS fallback (B-LE-01).
+    let egressCity = '';
+    const egressResult = lookup['27'];
+    if (egressResult && egressResult.detailedInfo) {
+        egressCity = extractLine(egressResult.detailedInfo, 'Your egress location:');
+    }
+    if (!egressCity) {
+        const gwUsedForIsp = lookup['L-TCP-09'];
+        if (gwUsedForIsp && gwUsedForIsp.detailedInfo) {
+            egressCity = extractLine(gwUsedForIsp.detailedInfo, 'Your location:');
+        }
+    }
+    if (!egressCity) {
+        // Final fallback: GPS-based location (may mismatch on satellite/aircraft)
+        const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+        egressCity = userLoc ? userLoc.resultValue : '';
+    }
     setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
 
     setAccentStatus('map-isp-accent', isp.status);

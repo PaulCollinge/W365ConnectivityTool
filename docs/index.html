@@ -57,6 +57,14 @@
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 1C2.9 1 2 1.9 2 3v2c0 .6-.4 1-1 1v2c.6 0 1 .4 1 1v2c0 1.1.9 2 2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M10 1c1.1 0 2 .9 2 2v2c0 .6.4 1 1 1v2c-.6 0-1 .4-1 1v2c0 1.1-.9 2-2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
                     Export JSON
                 </button>
+                <button id="btn-export-csv" class="btn btn-secondary" onclick="exportCsvReport()" disabled title="Run tests first">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M4.5 8.5l1.5 1.5-1.5 1.5M7 10h2.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Export CSV
+                </button>
+                <button id="btn-send-it" class="btn btn-secondary" onclick="sendResultsToIT()" disabled title="Run tests first">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 2.5h12L7 8 1 2.5z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M1 2.5v9h12v-9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
+                    Send to IT
+                </button>
                 <button id="btn-copy-link" class="btn btn-secondary" onclick="copyShareLink()" disabled title="Run tests first">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M6 8a3 3 0 004.24 0l2-2a3 3 0 00-4.24-4.24l-1 1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M8 6a3 3 0 00-4.24 0l-2 2a3 3 0 004.24 4.24l1-1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
                     Copy Link
@@ -69,13 +77,30 @@
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L1 4l6 3 6-3-6-3z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M1 10l6 3 6-3M1 7l6 3 6-3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
                     Analyze with AI
                 </button>
+                <button id="btn-compare" class="btn btn-secondary" onclick="document.getElementById('file-baseline').click()" disabled title="Run tests first to enable comparison">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 3h5M1 7h5M1 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M8 3h5M8 7h5M8 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="2 1"/></svg>
+                    Compare
+                </button>
                 <input type="file" id="file-import" accept=".json" style="display:none" onchange="importLocalResults(event)">
+                <input type="file" id="file-baseline" accept=".json" style="display:none" onchange="importBaselineResults(event)">
             </div>
         </div>
         <div class="header-border" aria-hidden="true"></div>
     </header>
 
     <main>
+        <!-- Before/After Comparison Panel -->
+        <div id="compare-panel" class="compare-panel hidden">
+            <div class="compare-header">
+                <span class="compare-icon">⚖️</span>
+                <h2 class="compare-title">Before / After Comparison</h2>
+                <div class="compare-meta" id="compare-meta"></div>
+                <button class="btn btn-secondary btn-sm" onclick="clearComparison()">✕ Close</button>
+            </div>
+            <div class="compare-summary" id="compare-summary"></div>
+            <div class="compare-grid" id="compare-grid"></div>
+        </div>
+
         <!-- Summary Bar -->
         <div id="summary-bar" class="summary-bar hidden">
             <div class="summary-item">
@@ -117,6 +142,16 @@
                 <span class="kf-verdict" id="kf-verdict"></span>
             </div>
             <div class="kf-grid" id="kf-grid"></div>
+        </div>
+
+        <!-- Remediation Checklist -->
+        <div id="remediation-panel" class="remediation-panel hidden">
+            <div class="rem-header">
+                <span class="rem-icon">🔧</span>
+                <h2>What to Fix</h2>
+                <span class="rem-count" id="rem-count"></span>
+            </div>
+            <ol class="rem-list" id="rem-list"></ol>
         </div>
 
         <!-- History Bar -->
@@ -547,6 +582,17 @@
             </div>
         </div>
 
+        <!-- Filter Bar -->
+        <div id="filter-bar" class="filter-bar hidden">
+            <span class="filter-label">Show:</span>
+            <button class="filter-btn active" data-filter="all"    onclick="setResultFilter('all')">All</button>
+            <button class="filter-btn"        data-filter="failed"  onclick="setResultFilter('failed')">Failed</button>
+            <button class="filter-btn"        data-filter="warning" onclick="setResultFilter('warning')">Warning</button>
+            <button class="filter-btn"        data-filter="passed"  onclick="setResultFilter('passed')">Passed</button>
+            <button class="filter-btn"        data-filter="pending" onclick="setResultFilter('pending')">Pending</button>
+            <span class="filter-count" id="filter-count"></span>
+        </div>
+
         <!-- Test Categories -->
         <div id="test-results" class="test-categories">
             <section class="category" id="cat-endpoint">
@@ -590,6 +636,27 @@
         </div>
 
         <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- Cloud PC Diagnostics — server-side test results           -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <div id="cloudpc-diagnostics-section" class="live-diagnostics-section">
+            <div class="live-header cloudpc-header">
+                <div class="live-header-left">
+                    <span class="live-icon">☁️</span>
+                    <div>
+                        <h2 class="live-title">Cloud PC Diagnostics</h2>
+                        <p class="live-subtitle">Connectivity tests run from within the Cloud PC (Azure VM)</p>
+                    </div>
+                </div>
+                <span class="category-badge" id="badge-cloudpc"></span>
+            </div>
+            <div class="live-info-bar" id="cloudpc-info-bar">
+                <span class="live-info-icon">ℹ️</span>
+                <span>Run the scanner inside the Cloud PC with <code>--cloudpc</code> or it will auto-detect Azure VMs. Import the results to see the server-side view.</span>
+            </div>
+            <div class="test-list" id="tests-cloudpc"></div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
         <!-- Live Connection Diagnostics — separate visual section     -->
         <!-- ═══════════════════════════════════════════════════════════ -->
         <div id="live-diagnostics-section" class="live-diagnostics-section">
@@ -608,27 +675,6 @@
                 <span>Run the desktop tool while connected to your Cloud PC, or from within the Cloud PC session itself.</span>
             </div>
             <div class="test-list" id="tests-cloud"></div>
-        </div>
-
-        <!-- ═══════════════════════════════════════════════════════════ -->
-        <!-- Cloud PC Diagnostics — server-side test results           -->
-        <!-- ═══════════════════════════════════════════════════════════ -->
-        <div id="cloudpc-diagnostics-section" class="live-diagnostics-section hidden">
-            <div class="live-header cloudpc-header">
-                <div class="live-header-left">
-                    <span class="live-icon">☁️</span>
-                    <div>
-                        <h2 class="live-title">Cloud PC Diagnostics</h2>
-                        <p class="live-subtitle">Connectivity tests run from within the Cloud PC (Azure VM)</p>
-                    </div>
-                </div>
-                <span class="category-badge" id="badge-cloudpc"></span>
-            </div>
-            <div class="live-info-bar" id="cloudpc-info-bar">
-                <span class="live-info-icon">ℹ️</span>
-                <span>Run the scanner inside the Cloud PC with <code>--cloudpc</code> or it will auto-detect Azure VMs. Import the results to see the server-side view.</span>
-            </div>
-            <div class="test-list" id="tests-cloudpc"></div>
         </div>
     </main>
 
@@ -651,7 +697,7 @@
         </div>
     </footer>
 
-    <!-- deploy: v44 -->
+    <!-- deploy: v48 -->
     <script>
     // Inline diagnostic: immediately detect import params before external JS loads
     // Also provides a global importLog() function the other scripts can call

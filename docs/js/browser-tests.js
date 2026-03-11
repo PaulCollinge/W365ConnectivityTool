@@ -37,6 +37,11 @@ const ALL_TESTS = [
         category: 'local', source: 'browser', run: testConnectionSpeed
     },
     {
+        id: 'B-NET-01', name: 'Captive Portal Detection',
+        description: 'Checks whether network traffic is being intercepted by a captive portal (hotel/café/guest Wi-Fi login page)',
+        category: 'local', source: 'browser', run: testCaptivePortal
+    },
+    {
         id: 'L-LE-04', name: 'WiFi Signal Strength',
         description: 'Measures wireless signal strength and channel (requires Local Scanner)',
         category: 'local', source: 'local'
@@ -84,8 +89,9 @@ const ALL_TESTS = [
 
     // ── TCP Based RDP Connectivity ──
     {
-        id: 'B-TCP-03', name: 'DNS Resolution Performance',
-        description: 'Measures DNS lookup time for key service endpoints',
+        id: 'B-TCP-03', name: 'Endpoint Connectivity Timing',
+        description: 'Measures HTTPS connection time (DNS + TCP + TLS) to key W365 service endpoints',
+
         category: 'tcp', source: 'browser', run: testDnsPerformance
     },
     {
@@ -494,7 +500,7 @@ async function fetchGeoIp() {
     return null;
 }
 
-function makeResult(test, status, value, detail, duration, remediation) {
+function makeResult(test, status, value, detail, duration, remediation, remediationText) {
     return {
         id: test.id,
         name: test.name,
@@ -505,7 +511,8 @@ function makeResult(test, status, value, detail, duration, remediation) {
         resultValue: value,
         detailedInfo: detail || '',
         duration: duration || 0,
-        remediationUrl: remediation || ''
+        remediationUrl: remediation || '',
+        remediationText: remediationText || ''
     };
 }
 
@@ -627,6 +634,96 @@ async function testIspDetection(test) {
     return makeResult(test, 'Passed', value, detail, duration);
 }
 
+// ── Captive Portal Detection ──
+async function testCaptivePortal(test) {
+    const t0 = performance.now();
+    // Microsoft's own NCSI endpoint — same URL Windows uses for network connectivity detection
+    const NCSI_URL = 'https://www.msftconnecttest.com/connecttest.txt';
+    const EXPECTED  = 'Microsoft Connect Test';
+    const REMEDIATION = 'Open a browser and navigate to any HTTP website (e.g. http://example.com) to trigger the captive portal login page, then authenticate and try again.';
+
+    try {
+        let body = null;
+        let finalUrl = null;
+
+        // Try with standard CORS first so we can read and validate the body
+        try {
+            const resp = await fetch(NCSI_URL, {
+                signal: AbortSignal.timeout(8000),
+                cache: 'no-store',
+                redirect: 'follow'
+            });
+            finalUrl = resp.url;
+            body = await resp.text();
+        } catch (_corsErr) {
+            // CORS blocked the read — fall back to no-cors to at least confirm HTTPS reachability
+            try {
+                await fetch(NCSI_URL, {
+                    mode: 'no-cors',
+                    signal: AbortSignal.timeout(8000),
+                    cache: 'no-store'
+                });
+                // Opaque response means a server answered — HTTPS path is open
+                const duration = Math.round(performance.now() - t0);
+                return makeResult(test, 'Passed',
+                    'No captive portal detected',
+                    `HTTPS connectivity to ${NCSI_URL} confirmed.\nNote: HTTP-level captive portals cannot be detected from a secure (HTTPS) browser context. If you are on guest or public Wi-Fi and Windows 365 is still failing, try opening any HTTP website to trigger the portal login.`,
+                    duration, '', '');
+            } catch (netErr) {
+                throw netErr; // genuine network failure — handled below
+            }
+        }
+
+        const duration = Math.round(performance.now() - t0);
+
+        // Redirect to a different host = classic captive portal hijack
+        if (finalUrl && finalUrl !== NCSI_URL) {
+            try {
+                const redirectHost = new URL(finalUrl).hostname;
+                const expectedHost = new URL(NCSI_URL).hostname;
+                if (redirectHost !== expectedHost) {
+                    return makeResult(test, 'Failed',
+                        `Captive portal detected — redirected to ${redirectHost}`,
+                        `The connectivity check was redirected to:\n${finalUrl}\n\nA captive portal or network login page is intercepting your traffic.`,
+                        duration, '', REMEDIATION);
+                }
+            } catch (_) { /* URL parse failed */ }
+        }
+
+        // Validate response body
+        const trimmed = (body || '').trim();
+        if (trimmed === EXPECTED) {
+            return makeResult(test, 'Passed',
+                'No captive portal detected',
+                `MSFT NCSI response: "${trimmed}"\nConnectivity confirmed — no captive portal intercepting traffic.`,
+                duration, '', '');
+        }
+
+        // Wrong content = portal injected its own response
+        const preview = trimmed.length > 150 ? trimmed.substring(0, 150) + '…' : trimmed;
+        return makeResult(test, 'Failed',
+            'Captive portal likely — unexpected response from connectivity check',
+            `Expected: "${EXPECTED}"\nReceived: "${preview}"\n\nA captive portal may be serving its own login page instead of allowing through traffic.`,
+            duration, '', REMEDIATION);
+
+    } catch (err) {
+        const duration = Math.round(performance.now() - t0);
+        const errMsg = err.message || String(err);
+        const isTimeout = err.name === 'TimeoutError' || errMsg.toLowerCase().includes('timeout') || errMsg.toLowerCase().includes('aborted');
+
+        if (isTimeout) {
+            return makeResult(test, 'Warning',
+                'Captive portal check timed out',
+                `Connectivity check to ${NCSI_URL} timed out (8s).\nA captive portal may be intercepting and dropping the connection, or there is a general connectivity problem.`,
+                duration, '', REMEDIATION);
+        }
+        return makeResult(test, 'Warning',
+            'Captive portal check inconclusive',
+            `Could not reach ${NCSI_URL}\nError: ${errMsg}\n\nThis may indicate a captive portal, SSL interception, or a network connectivity issue.`,
+            duration, '', REMEDIATION);
+    }
+}
+
 // ── Connection Speed (download-based) ──
 async function testConnectionSpeed(test) {
     const t0 = performance.now();
@@ -716,7 +813,7 @@ const AFD_POP_MAP = {
     'LIS': 'Lisbon', 'ATH': 'Athens', 'SOF': 'Sofia', 'BUH': 'Bucharest',
     'ZAG': 'Zagreb', 'BEG': 'Belgrade', 'BTS': 'Bratislava',
     // US
-    'IAD': 'Washington DC', 'JFK': 'New York', 'EWR': 'Newark',
+    'BL': 'Boydton, VA', 'IAD': 'Washington DC', 'JFK': 'New York', 'EWR': 'Newark',
     'ATL': 'Atlanta', 'MIA': 'Miami', 'ORD': 'Chicago', 'DFW': 'Dallas',
     'LAX': 'Los Angeles', 'SJC': 'San Jose', 'SEA': 'Seattle',
     'DEN': 'Denver', 'PHX': 'Phoenix', 'SLC': 'Salt Lake City',
@@ -926,10 +1023,11 @@ async function testDnsPerformance(test) {
         '\n\nNote: Timing includes DNS + TCP + TLS. For pure DNS timing, use the Local Scanner.';
 
     let status = 'Passed';
-    if (avg > 500 || avg < 0) status = 'Warning';
+    if (avg < 0) status = 'Warning';
     else if (avg > 1000) status = 'Failed';
+    else if (avg > 500) status = 'Warning';
 
-    const value = avg > 0 ? `Avg ${avg}ms (DNS+TLS) across ${valid.length} endpoints` : 'Could not measure';
+    const value = avg > 0 ? `Avg ${avg}ms (DNS+TCP+TLS) across ${valid.length} endpoints` : 'Could not measure';
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.dnsConfig);
 }
 
@@ -965,11 +1063,11 @@ async function testWebRtcStun(test) {
         } else if (host.length > 0) {
             return makeResult(test, 'Warning',
                 'STUN returned only host candidates',
-                `No server-reflexive candidates. STUN may be blocked.\n\n${detail}`,
+                `No server-reflexive candidates. STUN is unavailable (typical in enterprise environments).\n\n${detail}`,
                 duration, EndpointConfig.docs.natType);
         } else {
             return makeResult(test, 'Failed', 'No ICE candidates gathered',
-                'WebRTC ICE gathering returned no candidates. STUN is likely blocked.',
+                'WebRTC ICE gathering found no candidates. UDP connectivity is limited.',
                 duration, EndpointConfig.docs.natType);
         }
     } catch (e) {
@@ -1021,9 +1119,9 @@ async function testNatType(test) {
             status = 'Failed';
             detail = 'No ICE candidates gathered. UDP is likely fully blocked.';
         } else if (srflx.length === 0) {
-            natType = 'STUN Blocked';
+            natType = 'STUN Unavailable (Enterprise Standard)';
             status = 'Warning';
-            detail = 'Only host candidates available. STUN is blocked \u2014 RDP Shortpath may require TURN relay.\n' +
+            detail = 'Only host candidates available. STUN is unavailable \u2014 Windows 365 will use TURN relay.\n' +
                 'Host candidates:\n' + allHost.map(c => `  ${c.address}:${c.port}`).join('\n');
         } else {
             // STUN worked — we have at least one server-reflexive candidate

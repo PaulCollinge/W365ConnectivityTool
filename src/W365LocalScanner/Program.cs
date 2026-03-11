@@ -1076,6 +1076,7 @@ class Program
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
 
             // ── TCP Based RDP Connectivity ──
+            new("L-TCP-03", "DNS Resolution Performance", "Measures pure DNS resolution time for key W365 endpoints", "tcp", RunDnsPerformance),
             new("L-TCP-04", "Gateway & Service Connectivity", "Tests AFD gateway discovery, RDP gateway reachability, RDWeb feed, and authentication endpoints", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
             new("L-TCP-08", "DNS Hijacking Check", "Verifies gateway DNS resolves to legitimate Microsoft IPs", "tcp", RunDnsHijackingCheck),
@@ -1259,6 +1260,15 @@ class Program
         var result = new TestResult { Id = "L-LE-05", Name = "Router/Gateway Latency", Category = "local" };
         try
         {
+            // Azure VNet gateways block ICMP — this test is only meaningful on the client device.
+            if (IsRemoteSession())
+            {
+                result.Status = "Skipped";
+                result.ResultValue = "Running inside Cloud PC — Azure VNet gateway does not respond to ICMP";
+                result.DetailedInfo = "Gateway latency cannot be measured inside a Cloud PC.\nRun the scanner on your physical client device to test local network latency to your router.";
+                return result;
+            }
+
             // Find default gateway
             var gateway = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
@@ -2236,6 +2246,74 @@ class Program
         return result;
     }
 
+    static async Task<TestResult> RunDnsPerformance()
+    {
+        var result = new TestResult { Id = "L-TCP-03", Name = "DNS Resolution Performance", Category = "tcp" };
+        try
+        {
+            var hosts = new[]
+            {
+                "rdweb.wvd.microsoft.com",
+                "login.microsoftonline.com",
+                "client.wvd.microsoft.com",
+                "world.relay.avd.microsoft.com",
+                "afdfp-rdgateway-r1.wvd.microsoft.com",
+            };
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Pure DNS resolution timing using Dns.GetHostAddressesAsync()");
+            sb.AppendLine("(no TCP/TLS overhead — raw resolver round-trip only)");
+            sb.AppendLine();
+
+            var timings = new List<long>();
+
+            foreach (var host in hosts)
+            {
+                var sw = Stopwatch.StartNew();
+                try
+                {
+                    var addrs = await Dns.GetHostAddressesAsync(host);
+                    sw.Stop();
+                    var ms = sw.ElapsedMilliseconds;
+                    timings.Add(ms);
+                    var firstIp = addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)?.ToString() ?? "no IPv4";
+                    sb.AppendLine($"  {ms,6}ms  {host} → {firstIp}");
+                }
+                catch (Exception ex)
+                {
+                    sw.Stop();
+                    sb.AppendLine($"  {"ERR",6}     {host} — {ex.Message}");
+                }
+            }
+
+            sb.AppendLine();
+
+            if (timings.Count == 0)
+            {
+                result.Status = "Failed";
+                result.ResultValue = "DNS resolution failed for all endpoints";
+                result.DetailedInfo = sb.ToString().Trim();
+                return result;
+            }
+
+            var avg = (long)timings.Average();
+            var max = timings.Max();
+            sb.AppendLine($"Average: {avg}ms  |  Slowest: {max}ms  |  Resolved: {timings.Count}/{hosts.Length}");
+
+            if (timings.Count < hosts.Length)
+                sb.AppendLine($"⚠ {hosts.Length - timings.Count} host(s) failed to resolve — check DNS server availability.");
+
+            result.ResultValue = $"Avg {avg}ms DNS ({timings.Count}/{hosts.Length} resolved)";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = avg > 1000 ? "Failed" : avg > 500 ? "Warning" : "Passed";
+
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#dns-requirements";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
     static async Task<TestResult> RunDnsCnameChain()
     {
         var result = new TestResult { Id = "L-TCP-05", Name = "DNS CNAME Chain Analysis", Category = "tcp" };
@@ -2959,9 +3037,9 @@ class Program
                 }
                 else
                 {
-                    result.Status = "Warning";
-                    result.ResultValue = $"TURN relay {ip}:{port} \u2014 no STUN response (UDP may be blocked)";
-                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent STUN binding request but received no response.\nUDP port 3478 may be blocked by firewall.";
+                    result.Status = "Failed";
+                    result.ResultValue = $"TURN relay {ip}:{port} — unreachable (UDP 3478 required)";
+                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent STUN binding request but received no response.\nUDP port 3478 appears to be blocked by firewall or network policy.";
                     result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
                 }
             }
@@ -3377,6 +3455,19 @@ class Program
         var result = new TestResult { Id = "L-UDP-05", Name = "STUN NAT Type Detection", Category = "udp" };
         try
         {
+            // Azure VM outbound NAT is always Endpoint-Dependent (Symmetric) — this is expected and
+            // does not affect TURN relay connectivity. The test is only useful on the client device.
+            if (IsRemoteSession())
+            {
+                result.Status = "Passed";
+                result.ResultValue = "Not applicable — Azure VM NAT is always Symmetric (expected)";
+                result.DetailedInfo = "This test is not meaningful when run inside a Cloud PC (Azure VM).\n" +
+                    "Azure's outbound NAT is always Endpoint-Dependent (Symmetric), which is normal.\n" +
+                    "TURN relay connectivity is confirmed separately by L-UDP-03.\n\n" +
+                    "Run the scanner on your physical client device to classify the client-side NAT type.";
+                return result;
+            }
+
             var sb = new StringBuilder();
             sb.AppendLine("Method: Two-server STUN comparison");
             sb.AppendLine("A single UDP socket sends STUN binding requests to two servers.");
@@ -3566,17 +3657,19 @@ class Program
                 {
                     sb.AppendLine("NAT Type: Symmetric NAT (different external IP per destination)");
                     sb.AppendLine("  The NAT assigns a completely different public IP per destination.");
-                    sb.AppendLine("  This may also indicate multi-WAN or load-balanced egress.");
+                    sb.AppendLine("  This typically indicates multi-WAN, load-balanced egress, or enterprise security.");
+                    sb.AppendLine("  ✓ This is STANDARD and EXPECTED in corporate environments.");
                 }
                 else
                 {
                     sb.AppendLine($"NAT Type: Symmetric NAT (same IP {ip1}, but port {port1} vs {port2})");
                     sb.AppendLine("  The NAT assigns a different external port per destination.");
                     sb.AppendLine("  This is Endpoint-Dependent Mapping (Symmetric NAT).");
+                    sb.AppendLine("  ✓ This is STANDARD and EXPECTED in corporate environments.");
                 }
                 sb.AppendLine();
-                sb.AppendLine("RDP Shortpath via STUN (direct hole-punching) is UNLIKELY to work.");
-                sb.AppendLine("TURN relay fallback will still provide UDP transport if available.");
+                sb.AppendLine("RDP Shortpath will use TURN relay for reliable UDP connectivity.");
+                sb.AppendLine("TURN relay provides excellent performance in enterprise environments.");
                 sb.AppendLine();
                 sb.AppendLine("NAT type reference:");
                 sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
@@ -3584,7 +3677,7 @@ class Program
                 sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
                 sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
                 result.Status = "Warning";
-                result.ResultValue = $"Symmetric NAT — Shortpath via STUN unlikely";
+                result.ResultValue = $"Symmetric NAT (Enterprise Standard) — TURN relay recommended";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
 
@@ -4477,13 +4570,19 @@ class Program
 
                 if (tcpSamples.Count > 0)
                 {
+                    var tcpUnique = tcpSamples.Select(s => (int)s).Distinct().Count();
                     sb.AppendLine($"TCP RTT: avg {tcpSamples.Average():F0}ms, min {tcpSamples.Min():F0}ms, max {tcpSamples.Max():F0}ms ({tcpSamples.Count} samples over ~60s)");
                     sb.AppendLine($"  Values: {string.Join(", ", tcpSamples.Select(s => $"{s:F0}ms"))}");
+                    if (tcpUnique == 1)
+                        sb.AppendLine($"  ⚠ Counter did not update during sampling — RemoteFX RTT counters refresh infrequently; value represents a single measurement.");
                 }
                 if (udpSamples.Count > 0)
                 {
+                    var udpUnique = udpSamples.Select(s => (int)s).Distinct().Count();
                     sb.AppendLine($"UDP RTT: avg {udpSamples.Average():F0}ms, min {udpSamples.Min():F0}ms, max {udpSamples.Max():F0}ms ({udpSamples.Count} samples over ~60s)");
                     sb.AppendLine($"  Values: {string.Join(", ", udpSamples.Select(s => $"{s:F0}ms"))}");
+                    if (udpUnique == 1)
+                        sb.AppendLine($"  ⚠ Counter did not update during sampling — RemoteFX RTT counters refresh infrequently; value represents a single measurement.");
                 }
 
                 if (tcpSamples.Count == 0 && udpSamples.Count == 0)
@@ -6174,6 +6273,7 @@ class Program
             ["BUH"] = "Bucharest, RO", ["SOF"] = "Sofia, BG",
             ["ATH"] = "Athens, GR", ["LIS"] = "Lisbon, PT", ["BRU"] = "Brussels, BE",
             // North America
+            ["BL"] = "Boydton, VA, US",
             ["IAD"] = "Ashburn, VA, US", ["DCA"] = "Washington DC, US",
             ["JFK"] = "New York, US", ["EWR"] = "Newark, NJ, US", ["TEB"] = "Teterboro, NJ, US",
             ["BOS"] = "Boston, US", ["PHL"] = "Philadelphia, US",
