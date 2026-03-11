@@ -9,7 +9,8 @@ function updateConnectivityMap(results) {
         lookup[r.id] = r;
     }
 
-    updateMapClientCard(lookup);
+    const isSatellite = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
+    updateMapClientCard(lookup, isSatellite);
     updateMapLocalGwCard(lookup);
     updateMapIspCard(lookup);
     updateMapAfdCard(lookup);
@@ -315,7 +316,7 @@ function setClientOSIcon() {
 setClientOSIcon();
 
 // ── Client Card ──
-function updateMapClientCard(lookup) {
+function updateMapClientCard(lookup, isSatellite) {
     let location = '';
     let publicIp = '';
     let status = 'NotRun';
@@ -331,6 +332,11 @@ function updateMapClientCard(lookup) {
     setText('map-client-ip', publicIp ? `🌐 ${publicIp}` : '');
     setAccentStatus('map-client-accent', status);
     setDeviceDot('device-status-dot', status);
+
+    // In-flight visual: toggle aircraft overlay and card label
+    const card = document.getElementById('map-client');
+    if (card) card.classList.toggle('in-flight', !!isSatellite);
+    setText('map-client-title', isSatellite ? '✈ In Flight' : 'This Device');
 }
 
 // ── Local Gateway Card ──

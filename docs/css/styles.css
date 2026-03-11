@@ -981,6 +981,48 @@ main {
 }
 .satellite-banner-dismiss:hover { opacity: 1; color: var(--text-primary); }
 
+/* ── In-flight (satellite WiFi) client map card ── */
+.inflight-frame {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 3px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 130px;
+    pointer-events: none;
+    z-index: 2;
+    animation: inflight-hover 4s ease-in-out infinite;
+}
+.inflight-aircraft {
+    width: 100%;
+    height: auto;
+    display: block;
+    filter: drop-shadow(0 0 6px rgba(30, 120, 220, 0.5));
+}
+.inflight-clouds {
+    text-align: center;
+    font-size: 13px;
+    opacity: 0.28;
+    letter-spacing: 6px;
+    margin-top: 1px;
+    animation: inflight-drift 6s ease-in-out infinite;
+}
+#map-client.in-flight .inflight-frame { display: block; }
+#map-client.in-flight .device-laptop {
+    background: linear-gradient(180deg, #0a1e3c 0%, #0d1117 100%);
+    border-radius: 6px;
+    padding: 5px 5px 3px;
+    box-shadow: 0 0 16px rgba(30, 100, 210, 0.2);
+}
+@keyframes inflight-hover {
+    0%, 100% { transform: translateX(-50%) translateY(0px); }
+    50% { transform: translateX(-50%) translateY(-4px); }
+}
+@keyframes inflight-drift {
+    0%, 100% { opacity: 0.28; transform: translateX(0); }
+    50% { opacity: 0.18; transform: translateX(4px); }
+}
+
 /* ════════════════════════════════════════
    DOWNLOAD BANNER
    ════════════════════════════════════════ */

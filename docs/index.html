@@ -266,6 +266,29 @@
                             <!-- Trackpad -->
                             <rect x="46" y="66" width="28" height="8" rx="2" fill="none" stroke="#21262d" stroke-width="1"/>
                         </svg>
+                        <!-- Aircraft overlay — shown when satellite/in-flight WiFi detected -->
+                        <div class="inflight-frame" id="map-client-inflight-frame">
+                            <svg class="inflight-aircraft" viewBox="0 0 120 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <!-- Fuselage -->
+                                <path d="M 7,18 Q 16,11 28,10 L 101,10 Q 116,10 117,18 Q 116,26 101,26 L 28,26 Q 16,25 7,18 Z" fill="#0f1f38" stroke="#2a6fb5" stroke-width="1.2" opacity="0.95"/>
+                                <!-- Wing -->
+                                <path d="M 58,24 L 40,36 L 95,26 Z" fill="#091526" stroke="#1a4a8a" stroke-width="0.9" opacity="0.9"/>
+                                <!-- Vertical tail fin -->
+                                <path d="M 100,10 L 100,2 L 114,10 Z" fill="#0f1f38" stroke="#2a6fb5" stroke-width="0.9"/>
+                                <!-- Horizontal stabilizer -->
+                                <path d="M 101,21 L 87,27 L 116,27 Z" fill="#091526" stroke="#1a4a8a" stroke-width="0.8" opacity="0.8"/>
+                                <!-- Engine -->
+                                <rect x="70" y="27" width="18" height="5" rx="2.5" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <!-- Windows -->
+                                <circle cx="36" cy="17" r="1.8" fill="#58a6ff" opacity="0.7"/>
+                                <circle cx="47" cy="16" r="1.8" fill="#58a6ff" opacity="0.7"/>
+                                <circle cx="58" cy="15.5" r="1.8" fill="#58a6ff" opacity="0.65"/>
+                                <circle cx="69" cy="15" r="1.8" fill="#58a6ff" opacity="0.65"/>
+                                <circle cx="80" cy="14.5" r="1.8" fill="#58a6ff" opacity="0.6"/>
+                                <circle cx="91" cy="14.5" r="1.8" fill="#58a6ff" opacity="0.55"/>
+                            </svg>
+                            <div class="inflight-clouds">&#9729;&nbsp;&nbsp;&#9729;</div>
+                        </div>
                         <div class="device-accent" id="map-client-accent"></div>
                     </div>
                     <div class="device-info">
