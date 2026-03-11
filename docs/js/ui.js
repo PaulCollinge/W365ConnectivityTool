@@ -338,7 +338,7 @@ function updateNatTypeBanner(results) {
         if (isSat) {
             icon = 'ℹ'; label = 'Symmetric NAT — carrier-grade satellite NAT (expected), TURN relay active'; cssClass = 'nat-info';
         } else {
-            icon = '✗'; label = 'Symmetric NAT — STUN hole-punching unlikely, TURN relay used'; cssClass = 'nat-symmetric';
+            icon = 'ℹ'; label = 'Symmetric NAT — STUN shortpath not available, TURN relay will be used (normal in many networks)'; cssClass = 'nat-warn';
         }
     } else if (val.includes('stun ok')) {
         icon = '✓'; label = 'STUN OK — UDP connectivity confirmed'; cssClass = 'nat-cone';

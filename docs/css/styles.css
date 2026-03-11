@@ -2146,6 +2146,11 @@ footer {
     border: 1px solid rgba(248,81,73,0.25);
     color: var(--red);
 }
+.nat-type-banner.nat-info {
+    background: rgba(88,166,255,0.08);
+    border: 1px solid rgba(88,166,255,0.20);
+    color: var(--accent);
+}
 .nat-type-banner.nat-warn {
     background: rgba(210,153,34,0.10);
     border: 1px solid rgba(210,153,34,0.25);
