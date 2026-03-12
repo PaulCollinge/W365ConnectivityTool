@@ -101,7 +101,24 @@ function detectSatelliteConnection(results) {
         return false; // Browser ISP not confirmed yet — don't assume satellite
     }
     const ispLower = (browserIsp.resultValue || '').toLowerCase();
-    return SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw));
+    if (!SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return false;
+
+    // If local scanner SSID data is available, require SSID to match aircraft patterns.
+    // Satellite ISPs (e.g. Intelsat) also provide ground-based enterprise links —
+    // without a matching in-flight SSID we can't confirm the user is actually airborne.
+    const wifiResult = results.find(r => r.id === 'L-LE-04');
+    if (wifiResult &&
+        wifiResult.status !== 'NotRun' &&
+        wifiResult.status !== 'Pending' &&
+        wifiResult.status !== 'Skipped') {
+        const ssidMatch = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
+        const ssid = ssidMatch ? ssidMatch[1].trim() : '';
+        if (ssid && !INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid))) {
+            return false; // SSID present but doesn't match any in-flight pattern — not airborne
+        }
+    }
+
+    return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════

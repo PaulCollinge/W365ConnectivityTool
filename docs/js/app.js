@@ -1847,16 +1847,7 @@ function updateFilterBar() {
     if (!hasResults) { bar.classList.add('hidden'); return; }
 
     bar.classList.remove('hidden');
-
-    // Auto-select 'failed' if there are any failures and the filter is currently 'all'
-    const currentFilter = grid.dataset.filter || 'all';
-    if (currentFilter === 'all') {
-        const hasFailures = allResults.some(r => r.status === 'Failed' || r.status === 'Error');
-        if (hasFailures) setResultFilter('failed');
-        else setResultFilter('all');
-    } else {
-        updateFilterCount();
-    }
+    updateFilterCount();
 }
 
 function setResultFilter(filter) {
