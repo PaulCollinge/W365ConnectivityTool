@@ -303,57 +303,7 @@ function updateCategoryBadges(results) {
             badge.style.color = 'var(--text-muted)';
         }
     }
-
-    // Update NAT type banner in UDP section
-    updateNatTypeBanner(results);
-}
-
-/**
- * Update the NAT type banner displayed below the UDP category header.
- * Prefers scanner L-UDP-05 (accurate two-server comparison) over browser B-UDP-02.
- */
-function updateNatTypeBanner(results) {
-    const banner = document.getElementById('nat-type-banner');
-    if (!banner) return;
-
-    const scannerNat = results.find(r => r.id === 'L-UDP-05');
-    const browserNat = results.find(r => r.id === 'B-UDP-02');
-    const natResult = scannerNat || browserNat;
-
-    if (!natResult) {
-        banner.classList.remove('visible');
-        return;
-    }
-
-    const val = (natResult.resultValue || '').toLowerCase();
-    const source = scannerNat ? 'Local Scanner' : 'Browser';
-    let icon, label, cssClass;
-
-    if (val.includes('open internet')) {
-        icon = '🌐'; label = 'Open Internet — No NAT detected'; cssClass = 'nat-cone';
-    } else if (val.includes('cone')) {
-        icon = '✓'; label = 'Cone NAT — RDP Shortpath via STUN is available'; cssClass = 'nat-cone';
-    } else if (val.includes('symmetric')) {
-        const isSat = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
-        const stunLink = '<a href="https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun" target="_blank" rel="noopener" style="color:inherit;opacity:0.8">Why?</a>';
-        if (isSat) {
-            icon = 'ℹ'; label = `Symmetric NAT — carrier-grade satellite NAT (expected), TURN relay active  ${stunLink}`; cssClass = 'nat-info';
-        } else {
-            icon = 'ℹ'; label = `Symmetric NAT — STUN shortpath not available, TURN relay will be used (normal in many networks)  ${stunLink}`; cssClass = 'nat-warn';
-        }
-    } else if (val.includes('stun ok')) {
-        icon = '✓'; label = 'STUN OK — UDP connectivity confirmed'; cssClass = 'nat-cone';
-    } else if (val.includes('partial')) {
-        icon = '⚠'; label = 'Partial STUN — NAT type could not be determined'; cssClass = 'nat-warn';
-    } else if (val.includes('blocked') || val.includes('failed')) {
-        const stunLink = '<a href="https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun" target="_blank" rel="noopener" style="color:inherit;opacity:0.8">Why?</a>';
-        icon = 'ⓘ'; label = `STUN unavailable (standard enterprise) — TURN relay used  ${stunLink}`; cssClass = 'nat-info';
-    } else {
-        icon = '⚠'; label = natResult.resultValue || 'Unknown'; cssClass = 'nat-warn';
-    }
-
-    banner.className = `nat-type-banner visible ${cssClass}`;
-    banner.innerHTML = `<span class="nat-icon">${icon}</span><span class="nat-label">${label}<span class="nat-source">[${source}]</span></span>`;
+}</span><span class="nat-label">${label}<span class="nat-source">[${source}]</span></span>`;
 }
 
 /**
