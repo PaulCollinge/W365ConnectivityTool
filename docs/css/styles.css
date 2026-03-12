@@ -1619,6 +1619,34 @@ main {
 .map-arrow-cell { position: relative; }
 .map-arrow-cell .map-line-label { bottom: -2px; left: 50%; transform: translate(-50%, 100%); }
 
+/* ── WiFi / wired badge floating above the Client→Gateway path line ── */
+.map-wifi-badge {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, calc(-100% - 9px));
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px 3px 7px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: var(--mono);
+    white-space: nowrap;
+    background: var(--bg-card);
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    z-index: 3;
+    pointer-events: none;
+}
+.map-wifi-badge.wired     { color: var(--text-secondary); }
+.map-wifi-badge.wifi-strong { color: var(--green); border-color: var(--green-border); background: var(--green-bg); }
+.map-wifi-badge.wifi-good   { color: var(--accent); border-color: rgba(88,166,255,.3); background: rgba(88,166,255,.06); }
+.map-wifi-badge.wifi-fair   { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-bg); }
+.map-wifi-badge.wifi-weak   { color: var(--red); border-color: var(--red-border); background: var(--red-bg); }
+.map-wifi-sig, .map-wifi-radio { opacity: 0.75; font-weight: 500; }
+
 /* Fanout latency: hidden — latency shown in card badges instead */
 .map-ll-afd,
 .map-ll-rdgw,

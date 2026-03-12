@@ -11,6 +11,7 @@ function updateConnectivityMap(results) {
 
     const isSatellite = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
     updateMapClientCard(lookup, isSatellite);
+    updateMapWifiBadge(lookup);
     updateMapLocalGwCard(lookup);
     updateMapIspCard(lookup);
     updateMapAfdCard(lookup);
@@ -337,39 +338,61 @@ function updateMapClientCard(lookup, isSatellite) {
     const card = document.getElementById('map-client');
     if (card) card.classList.toggle('in-flight', !!isSatellite);
     setText('map-client-title', isSatellite ? '✈ In Flight' : 'This Device');
+}
 
-    // WiFi / wired connection display
+// ── WiFi / Wired badge on the Client→Gateway path ──
+function updateMapWifiBadge(lookup) {
+    const badge = document.getElementById('map-wifi-badge');
+    if (!badge) return;
+
     const wifi = lookup['L-LE-04'];
-    const wifiEl = document.getElementById('map-client-wifi');
-    if (wifiEl) {
-        if (wifi && wifi.status === 'Skipped') {
-            wifiEl.innerHTML = '🔌 Wired connection';
-            wifiEl.style.display = '';
-        } else if (wifi && wifi.status !== 'NotRun' && wifi.status !== 'Pending') {
-            const rv = wifi.resultValue || '';
-            const ssidMatch = rv.match(/SSID:\s*([^,]+)/i);
-            const sigMatch  = rv.match(/Signal:\s*(\d+)%/i);
-            const radioMatch = rv.match(/Radio:\s*([^,]+)/i);
-            const ssid  = ssidMatch  ? ssidMatch[1].trim()  : '';
-            const sig   = sigMatch   ? parseInt(sigMatch[1]) : null;
-            const radio = radioMatch ? radioMatch[1].trim() : '';
-            const bars = sig !== null
-                ? (sig >= 80 ? '▂▄▆█' : sig >= 60 ? '▂▄▆░' : sig >= 40 ? '▂▄░░' : '▂░░░')
-                : '📶';
-            const barClass = sig !== null
-                ? (sig >= 80 ? 'wifi-sig-strong' : sig >= 60 ? 'wifi-sig-good' : sig >= 40 ? 'wifi-sig-fair' : 'wifi-sig-weak')
-                : '';
-            const radioFriendly = /ax/i.test(radio) ? 'Wi\u2011Fi 6' : /ac/i.test(radio) ? 'Wi\u2011Fi 5' : /\bn\b/i.test(radio) ? 'Wi\u2011Fi 4' : radio;
-            let html = `<span class="wifi-bars ${barClass}" title="${sig !== null ? sig + '% signal' : ''}">${bars}</span>`;
-            if (ssid) html += ` ${escapeHtml(ssid)}`;
-            if (sig !== null) html += ` · ${sig}%`;
-            if (radioFriendly) html += ` · ${radioFriendly}`;
-            wifiEl.innerHTML = html;
-            wifiEl.style.display = '';
-        } else {
-            wifiEl.style.display = 'none';
-        }
+    if (!wifi || wifi.status === 'NotRun' || wifi.status === 'Pending') {
+        badge.classList.add('hidden');
+        return;
     }
+
+    if (wifi.status === 'Skipped') {
+        // Wired connection
+        badge.innerHTML =
+            `<svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;flex-shrink:0">` +
+            `<rect x="3.5" y="1.5" width="7" height="7" rx="1" stroke-width="1.4"/>` +
+            `<line x1="5.5" y1="3.5" x2="5.5" y2="7" stroke-width="1.2"/>` +
+            `<line x1="8.5" y1="3.5" x2="8.5" y2="7" stroke-width="1.2"/>` +
+            `<line x1="7" y1="8.5" x2="7" y2="12.5" stroke-width="1.4"/>` +
+            `</svg><span>Wired</span>`;
+        badge.className = 'map-wifi-badge wired';
+        return;
+    }
+
+    // WiFi connection
+    const rv = wifi.resultValue || '';
+    const ssidMatch  = rv.match(/SSID:\s*([^,]+)/i);
+    const sigMatch   = rv.match(/Signal:\s*(\d+)%/i);
+    const radioMatch = rv.match(/Radio:\s*([^,]+)/i);
+    const ssid  = ssidMatch  ? ssidMatch[1].trim()  : '';
+    const sig   = sigMatch   ? parseInt(sigMatch[1]) : null;
+    const radio = radioMatch ? radioMatch[1].trim() : '';
+
+    const sigClass = sig === null ? '' : sig >= 80 ? 'wifi-strong' : sig >= 60 ? 'wifi-good' : sig >= 40 ? 'wifi-fair' : 'wifi-weak';
+    const a1 = sig === null || sig >= 30 ? 1 : 0.2;
+    const a2 = sig === null || sig >= 60 ? 1 : 0.2;
+    const a3 = sig === null || sig >= 80 ? 1 : 0.2;
+    const radioFriendly = /ax/i.test(radio) ? 'Wi\u2011Fi\u00A06' : /ac/i.test(radio) ? 'Wi\u2011Fi\u00A05' : /\bn\b/i.test(radio) ? 'Wi\u2011Fi\u00A04' : radio;
+
+    const iconSvg =
+        `<svg viewBox="0 0 14 12" width="14" height="12" fill="none" stroke="currentColor" stroke-linecap="round" style="vertical-align:middle;flex-shrink:0">` +
+        `<circle cx="7" cy="11" r="1.3" fill="currentColor" stroke="none"/>` +
+        `<path d="M4.5 8.5a3.6 3.6 0 0 1 5 0" stroke-width="1.5" opacity="${a1}"/>` +
+        `<path d="M2 6a7.2 7.2 0 0 1 10 0" stroke-width="1.5" opacity="${a2}"/>` +
+        `<path d="M-0.5 3.5a10.8 10.8 0 0 1 15 0" stroke-width="1.5" opacity="${a3}"/>` +
+        `</svg>`;
+
+    let label = ssid ? escapeHtml(ssid) : 'Wi\u2011Fi';
+    if (sig !== null) label += `<span class="map-wifi-sig"> · ${sig}%</span>`;
+    if (radioFriendly) label += `<span class="map-wifi-radio"> · ${radioFriendly}</span>`;
+
+    badge.innerHTML = iconSvg + `<span>${label}</span>`;
+    badge.className = `map-wifi-badge ${sigClass}`;
 }
 
 // ── Local Gateway Card ──
