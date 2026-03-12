@@ -303,7 +303,6 @@ function updateCategoryBadges(results) {
             badge.style.color = 'var(--text-muted)';
         }
     }
-}</span><span class="nat-label">${label}<span class="nat-source">[${source}]</span></span>`;
 }
 
 /**
