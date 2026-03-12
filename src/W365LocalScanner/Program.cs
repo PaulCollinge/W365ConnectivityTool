@@ -1133,6 +1133,10 @@ class Program
             // ── Cloud PC RDP Egress Validation ──
             new("C-NET-01", "Azure IMDS Metadata", "Reads VM metadata from Azure Instance Metadata Service", "cloudpc-env", RunCpcImdsMetadata),
             new("C-NET-02", "RDP Egress in Azure", "Checks that RDP traffic to Gateway/TURN stays within Azure", "cloudpc-tcp", RunCpcRdpEgressInAzure),
+
+            // ── Cloud PC Endpoint & Speed ──
+            new("C-EP-01", "CPC Endpoint Reachability", "Tests required endpoint reachability from the Cloud PC", "cloudpc-env", RunCpcEndpointReachability),
+            new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
         ];
     }
 
@@ -6754,6 +6758,22 @@ class Program
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    /// <summary>C-EP-01: Required endpoint reachability from Cloud PC — reuses client endpoint test.</summary>
+    static async Task<TestResult> RunCpcEndpointReachability()
+    {
+        var r = await RunCertEndpointTest();
+        r.Id = "C-EP-01"; r.Name = "CPC Endpoint Reachability"; r.Category = "cloudpc-env";
+        return r;
+    }
+
+    /// <summary>C-LE-03: Connection speed from Cloud PC — reuses bandwidth estimation test.</summary>
+    static async Task<TestResult> RunCpcConnectionSpeed()
+    {
+        var r = await RunBandwidthTest();
+        r.Id = "C-LE-03"; r.Name = "CPC Connection Speed"; r.Category = "cloudpc-env";
+        return r;
     }
 }
 
