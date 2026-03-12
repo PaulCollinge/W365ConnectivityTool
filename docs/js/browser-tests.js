@@ -715,12 +715,12 @@ async function testCaptivePortal(test) {
             return makeResult(test, 'Info',
                 'Captive portal check inconclusive — slow connection',
                 `Connectivity check to ${NCSI_URL} timed out (15s).\nThis typically indicates a very slow or high-latency connection (e.g. satellite / aircraft WiFi) rather than a captive portal — captive portals respond immediately with a login redirect rather than dropping the connection.\nIf you cannot browse the web, try opening any HTTP website to trigger a portal login.`,
-                duration, '', REMEDIATION);
+                duration, '', '');
         }
         return makeResult(test, 'Passed',
-            'Captive portal check inconclusive',
-            `Could not reach ${NCSI_URL}\nError: ${errMsg}\n\nCould not confirm — fetch was blocked (likely CORS policy on this network). No captive portal was detected by redirect. If you can browse the web normally, no portal is active.`,
-            duration, '', REMEDIATION);
+            'No captive portal detected',
+            `Could not reach ${NCSI_URL} (${errMsg}).\nNo captive portal redirect was detected. This is typically caused by a network security policy or proxy blocking the connectivity check endpoint — not a captive portal.\nIf you can browse the web normally, no portal is active.`,
+            duration, '', '');
     }
 }
 
