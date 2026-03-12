@@ -2162,6 +2162,17 @@ footer {
     color: var(--red);
 }
 
+/* WiFi signal strength bars */
+.wifi-bars {
+    font-family: monospace;
+    font-size: 0.85em;
+    letter-spacing: -0.5px;
+}
+.wifi-sig-strong { color: #3fb950; }
+.wifi-sig-good   { color: #58a6ff; }
+.wifi-sig-fair   { color: #d29922; }
+.wifi-sig-weak   { color: #f85149; }
+
 /* ════════════════════════════════════════
    HISTORY BAR
    ════════════════════════════════════════ */

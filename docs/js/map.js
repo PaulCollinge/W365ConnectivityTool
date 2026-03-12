@@ -337,6 +337,39 @@ function updateMapClientCard(lookup, isSatellite) {
     const card = document.getElementById('map-client');
     if (card) card.classList.toggle('in-flight', !!isSatellite);
     setText('map-client-title', isSatellite ? '✈ In Flight' : 'This Device');
+
+    // WiFi / wired connection display
+    const wifi = lookup['L-LE-04'];
+    const wifiEl = document.getElementById('map-client-wifi');
+    if (wifiEl) {
+        if (wifi && wifi.status === 'Skipped') {
+            wifiEl.innerHTML = '🔌 Wired connection';
+            wifiEl.style.display = '';
+        } else if (wifi && wifi.status !== 'NotRun' && wifi.status !== 'Pending') {
+            const rv = wifi.resultValue || '';
+            const ssidMatch = rv.match(/SSID:\s*([^,]+)/i);
+            const sigMatch  = rv.match(/Signal:\s*(\d+)%/i);
+            const radioMatch = rv.match(/Radio:\s*([^,]+)/i);
+            const ssid  = ssidMatch  ? ssidMatch[1].trim()  : '';
+            const sig   = sigMatch   ? parseInt(sigMatch[1]) : null;
+            const radio = radioMatch ? radioMatch[1].trim() : '';
+            const bars = sig !== null
+                ? (sig >= 80 ? '▂▄▆█' : sig >= 60 ? '▂▄▆░' : sig >= 40 ? '▂▄░░' : '▂░░░')
+                : '📶';
+            const barClass = sig !== null
+                ? (sig >= 80 ? 'wifi-sig-strong' : sig >= 60 ? 'wifi-sig-good' : sig >= 40 ? 'wifi-sig-fair' : 'wifi-sig-weak')
+                : '';
+            const radioFriendly = /ax/i.test(radio) ? 'Wi\u2011Fi 6' : /ac/i.test(radio) ? 'Wi\u2011Fi 5' : /\bn\b/i.test(radio) ? 'Wi\u2011Fi 4' : radio;
+            let html = `<span class="wifi-bars ${barClass}" title="${sig !== null ? sig + '% signal' : ''}">${bars}</span>`;
+            if (ssid) html += ` ${escapeHtml(ssid)}`;
+            if (sig !== null) html += ` · ${sig}%`;
+            if (radioFriendly) html += ` · ${radioFriendly}`;
+            wifiEl.innerHTML = html;
+            wifiEl.style.display = '';
+        } else {
+            wifiEl.style.display = 'none';
+        }
+    }
 }
 
 // ── Local Gateway Card ──
