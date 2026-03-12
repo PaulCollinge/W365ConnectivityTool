@@ -92,16 +92,30 @@ const INFLIGHT_SSID_PATTERNS = [
 function detectSatelliteConnection(results) {
     const r = id => results.find(x => x.id === id);
 
-    // Check ISP name
-    const isp = r('B-LE-02') || r('C-LE-02');
-    if (isp && isp.resultValue) {
-        const ispLower = isp.resultValue.toLowerCase();
+    // B-LE-02 is the live browser ISP lookup — always reflects the current connection.
+    // If it has run and the ISP is NOT a satellite provider, treat that as a definitive
+    // veto so that stale imported scanner data (old aircraft scan) can't trigger a false positive.
+    const browserIsp = r('B-LE-02');
+    const browserIspRan = browserIsp && browserIsp.status && browserIsp.status !== 'NotRun' && browserIsp.status !== 'Pending' && browserIsp.status !== 'Skipped';
+    if (browserIspRan) {
+        const ispLower = (browserIsp.resultValue || '').toLowerCase();
+        if (SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return true;
+        // Browser confirmed a non-satellite ISP — don't trust stale scanner SSID/fingerprint data
+        return false;
+    }
+
+    // No live browser ISP data — fall back to scanner-based checks
+
+    // Check ISP name from CPC mode scanner
+    const scannerIsp = r('C-LE-02');
+    if (scannerIsp && scannerIsp.resultValue) {
+        const ispLower = scannerIsp.resultValue.toLowerCase();
         if (SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return true;
     }
 
     // Check WiFi SSID (L-LE-04 resultValue contains "SSID: <name>")
     const wifi = r('L-LE-04');
-    if (wifi && wifi.resultValue) {
+    if (wifi && wifi.resultValue && wifi.status !== 'Skipped') {
         const ssidMatch = wifi.resultValue.match(/SSID:\s*([^,]+)/i);
         if (ssidMatch) {
             const ssid = ssidMatch[1].trim();
@@ -112,7 +126,7 @@ function detectSatelliteConnection(results) {
     // Check WiFi auth: open + no cipher is a strong signal of public/inflight WiFi
     // combined with symmetric NAT (typical of carrier-grade satellite NAT)
     const nat = r('L-UDP-05');
-    if (wifi && nat && nat.status === 'Warning' && nat.resultValue &&
+    if (wifi && wifi.status !== 'Skipped' && nat && nat.status === 'Warning' && nat.resultValue &&
         nat.resultValue.toLowerCase().includes('symmetric') &&
         wifi.detailedInfo && /authentication\s*:\s*open/i.test(wifi.detailedInfo) &&
         /cipher\s*:\s*none/i.test(wifi.detailedInfo)) {
