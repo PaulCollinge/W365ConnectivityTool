@@ -3678,7 +3678,7 @@ class Program
                 sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
                 result.Status = "Warning";
                 result.ResultValue = $"Symmetric NAT (Enterprise Standard) — TURN relay recommended";
-                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun";
             }
 
             result.DetailedInfo = sb.ToString().Trim();

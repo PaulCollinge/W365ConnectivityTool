@@ -71,7 +71,7 @@ const EndpointConfig = {
         avdRequiredUrls: 'https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint',
         turnRelay: 'https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks',
         teamsOptimization: 'https://learn.microsoft.com/azure/virtual-desktop/teams-on-avd',
-        natType: 'https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=public-networks'
+        natType: 'https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun'
     },
 
     // Test categories matching the .NET enum

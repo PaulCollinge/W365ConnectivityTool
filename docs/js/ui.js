@@ -335,17 +335,19 @@ function updateNatTypeBanner(results) {
         icon = '✓'; label = 'Cone NAT — RDP Shortpath via STUN is available'; cssClass = 'nat-cone';
     } else if (val.includes('symmetric')) {
         const isSat = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
+        const stunLink = '<a href="https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun" target="_blank" rel="noopener" style="color:inherit;opacity:0.8">Why?</a>';
         if (isSat) {
-            icon = 'ℹ'; label = 'Symmetric NAT — carrier-grade satellite NAT (expected), TURN relay active'; cssClass = 'nat-info';
+            icon = 'ℹ'; label = `Symmetric NAT — carrier-grade satellite NAT (expected), TURN relay active  ${stunLink}`; cssClass = 'nat-info';
         } else {
-            icon = 'ℹ'; label = 'Symmetric NAT — STUN shortpath not available, TURN relay will be used (normal in many networks)'; cssClass = 'nat-warn';
+            icon = 'ℹ'; label = `Symmetric NAT — STUN shortpath not available, TURN relay will be used (normal in many networks)  ${stunLink}`; cssClass = 'nat-warn';
         }
     } else if (val.includes('stun ok')) {
         icon = '✓'; label = 'STUN OK — UDP connectivity confirmed'; cssClass = 'nat-cone';
     } else if (val.includes('partial')) {
         icon = '⚠'; label = 'Partial STUN — NAT type could not be determined'; cssClass = 'nat-warn';
     } else if (val.includes('blocked') || val.includes('failed')) {
-        icon = 'ⓘ'; label = 'STUN unavailable (standard enterprise) — TURN relay used'; cssClass = 'nat-info';
+        const stunLink = '<a href="https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun" target="_blank" rel="noopener" style="color:inherit;opacity:0.8">Why?</a>';
+        icon = 'ⓘ'; label = `STUN unavailable (standard enterprise) — TURN relay used  ${stunLink}`; cssClass = 'nat-info';
     } else {
         icon = '⚠'; label = natResult.resultValue || 'Unknown'; cssClass = 'nat-warn';
     }
