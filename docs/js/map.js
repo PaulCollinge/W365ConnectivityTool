@@ -23,7 +23,8 @@ function updateConnectivityMap(results) {
 
     // Cloud PC right-side cards — show when CPC mode active OR imported scanner data
     const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
-    const hasImportedCpc = results.some(r => r.source === 'cloudpc' && r.id === 'C-NET-01');
+    // Use any cloudpc-sourced result (C-LE-01, C-LE-02, etc.) — C-NET-01 may not run on all builds
+    const hasImportedCpc = results.some(r => r.source === 'cloudpc' && /^C-/.test(r.id));
     if (isCpcMode) {
         // CPC mode uses cpc-mode class (already set by toggle), just update cards
         updateMapCloudPcCard(lookup);
@@ -1177,7 +1178,7 @@ function updateMapAzureCard(lookup) {
     const dot = document.getElementById('device-azure-dot');
     const accent = document.getElementById('map-azure-accent');
 
-    // Show Azure region from IMDS, or infer from geo-IP coordinates
+    // Show Azure region from IMDS, or infer from geo-IP coordinates, or fall back to location value
     if (imds && imds.status === 'Passed' && imds.detailedInfo) {
         const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
         if (regionMatch && detail) detail.textContent = regionMatch[1];
@@ -1185,7 +1186,14 @@ function updateMapAzureCard(lookup) {
         // Infer Azure region from geo-IP coordinates
         const coords = extractCoords(loc.detailedInfo);
         const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
-        if (azRegion && detail) detail.textContent = azRegion.name;
+        if (azRegion && detail) {
+            detail.textContent = azRegion.name;
+        } else if (detail && loc.resultValue) {
+            detail.textContent = loc.resultValue;
+        }
+    } else if (loc && loc.resultValue && detail) {
+        // No detailed info — use result value directly (e.g. "East US 2, Boydton, VA, US")
+        detail.textContent = loc.resultValue;
     }
 
     // Show org/ISP info
