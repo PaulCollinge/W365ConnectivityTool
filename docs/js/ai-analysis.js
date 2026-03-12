@@ -90,50 +90,18 @@ const INFLIGHT_SSID_PATTERNS = [
 ];
 
 function detectSatelliteConnection(results) {
-    const r = id => results.find(x => x.id === id);
-
-    // B-LE-02 is the live browser ISP lookup — but only trust it if it ran in THIS browser
-    // session (source === 'browser'). Imported scan exports can contain a stale B-LE-02
-    // from a previous session (e.g. aircraft) which would cause a false positive here.
+    // Only the live browser ISP lookup (B-LE-02 with source==='browser') is reliable.
+    // Scanner data (C-LE-02, L-LE-04, etc.) may be imported from a previous session at a
+    // different location and would cause false positives — so we never use it here.
     const browserIsp = results.find(x => x.id === 'B-LE-02' && x.source === 'browser');
-    const browserIspRan = browserIsp && browserIsp.status && browserIsp.status !== 'NotRun' && browserIsp.status !== 'Pending' && browserIsp.status !== 'Skipped';
-    if (browserIspRan) {
-        const ispLower = (browserIsp.resultValue || '').toLowerCase();
-        if (SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return true;
-        // Live browser ISP confirmed non-satellite — veto any stale scanner data
-        return false;
+    if (!browserIsp ||
+        browserIsp.status === 'NotRun' ||
+        browserIsp.status === 'Pending' ||
+        browserIsp.status === 'Skipped') {
+        return false; // Browser ISP not confirmed yet — don't assume satellite
     }
-
-    // No live browser ISP data — fall back to scanner-based checks
-
-    // Check ISP name from CPC mode scanner
-    const scannerIsp = r('C-LE-02');
-    if (scannerIsp && scannerIsp.resultValue) {
-        const ispLower = scannerIsp.resultValue.toLowerCase();
-        if (SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return true;
-    }
-
-    // Check WiFi SSID (L-LE-04 resultValue contains "SSID: <name>")
-    const wifi = r('L-LE-04');
-    if (wifi && wifi.resultValue && wifi.status !== 'Skipped') {
-        const ssidMatch = wifi.resultValue.match(/SSID:\s*([^,]+)/i);
-        if (ssidMatch) {
-            const ssid = ssidMatch[1].trim();
-            if (INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid))) return true;
-        }
-    }
-
-    // Check WiFi auth: open + no cipher is a strong signal of public/inflight WiFi
-    // combined with symmetric NAT (typical of carrier-grade satellite NAT)
-    const nat = r('L-UDP-05');
-    if (wifi && wifi.status !== 'Skipped' && nat && nat.status === 'Warning' && nat.resultValue &&
-        nat.resultValue.toLowerCase().includes('symmetric') &&
-        wifi.detailedInfo && /authentication\s*:\s*open/i.test(wifi.detailedInfo) &&
-        /cipher\s*:\s*none/i.test(wifi.detailedInfo)) {
-        return true;
-    }
-
-    return false;
+    const ispLower = (browserIsp.resultValue || '').toLowerCase();
+    return SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw));
 }
 
 // ═══════════════════════════════════════════════════════════════════
