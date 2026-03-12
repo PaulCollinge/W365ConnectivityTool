@@ -92,15 +92,15 @@ const INFLIGHT_SSID_PATTERNS = [
 function detectSatelliteConnection(results) {
     const r = id => results.find(x => x.id === id);
 
-    // B-LE-02 is the live browser ISP lookup — always reflects the current connection.
-    // If it has run and the ISP is NOT a satellite provider, treat that as a definitive
-    // veto so that stale imported scanner data (old aircraft scan) can't trigger a false positive.
-    const browserIsp = r('B-LE-02');
+    // B-LE-02 is the live browser ISP lookup — but only trust it if it ran in THIS browser
+    // session (source === 'browser'). Imported scan exports can contain a stale B-LE-02
+    // from a previous session (e.g. aircraft) which would cause a false positive here.
+    const browserIsp = results.find(x => x.id === 'B-LE-02' && x.source === 'browser');
     const browserIspRan = browserIsp && browserIsp.status && browserIsp.status !== 'NotRun' && browserIsp.status !== 'Pending' && browserIsp.status !== 'Skipped';
     if (browserIspRan) {
         const ispLower = (browserIsp.resultValue || '').toLowerCase();
         if (SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return true;
-        // Browser confirmed a non-satellite ISP — don't trust stale scanner SSID/fingerprint data
+        // Live browser ISP confirmed non-satellite — veto any stale scanner data
         return false;
     }
 
