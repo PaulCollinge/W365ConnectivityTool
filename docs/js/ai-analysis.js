@@ -90,35 +90,37 @@ const INFLIGHT_SSID_PATTERNS = [
 ];
 
 function detectSatelliteConnection(results) {
-    // Only the live browser ISP lookup (B-LE-02 with source==='browser') is reliable.
-    // Scanner data (C-LE-02, L-LE-04, etc.) may be imported from a previous session at a
-    // different location and would cause false positives — so we never use it here.
+    // Satellite/aircraft detection requires BOTH conditions to be true:
+    //   1. Live browser ISP (B-LE-02) matches a known satellite/aviation provider name
+    //   2. Local scanner WiFi (L-LE-04) reports an SSID that matches an in-flight pattern
+    //
+    // Satellite ISPs (e.g. Intelsat, Eutelsat) also provide ground-based enterprise
+    // links — ISP name alone causes false positives on corporate networks.
+    // Without scanner SSID data to positively confirm an aircraft SSID, we do NOT flag.
+
+    // Condition 1: live browser ISP must match a satellite keyword
     const browserIsp = results.find(x => x.id === 'B-LE-02' && x.source === 'browser');
     if (!browserIsp ||
         browserIsp.status === 'NotRun' ||
         browserIsp.status === 'Pending' ||
         browserIsp.status === 'Skipped') {
-        return false; // Browser ISP not confirmed yet — don't assume satellite
+        return false;
     }
     const ispLower = (browserIsp.resultValue || '').toLowerCase();
     if (!SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return false;
 
-    // If local scanner SSID data is available, require SSID to match aircraft patterns.
-    // Satellite ISPs (e.g. Intelsat) also provide ground-based enterprise links —
-    // without a matching in-flight SSID we can't confirm the user is actually airborne.
+    // Condition 2: scanner WiFi result must be present and its SSID must match an aircraft pattern.
+    // If L-LE-04 is absent, Pending, or the SSID doesn't match — not airborne.
     const wifiResult = results.find(r => r.id === 'L-LE-04');
-    if (wifiResult &&
-        wifiResult.status !== 'NotRun' &&
-        wifiResult.status !== 'Pending' &&
-        wifiResult.status !== 'Skipped') {
-        const ssidMatch = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
-        const ssid = ssidMatch ? ssidMatch[1].trim() : '';
-        if (ssid && !INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid))) {
-            return false; // SSID present but doesn't match any in-flight pattern — not airborne
-        }
+    if (!wifiResult ||
+        wifiResult.status === 'NotRun' ||
+        wifiResult.status === 'Pending' ||
+        wifiResult.status === 'Skipped') {
+        return false; // No confirmed SSID — can't verify airborne
     }
-
-    return true;
+    const ssidMatch = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
+    const ssid = ssidMatch ? ssidMatch[1].trim() : '';
+    return !!ssid && INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid));
 }
 
 // ═══════════════════════════════════════════════════════════════════
