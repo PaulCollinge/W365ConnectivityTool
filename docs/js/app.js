@@ -2340,8 +2340,8 @@ async function updateKeyFindings(results) {
             if (httpEgressIp === stunReflexiveIp) {
                 // Same IP — no split-path (don't show, it's noise when everything is fine)
             } else {
-                // IPs differ — GeoIP the STUN IP to distinguish CGNAT vs proxy
-                let stunCountry = '', stunCity = '';
+                // IPs differ — GeoIP the STUN IP to distinguish CGNAT vs proxy vs GSA
+                let stunCountry = '', stunCity = '', stunOrg = '';
                 try {
                     const geoResp = await fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
                         signal: AbortSignal.timeout(5000), cache: 'no-store'
@@ -2350,10 +2350,20 @@ async function updateKeyFindings(results) {
                         const geoData = await geoResp.json();
                         stunCountry = geoData.country || '';
                         stunCity = geoData.city || '';
+                        stunOrg = geoData.org || '';
                     }
                 } catch { /* GeoIP lookup failed */ }
 
-                if (stunCountry && httpCountry &&
+                // Detect Global Secure Access (GSA) — STUN IP belongs to Microsoft/Azure
+                const stunOrgLower = stunOrg.toLowerCase();
+                const isGsa = stunOrgLower.includes('microsoft') || stunOrgLower.includes('azure') ||
+                    /^(108\.14[0-9]|20\.|40\.|51\.[0-9]+\.|52\.|104\.4[0-9])/.test(stunReflexiveIp);
+
+                if (isGsa) {
+                    add('kf-info', 'Global Secure Access',
+                        `UDP traffic routed via Microsoft Global Secure Access`,
+                        `HTTP: ${esc(httpEgressIp)} (direct) · STUN: ${esc(stunReflexiveIp)} (${esc(stunOrg || 'Microsoft')}). GSA tunnels UDP — this is expected if Entra Private Access is enabled.`);
+                } else if (stunCountry && httpCountry &&
                     stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
                     // Same country — CGNAT
                     const natVal = (natType?.resultValue || '').toLowerCase();
@@ -2370,9 +2380,16 @@ async function updateKeyFindings(results) {
                         `🔺 TCP/UDP taking different paths — HTTP proxy or SWG likely`,
                         `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
                 } else if (httpEgressIp !== stunReflexiveIp) {
-                    add('kf-info', 'Split Routing',
-                        `Different egress IPs detected (may be CGNAT)`,
-                        `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}`);
+                    // GeoIP failed — check org for known patterns
+                    if (stunOrg) {
+                        add('kf-info', 'Split Routing',
+                            `Different egress IPs detected`,
+                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
+                    } else {
+                        add('kf-info', 'Split Routing',
+                            `Different egress IPs detected (may be CGNAT)`,
+                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}`);
+                    }
                 }
             }
         }
