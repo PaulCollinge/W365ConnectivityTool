@@ -1496,7 +1496,9 @@ class Program
         await udp.SendAsync(mSearchBytes, mSearchBytes.Length, multicastEndpoint);
         await udp.SendAsync(mSearchBytes, mSearchBytes.Length, unicastEndpoint);
 
-        // Collect responses
+        // Collect responses — ONLY accept responses from the gateway IP itself.
+        // Other devices (Hue bridges, smart TVs, etc.) also respond to SSDP multicast
+        // but are not the router.
         string? locationUrl = null;
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
@@ -1509,19 +1511,17 @@ class Program
                 if (await Task.WhenAny(receiveTask, Task.Delay(remaining)) != receiveTask) break;
                 var response = await receiveTask;
 
+                // Ignore responses from devices that are NOT the gateway
+                if (!response.RemoteEndPoint.Address.Equals(gatewayIp))
+                    continue;
+
                 var text = Encoding.ASCII.GetString(response.Buffer);
                 // Extract LOCATION header
                 var locMatch = Regex.Match(text, @"LOCATION:\s*(https?://\S+)", RegexOptions.IgnoreCase);
                 if (locMatch.Success)
                 {
-                    var loc = locMatch.Groups[1].Value.Trim();
-                    // Prefer responses from the actual gateway IP
-                    if (response.RemoteEndPoint.Address.Equals(gatewayIp))
-                    {
-                        locationUrl = loc;
-                        break;
-                    }
-                    locationUrl ??= loc;
+                    locationUrl = locMatch.Groups[1].Value.Trim();
+                    break;
                 }
             }
             catch (SocketException) { break; }
@@ -1530,11 +1530,11 @@ class Program
 
         if (locationUrl == null) return null;
 
-        // Validate URL points to gateway IP or local network
+        // Validate URL points to the gateway IP specifically (not some other LAN device)
         if (!Uri.TryCreate(locationUrl, UriKind.Absolute, out var locationUri)) return null;
         if (locationUri.Scheme != "http" && locationUri.Scheme != "https") return null;
-        // Only fetch from the gateway's private IP to avoid SSRF
-        if (!IPAddress.TryParse(locationUri.Host, out var locationIp) || !IsPrivateIp(locationIp)) return null;
+        if (!IPAddress.TryParse(locationUri.Host, out var locationIp)) return null;
+        if (!locationIp.Equals(gatewayIp)) return null; // Must be the gateway, not another device
 
         // Fetch device description XML
         try
