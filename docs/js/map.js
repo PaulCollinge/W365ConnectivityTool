@@ -407,7 +407,24 @@ function updateMapLocalGwCard(lookup) {
     }
 
     const gwIp = extractLine(gw.detailedInfo, 'Gateway:');
-    setText('map-localgw-detail', gwIp || gw.resultValue || '');
+    // Extract router model from detailed info
+    const routerLines = [];
+    const hostname = extractLine(gw.detailedInfo, 'Hostname:');
+    const macVendor = extractLine(gw.detailedInfo, 'MAC Vendor:');
+    const upnpModel = extractLine(gw.detailedInfo, 'UPnP Model:');
+    const upnpName = extractLine(gw.detailedInfo, 'UPnP Name:');
+    const upnpMfr = extractLine(gw.detailedInfo, 'UPnP Manufacturer:');
+
+    // Build gateway detail line with router info
+    let detail = gwIp || gw.resultValue || '';
+    const routerDesc = upnpModel ? (upnpMfr ? `${upnpMfr} ${upnpModel}` : upnpModel)
+        : upnpName ? upnpName
+        : macVendor ? macVendor
+        : hostname ? hostname
+        : null;
+    if (routerDesc) detail += ` (${routerDesc})`;
+
+    setText('map-localgw-detail', detail);
     setText('map-localgw-detail2', gw.resultValue || '');
     setAccentStatus('map-localgw-accent', gw.status);
     setDeviceDot('device-gw-dot', gw.status);

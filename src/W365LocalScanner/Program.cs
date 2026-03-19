@@ -1352,13 +1352,306 @@ class Program
             }
 
             var avg = times.Average();
-            result.ResultValue = $"Gateway {gateway}: avg {avg:F0}ms (min {times.Min()}ms, max {times.Max()}ms)";
-            result.DetailedInfo = $"Gateway: {gateway}\nSamples: {times.Count}/5\n" +
-                                  string.Join(", ", times.Select(t => $"{t}ms"));
+            var sb = new StringBuilder();
+            sb.AppendLine($"Gateway: {gateway}");
+            sb.AppendLine($"Samples: {times.Count}/5");
+            sb.AppendLine(string.Join(", ", times.Select(t => $"{t}ms")));
+
+            // ── Router/Gateway Identification ──
+            string routerModel = null;
+            try
+            {
+                // 1. Reverse DNS — often reveals device hostname (e.g. "fritz.box", "router.asus.com")
+                string reverseDns = null;
+                try
+                {
+                    var entry = await Dns.GetHostEntryAsync(gateway);
+                    if (entry.HostName != gateway.ToString())
+                        reverseDns = entry.HostName;
+                }
+                catch { }
+
+                // 2. MAC OUI lookup — get gateway MAC from ARP cache, map OUI prefix to manufacturer
+                string macAddress = null;
+                string ouiManufacturer = null;
+                try
+                {
+                    var arpOutput = await RunProcessAsync("arp", $"-a {gateway}");
+                    if (arpOutput != null)
+                    {
+                        // Parse ARP output for MAC address (works across all locales — MAC format is universal)
+                        var macMatch = Regex.Match(arpOutput, @"([0-9a-f]{2}[:-]){5}[0-9a-f]{2}", RegexOptions.IgnoreCase);
+                        if (macMatch.Success)
+                        {
+                            macAddress = macMatch.Value.ToUpperInvariant().Replace('-', ':');
+                            var oui = macAddress.Substring(0, 8); // "AA:BB:CC"
+                            ouiManufacturer = LookupMacOui(oui);
+                        }
+                    }
+                }
+                catch { }
+
+                // 3. UPnP SSDP Discovery — query for Internet Gateway Device to get model info
+                string upnpModel = null;
+                string upnpManufacturer = null;
+                string upnpFriendlyName = null;
+                try
+                {
+                    var ssdpResult = await DiscoverUpnpGateway(gateway, TimeSpan.FromSeconds(3));
+                    if (ssdpResult != null)
+                    {
+                        upnpModel = ssdpResult.Value.Model;
+                        upnpManufacturer = ssdpResult.Value.Manufacturer;
+                        upnpFriendlyName = ssdpResult.Value.FriendlyName;
+                    }
+                }
+                catch { }
+
+                // Build router identification section
+                sb.AppendLine();
+                sb.AppendLine("═══ Router/Gateway Identification ═══");
+
+                if (reverseDns != null)
+                    sb.AppendLine($"  Hostname: {reverseDns}");
+                if (macAddress != null)
+                    sb.AppendLine($"  MAC Address: {macAddress}");
+                if (ouiManufacturer != null)
+                    sb.AppendLine($"  MAC Vendor: {ouiManufacturer}");
+                if (upnpFriendlyName != null)
+                    sb.AppendLine($"  UPnP Name: {upnpFriendlyName}");
+                if (upnpManufacturer != null)
+                    sb.AppendLine($"  UPnP Manufacturer: {upnpManufacturer}");
+                if (upnpModel != null)
+                    sb.AppendLine($"  UPnP Model: {upnpModel}");
+
+                // Build a concise router model description for the summary
+                if (upnpModel != null)
+                    routerModel = upnpManufacturer != null ? $"{upnpManufacturer} {upnpModel}" : upnpModel;
+                else if (upnpFriendlyName != null)
+                    routerModel = upnpFriendlyName;
+                else if (ouiManufacturer != null && reverseDns != null)
+                    routerModel = $"{ouiManufacturer} ({reverseDns})";
+                else if (ouiManufacturer != null)
+                    routerModel = ouiManufacturer;
+                else if (reverseDns != null)
+                    routerModel = reverseDns;
+
+                if (routerModel == null && macAddress == null && reverseDns == null)
+                    sb.AppendLine("  Could not identify router (UPnP disabled, ARP empty, no PTR record)");
+            }
+            catch { }
+
+            var routerSuffix = routerModel != null ? $" [{routerModel}]" : "";
+            result.ResultValue = $"Gateway {gateway}: avg {avg:F0}ms (min {times.Min()}ms, max {times.Max()}ms){routerSuffix}";
+            result.DetailedInfo = sb.ToString().Trim();
             result.Status = avg < 20 ? "Passed" : avg < 50 ? "Warning" : "Failed";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    /// <summary>Run an external process and capture stdout.</summary>
+    static async Task<string?> RunProcessAsync(string fileName, string arguments, int timeoutMs = 5000)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return null;
+            var output = await proc.StandardOutput.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(timeoutMs);
+            await proc.WaitForExitAsync(cts.Token);
+            return output;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>UPnP SSDP discovery result.</summary>
+    record struct UpnpDeviceInfo(string? FriendlyName, string? Manufacturer, string? Model);
+
+    /// <summary>Discover UPnP Internet Gateway Device via SSDP M-SEARCH.</summary>
+    static async Task<UpnpDeviceInfo?> DiscoverUpnpGateway(IPAddress gatewayIp, TimeSpan timeout)
+    {
+        // Send SSDP M-SEARCH for Internet Gateway Device
+        var searchTarget = "urn:schemas-upnp-org:device:InternetGatewayDevice:1";
+        var mSearch = $"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n" +
+                      $"MAN: \"ssdp:discover\"\r\nMX: 2\r\nST: {searchTarget}\r\n\r\n";
+        var mSearchBytes = Encoding.ASCII.GetBytes(mSearch);
+
+        using var udp = new UdpClient();
+        udp.Client.ReceiveTimeout = (int)timeout.TotalMilliseconds;
+        var multicastEndpoint = new IPEndPoint(IPAddress.Parse("239.255.255.250"), 1900);
+
+        // Also try unicast directly to the gateway (some routers only respond to unicast)
+        var unicastEndpoint = new IPEndPoint(gatewayIp, 1900);
+
+        await udp.SendAsync(mSearchBytes, mSearchBytes.Length, multicastEndpoint);
+        await udp.SendAsync(mSearchBytes, mSearchBytes.Length, unicastEndpoint);
+
+        // Collect responses
+        string? locationUrl = null;
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var receiveTask = udp.ReceiveAsync();
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero) break;
+                if (await Task.WhenAny(receiveTask, Task.Delay(remaining)) != receiveTask) break;
+                var response = await receiveTask;
+
+                var text = Encoding.ASCII.GetString(response.Buffer);
+                // Extract LOCATION header
+                var locMatch = Regex.Match(text, @"LOCATION:\s*(https?://\S+)", RegexOptions.IgnoreCase);
+                if (locMatch.Success)
+                {
+                    var loc = locMatch.Groups[1].Value.Trim();
+                    // Prefer responses from the actual gateway IP
+                    if (response.RemoteEndPoint.Address.Equals(gatewayIp))
+                    {
+                        locationUrl = loc;
+                        break;
+                    }
+                    locationUrl ??= loc;
+                }
+            }
+            catch (SocketException) { break; }
+            catch { break; }
+        }
+
+        if (locationUrl == null) return null;
+
+        // Validate URL points to gateway IP or local network
+        if (!Uri.TryCreate(locationUrl, UriKind.Absolute, out var locationUri)) return null;
+        if (locationUri.Scheme != "http" && locationUri.Scheme != "https") return null;
+        // Only fetch from the gateway's private IP to avoid SSRF
+        if (!IPAddress.TryParse(locationUri.Host, out var locationIp) || !IsPrivateIp(locationIp)) return null;
+
+        // Fetch device description XML
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var xml = await http.GetStringAsync(locationUrl);
+
+            // Parse key fields from the XML (simple regex — avoids XML parser dependency issues with malformed docs)
+            var friendly = Regex.Match(xml, @"<friendlyName>([^<]+)</friendlyName>", RegexOptions.IgnoreCase);
+            var mfr = Regex.Match(xml, @"<manufacturer>([^<]+)</manufacturer>", RegexOptions.IgnoreCase);
+            var model = Regex.Match(xml, @"<modelName>([^<]+)</modelName>", RegexOptions.IgnoreCase);
+            var modelDesc = Regex.Match(xml, @"<modelDescription>([^<]+)</modelDescription>", RegexOptions.IgnoreCase);
+
+            return new UpnpDeviceInfo(
+                friendly.Success ? friendly.Groups[1].Value.Trim() : null,
+                mfr.Success ? mfr.Groups[1].Value.Trim() : null,
+                model.Success ? model.Groups[1].Value.Trim() :
+                    (modelDesc.Success ? modelDesc.Groups[1].Value.Trim() : null)
+            );
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Look up MAC OUI prefix to manufacturer name.</summary>
+    static string? LookupMacOui(string oui)
+    {
+        // Common router/networking equipment OUI prefixes (IEEE MA-L assignments)
+        // Format: "AA:BB:CC" → "Manufacturer"
+        var ouiMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // AVM (FRITZ!Box)
+            ["24:4B:03"] = "AVM (FRITZ!Box)", ["3C:A6:2F"] = "AVM (FRITZ!Box)", ["44:4E:6D"] = "AVM (FRITZ!Box)",
+            ["B0:F2:08"] = "AVM (FRITZ!Box)", ["C8:0E:14"] = "AVM (FRITZ!Box)", ["E0:28:6D"] = "AVM (FRITZ!Box)",
+            ["2C:91:AB"] = "AVM (FRITZ!Box)", ["DC:39:6F"] = "AVM (FRITZ!Box)", ["A8:6B:AD"] = "AVM (FRITZ!Box)",
+            // TP-Link
+            ["50:C7:BF"] = "TP-Link", ["60:32:B1"] = "TP-Link", ["98:DA:C4"] = "TP-Link",
+            ["B0:4E:26"] = "TP-Link", ["C0:06:C3"] = "TP-Link", ["C4:E9:84"] = "TP-Link",
+            ["F4:F2:6D"] = "TP-Link", ["AC:84:C6"] = "TP-Link", ["30:B5:C2"] = "TP-Link",
+            ["E8:48:B8"] = "TP-Link", ["1C:3B:F3"] = "TP-Link", ["54:AF:97"] = "TP-Link",
+            // Netgear
+            ["28:80:88"] = "Netgear", ["44:94:FC"] = "Netgear", ["6C:B0:CE"] = "Netgear",
+            ["84:1B:5E"] = "Netgear", ["A0:21:B7"] = "Netgear", ["C4:04:15"] = "Netgear",
+            ["E0:46:9A"] = "Netgear", ["E4:F4:C6"] = "Netgear", ["20:E5:2A"] = "Netgear",
+            ["B0:7F:B9"] = "Netgear", ["CC:40:D0"] = "Netgear", ["9C:3D:CF"] = "Netgear",
+            // Linksys (Belkin)
+            ["20:AA:4B"] = "Linksys", ["C0:56:27"] = "Linksys", ["58:6D:8F"] = "Linksys",
+            ["14:91:82"] = "Linksys", ["6C:72:20"] = "Linksys", ["E8:9F:80"] = "Linksys",
+            // ASUS
+            ["04:D9:F5"] = "ASUS", ["10:C3:7B"] = "ASUS", ["1C:87:2C"] = "ASUS",
+            ["2C:FD:A1"] = "ASUS", ["38:D5:47"] = "ASUS", ["50:46:5D"] = "ASUS",
+            ["78:24:AF"] = "ASUS", ["AC:9E:17"] = "ASUS", ["F0:2F:74"] = "ASUS",
+            ["B0:6E:BF"] = "ASUS", ["70:8B:CD"] = "ASUS", ["24:4B:FE"] = "ASUS",
+            // Ubiquiti
+            ["04:18:D6"] = "Ubiquiti", ["24:A4:3C"] = "Ubiquiti", ["68:72:51"] = "Ubiquiti",
+            ["78:8A:20"] = "Ubiquiti", ["80:2A:A8"] = "Ubiquiti", ["B4:FB:E4"] = "Ubiquiti",
+            ["DC:9F:DB"] = "Ubiquiti", ["F4:92:BF"] = "Ubiquiti", ["E0:63:DA"] = "Ubiquiti",
+            ["FC:EC:DA"] = "Ubiquiti", ["18:E8:29"] = "Ubiquiti", ["74:83:C2"] = "Ubiquiti",
+            // Cisco / Meraki
+            ["00:0C:29"] = "Cisco", ["00:1B:0D"] = "Cisco", ["58:97:1E"] = "Cisco",
+            ["D4:AD:71"] = "Cisco (Meraki)", ["0C:8D:DB"] = "Cisco (Meraki)", ["AC:17:02"] = "Cisco (Meraki)",
+            ["E8:55:B4"] = "Cisco (Meraki)", ["34:56:FE"] = "Cisco (Meraki)",
+            // Huawei
+            ["00:E0:FC"] = "Huawei", ["48:46:FB"] = "Huawei", ["88:CE:FA"] = "Huawei",
+            ["CC:A2:23"] = "Huawei", ["20:F3:A3"] = "Huawei", ["70:8A:09"] = "Huawei",
+            ["AC:CF:85"] = "Huawei", ["E4:68:A3"] = "Huawei", ["B4:30:52"] = "Huawei",
+            // D-Link
+            ["1C:7E:E5"] = "D-Link", ["28:10:7B"] = "D-Link", ["78:54:2E"] = "D-Link",
+            ["B8:A3:86"] = "D-Link", ["C8:BE:19"] = "D-Link", ["F0:B4:D2"] = "D-Link",
+            // MikroTik
+            ["08:55:31"] = "MikroTik", ["2C:C8:1B"] = "MikroTik", ["48:8F:5A"] = "MikroTik",
+            ["4C:5E:0C"] = "MikroTik", ["6C:3B:6B"] = "MikroTik", ["B8:69:F4"] = "MikroTik",
+            ["CC:2D:E0"] = "MikroTik", ["D4:CA:6D"] = "MikroTik", ["E4:8D:8C"] = "MikroTik",
+            // Synology
+            ["00:11:32"] = "Synology", ["BC:6A:29"] = "Synology",
+            // Google (Nest WiFi / Google WiFi)
+            ["48:01:C5"] = "Google (Nest WiFi)", ["F4:F5:D8"] = "Google (Nest WiFi)",
+            ["A4:77:33"] = "Google (Nest WiFi)", ["54:60:09"] = "Google (Nest WiFi)",
+            // Apple (AirPort)
+            ["70:56:81"] = "Apple (AirPort)", ["34:36:3B"] = "Apple (AirPort)",
+            ["40:30:04"] = "Apple", ["F0:D1:A9"] = "Apple",
+            // BT (Home Hub / Smart Hub)
+            ["E8:65:D4"] = "BT (Home Hub)", ["08:36:C9"] = "BT (Home Hub)",
+            // Sky (UK)
+            ["CC:49:37"] = "Sky (UK)", ["D4:B9:2F"] = "Sky (UK)",
+            // Virgin Media
+            ["1C:E1:92"] = "Virgin Media", ["58:23:8C"] = "Virgin Media",
+            // Arris / Motorola / CommScope
+            ["20:3D:66"] = "Arris", ["F8:E4:FB"] = "Arris", ["00:1D:D1"] = "Arris",
+            ["F8:8B:37"] = "Arris", ["44:E1:37"] = "Arris",
+            // Eero (Amazon)
+            ["50:01:BB"] = "Eero", ["F8:BB:BF"] = "Eero",
+            // ZTE
+            ["54:22:F8"] = "ZTE", ["44:F4:36"] = "ZTE", ["DC:02:8E"] = "ZTE",
+            // Zyxel
+            ["40:4A:03"] = "Zyxel", ["B0:B2:DC"] = "Zyxel", ["E4:18:6B"] = "Zyxel",
+            // Juniper
+            ["88:E0:F3"] = "Juniper", ["00:05:85"] = "Juniper", ["2C:21:31"] = "Juniper",
+            // HPE / Aruba
+            ["00:0B:86"] = "Aruba Networks", ["D8:C7:C8"] = "Aruba Networks",
+            ["20:4C:03"] = "Aruba Networks", ["94:B4:0F"] = "Aruba Networks",
+            // Fortinet
+            ["00:09:0F"] = "Fortinet", ["70:4C:A5"] = "Fortinet", ["08:5B:0E"] = "Fortinet",
+            // Palo Alto Networks
+            ["00:1B:17"] = "Palo Alto Networks", ["08:66:1F"] = "Palo Alto Networks",
+            // SonicWall
+            ["00:06:B1"] = "SonicWall", ["C0:EA:E4"] = "SonicWall",
+            // Sophos
+            ["00:1A:8C"] = "Sophos", ["B4:74:9F"] = "Sophos",
+            // Vodafone Station
+            ["38:71:DE"] = "Vodafone", ["5C:F2:86"] = "Vodafone",
+            // Deutsche Telekom (Speedport)
+            ["00:1A:2A"] = "Deutsche Telekom (Speedport)", ["74:31:70"] = "Deutsche Telekom (Speedport)",
+            // Swisscom (Internet Box)
+            ["44:FE:3B"] = "Swisscom", ["5C:49:79"] = "Swisscom",
+        };
+
+        return ouiMap.TryGetValue(oui, out var manufacturer) ? manufacturer : null;
     }
 
     static async Task<TestResult> RunNetworkAdapters()
