@@ -3322,7 +3322,7 @@ class Program
             }
 
             // SWG / security processes — tracked as detections; only routing/proxy evidence promotes to issues
-            var swgProcesses = new[] { "ZscalerService", "netskope", "iboss", "forcepoint", "mcafee", "symantec", "crowdstrike" };
+            var swgProcesses = new[] { "ZscalerService", "netskope", "iboss", "forcepoint", "mcafee", "symantec", "crowdstrike", "GlobalSecureAccessClient" };
             foreach (var name in swgProcesses)
             {
                 var procs = Process.GetProcessesByName(name);

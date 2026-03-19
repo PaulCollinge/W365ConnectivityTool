@@ -2340,32 +2340,59 @@ async function updateKeyFindings(results) {
             if (httpEgressIp === stunReflexiveIp) {
                 // Same IP — no split-path (don't show, it's noise when everything is fine)
             } else {
-                // IPs differ — GeoIP the STUN IP to distinguish CGNAT vs proxy vs GSA
+                // IPs differ — GeoIP both IPs to understand the split
                 let stunCountry = '', stunCity = '', stunOrg = '';
+                let httpOrg = '';
                 try {
-                    const geoResp = await fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
-                        signal: AbortSignal.timeout(5000), cache: 'no-store'
-                    });
-                    if (geoResp.ok) {
-                        const geoData = await geoResp.json();
-                        stunCountry = geoData.country || '';
-                        stunCity = geoData.city || '';
-                        stunOrg = geoData.org || '';
-                    }
+                    const [stunGeo, httpGeo] = await Promise.all([
+                        fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
+                            signal: AbortSignal.timeout(5000), cache: 'no-store'
+                        }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+                        fetch(`https://ipinfo.io/${httpEgressIp}/json`, {
+                            signal: AbortSignal.timeout(5000), cache: 'no-store'
+                        }).then(r => r.ok ? r.json() : {}).catch(() => ({}))
+                    ]);
+                    stunCountry = stunGeo.country || '';
+                    stunCity = stunGeo.city || '';
+                    stunOrg = stunGeo.org || '';
+                    httpOrg = httpGeo.org || '';
                 } catch { /* GeoIP lookup failed */ }
 
-                // Detect Global Secure Access (GSA) — STUN IP belongs to Microsoft/Azure
+                // Determine what's routing the STUN traffic based on the org
                 const stunOrgLower = stunOrg.toLowerCase();
-                const isGsa = stunOrgLower.includes('microsoft') || stunOrgLower.includes('azure') ||
-                    /^(108\.14[0-9]|20\.|40\.|51\.[0-9]+\.|52\.|104\.4[0-9])/.test(stunReflexiveIp);
+                const httpOrgLower = httpOrg.toLowerCase();
 
-                if (isGsa) {
-                    add('kf-info', 'Global Secure Access',
-                        `UDP traffic routed via Microsoft Global Secure Access`,
-                        `HTTP: ${esc(httpEgressIp)} (direct) · STUN: ${esc(stunReflexiveIp)} (${esc(stunOrg || 'Microsoft')}). GSA tunnels UDP — this is expected if Entra Private Access is enabled.`);
+                // Check if STUN exits through a known tunnel/proxy provider
+                const knownTunnels = {
+                    'microsoft': 'Microsoft network (likely Global Secure Access / Entra Private Access)',
+                    'azure':     'Microsoft Azure (likely Global Secure Access)',
+                    'zscaler':   'Zscaler',
+                    'netskope':  'Netskope',
+                    'cloudflare':'Cloudflare (likely WARP or Gateway)',
+                    'palo alto': 'Palo Alto Networks (likely GlobalProtect)',
+                    'fortinet':  'Fortinet',
+                    'akamai':    'Akamai (likely Enterprise Threat Protector)',
+                    'menlo':     'Menlo Security',
+                    'iboss':     'iboss',
+                    'symantec':  'Symantec / Broadcom (likely WSS)',
+                };
+
+                let tunnelName = null;
+                for (const [keyword, label] of Object.entries(knownTunnels)) {
+                    if (stunOrgLower.includes(keyword) && !httpOrgLower.includes(keyword)) {
+                        tunnelName = label;
+                        break;
+                    }
+                }
+
+                if (tunnelName) {
+                    // STUN exits through a different org than HTTP — tunnel detected
+                    add('kf-info', 'Split Routing',
+                        `UDP traffic routed via ${esc(tunnelName)}`,
+                        `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg || 'direct')}) · STUN: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
                 } else if (stunCountry && httpCountry &&
                     stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                    // Same country — CGNAT
+                    // Same country, same or unknown org — CGNAT
                     const natVal = (natType?.resultValue || '').toLowerCase();
                     if (natVal.includes('symmetric')) {
                         add('kf-issue', 'CGNAT', 'Carrier-Grade NAT detected — Symmetric NAT confirmed',
@@ -2379,17 +2406,12 @@ async function updateKeyFindings(results) {
                     add('kf-error', 'Split Routing',
                         `🔺 TCP/UDP taking different paths — HTTP proxy or SWG likely`,
                         `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
-                } else if (httpEgressIp !== stunReflexiveIp) {
-                    // GeoIP failed — check org for known patterns
-                    if (stunOrg) {
-                        add('kf-info', 'Split Routing',
-                            `Different egress IPs detected`,
-                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
-                    } else {
-                        add('kf-info', 'Split Routing',
-                            `Different egress IPs detected (may be CGNAT)`,
-                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}`);
-                    }
+                } else {
+                    // GeoIP incomplete — report what we know
+                    const orgHint = stunOrg ? ` (${esc(stunOrg)})` : '';
+                    add('kf-info', 'Split Routing',
+                        `Different egress IPs detected${stunOrg ? '' : ' (may be CGNAT)'}`,
+                        `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}${orgHint}`);
                 }
             }
         }
