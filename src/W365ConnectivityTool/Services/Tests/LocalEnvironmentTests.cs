@@ -314,24 +314,41 @@ public class WifiStrengthTest : BaseTest
         var info = new WifiInfo();
         var lines = output.Split('\n');
 
+        // Parse locale-independently: use value patterns instead of localized key names.
+        // The " : " separator format is consistent across all locales.
         foreach (var line in lines)
         {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("Signal", StringComparison.OrdinalIgnoreCase))
+            var colonIdx = line.IndexOf(" : ");
+            if (colonIdx < 0) continue;
+            var key = line.Substring(0, colonIdx).Trim();
+            var value = line.Substring(colonIdx + 3).Trim();
+
+            // Signal: value is always "<digits>%" (e.g. "85%")
+            if (!info.SignalPercent.HasValue)
             {
-                var match = Regex.Match(trimmed, @"(\d+)%");
-                if (match.Success) info.SignalPercent = int.Parse(match.Groups[1].Value);
+                var match = Regex.Match(value, @"^(\d+)%$");
+                if (match.Success) { info.SignalPercent = int.Parse(match.Groups[1].Value); continue; }
             }
-            else if (trimmed.StartsWith("SSID", StringComparison.OrdinalIgnoreCase) && !trimmed.Contains("BSSID"))
-                info.Ssid = trimmed.Split(':').LastOrDefault()?.Trim();
-            else if (trimmed.StartsWith("Radio type", StringComparison.OrdinalIgnoreCase))
-                info.RadioType = trimmed.Split(':').LastOrDefault()?.Trim();
-            else if (trimmed.StartsWith("Channel", StringComparison.OrdinalIgnoreCase))
-                info.Channel = trimmed.Split(':').LastOrDefault()?.Trim();
-            else if (trimmed.StartsWith("Receive rate", StringComparison.OrdinalIgnoreCase))
-                info.ReceiveRate = trimmed.Split(':').LastOrDefault()?.Trim();
-            else if (trimmed.StartsWith("Transmit rate", StringComparison.OrdinalIgnoreCase))
-                info.TransmitRate = trimmed.Split(':').LastOrDefault()?.Trim();
+
+            // Radio type: value contains "802.11" (universal protocol name)
+            if (info.RadioType == null && value.Contains("802.11"))
+            { info.RadioType = value; continue; }
+
+            // SSID (not BSSID): key doesn't contain "BSSID", value isn't a MAC address
+            if (info.Ssid == null && !key.Contains("BSSID", StringComparison.OrdinalIgnoreCase)
+                && key.Contains("SSID", StringComparison.OrdinalIgnoreCase))
+            { info.Ssid = value; continue; }
+
+            // Channel: a small integer (1-165), appears after signal in the output
+            if (info.Channel == null && info.SignalPercent.HasValue
+                && int.TryParse(value, out var ch) && ch >= 1 && ch <= 165)
+            { info.Channel = value; continue; }
+
+            // Receive/Transmit rate: value contains "Mbps" (universal unit)
+            if (info.ReceiveRate == null && value.Contains("Mbps") && !value.Contains("802.11"))
+            { info.ReceiveRate = value; continue; }
+            else if (info.ReceiveRate != null && info.TransmitRate == null && value.Contains("Mbps") && !value.Contains("802.11"))
+            { info.TransmitRate = value; continue; }
         }
 
         return info;
@@ -744,90 +761,254 @@ public class BandwidthTest : BaseTest
 }
 
 // ════════════════════════════════════════════════════════════════════
-// ID 08 – NAT Type
+// ID 08 – NAT Type (Two-Server STUN Detection)
 // ════════════════════════════════════════════════════════════════════
 public class NatTypeTest : BaseTest
 {
     public override string Id => "08";
     public override string Name => "NAT Type";
-    public override string Description => "Identifies the NAT type in use. Symmetric NAT prevents STUN-based direct connections, forcing TURN relay usage which increases latency.";
+    public override string Description => "Identifies the NAT type using two-server STUN comparison. Symmetric NAT is standard for enterprise security and works reliably with TURN relay transport.";
     public override TestCategory Category => TestCategory.UdpShortpath;
     public override TestPriority Priority => TestPriority.Important;
 
     protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
-        try
+        var details = new List<string>();
+        details.Add("Method: Two-server STUN comparison");
+        details.Add("A single UDP socket sends STUN binding requests to two servers.");
+        details.Add("If both return the same reflexive IP:port → Cone NAT (Shortpath works).");
+        details.Add("If they differ → Symmetric NAT (TURN relay recommended).");
+        details.Add("");
+
+        // Resolve TURN relay via DNS round-robin to get two distinct IPs
+        var turnHost = EndpointConfiguration.TurnRelayEndpoints[0];
+        var turnIps = new HashSet<IPAddress>();
+
+        for (int i = 0; i < 6 && turnIps.Count < 2; i++)
         {
-            var (natType, mappedAddress, mappedPort) = await PerformStunCheckAsync(ct);
-
-            result.ResultValue = natType;
-            result.DetailedInfo = $"STUN Server: {EndpointConfiguration.StunServer}:{EndpointConfiguration.StunPort}\n" +
-                                  $"Mapped Address: {mappedAddress}:{mappedPort}";
-
-            if (natType.Contains("Full Cone") || natType.Contains("Open"))
+            try
             {
-                result.Status = TestStatus.Passed;
-                result.RemediationText = "NAT type supports STUN-based direct connections (RDP Shortpath).";
+                var addrs = await Dns.GetHostAddressesAsync(turnHost, ct);
+                foreach (var a in addrs.Where(a => a.AddressFamily == AddressFamily.InterNetwork))
+                    turnIps.Add(a);
             }
-            else if (natType.Contains("Symmetric"))
+            catch { }
+            if (turnIps.Count < 2 && i < 5) await Task.Delay(200, ct);
+        }
+
+        var sortedIps = turnIps.OrderBy(ip => ip.ToString()).ToList();
+
+        // Fallback: if DNS only returns one IP, try stun.azure.com
+        if (sortedIps.Count < 2)
+        {
+            try
+            {
+                var fallbackAddrs = await Dns.GetHostAddressesAsync("stun.azure.com", ct);
+                var fallbackIp = fallbackAddrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (fallbackIp != null && !sortedIps.Contains(fallbackIp))
+                    sortedIps.Add(fallbackIp);
+            }
+            catch { }
+        }
+
+        if (sortedIps.Count < 2)
+        {
+            // Can't do two-server comparison — fall back to single-server with Google STUN
+            details.Add($"⚠ Could not resolve two distinct TURN IPs from {turnHost}.");
+            details.Add("Falling back to single-server STUN (cannot detect Symmetric NAT).");
+            details.Add("");
+
+            try
+            {
+                var mapped = await SendStunAndGetMapped(EndpointConfiguration.StunServer, EndpointConfiguration.StunPort, details, ct);
+                if (mapped != null)
+                {
+                    result.Status = TestStatus.Passed;
+                    result.ResultValue = $"UDP reachable — NAT type undetermined ({mapped})";
+                    result.RemediationText = "STUN binding succeeded. RDP Shortpath should be available, but NAT type could not be classified (only one server responded).";
+                }
+                else
+                {
+                    result.Status = TestStatus.Warning;
+                    result.ResultValue = "STUN failed — UDP may be blocked";
+                    result.RemediationText = "Could not get a STUN response. UDP connectivity to STUN/TURN servers may be blocked.";
+                }
+            }
+            catch (Exception ex)
             {
                 result.Status = TestStatus.Warning;
-                result.RemediationText = "Symmetric NAT detected. STUN-based direct connections (RDP Shortpath with public networks) will NOT work. " +
-                                         "Traffic will use TURN relay instead, which adds latency. Consider changing NAT configuration if possible.";
+                result.ResultValue = "Unable to determine NAT type";
+                details.Add($"STUN failed: {ex.Message}");
+            }
+
+            result.DetailedInfo = string.Join("\n", details);
+            result.RemediationUrl = EndpointConfiguration.Docs.NatType;
+            return;
+        }
+
+        var stunIp1 = sortedIps[0];
+        var stunIp2 = sortedIps[1];
+        details.Add($"Server 1: {stunIp1} ({turnHost})");
+        details.Add($"Server 2: {stunIp2} ({(turnIps.Contains(stunIp2) ? turnHost : "stun.azure.com")})");
+        details.Add("");
+
+        // Send STUN from the same local port to both servers
+        using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+        udp.Client.ReceiveTimeout = 5000;
+        var localPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+        details.Add($"Local UDP port: {localPort}");
+
+        var mapped1 = await SendStunViaUdpClient(udp, new IPEndPoint(stunIp1, EndpointConfiguration.TurnRelayPort), details, $"Server 1 ({stunIp1})", ct);
+        var mapped2 = await SendStunViaUdpClient(udp, new IPEndPoint(stunIp2, EndpointConfiguration.TurnRelayPort), details, $"Server 2 ({stunIp2})", ct);
+
+        details.Add("");
+
+        if (mapped1 == null && mapped2 == null)
+        {
+            details.Add("✗ Neither STUN server responded. UDP 3478 is likely blocked.");
+            result.Status = TestStatus.Warning;
+            result.ResultValue = "STUN failed — UDP 3478 may be blocked";
+            result.RemediationText = "Could not reach STUN/TURN servers on UDP 3478. Ensure this port is allowed outbound.";
+        }
+        else if (mapped1 == null || mapped2 == null)
+        {
+            var working = mapped1 ?? mapped2;
+            details.Add($"⚠ Only one server responded — reflexive endpoint: {working}");
+            details.Add("NAT type cannot be determined with only one response, but UDP works.");
+            result.Status = TestStatus.Passed;
+            result.ResultValue = $"UDP reachable — NAT type undetermined ({working})";
+            result.RemediationText = "STUN binding succeeded. RDP Shortpath should be available.";
+        }
+        else if (mapped1 == mapped2)
+        {
+            // Same reflexive endpoint = Endpoint-Independent Mapping (Cone NAT)
+            var reflexIp = mapped1.Split(':')[0];
+            var localAddrs = NetworkInterface.GetAllNetworkInterfaces()
+                .SelectMany(nic => nic.GetIPProperties().UnicastAddresses)
+                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                .Select(a => a.Address.ToString())
+                .ToHashSet();
+
+            string natLabel;
+            if (localAddrs.Contains(reflexIp))
+            {
+                natLabel = "Open Internet (No NAT)";
+                details.Add($"✓ Reflexive IP {reflexIp} matches a local interface — no NAT detected.");
             }
             else
             {
-                result.Status = TestStatus.Passed;
-                result.RemediationText = $"NAT type ({natType}) supports STUN-based connections.";
+                natLabel = "Cone NAT (Shortpath ready)";
+                details.Add($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
             }
 
-            result.RemediationUrl = EndpointConfiguration.Docs.NatType;
+            details.Add("");
+            details.Add($"NAT Type: {natLabel}");
+            details.Add("  Endpoint-Independent Mapping — the same external IP:port is used");
+            details.Add("  regardless of destination. RDP Shortpath (STUN + TURN) will work.");
+
+            result.Status = TestStatus.Passed;
+            result.ResultValue = $"{natLabel} ({mapped1})";
+            result.RemediationText = "NAT type supports STUN-based direct connections (RDP Shortpath).";
         }
-        catch (Exception ex)
+        else
         {
+            // Different reflexive endpoints = Symmetric NAT
+            var ip1 = mapped1.Split(':')[0];
+            var ip2 = mapped2.Split(':')[0];
+
+            details.Add($"✗ Servers returned different reflexive endpoints:");
+            details.Add($"    Server 1: {mapped1}");
+            details.Add($"    Server 2: {mapped2}");
+            details.Add("");
+
+            if (ip1 != ip2)
+                details.Add("NAT Type: Symmetric NAT (different external IP per destination)");
+            else
+                details.Add($"NAT Type: Symmetric NAT (same IP {ip1}, different ports)");
+
+            details.Add("  ✓ This is STANDARD and EXPECTED in enterprise environments.");
+            details.Add("  RDP Shortpath will use TURN relay for reliable UDP transport.");
+
             result.Status = TestStatus.Warning;
-            result.ResultValue = "Unable to determine NAT type";
-            result.DetailedInfo = $"STUN check failed: {ex.Message}\nUDP may be blocked on port {EndpointConfiguration.StunPort}.";
-            result.RemediationText = "Could not determine NAT type. This may indicate UDP is blocked on your network.";
+            result.ResultValue = "Symmetric NAT (Enterprise Standard) — TURN relay recommended";
+            result.RemediationText = "Symmetric NAT detected. This is typical for enterprise environments and provides strong security. " +
+                                     "Windows 365 will use TURN relay for reliable UDP transport. No action required.";
         }
+
+        result.DetailedInfo = string.Join("\n", details);
+        result.RemediationUrl = EndpointConfiguration.Docs.NatType;
     }
 
-    private static async Task<(string natType, string mappedAddress, int mappedPort)> PerformStunCheckAsync(CancellationToken ct)
+    /// <summary>
+    /// Sends a STUN binding request via an existing UdpClient and returns the reflexive IP:port.
+    /// Retries up to 2 times on timeout.
+    /// </summary>
+    private static async Task<string?> SendStunViaUdpClient(UdpClient udp, IPEndPoint server, List<string> details, string label, CancellationToken ct)
     {
-        var serverAddresses = await Dns.GetHostAddressesAsync(EndpointConfiguration.StunServer, ct);
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            try
+            {
+                var request = BuildStunBindingRequest();
+                await udp.SendAsync(request, request.Length, server);
+
+                var receiveTask = udp.ReceiveAsync(ct);
+                var completed = await Task.WhenAny(receiveTask.AsTask(), Task.Delay(3000, ct));
+
+                if (completed == receiveTask.AsTask())
+                {
+                    var response = await receiveTask;
+                    if (response.Buffer.Length >= 20 && ((response.Buffer[0] << 8) | response.Buffer[1]) == 0x0101)
+                    {
+                        var mapped = ParseStunMappedAddress(response.Buffer);
+                        if (mapped != null)
+                        {
+                            details.Add($"  {label}: reflexive = {mapped}" + (attempt > 1 ? $" (attempt {attempt})" : ""));
+                            return mapped;
+                        }
+                    }
+                    details.Add($"  {label}: invalid STUN response ({response.Buffer.Length} bytes)");
+                    return null;
+                }
+                // Timeout — retry
+            }
+            catch { /* Send/receive error — retry */ }
+        }
+
+        details.Add($"  {label}: no response after 2 attempts");
+        return null;
+    }
+
+    /// <summary>
+    /// Sends a STUN binding request to a named server (single-shot fallback).
+    /// </summary>
+    private static async Task<string?> SendStunAndGetMapped(string host, int port, List<string> details, CancellationToken ct)
+    {
+        var serverAddresses = await Dns.GetHostAddressesAsync(host, ct);
         var serverIp = serverAddresses.First(a => a.AddressFamily == AddressFamily.InterNetwork);
 
-        using var udpClient = new UdpClient(0, AddressFamily.InterNetwork);
-        udpClient.Client.ReceiveTimeout = 5000;
+        using var udp = new UdpClient(0, AddressFamily.InterNetwork);
+        udp.Client.ReceiveTimeout = 5000;
 
-        var localEndpoint = (IPEndPoint)udpClient.Client.LocalEndPoint!;
-
-        // Build STUN Binding Request (RFC 5389)
         var request = BuildStunBindingRequest();
-        await udpClient.SendAsync(request, request.Length, new IPEndPoint(serverIp, EndpointConfiguration.StunPort));
+        await udp.SendAsync(request, request.Length, new IPEndPoint(serverIp, port));
 
-        var receiveTask = udpClient.ReceiveAsync(ct);
+        var receiveTask = udp.ReceiveAsync(ct);
         var completed = await Task.WhenAny(receiveTask.AsTask(), Task.Delay(5000, ct));
 
-        if (completed != receiveTask.AsTask())
-            throw new TimeoutException("STUN request timed out");
+        if (completed == receiveTask.AsTask())
+        {
+            var response = await receiveTask;
+            var mapped = ParseStunMappedAddress(response.Buffer);
+            if (mapped != null)
+            {
+                details.Add($"  {host} ({serverIp}): reflexive = {mapped}");
+                return mapped;
+            }
+        }
 
-        var response = await receiveTask;
-        var (mappedAddress, mappedPort) = ParseStunResponse(response.Buffer);
-
-        // Determine NAT type by comparing local vs mapped
-        string natType;
-        if (mappedAddress == GetLocalIpAddress() && mappedPort == localEndpoint.Port)
-            natType = "Open Internet (No NAT)";
-        else if (mappedPort == localEndpoint.Port)
-            natType = "Full Cone NAT";
-        else
-            natType = "Restricted/Port-Restricted NAT";
-
-        // For full NAT type detection, we'd need a second STUN test to a different endpoint
-        // and compare the mapped addresses. For now, this provides a useful indicator.
-
-        return (natType, mappedAddress, mappedPort);
+        details.Add($"  {host} ({serverIp}): no response");
+        return null;
     }
 
     private static byte[] BuildStunBindingRequest()
@@ -849,58 +1030,44 @@ public class NatTypeTest : BaseTest
         return request;
     }
 
-    private static (string address, int port) ParseStunResponse(byte[] data)
-    {
-        // Skip header (20 bytes), parse attributes
-        int offset = 20;
-        while (offset < data.Length - 4)
-        {
-            int attrType = (data[offset] << 8) | data[offset + 1];
-            int attrLen = (data[offset + 2] << 8) | data[offset + 3];
-            offset += 4;
-
-            // XOR-MAPPED-ADDRESS (0x0020) or MAPPED-ADDRESS (0x0001)
-            if (attrType == 0x0020 && attrLen >= 8)
-            {
-                // XOR-MAPPED-ADDRESS
-                int port = ((data[offset + 2] << 8) | data[offset + 3]) ^ 0x2112;
-                byte[] ip =
-                [
-                    (byte)(data[offset + 4] ^ 0x21),
-                    (byte)(data[offset + 5] ^ 0x12),
-                    (byte)(data[offset + 6] ^ 0xA4),
-                    (byte)(data[offset + 7] ^ 0x42)
-                ];
-                return (new IPAddress(ip).ToString(), port);
-            }
-            else if (attrType == 0x0001 && attrLen >= 8)
-            {
-                // MAPPED-ADDRESS
-                int port = (data[offset + 2] << 8) | data[offset + 3];
-                byte[] ip = [data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]];
-                return (new IPAddress(ip).ToString(), port);
-            }
-
-            offset += attrLen;
-            // Pad to 4-byte boundary
-            if (attrLen % 4 != 0) offset += 4 - (attrLen % 4);
-        }
-
-        throw new InvalidOperationException("No mapped address found in STUN response");
-    }
-
-    private static string GetLocalIpAddress()
+    /// <summary>
+    /// Parses XOR-MAPPED-ADDRESS or MAPPED-ADDRESS from a STUN response.
+    /// Returns "IP:port" string or null.
+    /// </summary>
+    private static string? ParseStunMappedAddress(byte[] data)
     {
         try
         {
-            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            socket.Connect("8.8.8.8", 80);
-            return ((IPEndPoint)socket.LocalEndPoint!).Address.ToString();
+            int offset = 20;
+            while (offset + 4 <= data.Length)
+            {
+                int attrType = (data[offset] << 8) | data[offset + 1];
+                int attrLen = (data[offset + 2] << 8) | data[offset + 3];
+
+                if (attrType == 0x0020 && attrLen >= 8) // XOR-MAPPED-ADDRESS
+                {
+                    int port = ((data[offset + 6] << 8) | data[offset + 7]) ^ 0x2112;
+                    byte[] ip =
+                    [
+                        (byte)(data[offset + 8] ^ 0x21),
+                        (byte)(data[offset + 9] ^ 0x12),
+                        (byte)(data[offset + 10] ^ 0xA4),
+                        (byte)(data[offset + 11] ^ 0x42)
+                    ];
+                    return $"{new IPAddress(ip)}:{port}";
+                }
+                else if (attrType == 0x0001 && attrLen >= 8) // MAPPED-ADDRESS
+                {
+                    int port = (data[offset + 6] << 8) | data[offset + 7];
+                    return $"{data[offset + 8]}.{data[offset + 9]}.{data[offset + 10]}.{data[offset + 11]}:{port}";
+                }
+
+                offset += 4 + attrLen;
+                if (attrLen % 4 != 0) offset += 4 - (attrLen % 4);
+            }
         }
-        catch
-        {
-            return "0.0.0.0";
-        }
+        catch { }
+        return null;
     }
 }
 

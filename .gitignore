@@ -24,3 +24,19 @@ gen_lookup.py
 gen_gw_lookup.py
 gen_gw_lookup2.py
 gen_gw_final.py
+
+# Developer working files
+_push.ps1
+_push_result.json
+_push_err.txt
+_push_stderr.txt
+_push_ec.txt
+push_result.txt
+git_status.txt
+gitcheck.txt
+_notes.txt
+_prev.html
+_git_head.html
+scanner_diff.txt
+test_url.txt
+_release_notes*.md

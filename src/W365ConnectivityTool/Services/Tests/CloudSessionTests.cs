@@ -135,7 +135,7 @@ public class TransportProtocolTest : BaseTest
                         131 => "Connection Accepted",
                         140 => "Transport Negotiated",
                         141 => "UDP Connected",
-                        142 => "UDP Failed (TCP Fallback)",
+                        142 => "TCP Transport (UDP Unavailable)",
                         143 => "RDP Shortpath Connected",
                         _ => $"Event {evt.EventId}"
                     };
@@ -360,8 +360,8 @@ public class UdpReadinessTest : BaseTest
         }
         else
         {
-            sb.AppendLine("✗ UDP connectivity to STUN servers failed.");
-            sb.AppendLine("  RDP Shortpath will NOT be available — connections will use TCP.");
+            sb.AppendLine("✗ UDP connectivity to TURN relay servers failed.");
+            sb.AppendLine("  UDP 3478 is essential for optimal Windows 365 performance.");
             sb.AppendLine();
             sb.AppendLine("Common causes:");
             sb.AppendLine("  • Firewall blocking outbound UDP 3478");
@@ -369,10 +369,10 @@ public class UdpReadinessTest : BaseTest
             sb.AppendLine("  • VPN tunneling all traffic (no UDP passthrough)");
             sb.AppendLine("  • Corporate SWG blocking non-HTTP traffic");
 
-            result.Status = TestStatus.Warning;
-            result.ResultValue = "UDP blocked — RDP Shortpath unavailable";
-            result.RemediationText = "UDP 3478 outbound is blocked. Without this, RDP Shortpath cannot be used and connections will fall back to TCP, " +
-                                     "resulting in higher latency. Allow UDP 3478 outbound to Microsoft STUN/TURN relay servers.";
+            result.Status = TestStatus.Error;
+            result.ResultValue = "UDP 3478 blocked — Critical for optimal performance";
+            result.RemediationText = "UDP 3478 outbound is blocked. This port is essential for Windows 365 performance. " +
+                                     "Open UDP 3478 outbound to Microsoft STUN/TURN relay servers.";
             result.RemediationUrl = EndpointConfiguration.Docs.TurnRelay;
         }
 

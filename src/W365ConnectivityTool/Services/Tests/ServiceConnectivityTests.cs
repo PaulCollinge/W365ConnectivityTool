@@ -1827,39 +1827,37 @@ public class ProxyVpnDetectionTest : BaseTest
             }
         }
 
-        // 2b. Check WinHTTP proxy (often different from WinINET/system proxy)
+        // 2b. Check WinHTTP proxy — read from registry (locale-independent)
         try
         {
-            var psi = new ProcessStartInfo("netsh", "winhttp show proxy")
+            bool winHttpProxyDetected = false;
+            string winHttpDetail = "";
+            using var connKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections");
+            var winHttpBytes = connKey?.GetValue("WinHttpSettings") as byte[];
+            if (winHttpBytes != null && winHttpBytes.Length > 8)
             {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi);
-            if (proc != null)
-            {
-                var output = await proc.StandardOutput.ReadToEndAsync(ct);
-                await proc.WaitForExitAsync(ct);
-                if (output.Contains("Direct access", StringComparison.OrdinalIgnoreCase))
+                // Byte 8 flags: bit 0x02 = manual proxy configured
+                if ((winHttpBytes[8] & 0x02) != 0)
                 {
-                    details.Add("✓ WinHTTP proxy: Direct access (no proxy)");
-                }
-                else
-                {
-                    var proxyLine = output.Split('\n')
-                        .FirstOrDefault(l => l.Contains("Proxy Server", StringComparison.OrdinalIgnoreCase));
-                    if (proxyLine != null)
+                    winHttpProxyDetected = true;
+                    if (winHttpBytes.Length > 15)
                     {
-                        issues.Add($"WinHTTP proxy configured: {proxyLine.Trim()}");
-                        details.Add($"⚠ WinHTTP {proxyLine.Trim()}");
+                        int proxyLen = BitConverter.ToInt32(winHttpBytes, 12);
+                        if (proxyLen > 0 && winHttpBytes.Length >= 16 + proxyLen)
+                            winHttpDetail = System.Text.Encoding.ASCII.GetString(winHttpBytes, 16, proxyLen);
                     }
-
-                    var bypassLine = output.Split('\n')
-                        .FirstOrDefault(l => l.Contains("Bypass List", StringComparison.OrdinalIgnoreCase));
-                    if (bypassLine != null)
-                        details.Add($"  Bypass: {bypassLine.Trim()}");
                 }
+            }
+
+            if (winHttpProxyDetected)
+            {
+                issues.Add($"WinHTTP proxy configured: {winHttpDetail}");
+                details.Add($"⚠ WinHTTP proxy configured: {winHttpDetail}");
+            }
+            else
+            {
+                details.Add("✓ WinHTTP proxy: Direct access (no proxy)");
             }
         }
         catch { details.Add("— Could not check WinHTTP proxy settings"); }
@@ -2201,19 +2199,17 @@ public class ProxyVpnDetectionTest : BaseTest
     private static List<RtEntry> ParseRoutePrintOutput(string output)
     {
         var routes = new List<RtEntry>();
-        bool inTable = false;
+        // Parse locale-independently: detect route data by checking whether the
+        // first field is a valid IPv4 address (headers/labels are never IPs).
         foreach (var rawLine in output.Split('\n'))
         {
             var line = rawLine.Trim();
-            if (line.StartsWith("Network Destination")) { inTable = true; continue; }
-            if (!inTable) continue;
             if (line.StartsWith("=") || string.IsNullOrWhiteSpace(line)) continue;
-            if (line.StartsWith("Persistent") || line.StartsWith("Default")) break;
 
             var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 5) continue;
-            if (!IPAddress.TryParse(parts[0], out var dest)) continue;
-            if (!IPAddress.TryParse(parts[1], out var mask)) continue;
+            if (!IPAddress.TryParse(parts[0], out var dest) || dest.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+            if (!IPAddress.TryParse(parts[1], out var mask) || mask.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
 
             uint destUint = IpToUint(dest);
             uint maskUint = IpToUint(mask);
@@ -2516,7 +2512,8 @@ public class TurnProxyVpnDetectionTest : BaseTest
         // 4. Check Windows Firewall for UDP 3478 block rules
         try
         {
-            var psi = new ProcessStartInfo("netsh", "advfirewall firewall show rule name=all dir=out")
+            // Use PowerShell Get-NetFirewallRule for locale-independent firewall check
+            var psi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | ForEach-Object { $pf = $_ | Get-NetFirewallPortFilter 2>$null; if($pf) { $pf.LocalPort + '|' + $pf.Protocol } }\"")
             {
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -2528,14 +2525,22 @@ public class TurnProxyVpnDetectionTest : BaseTest
                 var output = await proc.StandardOutput.ReadToEndAsync(ct);
                 await proc.WaitForExitAsync(ct);
 
-                if (output.Contains("3478") || output.Contains("UDP") && output.Contains("Block"))
-                {
-                    details.Add("⚠ Windows Firewall has outbound rules that may affect UDP 3478");
-                }
+                bool found3478Block = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Any(line =>
+                    {
+                        var parts = line.Trim().Split('|');
+                        if (parts.Length < 2) return false;
+                        var port = parts[0];
+                        var proto = parts[1];
+                        bool matchesPort = port == "Any" || port == "3478" || port.Split(',').Any(p => p.Trim() == "3478");
+                        bool matchesProto = proto.Contains("Any", StringComparison.OrdinalIgnoreCase) || proto.Contains("UDP", StringComparison.OrdinalIgnoreCase);
+                        return matchesPort && matchesProto;
+                    });
+
+                if (found3478Block)
+                    details.Add("⚠ Windows Firewall has outbound rules that may block UDP 3478");
                 else
-                {
-                    details.Add("✓ No obvious Windows Firewall blocks for UDP");
-                }
+                    details.Add("✓ No Windows Firewall rules blocking UDP 3478 detected");
             }
         }
         catch { details.Add("— Could not check Windows Firewall rules"); }

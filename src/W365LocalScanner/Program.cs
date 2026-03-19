@@ -10,6 +10,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
@@ -168,6 +169,7 @@ class Program
         {
             Console.WriteLine("╔══════════════════════════════════════════════════════╗");
             Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
+            Console.WriteLine($"║   Version {typeof(Program).Assembly.GetName().Version?.ToString() ?? "?"}{"".PadRight(42 - (typeof(Program).Assembly.GetName().Version?.ToString()?.Length ?? 1))}║");
             Console.WriteLine("╠══════════════════════════════════════════════════════╣");
             Console.WriteLine("║   Runs tests requiring local OS access.             ║");
             Console.WriteLine("║   Import results into the web diagnostics page.     ║");
@@ -355,6 +357,7 @@ class Program
         var output = new ScanOutput
         {
             Timestamp = DateTime.UtcNow,
+            ScannerVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
             MachineName = Environment.MachineName,
             OsVersion = Environment.OSVersion.ToString(),
             DotNetVersion = RuntimeInformation.FrameworkDescription,
@@ -375,6 +378,7 @@ class Program
         var output = new ScanOutput
         {
             Timestamp = DateTime.UtcNow,
+            ScannerVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
             MachineName = Environment.MachineName,
             OsVersion = Environment.OSVersion.ToString(),
             DotNetVersion = RuntimeInformation.FrameworkDescription,
@@ -909,21 +913,19 @@ class Program
     static List<RouteEntry> ParseRouteTable(string routePrintOutput)
     {
         var routes = new List<RouteEntry>();
-        bool inTable = false;
+        // Parse locale-independently: skip header/separator lines and detect route data
+        // by checking whether the first field is a valid IPv4 address.
         foreach (var rawLine in routePrintOutput.Split('\n'))
         {
             var line = rawLine.Trim();
-            if (line.StartsWith("Network Destination")) { inTable = true; continue; }
-            if (!inTable) continue;
             if (line.StartsWith("=") || string.IsNullOrWhiteSpace(line)) continue;
-            if (line.StartsWith("Persistent") || line.StartsWith("Default")) break;
 
             // Fields: NetworkDestination  Netmask  Gateway  Interface  Metric
             var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 5) continue;
 
-            if (!IPAddress.TryParse(parts[0], out var dest)) continue;
-            if (!IPAddress.TryParse(parts[1], out var mask)) continue;
+            if (!IPAddress.TryParse(parts[0], out var dest) || dest.AddressFamily != AddressFamily.InterNetwork) continue;
+            if (!IPAddress.TryParse(parts[1], out var mask) || mask.AddressFamily != AddressFamily.InterNetwork) continue;
 
             uint destUint = IpToUint32(dest);
             uint maskUint = IpToUint32(mask);
@@ -1199,6 +1201,56 @@ class Program
     //  LOCAL ENVIRONMENT TESTS
     // ═══════════════════════════════════════════
 
+    /// <summary>
+    /// Checks whether a Wi-Fi adapter is connected using the .NET NetworkInterface API (locale-independent).
+    /// </summary>
+    static bool IsWifiConnected()
+    {
+        return NetworkInterface.GetAllNetworkInterfaces()
+            .Any(n => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 &&
+                      n.OperationalStatus == OperationalStatus.Up);
+    }
+
+    /// <summary>
+    /// Parses netsh wlan show interfaces output locale-independently.
+    /// Field names are localized but the colon-separated format and value patterns are universal.
+    /// </summary>
+    static (string? signal, string? ssid, string? radioType, string? channel) ParseNetshWlanFields(string output)
+    {
+        string? signal = null, ssid = null, radioType = null, channel = null;
+        var lines = output.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            // All fields use " : " as key-value separator
+            var colonIdx = line.IndexOf(" : ");
+            if (colonIdx < 0) continue;
+            var value = line.Substring(colonIdx + 3).Trim();
+
+            // Signal: value is always "<digits>%" (e.g. "85%")
+            if (signal == null && Regex.IsMatch(value, @"^\d+%$"))
+            { signal = value; continue; }
+
+            // Radio type: value always contains "802.11" (e.g. "802.11ax", "802.11ac")
+            if (radioType == null && value.Contains("802.11"))
+            { radioType = value; continue; }
+
+            // SSID (not BSSID): key does NOT contain "BSSID" and value is not a MAC address
+            // BSSID values look like "aa:bb:cc:dd:ee:ff"
+            var key = line.Substring(0, colonIdx).Trim();
+            if (ssid == null && key.Length <= 10 && !key.Contains("BSSID", StringComparison.OrdinalIgnoreCase)
+                && !Regex.IsMatch(value, @"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+                && key.Contains("SSID", StringComparison.OrdinalIgnoreCase))
+            { ssid = value; continue; }
+
+            // Channel: value is a small integer (1-165), appears after signal in the output
+            // Guard: only match after we found signal (to avoid matching other numeric fields)
+            if (channel == null && signal != null && int.TryParse(value, out var ch) && ch >= 1 && ch <= 165)
+            { channel = value; continue; }
+        }
+        return (signal, ssid, radioType, channel);
+    }
+
     static async Task<TestResult> RunWifiStrength()
     {
         var result = new TestResult { Id = "L-LE-04", Name = "WiFi Signal Strength", Category = "local" };
@@ -1212,16 +1264,15 @@ class Program
             var output = await proc!.StandardOutput.ReadToEndAsync();
             await proc.WaitForExitAsync();
 
-            if (string.IsNullOrWhiteSpace(output) || output.Contains("not running"))
+            if (string.IsNullOrWhiteSpace(output))
             {
                 result.Status = "Skipped";
                 result.ResultValue = "No wireless interface detected (wired connection)";
                 return result;
             }
 
-            // Check if there's a connected WiFi profile — "State" line should say "connected"
-            var stateLine = output.Split('\n').FirstOrDefault(l => l.Trim().StartsWith("State"))?.Split(':').LastOrDefault()?.Trim();
-            if (stateLine == null || !stateLine.Equals("connected", StringComparison.OrdinalIgnoreCase))
+            // Check Wi-Fi connection state using .NET API (locale-independent)
+            if (!IsWifiConnected())
             {
                 result.Status = "Skipped";
                 result.ResultValue = "Not connected by WiFi";
@@ -1229,11 +1280,8 @@ class Program
                 return result;
             }
 
-            var lines = output.Split('\n');
-            var signal = lines.FirstOrDefault(l => l.Trim().StartsWith("Signal"))?.Split(':').LastOrDefault()?.Trim();
-            var ssid = lines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"))?.Split(':').LastOrDefault()?.Trim();
-            var radioType = lines.FirstOrDefault(l => l.Trim().StartsWith("Radio type"))?.Split(':').LastOrDefault()?.Trim();
-            var channel = lines.FirstOrDefault(l => l.Trim().StartsWith("Channel"))?.Split(':').LastOrDefault()?.Trim();
+            // Parse fields locale-independently by value patterns
+            var (signal, ssid, radioType, channel) = ParseNetshWlanFields(output);
 
             result.DetailedInfo = output.Trim();
 
@@ -1286,7 +1334,7 @@ class Program
                 return result;
             }
 
-            var ping = new Ping();
+            using var ping = new Ping();
             var times = new List<long>();
             for (int i = 0; i < 5; i++)
             {
@@ -1605,7 +1653,7 @@ class Program
             sb.AppendLine(fwOutput.Trim());
             sb.AppendLine();
 
-            // Check for blocking rules on key ports
+            // Check for blocking rules on key ports using PowerShell (locale-independent)
             var portsToCheck = new[] {
                 (443, "TCP", "HTTPS (RDP gateway, AFD, auth)"),
                 (3478, "UDP", "TURN relay (UDP Shortpath)"),
@@ -1613,46 +1661,50 @@ class Program
             };
 
             sb.AppendLine("═══ Outbound Blocking Rules ═══");
-            foreach (var (port, proto, desc) in portsToCheck)
+            try
             {
-                var blockPsi = new ProcessStartInfo("netsh",
-                    $"advfirewall firewall show rule name=all dir=out | findstr /C:\"Block\" /C:\"LocalPort\" /C:\"Protocol\" /C:\"Rule Name\"")
+                // Get-NetFirewallRule returns structured objects — no localized text parsing needed
+                var fwPsi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | ForEach-Object { $pf = $_ | Get-NetFirewallPortFilter 2>$null; if($pf) { $_.DisplayName + '|' + $pf.LocalPort + '|' + $pf.Protocol } }\"")
                 {
                     RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
                 };
-                using var blockProc = Process.Start(blockPsi);
-                var blockOutput = await blockProc!.StandardOutput.ReadToEndAsync();
-                await blockProc.WaitForExitAsync();
-
-                // Parse rule blocks — each rule is separated by blank lines
-                var rules = blockOutput.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var rule in rules)
+                using var fwProc = Process.Start(fwPsi);
+                var fwReadTask = fwProc!.StandardOutput.ReadToEndAsync();
+                if (await Task.WhenAny(fwReadTask, Task.Delay(30000)) == fwReadTask)
                 {
-                    if (!rule.Contains("Block", StringComparison.OrdinalIgnoreCase)) continue;
-                    var ruleLines = rule.Split('\n');
-                    var localPort = ruleLines.FirstOrDefault(l => l.Trim().StartsWith("LocalPort:", StringComparison.OrdinalIgnoreCase))
-                        ?.Split(':').LastOrDefault()?.Trim();
-                    var protocol = ruleLines.FirstOrDefault(l => l.Trim().StartsWith("Protocol:", StringComparison.OrdinalIgnoreCase))
-                        ?.Split(':').LastOrDefault()?.Trim();
-                    var ruleName = ruleLines.FirstOrDefault(l => l.Trim().StartsWith("Rule Name:", StringComparison.OrdinalIgnoreCase))
-                        ?.Substring(ruleLines.FirstOrDefault(l => l.Trim().StartsWith("Rule Name:"))?.IndexOf(':') + 1 ?? 0).Trim();
-
-                    if (localPort == null || protocol == null) continue;
-
-                    // Check if this rule blocks our port
-                    bool matchesPort = localPort == "Any" || localPort == port.ToString()
-                        || localPort.Split(',').Any(p => p.Trim() == port.ToString());
-                    bool matchesProto = protocol.Equals("Any", StringComparison.OrdinalIgnoreCase)
-                        || protocol.Equals(proto, StringComparison.OrdinalIgnoreCase);
-
-                    if (matchesPort && matchesProto)
+                    var fwRules = fwReadTask.Result;
+                    fwProc.WaitForExit(1000);
+                    foreach (var ruleLine in fwRules.Split('\n', StringSplitOptions.RemoveEmptyEntries))
                     {
-                        var issue = $"Outbound {proto} {port} ({desc}) blocked by rule: {ruleName}";
-                        issues.Add(issue);
-                        sb.AppendLine($"  ✗ {issue}");
+                        var ruleParts = ruleLine.Trim().Split('|');
+                        if (ruleParts.Length < 3) continue;
+                        var ruleName = ruleParts[0];
+                        var localPort = ruleParts[1];
+                        var protocol = ruleParts[2];
+
+                        foreach (var (port, proto, desc) in portsToCheck)
+                        {
+                            bool matchesPort = localPort == "Any" || localPort == port.ToString()
+                                || localPort.Split(',').Any(p => p.Trim() == port.ToString());
+                            bool matchesProto = protocol.Equals("Any", StringComparison.OrdinalIgnoreCase)
+                                || protocol.Equals(proto, StringComparison.OrdinalIgnoreCase);
+
+                            if (matchesPort && matchesProto)
+                            {
+                                var issue = $"Outbound {proto} {port} ({desc}) blocked by rule: {ruleName}";
+                                issues.Add(issue);
+                                sb.AppendLine($"  ✗ {issue}");
+                            }
+                        }
                     }
                 }
+                else
+                {
+                    try { fwProc.Kill(); } catch { }
+                    sb.AppendLine("  Firewall rule check timed out (30s) — skipped");
+                }
             }
+            catch { sb.AppendLine("  Could not enumerate firewall blocking rules"); }
 
             // Also check if msrdcw or mstsc is explicitly blocked
             var appBlockPsi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | Where-Object { $_.DisplayName -match 'Remote Desktop|RDP|msrdc|mstsc' } | Select-Object -Property DisplayName,Profile | Format-List\"")
@@ -1849,27 +1901,26 @@ class Program
             var ifOutput = await ifProc!.StandardOutput.ReadToEndAsync();
             await ifProc.WaitForExitAsync();
 
-            if (string.IsNullOrWhiteSpace(ifOutput) || ifOutput.Contains("not running"))
+            if (string.IsNullOrWhiteSpace(ifOutput))
             {
                 result.Status = "Skipped";
                 result.ResultValue = "No wireless interface detected (wired connection)";
                 return result;
             }
 
-            var stateLine = ifOutput.Split('\n').FirstOrDefault(l => l.Trim().StartsWith("State"))?.Split(':').LastOrDefault()?.Trim();
-            if (stateLine == null || !stateLine.Equals("connected", StringComparison.OrdinalIgnoreCase))
+            // Check Wi-Fi connection state using .NET API (locale-independent)
+            if (!IsWifiConnected())
             {
                 result.Status = "Skipped";
                 result.ResultValue = "Not connected by WiFi";
                 return result;
             }
 
-            // Get current channel and band
+            // Get current channel and band using locale-independent parser
+            var (_, mySsid, myBand, myChannel) = ParseNetshWlanFields(ifOutput);
             var ifLines = ifOutput.Split('\n');
-            var myChannel = ifLines.FirstOrDefault(l => l.Trim().StartsWith("Channel"))?.Split(':').LastOrDefault()?.Trim();
-            var myBand = ifLines.FirstOrDefault(l => l.Trim().StartsWith("Radio type"))?.Split(':').LastOrDefault()?.Trim();
-            var mySsid = ifLines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"))?.Split(':').LastOrDefault()?.Trim();
-            var myBssid = ifLines.FirstOrDefault(l => l.Trim().StartsWith("BSSID"))?.Split(new[] { ':' }, 2).LastOrDefault()?.Trim();
+            var myBssid = ifLines.FirstOrDefault(l => l.Contains(" : ") && Regex.IsMatch(l.Split(new[] { " : " }, 2, StringSplitOptions.None).LastOrDefault()?.Trim() ?? "", @"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"))
+                ?.Split(new[] { " : " }, 2, StringSplitOptions.None).LastOrDefault()?.Trim();
 
             int currentChannel = int.TryParse(myChannel, out var ch) ? ch : 0;
 
@@ -1896,24 +1947,38 @@ class Program
             var bssidBlocks = output.Split(new[] { "BSSID" }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var block in bssidBlocks)
             {
-                // SSID is in the line before BSSID
                 var blockLines = block.Split('\n');
-                // Try to find SSID from the block preamble
-                var ssidLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("SSID") && !l.Trim().StartsWith("BSSID"));
-                if (ssidLine != null)
+
+                // Parse fields locale-independently using value patterns
+                string? blockSsid = null, blockSig = null, blockCh = null, blockRadio = null;
+                foreach (var bLine in blockLines)
                 {
-                    var parts = ssidLine.Split(new[] { ':' }, 2);
-                    if (parts.Length > 1) currentSsid = parts[1].Trim();
+                    var cIdx = bLine.IndexOf(" : ");
+                    if (cIdx < 0) continue;
+                    var bKey = bLine.Substring(0, cIdx).Trim();
+                    var bVal = bLine.Substring(cIdx + 3).Trim();
+
+                    if (blockSsid == null && !Regex.IsMatch(bVal, @"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+                        && bKey.Length <= 10 && !bKey.Contains("BSSID", StringComparison.OrdinalIgnoreCase)
+                        && !Regex.IsMatch(bVal, @"^\d+%$") && !bVal.Contains("802.11"))
+                    { blockSsid = bVal; continue; }
+
+                    if (blockSig == null && Regex.IsMatch(bVal, @"^\d+%$"))
+                    { blockSig = bVal; continue; }
+
+                    if (blockRadio == null && bVal.Contains("802.11"))
+                    { blockRadio = bVal; continue; }
+
+                    if (blockCh == null && blockSig != null && int.TryParse(bVal, out var chVal) && chVal >= 1 && chVal <= 165)
+                    { blockCh = bVal; continue; }
                 }
 
-                var chLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("Channel"))?.Split(':').LastOrDefault()?.Trim();
-                var sigLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("Signal"))?.Split(':').LastOrDefault()?.Trim();
-                var radioLine = blockLines.FirstOrDefault(l => l.Trim().StartsWith("Radio type"))?.Split(':').LastOrDefault()?.Trim();
+                if (blockSsid != null) currentSsid = blockSsid;
 
-                if (chLine != null && int.TryParse(chLine, out var c) && sigLine != null)
+                if (blockCh != null && int.TryParse(blockCh, out var c) && blockSig != null)
                 {
-                    var sig = int.TryParse(sigLine.Replace("%", ""), out var s) ? s : 0;
-                    networks.Add((currentSsid, c, sig, radioLine ?? ""));
+                    var sig = int.TryParse(blockSig.Replace("%", ""), out var s) ? s : 0;
+                    networks.Add((currentSsid, c, sig, blockRadio ?? ""));
                 }
             }
 
@@ -2861,31 +2926,40 @@ class Program
             }
             catch { sb.AppendLine("Could not check system proxy"); }
 
-            // WinHTTP proxy (with 10s timeout)
+            // WinHTTP proxy — read from registry (locale-independent)
             try
             {
-                var psi = new ProcessStartInfo("netsh", "winhttp show proxy")
+                // The WinHttpSettings binary value at offset 8 contains proxy flags:
+                // 0x01 = direct access, 0x03 = manual proxy configured
+                // Alternatively, the DefaultConnectionSettings value works the same way.
+                bool winHttpProxyDetected = false;
+                string winHttpDetail = "";
+                using var connKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections");
+                var winHttpBytes = connKey?.GetValue("WinHttpSettings") as byte[];
+                if (winHttpBytes != null && winHttpBytes.Length > 8)
                 {
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi);
-                var readTask = proc!.StandardOutput.ReadToEndAsync();
-                if (await Task.WhenAny(readTask, Task.Delay(10000)) == readTask)
-                {
-                    var output = readTask.Result;
-                    proc.WaitForExit(1000);
-                    if (output.Contains("Direct access"))
-                        sb.AppendLine("✓ WinHTTP: Direct access (no proxy)");
-                    else
+                    // Byte 8 is the flags: bit 0x02 means manual proxy is set
+                    if ((winHttpBytes[8] & 0x02) != 0)
                     {
-                        issues.Add("WinHTTP proxy configured");
-                        sb.AppendLine($"⚠ WinHTTP proxy configured:\n{output.Trim()}");
+                        winHttpProxyDetected = true;
+                        // Bytes 12..12+N contain the proxy string (length at offset 12, string at 12+4)
+                        if (winHttpBytes.Length > 15)
+                        {
+                            int proxyLen = BitConverter.ToInt32(winHttpBytes, 12);
+                            if (proxyLen > 0 && winHttpBytes.Length >= 16 + proxyLen)
+                                winHttpDetail = System.Text.Encoding.ASCII.GetString(winHttpBytes, 16, proxyLen);
+                        }
                     }
+                }
+
+                if (winHttpProxyDetected)
+                {
+                    issues.Add("WinHTTP proxy configured");
+                    sb.AppendLine($"⚠ WinHTTP proxy configured: {winHttpDetail}");
                 }
                 else
                 {
-                    try { proc.Kill(); } catch { }
-                    sb.AppendLine("⚠ WinHTTP proxy check timed out");
+                    sb.AppendLine("✓ WinHTTP: Direct access (no proxy)");
                 }
             }
             catch { sb.AppendLine("Could not check WinHTTP proxy"); }
@@ -3843,7 +3917,8 @@ class Program
             // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall (30s timeout)
             try
             {
-                var psi = new ProcessStartInfo("netsh", "advfirewall firewall show rule name=all dir=out")
+                // Use PowerShell for locale-independent firewall check
+                var psi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | ForEach-Object { $pf = $_ | Get-NetFirewallPortFilter 2>$null; if($pf) { $pf.LocalPort + '|' + $pf.Protocol } }\"")
                 {
                     RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
                 };
@@ -3854,19 +3929,18 @@ class Program
                     var output = fwReadTask.Result;
                     proc.WaitForExit(1000);
 
-                    // Parse rule blocks and check for specific UDP 3478 block rules
-                    var ruleBlocks = output.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-                    bool found3478Block = false;
-                    foreach (var block in ruleBlocks)
-                    {
-                        if (block.Contains("3478") &&
-                            block.Contains("Block", StringComparison.OrdinalIgnoreCase) &&
-                            block.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                    bool found3478Block = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                        .Any(line =>
                         {
-                            found3478Block = true;
-                            break;
-                        }
-                    }
+                            var ruleParts = line.Trim().Split('|');
+                            if (ruleParts.Length < 2) return false;
+                            var port = ruleParts[0];
+                            var proto = ruleParts[1];
+                            bool matchesPort = port == "Any" || port == "3478" || port.Split(',').Any(p => p.Trim() == "3478");
+                            bool matchesProto = proto.Contains("Any", StringComparison.OrdinalIgnoreCase) || proto.Contains("UDP", StringComparison.OrdinalIgnoreCase);
+                            return matchesPort && matchesProto;
+                        });
+
                     if (found3478Block)
                     {
                         issues.Add("Firewall rule blocks UDP 3478");
@@ -4274,16 +4348,23 @@ class Program
                             if (count <= 15 && msg.Length is > 0 and < 200)
                                 sb.AppendLine($"    {msg}");
                             if (eid == 1024) hasConnection = true;
-                            // Check for UDP transport indicators in message text
-                            if (msg.Contains("UDP", StringComparison.OrdinalIgnoreCase) ||
+                            // Detect UDP transport using event IDs (locale-independent)
+                            // Event 1103 = Multi-transport Established (UDP connected)
+                            // Event 1105 = Multi-transport Info (UDP status update)
+                            if (eid is 1103 or 1105)
+                            {
+                                udpConnected = true;
+                                protocol = "UDP (RDP Shortpath)";
+                            }
+                            // Also check message text for "UDP"/"Shortpath" as supplementary signal
+                            else if (msg.Contains("UDP", StringComparison.OrdinalIgnoreCase) ||
                                 msg.Contains("Shortpath", StringComparison.OrdinalIgnoreCase))
                             {
-                                if (msg.Contains("success", StringComparison.OrdinalIgnoreCase) ||
-                                    msg.Contains("connected", StringComparison.OrdinalIgnoreCase) ||
-                                    msg.Contains("established", StringComparison.OrdinalIgnoreCase) ||
-                                    eid is 1103 or 1105)
+                                // Event 1102 = Multi-transport Initiated means UDP was attempted
+                                if (eid == 1102)
                                 { udpConnected = true; protocol = "UDP (RDP Shortpath)"; }
-                                else if (msg.Contains("fail", StringComparison.OrdinalIgnoreCase))
+                                else if (msg.Contains("fail", StringComparison.OrdinalIgnoreCase) ||
+                                         msg.Contains("Fehler", StringComparison.OrdinalIgnoreCase))
                                 { udpFailed = true; if (string.IsNullOrEmpty(protocol)) protocol = "TCP (Reverse Connect)"; }
                             }
                         }
@@ -4325,16 +4406,14 @@ class Program
             {
                 try
                 {
-                    if (PerformanceCounterCategory.Exists("RemoteFX Network"))
+                    if (PerfCategoryExists("RemoteFX Network"))
                     {
-                        var cat = new PerformanceCounterCategory("RemoteFX Network");
+                        var cat = PerfCategory("RemoteFX Network");
                         var instances = cat.GetInstanceNames();
                         if (instances.Length > 0)
                         {
-                            using var pc = new PerformanceCounter("RemoteFX Network", "Current UDP Bandwidth", instances[0], true);
-                            pc.NextValue(); Thread.Sleep(100);
-                            var bw = pc.NextValue();
-                            if (bw > 0) { udpConnected = true; sb.AppendLine($"\nRemoteFX UDP Bandwidth: {bw:F0} KB/s (active)"); }
+                            var bw = TryReadPerfCounter("RemoteFX Network", "Current UDP Bandwidth", instances[0]);
+                            if (bw != null && bw > 0) { udpConnected = true; sb.AppendLine($"\nRemoteFX UDP Bandwidth: {bw:F0} KB/s (active)"); }
                         }
                     }
                 }
@@ -4554,9 +4633,9 @@ class Program
                 {
                     try
                     {
-                        if (PerformanceCounterCategory.Exists("RemoteFX Network"))
+                        if (PerfCategoryExists("RemoteFX Network"))
                         {
-                            var cat = new PerformanceCounterCategory("RemoteFX Network");
+                            var cat = PerfCategory("RemoteFX Network");
                             var instances = cat.GetInstanceNames();
                             if (instances.Length > 0)
                             {
@@ -4717,9 +4796,9 @@ class Program
             {
                 try
                 {
-                    if (PerformanceCounterCategory.Exists("RemoteFX Graphics"))
+                    if (PerfCategoryExists("RemoteFX Graphics"))
                     {
-                        var cat = new PerformanceCounterCategory("RemoteFX Graphics");
+                        var cat = PerfCategory("RemoteFX Graphics");
                         var instances = cat.GetInstanceNames();
                         if (instances.Length > 0)
                         {
@@ -4733,9 +4812,9 @@ class Program
                             v = TryReadPerfCounter("RemoteFX Graphics", "Frame Quality", inst); if (v.HasValue) qualityList.Add(v.Value);
                         }
                     }
-                    if (PerformanceCounterCategory.Exists("RemoteFX Network"))
+                    if (PerfCategoryExists("RemoteFX Network"))
                     {
-                        var cat = new PerformanceCounterCategory("RemoteFX Network");
+                        var cat = PerfCategory("RemoteFX Network");
                         var instances = cat.GetInstanceNames();
                         if (instances.Length > 0)
                         {
@@ -4939,9 +5018,9 @@ class Program
                 {
                     try
                     {
-                        if (PerformanceCounterCategory.Exists("RemoteFX Graphics"))
+                        if (PerfCategoryExists("RemoteFX Graphics"))
                         {
-                            var cat = new PerformanceCounterCategory("RemoteFX Graphics");
+                            var cat = PerfCategory("RemoteFX Graphics");
                             var instances = cat.GetInstanceNames();
                             if (instances.Length > 0)
                             {
@@ -5562,7 +5641,7 @@ class Program
                 if (userGeo.TryGetProperty("loc", out var loc))
                 {
                     var parts = loc.GetString()?.Split(',');
-                    if (parts?.Length == 2 && double.TryParse(parts[0], out userLat) && double.TryParse(parts[1], out userLon))
+                    if (parts?.Length == 2 && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out userLat) && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out userLon))
                         hasUserGeo = true;
                 }
                 sb.AppendLine($"Your egress location: {userCity}, {userRegion}, {userCountry}");
@@ -5608,7 +5687,7 @@ class Program
                     if (hasUserGeo && gwGeo.TryGetProperty("loc", out var gloc))
                     {
                         var parts = gloc.GetString()?.Split(',');
-                        if (parts?.Length == 2 && double.TryParse(parts[0], out var gwLat) && double.TryParse(parts[1], out var gwLon))
+                        if (parts?.Length == 2 && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLat) && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLon))
                         {
                             var distKm = HaversineDistance(userLat, userLon, gwLat, gwLon);
                             sb.AppendLine($"Distance from you: ~{distKm:F0} km");
@@ -5682,7 +5761,7 @@ class Program
                         if (hasUserGeo && turnGeo.TryGetProperty("loc", out var tloc))
                         {
                             var parts = tloc.GetString()?.Split(',');
-                            if (parts?.Length == 2 && double.TryParse(parts[0], out var tLat) && double.TryParse(parts[1], out var tLon))
+                            if (parts?.Length == 2 && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tLat) && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tLon))
                             {
                                 var distKm = HaversineDistance(userLat, userLon, tLat, tLon);
                                 sb.AppendLine($"Distance from you: ~{distKm:F0} km");
@@ -5747,12 +5826,66 @@ class Program
     {
         try
         {
-            using var pc = new PerformanceCounter(category, counter, instance, readOnly: true);
+            var localCat = GetLocalizedPerfName(category) ?? category;
+            var localCounter = GetLocalizedPerfName(counter) ?? counter;
+            using var pc = new PerformanceCounter(localCat, localCounter, instance, readOnly: true);
             pc.NextValue();
             Thread.Sleep(100);
             return pc.NextValue();
         }
         catch { return null; }
+    }
+
+    static bool PerfCategoryExists(string englishName)
+    {
+        var localName = GetLocalizedPerfName(englishName) ?? englishName;
+        return PerformanceCounterCategory.Exists(localName);
+    }
+
+    static PerformanceCounterCategory PerfCategory(string englishName)
+    {
+        var localName = GetLocalizedPerfName(englishName) ?? englishName;
+        return new PerformanceCounterCategory(localName);
+    }
+
+    /// <summary>
+    /// Maps an English performance counter/category name to the current locale's name
+    /// by reading Perflib registry keys. Returns null if mapping is not found (falls back to English).
+    /// </summary>
+    static string? GetLocalizedPerfName(string englishName)
+    {
+        try
+        {
+            // Read English name→index mapping from the 009 (English) Perflib key
+            using var enKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\009");
+            var enCounters = enKey?.GetValue("Counter") as string[];
+            if (enCounters == null) return null;
+
+            // Find the index for the English name (entries are: index, name, index, name, ...)
+            int? idx = null;
+            for (int i = 0; i < enCounters.Length - 1; i += 2)
+            {
+                if (enCounters[i + 1].Equals(englishName, StringComparison.OrdinalIgnoreCase))
+                {
+                    idx = int.Parse(enCounters[i]);
+                    break;
+                }
+            }
+            if (idx == null) return null;
+
+            // Map index to current locale name
+            using var locKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\CurrentLanguage");
+            var locCounters = locKey?.GetValue("Counter") as string[];
+            if (locCounters == null) return null;
+
+            for (int i = 0; i < locCounters.Length - 1; i += 2)
+            {
+                if (locCounters[i] == idx.ToString())
+                    return locCounters[i + 1];
+            }
+        }
+        catch { }
+        return null;
     }
 
     // ═══════════════════════════════════════════
@@ -6818,6 +6951,9 @@ class ScanOutput
 {
     [JsonPropertyName("timestamp")]
     public DateTime Timestamp { get; set; }
+
+    [JsonPropertyName("scannerVersion")]
+    public string ScannerVersion { get; set; } = string.Empty;
 
     [JsonPropertyName("machineName")]
     public string MachineName { get; set; } = string.Empty;

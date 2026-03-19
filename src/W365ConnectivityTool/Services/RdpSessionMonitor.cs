@@ -130,7 +130,7 @@ public static class RdpSessionMonitor
                             info.UdpConnected = true;
                             info.Protocol = "UDP (RDP Shortpath)";
                             break;
-                        case 142: // UDP failed, TCP fallback
+                        case 142: // UDP unavailable, using TCP transport
                             info.UdpFailed = true;
                             info.Protocol = "TCP (Reverse Connect)";
                             info.UdpFailReason = message;
@@ -188,16 +188,23 @@ public static class RdpSessionMonitor
                         }
                     }
 
-                    // Check for UDP-related messages
-                    if (message.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                    // Detect UDP transport using event IDs (locale-independent)
+                    // Event 1103 = Multi-transport Established, 1105 = Multi-transport Info
+                    if (eventId is 1103 or 1105)
                     {
-                        if (message.Contains("success", StringComparison.OrdinalIgnoreCase) ||
-                            message.Contains("connected", StringComparison.OrdinalIgnoreCase))
+                        info.UdpConnected = true;
+                        info.Protocol = "UDP (RDP Shortpath)";
+                    }
+                    // Supplementary: check message text for UDP keywords
+                    else if (message.Contains("UDP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (eventId == 1102)
                         {
                             info.UdpConnected = true;
                             info.Protocol = "UDP (RDP Shortpath)";
                         }
-                        else if (message.Contains("fail", StringComparison.OrdinalIgnoreCase))
+                        else if (message.Contains("fail", StringComparison.OrdinalIgnoreCase) ||
+                                 message.Contains("Fehler", StringComparison.OrdinalIgnoreCase))
                         {
                             info.UdpFailed = true;
                             if (string.IsNullOrEmpty(info.Protocol))
@@ -243,9 +250,9 @@ public static class RdpSessionMonitor
     {
         try
         {
-            if (!PerformanceCounterCategory.Exists("RemoteFX Network")) return;
+            if (!PerfCategoryExists("RemoteFX Network")) return;
 
-            var cat = new PerformanceCounterCategory("RemoteFX Network");
+            var cat = PerfCategory("RemoteFX Network");
             var instances = cat.GetInstanceNames();
             if (instances.Length == 0) return;
 
@@ -264,9 +271,9 @@ public static class RdpSessionMonitor
     {
         try
         {
-            if (!PerformanceCounterCategory.Exists("RemoteFX Graphics")) return;
+            if (!PerfCategoryExists("RemoteFX Graphics")) return;
 
-            var cat = new PerformanceCounterCategory("RemoteFX Graphics");
+            var cat = PerfCategory("RemoteFX Graphics");
             var instances = cat.GetInstanceNames();
             if (instances.Length == 0) return;
 
@@ -289,9 +296,9 @@ public static class RdpSessionMonitor
     {
         try
         {
-            if (!PerformanceCounterCategory.Exists("User Input Delay per Session")) return;
+            if (!PerfCategoryExists("User Input Delay per Session")) return;
 
-            var cat = new PerformanceCounterCategory("User Input Delay per Session");
+            var cat = PerfCategory("User Input Delay per Session");
             var instances = cat.GetInstanceNames();
             if (instances.Length == 0) return;
 
@@ -307,12 +314,62 @@ public static class RdpSessionMonitor
     {
         try
         {
-            using var pc = new PerformanceCounter(category, counter, instance, readOnly: true);
+            var localCat = GetLocalizedPerfName(category) ?? category;
+            var localCounter = GetLocalizedPerfName(counter) ?? counter;
+            using var pc = new PerformanceCounter(localCat, localCounter, instance, readOnly: true);
             pc.NextValue(); // First call initializes
             System.Threading.Thread.Sleep(100);
             return pc.NextValue();
         }
         catch { return null; }
+    }
+
+    private static bool PerfCategoryExists(string englishName)
+    {
+        var localName = GetLocalizedPerfName(englishName) ?? englishName;
+        return PerformanceCounterCategory.Exists(localName);
+    }
+
+    private static PerformanceCounterCategory PerfCategory(string englishName)
+    {
+        var localName = GetLocalizedPerfName(englishName) ?? englishName;
+        return new PerformanceCounterCategory(localName);
+    }
+
+    /// <summary>
+    /// Maps an English performance counter/category name to the current locale's name
+    /// by reading Perflib registry keys.
+    /// </summary>
+    private static string? GetLocalizedPerfName(string englishName)
+    {
+        try
+        {
+            using var enKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\009");
+            var enCounters = enKey?.GetValue("Counter") as string[];
+            if (enCounters == null) return null;
+
+            int? idx = null;
+            for (int i = 0; i < enCounters.Length - 1; i += 2)
+            {
+                if (enCounters[i + 1].Equals(englishName, StringComparison.OrdinalIgnoreCase))
+                { idx = int.Parse(enCounters[i]); break; }
+            }
+            if (idx == null) return null;
+
+            using var locKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\CurrentLanguage");
+            var locCounters = locKey?.GetValue("Counter") as string[];
+            if (locCounters == null) return null;
+
+            for (int i = 0; i < locCounters.Length - 1; i += 2)
+            {
+                if (locCounters[i] == idx.ToString())
+                    return locCounters[i + 1];
+            }
+        }
+        catch { }
+        return null;
     }
 
     // ── TCP Latency Sampling (for jitter from client side) ──────────

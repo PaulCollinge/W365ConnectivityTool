@@ -103,7 +103,7 @@ function createTestElement(test, result) {
             <div class="test-description">${test.description}</div>
             ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
             ${result.detailedInfo ? `<div class="test-details" id="details-${test.id}">${escapeHtml(result.detailedInfo)}</div>` : ''}
-            ${result.remediationUrl ? `<div class="test-remediation"><a href="${result.remediationUrl}" target="_blank">📖 View documentation</a></div>` : ''}
+            ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
         </div>
         <div class="test-meta">
             ${result.duration > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${result.duration}ms</span>` : ''}
@@ -149,7 +149,7 @@ function updateTestUI(testId, result) {
             <div class="test-description">${test.description}</div>
             ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
             ${result.detailedInfo ? `<div class="test-details" id="details-${testId}">${escapeHtml(result.detailedInfo)}</div>` : ''}
-            ${result.remediationUrl ? `<div class="test-remediation"><a href="${result.remediationUrl}" target="_blank">📖 View documentation</a></div>` : ''}
+            ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
             ${result.remediationText ? `<div class="test-remediation-text">${escapeHtml(result.remediationText)}</div>` : ''}
         </div>
         <div class="test-meta">
@@ -323,4 +323,18 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Sanitise a URL for use in href attributes — only allow https:// scheme.
+ * Returns the URL if safe, or empty string if not.
+ */
+function safeUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:' ? parsed.href : '';
+    } catch {
+        return '';
+    }
 }
