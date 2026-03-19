@@ -425,7 +425,9 @@ function updateMapLocalGwCard(lookup) {
     if (routerDesc) detail += ` (${routerDesc})`;
 
     setText('map-localgw-detail', detail);
-    setText('map-localgw-detail2', gw.resultValue || '');
+    // Strip the router model suffix [xxx] from the second line to avoid showing it twice
+    const detail2 = (gw.resultValue || '').replace(/\s*\[.*\]\s*$/, '');
+    setText('map-localgw-detail2', detail2);
     setAccentStatus('map-localgw-accent', gw.status);
     setDeviceDot('device-gw-dot', gw.status);
 }
