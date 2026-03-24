@@ -2322,7 +2322,8 @@ async function updateKeyFindings(results) {
     // ── 6b. Split-path Routing (HTTP TCP egress vs STUN UDP egress) ──
     {
         let httpEgressIp = '', httpCountry = '', httpCity = '';
-        const locResult = r('B-LE-01');
+        // In Cloud PC mode, B-LE-01 is remapped to C-LE-01 — try both
+        const locResult = r('B-LE-01') || r('C-LE-01');
         if (locResult?.detailedInfo) {
             const mIp = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
             if (mIp) httpEgressIp = mIp[1];
@@ -2331,7 +2332,10 @@ async function updateKeyFindings(results) {
             if (rvParts.length >= 3) httpCity = rvParts[0];
         }
         let stunReflexiveIp = '';
-        const stunResult = r('B-UDP-01');
+        // In Cloud PC mode, B-UDP-01 is remapped to C-UDP-03 — but the scanner
+        // also uses C-UDP-03 for TURN relay (no Reflexive IP). Match the right one.
+        const stunResult = r('B-UDP-01')
+            || results.find(x => x.id === 'C-UDP-03' && x.detailedInfo?.includes('Reflexive IP:'));
         if (stunResult?.detailedInfo) {
             const m = stunResult.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
             if (m) stunReflexiveIp = m[1];
@@ -2358,38 +2362,51 @@ async function updateKeyFindings(results) {
                     httpOrg = httpGeo.org || '';
                 } catch { /* GeoIP lookup failed */ }
 
-                // Determine what's routing the STUN traffic based on the org
                 const stunOrgLower = stunOrg.toLowerCase();
                 const httpOrgLower = httpOrg.toLowerCase();
 
-                // Check if STUN exits through a known tunnel/proxy provider
-                const knownTunnels = {
-                    'microsoft': 'Microsoft network (likely Global Secure Access / Entra Private Access)',
-                    'azure':     'Microsoft Azure (likely Global Secure Access)',
+                // Known security / tunnel providers
+                const knownProviders = {
+                    'microsoft': 'Microsoft',
+                    'azure':     'Microsoft Azure',
                     'zscaler':   'Zscaler',
                     'netskope':  'Netskope',
-                    'cloudflare':'Cloudflare (likely WARP or Gateway)',
-                    'palo alto': 'Palo Alto Networks (likely GlobalProtect)',
+                    'cloudflare':'Cloudflare',
+                    'palo alto': 'Palo Alto Networks',
                     'fortinet':  'Fortinet',
-                    'akamai':    'Akamai (likely Enterprise Threat Protector)',
+                    'akamai':    'Akamai',
                     'menlo':     'Menlo Security',
                     'iboss':     'iboss',
-                    'symantec':  'Symantec / Broadcom (likely WSS)',
+                    'symantec':  'Symantec / Broadcom',
                 };
 
-                let tunnelName = null;
-                for (const [keyword, label] of Object.entries(knownTunnels)) {
-                    if (stunOrgLower.includes(keyword) && !httpOrgLower.includes(keyword)) {
-                        tunnelName = label;
-                        break;
+                function matchProvider(orgLower, otherOrgLower) {
+                    for (const [keyword, name] of Object.entries(knownProviders)) {
+                        if (orgLower.includes(keyword) && !otherOrgLower.includes(keyword)) return name;
                     }
+                    return null;
                 }
 
-                if (tunnelName) {
-                    // STUN exits through a different org than HTTP — tunnel detected
+                let httpProvider = matchProvider(httpOrgLower, stunOrgLower);
+                let stunProvider = matchProvider(stunOrgLower, httpOrgLower);
+
+                // If running on an Azure VM (IMDS), STUN through Microsoft/Azure
+                // is just the VM's direct egress — not a tunnel
+                const isAzureHost = !!r('C-NET-01');
+                if (isAzureHost && stunProvider && stunProvider.startsWith('Microsoft')) {
+                    stunProvider = null;
+                }
+
+                if (httpProvider && !stunProvider) {
+                    // SWG proxies HTTP only — UDP goes direct. Good for RDP Shortpath.
+                    add('kf-pass', 'Split Routing',
+                        `${esc(httpProvider)} proxies HTTP — UDP bypasses proxy ` + tag('pass', 'RDP Shortpath OK'),
+                        `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg)}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
+                } else if (stunProvider) {
+                    // UDP tunneled through a different provider
                     add('kf-info', 'Split Routing',
-                        `UDP traffic routed via ${esc(tunnelName)}`,
-                        `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg || 'direct')}) · STUN: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
+                        `UDP traffic routed via ${esc(stunProvider)}`,
+                        `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg || 'direct')}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
                 } else if (stunCountry && httpCountry &&
                     stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
                     // Same country, same or unknown org — CGNAT
