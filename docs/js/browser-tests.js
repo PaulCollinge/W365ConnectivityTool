@@ -241,6 +241,11 @@ const ALL_TESTS = [
         category: 'cloudpc', source: 'cloudpc'
     },
     {
+        id: 'C-EP-02', name: 'Session Host Required Endpoints',
+        description: 'Tests all required FQDNs for AVD/W365 session hosts (marketplace, monitoring, activation, CRL/OCSP, IoT provisioning)',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
         id: 'C-LE-01', name: 'Cloud PC Location',
         description: 'Azure region and public IP location of the Cloud PC',
         category: 'cloudpc', source: 'cloudpc'

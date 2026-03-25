@@ -2587,6 +2587,26 @@ async function updateKeyFindings(results) {
         add(localCls, 'Local Network', localParts.join(' · '));
     }
 
+    // ── 11. Session Host Required Endpoints ──
+    const ep02 = r('C-EP-02');
+    if (ep02 && ep02.status !== 'NotRun' && ep02.status !== 'Pending') {
+        if (ep02.status === 'Passed') {
+            add('kf-pass', 'Session Host Endpoints', esc(ep02.resultValue));
+        } else if (ep02.status === 'Warning') {
+            add('kf-issue', 'Session Host Endpoints', esc(ep02.resultValue),
+                'Some non-critical endpoints unreachable — check detailed results');
+        } else {
+            // Extract failed endpoint names from detailedInfo
+            const failedLines = (ep02.detailedInfo || '').split('\n')
+                .filter(l => l.includes('\u2718') || l.includes('✘'))
+                .map(l => l.replace(/.*[✘\u2718]\s*/, '').replace(/\s*—.*/, '').trim())
+                .slice(0, 5);
+            const failedSummary = failedLines.length > 0 ? failedLines.join(', ') : '';
+            add('kf-error', 'Session Host Endpoints', esc(ep02.resultValue),
+                failedSummary ? `Blocked: ${esc(failedSummary)}` : 'Multiple required endpoints unreachable');
+        }
+    }
+
     // ── Render ──
     if (rows.length === 0) return;
 

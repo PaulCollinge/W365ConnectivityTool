@@ -1138,6 +1138,7 @@ class Program
 
             // ── Cloud PC Endpoint & Speed ──
             new("C-EP-01", "CPC Endpoint Reachability", "Tests required endpoint reachability from the Cloud PC", "cloudpc-env", RunCpcEndpointReachability),
+            new("C-EP-02", "Session Host Required Endpoints", "Tests all required FQDNs for AVD/W365 session hosts", "cloudpc-env", RunCpcRequiredEndpoints),
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
         ];
     }
@@ -7192,6 +7193,133 @@ class Program
         var r = await RunCertEndpointTest();
         r.Id = "C-EP-01"; r.Name = "CPC Endpoint Reachability"; r.Category = "cloudpc-env";
         return r;
+    }
+
+    /// <summary>
+    /// C-EP-02: Session Host Required Endpoints — tests all required FQDNs from the Microsoft docs.
+    /// AVD base list + W365-specific registration endpoints when _hostType == "cloudpc".
+    /// Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
+    /// </summary>
+    static async Task<TestResult> RunCpcRequiredEndpoints()
+    {
+        var result = new TestResult { Id = "C-EP-02", Name = "Session Host Required Endpoints", Category = "cloudpc-env" };
+        try
+        {
+            var endpoints = new List<(string host, int port, string purpose, string group)>();
+
+            // ── AVD base endpoints (apply to both AVD and W365) ──
+            // TCP 443
+            endpoints.Add(("catalogartifact.azureedge.net", 443, "Azure Marketplace", "AVD Required"));
+            endpoints.Add(("gcs.prod.monitoring.core.windows.net", 443, "Agent monitoring", "AVD Required"));
+            endpoints.Add(("mrsglobalsteus2prod.blob.core.windows.net", 443, "Agent/SXS stack updates", "AVD Required"));
+            endpoints.Add(("wvdportalstorageblob.blob.core.windows.net", 443, "Azure portal support", "AVD Required"));
+            endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", "AVD Required"));
+
+            // *.prod.warm.ingest.monitor.core.windows.net — use region-specific exemplar
+            var monitorRegion = _azureVmRegion ?? "eastus2";
+            endpoints.Add(($"{monitorRegion}-1.prod.warm.ingest.monitor.core.windows.net", 443,
+                "Agent diagnostics (*.prod.warm.ingest.monitor.core.windows.net)", "AVD Required"));
+
+            // TCP 80
+            endpoints.Add(("168.63.129.16", 80, "Session host health monitoring (Azure wireserver)", "AVD Required"));
+            endpoints.Add(("oneocsp.microsoft.com", 80, "CRL/OCSP certificate revocation", "AVD Required"));
+            endpoints.Add(("ctldl.windowsupdate.com", 80, "Certificate trust list updates", "AVD Required"));
+
+            // TCP 1688
+            endpoints.Add(("azkms.core.windows.net", 1688, "Windows KMS activation", "AVD Required"));
+
+            // ── W365-specific registration endpoints ──
+            if (_hostType == "cloudpc")
+            {
+                endpoints.Add(("cpcsaamssa1prodprap01.infra.windows365.microsoft.com", 443,
+                    "W365 infrastructure (*.infra.windows365.microsoft.com)", "W365 Registration"));
+                endpoints.Add(("login.live.com", 443, "Microsoft account authentication", "W365 Registration"));
+                endpoints.Add(("enterpriseregistration.windows.net", 443, "Device registration", "W365 Registration"));
+                endpoints.Add(("global.azure-devices-provisioning.net", 443, "IoT provisioning (TCP 443)", "W365 Registration"));
+                endpoints.Add(("global.azure-devices-provisioning.net", 5671, "IoT provisioning (AMQP 5671)", "W365 Registration"));
+
+                // IoT Hub endpoints — 443 + 5671 each
+                var iotHubs = new[]
+                {
+                    "hm-iot-in-prod-prap01", "hm-iot-in-prod-prau01", "hm-iot-in-prod-preu01",
+                    "hm-iot-in-prod-prna01", "hm-iot-in-prod-prna02",
+                    "hm-iot-in-2-prod-preu01", "hm-iot-in-2-prod-prna01",
+                    "hm-iot-in-3-prod-preu01", "hm-iot-in-3-prod-prna01",
+                    "hm-iot-in-4-prod-prna01"
+                };
+                foreach (var hub in iotHubs)
+                {
+                    var host = $"{hub}.azure-devices.net";
+                    endpoints.Add((host, 443, $"IoT Hub {hub} (TCP 443)", "W365 IoT Hub"));
+                    endpoints.Add((host, 5671, $"IoT Hub {hub} (AMQP 5671)", "W365 IoT Hub"));
+                }
+            }
+
+            // Run all checks in parallel (with concurrency limit to avoid socket exhaustion)
+            var semaphore = new SemaphoreSlim(10);
+            var tasks = endpoints.Select(async ep =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    using var tcp = new TcpClient();
+                    var sw = Stopwatch.StartNew();
+                    var connectTask = tcp.ConnectAsync(ep.host, ep.port);
+                    if (await Task.WhenAny(connectTask, Task.Delay(5000)) == connectTask && connectTask.IsCompletedSuccessfully)
+                    {
+                        sw.Stop();
+                        return (ep, ok: true, ms: sw.ElapsedMilliseconds, err: (string?)null);
+                    }
+                    return (ep, ok: false, ms: 0L, err: "Timeout (5s)");
+                }
+                catch (Exception ex)
+                {
+                    return (ep, ok: false, ms: 0L, err: ex.InnerException?.Message ?? ex.Message);
+                }
+                finally { semaphore.Release(); }
+            }).ToArray();
+
+            var results = await Task.WhenAll(tasks);
+
+            // Group and format output
+            var sb = new StringBuilder();
+            int passed = 0, total = results.Length;
+            string? currentGroup = null;
+
+            foreach (var r in results.OrderBy(x => x.ep.group).ThenBy(x => x.ep.host).ThenBy(x => x.ep.port))
+            {
+                if (r.ep.group != currentGroup)
+                {
+                    if (currentGroup != null) sb.AppendLine();
+                    sb.AppendLine($"\u2550\u2550 {r.ep.group} \u2550\u2550");
+                    currentGroup = r.ep.group;
+                }
+                if (r.ok)
+                {
+                    sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
+                    passed++;
+                }
+                else
+                {
+                    sb.AppendLine($"  \u2718 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
+                }
+            }
+
+            // Note untestable wildcard entries
+            sb.AppendLine();
+            sb.AppendLine("\u2550\u2550 Wildcard Firewall Rules (cannot test directly) \u2550\u2550");
+            sb.AppendLine("  \u2139 *.service.windows.cloud.microsoft:443 \u2014 Service Traffic");
+            sb.AppendLine("  \u2139 *.windows.static.microsoft:443 \u2014 Static Assets");
+            sb.AppendLine("  Ensure these wildcard rules are configured in your firewall/proxy.");
+
+            result.ResultValue = $"{passed}/{total} session host endpoints reachable";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = passed == total ? "Passed" : passed >= total - 2 ? "Warning" : "Failed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
     }
 
     /// <summary>C-LE-03: Connection speed from Cloud PC — reuses bandwidth estimation test.</summary>
