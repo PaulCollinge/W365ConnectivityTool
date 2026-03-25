@@ -1441,9 +1441,9 @@ function updateExportButton() {
 //  JSON Export
 // ═══════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════
-//  Send Results to IT (mailto: with JSON download)
+//  Send Results to IT (Web Share API with file attachment, fallback to download + mailto)
 // ═══════════════════════════════════════════════════════════════════
-function sendResultsToIT() {
+async function sendResultsToIT() {
     if (allResults.length === 0) return;
 
     const critical = allResults.filter(r => r.status === 'Failed' || r.status === 'Error').length;
@@ -1466,8 +1466,8 @@ function sendResultsToIT() {
         .map(r => `  [${r.status.toUpperCase()}] ${r.name}: ${r.resultValue || ''}`.trimEnd())
         .join('\n');
 
-    const subject = encodeURIComponent(`W365 Connectivity Results — ${machineName} — ${statusLabel} — ${dateStr}`);
-    const body = encodeURIComponent(
+    const titleText = `W365 Connectivity Results \u2014 ${machineName} \u2014 ${statusLabel} \u2014 ${dateStr}`;
+    const bodyText =
         `Hi IT Team,\n\n` +
         `A Windows 365 connectivity scan has been completed on this device.\n\n` +
         `Device:   ${machineName}\n` +
@@ -1476,10 +1476,9 @@ function sendResultsToIT() {
         (issueLines ? `Issues found:\n${issueLines}\n\n` : '') +
         `Please find the full diagnostic JSON report attached (${filename}).\n\n` +
         `To view the results, import the JSON file into the W365 Connectivity Tool web dashboard.\n\n` +
-        `Regards`
-    );
+        `Regards`;
 
-    // Download the JSON file first so the user can attach it
+    // Build JSON payload
     const output = {
         timestamp: new Date().toISOString(),
         machineName,
@@ -1492,8 +1491,26 @@ function sendResultsToIT() {
             remediationUrl: r.remediationUrl || '', remediationText: r.remediationText || ''
         }))
     };
-    const blob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
+    const jsonBlob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
+    const file = new File([jsonBlob], filename, { type: 'application/json' });
+
+    // Try Web Share API first (Edge/Chrome on Windows — auto-attaches file to Outlook/Teams/etc)
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+            await navigator.share({
+                title: titleText,
+                text: bodyText,
+                files: [file]
+            });
+            return; // Success — user shared via OS share picker
+        } catch (e) {
+            if (e.name === 'AbortError') return; // User cancelled share picker
+            // Other error — fall through to download + mailto
+        }
+    }
+
+    // Fallback: download the file + open mailto
+    const url = URL.createObjectURL(jsonBlob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
@@ -1502,7 +1519,8 @@ function sendResultsToIT() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    // Open mailto: after a short delay to let the download start
+    const subject = encodeURIComponent(titleText);
+    const body = encodeURIComponent(bodyText);
     setTimeout(() => {
         window.location.href = `mailto:?subject=${subject}&body=${body}`;
     }, 300);
