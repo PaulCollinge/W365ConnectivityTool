@@ -91,6 +91,16 @@ const ALL_TESTS = [
         description: 'Checks installed Windows App / Remote Desktop client version and currency (requires Local Scanner)',
         category: 'local', source: 'local'
     },
+    {
+        id: 'L-LE-14', name: 'DNS Server Identification',
+        description: 'Identifies configured and active DNS resolvers, classifies provider, and detects encrypted DNS (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
+    {
+        id: 'L-LE-15', name: 'Path MTU Discovery',
+        description: 'Discovers path MTU to key W365/AVD endpoints using DF-bit probes (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
 
     // ── TCP Based RDP Connectivity ──
     {

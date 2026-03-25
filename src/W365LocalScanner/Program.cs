@@ -1074,6 +1074,8 @@ class Program
             new("L-LE-11", "RDP Group Policy Check", "Checks for GP/registry settings affecting RDP", "local", RunRdpGroupPolicyCheck),
             new("L-LE-12", "WiFi Channel Congestion", "Scans nearby WiFi networks for channel congestion", "local", RunWifiChannelCongestion),
             new("L-LE-13", "RDP Client Version", "Checks installed Windows App / Remote Desktop client version", "local", RunRdpClientVersion),
+            new("L-LE-14", "DNS Server Identification", "Identifies configured and active DNS resolvers and classifies provider", "local", RunDnsServerIdentification),
+            new("L-LE-15", "Path MTU Discovery", "Discovers maximum transmission unit to key W365/AVD endpoints", "local", RunPathMtuDiscovery),
 
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
@@ -2482,6 +2484,410 @@ class Program
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
+    }
+
+    // ═══════════════════════════════════════════
+    //  DNS SERVER IDENTIFICATION
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// L-LE-14: Identifies configured DNS servers, classifies the provider, and detects encrypted DNS.
+    /// </summary>
+    static async Task<TestResult> RunDnsServerIdentification()
+    {
+        var result = new TestResult { Id = "L-LE-14", Name = "DNS Server Identification", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            var dnsServers = new List<(string ip, string adapterName)>();
+
+            // ── 1. Collect DNS servers from all active adapters ──
+            var adapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback);
+
+            foreach (var a in adapters)
+            {
+                var dnsAddrs = a.GetIPProperties().DnsAddresses
+                    .Where(d => d.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(d => d.ToString())
+                    .ToList();
+                foreach (var dns in dnsAddrs)
+                    dnsServers.Add((dns, a.Name));
+            }
+
+            // Deduplicate by IP
+            var uniqueDns = dnsServers
+                .GroupBy(d => d.ip)
+                .Select(g => (ip: g.Key, adapters: string.Join(", ", g.Select(x => x.adapterName).Distinct())))
+                .ToList();
+
+            if (uniqueDns.Count == 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "No DNS servers configured";
+                result.DetailedInfo = "No IPv4 DNS servers found on any active network adapter.";
+                return result;
+            }
+
+            sb.AppendLine($"Configured DNS servers: {uniqueDns.Count}");
+            sb.AppendLine();
+
+            var warnings = new List<string>();
+            var providers = new List<string>();
+
+            foreach (var (ip, adapterNames) in uniqueDns)
+            {
+                sb.AppendLine($"DNS Server: {ip}");
+                sb.AppendLine($"  Adapter(s): {adapterNames}");
+
+                // Classify the DNS provider
+                var classification = ClassifyDnsServer(ip);
+                sb.AppendLine($"  Provider: {classification}");
+                providers.Add(classification);
+
+                // Reverse DNS lookup
+                try
+                {
+                    var entry = await Dns.GetHostEntryAsync(ip);
+                    if (!string.IsNullOrEmpty(entry.HostName) && entry.HostName != ip)
+                        sb.AppendLine($"  Hostname: {entry.HostName}");
+                }
+                catch { /* PTR lookup failed */ }
+
+                // Test responsiveness — resolve a known good domain
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    await Dns.GetHostEntryAsync("login.microsoftonline.com");
+                    sw.Stop();
+                    sb.AppendLine($"  Response time: {sw.ElapsedMilliseconds}ms (login.microsoftonline.com)");
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  Response: FAILED ({ex.Message})");
+                    warnings.Add($"{ip} failed to resolve login.microsoftonline.com");
+                }
+
+                sb.AppendLine();
+            }
+
+            // ── 2. Detect actual resolver via whoami-style check ──
+            // Resolve o-o.myaddr.l.google.com TXT → returns the resolver's IP as seen by Google
+            sb.AppendLine("═══ Actual Resolver Detection ═══");
+            try
+            {
+                var nslookup = await RunProcessAsync("nslookup", "-type=TXT o-o.myaddr.l.google.com", 8000);
+                if (nslookup != null)
+                {
+                    // Parse the TXT record value which contains the resolver's egress IP
+                    var txtMatch = Regex.Match(nslookup, @"text\s*=\s*""?([\d\.]+)", RegexOptions.IgnoreCase);
+                    if (txtMatch.Success)
+                    {
+                        var resolverEgressIp = txtMatch.Groups[1].Value;
+                        sb.AppendLine($"Resolver egress IP (as seen by Google): {resolverEgressIp}");
+                        var resolverClass = ClassifyDnsServer(resolverEgressIp);
+                        sb.AppendLine($"Resolver classification: {resolverClass}");
+
+                        // Check if this differs from configured DNS
+                        if (!uniqueDns.Any(d => d.ip == resolverEgressIp))
+                        {
+                            sb.AppendLine("Note: Resolver egress IP differs from configured DNS — DNS forwarding or encrypted DNS may be in use");
+                        }
+                    }
+                    else
+                    {
+                        sb.AppendLine("Could not determine resolver egress IP (TXT record not found)");
+                    }
+                }
+            }
+            catch { sb.AppendLine("Resolver detection query failed"); }
+
+            // ── 3. Check Windows Encrypted DNS (DoH) settings via registry ──
+            sb.AppendLine();
+            sb.AppendLine("═══ Encrypted DNS (DoH) ═══");
+            bool dohDetected = false;
+            try
+            {
+                // Windows 11+ stores DoH config per-interface in HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters
+                using var dohKey = Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters");
+                if (dohKey != null)
+                {
+                    foreach (var iface in dohKey.GetSubKeyNames())
+                    {
+                        foreach (var subPath in new[] { @"DohInterfaceSettings\Doh", @"DohInterfaceSettings\Doh6" })
+                        {
+                            using var dohSub = dohKey.OpenSubKey($@"{iface}\{subPath}");
+                            if (dohSub != null)
+                            {
+                                foreach (var serverKey in dohSub.GetSubKeyNames())
+                                {
+                                    using var srvKey = dohSub.OpenSubKey(serverKey);
+                                    var flags = srvKey?.GetValue("DohFlags");
+                                    if (flags != null)
+                                    {
+                                        var flagVal = Convert.ToInt32(flags);
+                                        // DohFlags: 1 = automatic (fallback), 2 = mandatory DoH
+                                        var mode = flagVal switch
+                                        {
+                                            1 => "Automatic (DoH with fallback)",
+                                            2 => "Mandatory DoH only",
+                                            _ => $"Flags={flagVal}"
+                                        };
+                                        sb.AppendLine($"  DoH configured for {serverKey}: {mode}");
+                                        dohDetected = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!dohDetected)
+                    sb.AppendLine("  No DNS-over-HTTPS configuration detected");
+            }
+            catch { sb.AppendLine("  Could not read DoH registry settings"); }
+
+            // ── 4. Set status ──
+            var providerSummary = string.Join(", ", providers.Distinct());
+            if (warnings.Count > 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"{providerSummary} — {warnings.Count} issue(s)";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = providerSummary;
+                if (dohDetected) result.ResultValue += " (DoH enabled)";
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>Classify a DNS server IP into a known provider.</summary>
+    static string ClassifyDnsServer(string ip)
+    {
+        return ip switch
+        {
+            // Google Public DNS
+            "8.8.8.8" or "8.8.4.4" => "Google Public DNS",
+            // Cloudflare
+            "1.1.1.1" or "1.0.0.1" => "Cloudflare DNS",
+            "1.1.1.2" or "1.0.0.2" => "Cloudflare DNS (Malware filter)",
+            "1.1.1.3" or "1.0.0.3" => "Cloudflare DNS (Family filter)",
+            // Quad9
+            "9.9.9.9" or "149.112.112.112" => "Quad9 (Malware filter)",
+            "9.9.9.10" or "149.112.112.10" => "Quad9 (No filter)",
+            // OpenDNS / Cisco Umbrella
+            "208.67.222.222" or "208.67.220.220" => "OpenDNS / Cisco Umbrella",
+            "208.67.222.123" or "208.67.220.123" => "OpenDNS FamilyShield",
+            // Azure DNS (used inside Azure VMs)
+            "168.63.129.16" => "Azure Internal DNS",
+            // Zscaler common ranges
+            _ when ip.StartsWith("165.225.") || ip.StartsWith("104.129.") || ip.StartsWith("136.226.") => "Zscaler Cloud DNS",
+            // Private RFC1918 ranges — likely corporate/router DNS
+            _ when IsPrivateIp(ip) => "Private/Corporate DNS",
+            // Anything else — unknown public
+            _ => "Public DNS"
+        };
+    }
+
+    static bool IsPrivateIp(string ip)
+    {
+        if (!IPAddress.TryParse(ip, out var addr)) return false;
+        var bytes = addr.GetAddressBytes();
+        return bytes[0] == 10
+            || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+            || (bytes[0] == 192 && bytes[1] == 168)
+            || (bytes[0] == 169 && bytes[1] == 254);
+    }
+
+    // ═══════════════════════════════════════════
+    //  PATH MTU DISCOVERY
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// L-LE-15: Discovers the path MTU to key W365/AVD endpoints using DF-bit ping binary search.
+    /// </summary>
+    static async Task<TestResult> RunPathMtuDiscovery()
+    {
+        var result = new TestResult { Id = "L-LE-15", Name = "Path MTU Discovery", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+
+            // Targets: RDP gateway (TCP) and TURN relay (UDP) — the two critical paths
+            var targets = new (string host, string label)[]
+            {
+                ("afdfp-rdgateway-r1.wvd.microsoft.com", "RDP Gateway (AFD)"),
+                ("relay.turn.azure.net", "TURN Relay"),
+                ("login.microsoftonline.com", "Authentication"),
+            };
+
+            int minMtu = int.MaxValue;
+            int testedCount = 0;
+            var issues = new List<string>();
+
+            foreach (var (host, label) in targets)
+            {
+                sb.AppendLine($"Target: {label} ({host})");
+
+                // Resolve to IP first (Ping needs IP for DontFragment to work reliably)
+                IPAddress? targetIp = null;
+                try
+                {
+                    var entry = await Dns.GetHostEntryAsync(host);
+                    targetIp = entry.AddressList.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                }
+                catch { /* DNS resolution failed */ }
+
+                if (targetIp == null)
+                {
+                    sb.AppendLine($"  DNS resolution failed — skipped");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                sb.AppendLine($"  Resolved: {targetIp}");
+
+                // Binary search for max payload that gets through with DF bit set
+                // IP header = 20 bytes, ICMP header = 8 bytes → total overhead = 28 bytes
+                // So payload of N means MTU = N + 28
+                const int icmpOverhead = 28;
+                int lo = 0, hi = 1472; // 1472 + 28 = 1500 (standard Ethernet MTU)
+                int bestPayload = -1;
+
+                using var ping = new Ping();
+                var options = new PingOptions { DontFragment = true, Ttl = 128 };
+
+                // First test at standard Ethernet payload
+                bool standardWorks = await TestPingPayload(ping, targetIp, hi, options);
+                if (standardWorks)
+                {
+                    bestPayload = hi;
+                    sb.AppendLine($"  MTU: ≥1500 (standard Ethernet — OK)");
+                }
+                else
+                {
+                    // Binary search to find the max payload
+                    while (lo <= hi)
+                    {
+                        int mid = (lo + hi) / 2;
+                        bool ok = await TestPingPayload(ping, targetIp, mid, options);
+                        if (ok)
+                        {
+                            bestPayload = mid;
+                            lo = mid + 1;
+                        }
+                        else
+                        {
+                            hi = mid - 1;
+                        }
+                    }
+
+                    if (bestPayload >= 0)
+                    {
+                        int mtu = bestPayload + icmpOverhead;
+                        sb.AppendLine($"  Path MTU: {mtu} bytes (payload {bestPayload} + {icmpOverhead} overhead)");
+
+                        if (mtu < 1280)
+                        {
+                            sb.AppendLine($"  ✘ MTU below 1280 — will cause fragmentation and likely connection failures");
+                            issues.Add($"{label}: MTU {mtu} (critically low)");
+                        }
+                        else if (mtu < 1400)
+                        {
+                            sb.AppendLine($"  ⚠ MTU below 1400 — may cause UDP Shortpath fragmentation");
+                            issues.Add($"{label}: MTU {mtu} (suboptimal for Shortpath)");
+                        }
+                        else
+                        {
+                            sb.AppendLine($"  ✓ MTU adequate for RDP traffic");
+                        }
+                        minMtu = Math.Min(minMtu, mtu);
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  ✘ No ICMP response — host may block ping");
+                        issues.Add($"{label}: ICMP blocked");
+                    }
+                }
+
+                if (bestPayload >= 0 && standardWorks)
+                    minMtu = Math.Min(minMtu, 1500);
+
+                testedCount++;
+                sb.AppendLine();
+            }
+
+            // ── Adapter MTU check (local interface) ──
+            sb.AppendLine("═══ Local Interface MTU ═══");
+            var activeAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up
+                    && n.NetworkInterfaceType != NetworkInterfaceType.Loopback
+                    && n.GetIPProperties().GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork));
+
+            foreach (var a in activeAdapters)
+            {
+                var ipProps = a.GetIPProperties();
+                var ipv4Props = ipProps.GetIPv4Properties();
+                if (ipv4Props != null)
+                {
+                    sb.AppendLine($"  {a.Name}: Interface MTU = {ipv4Props.Mtu}");
+                    if (ipv4Props.Mtu < 1500)
+                    {
+                        sb.AppendLine($"    ⚠ Non-standard interface MTU (typically caused by VPN or tunnel)");
+                        if (!issues.Any(i => i.Contains("Interface MTU")))
+                            issues.Add($"Interface MTU {ipv4Props.Mtu} on {a.Name}");
+                    }
+                }
+            }
+
+            // ── Set status ──
+            if (testedCount == 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not test any target";
+            }
+            else if (issues.Any(i => i.Contains("critically low")))
+            {
+                result.Status = "Failed";
+                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU {minMtu} — critically low" : "MTU issues detected";
+                result.RemediationUrl = "https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+            }
+            else if (issues.Count > 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU {minMtu} — {issues.Count} issue(s)" : $"{issues.Count} MTU issue(s)";
+                result.RemediationUrl = "https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU ≥{minMtu} — OK" : "All targets OK";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>Send a single DF-bit ping with the given payload size. Returns true if reply received.</summary>
+    static async Task<bool> TestPingPayload(Ping ping, IPAddress target, int payloadSize, PingOptions options)
+    {
+        try
+        {
+            var buffer = new byte[payloadSize];
+            var reply = await ping.SendPingAsync(target, 2000, buffer, options);
+            return reply.Status == IPStatus.Success;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // ═══════════════════════════════════════════

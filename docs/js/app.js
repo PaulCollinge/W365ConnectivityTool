@@ -2619,6 +2619,30 @@ async function updateKeyFindings(results) {
         }
     }
 
+    // ── 13. DNS Server Identification ──
+    const dnsId = r('L-LE-14');
+    if (dnsId && dnsId.status !== 'NotRun' && dnsId.status !== 'Pending') {
+        if (dnsId.status === 'Passed') {
+            add('kf-pass', 'DNS Resolver', esc(dnsId.resultValue));
+        } else if (dnsId.status === 'Warning') {
+            add('kf-issue', 'DNS Resolver', esc(dnsId.resultValue));
+        } else {
+            add('kf-error', 'DNS Resolver', esc(dnsId.resultValue));
+        }
+    }
+
+    // ── 14. Path MTU ──
+    const mtu = r('L-LE-15');
+    if (mtu && mtu.status !== 'NotRun' && mtu.status !== 'Pending') {
+        if (mtu.status === 'Passed') {
+            add('kf-pass', 'Path MTU', esc(mtu.resultValue));
+        } else if (mtu.status === 'Warning') {
+            add('kf-issue', 'Path MTU', esc(mtu.resultValue));
+        } else {
+            add('kf-error', 'Path MTU', esc(mtu.resultValue));
+        }
+    }
+
     // ── Render ──
     if (rows.length === 0) return;
 
