@@ -1073,6 +1073,7 @@ class Program
             new("L-LE-10", "Windows Firewall Audit", "Checks for firewall rules blocking W365 ports", "local", RunFirewallAudit),
             new("L-LE-11", "RDP Group Policy Check", "Checks for GP/registry settings affecting RDP", "local", RunRdpGroupPolicyCheck),
             new("L-LE-12", "WiFi Channel Congestion", "Scans nearby WiFi networks for channel congestion", "local", RunWifiChannelCongestion),
+            new("L-LE-13", "RDP Client Version", "Checks installed Windows App / Remote Desktop client version", "local", RunRdpClientVersion),
 
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
@@ -2338,6 +2339,148 @@ class Program
             result.Status = "Error";
             result.ResultValue = ex.Message;
         }
+        return result;
+    }
+
+    // ═══════════════════════════════════════════
+    //  RDP CLIENT VERSION CHECK
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// L-LE-13: Detects installed Windows App / MSRDC / MSTSC and checks version currency.
+    /// Version history from https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=windows
+    /// </summary>
+    static async Task<TestResult> RunRdpClientVersion()
+    {
+        var result = new TestResult { Id = "L-LE-13", Name = "RDP Client Version", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            string? primaryClient = null;
+            Version? primaryVersion = null;
+            bool foundAny = false;
+
+            // ── 1. Windows App (Store MSIX) — MicrosoftCorporationII.Windows365 ──
+            try
+            {
+                var psOutput = await RunProcessAsync("powershell", "-NoProfile -Command \"Get-AppxPackage 'MicrosoftCorporationII.Windows365' | Select-Object -ExpandProperty Version\"");
+                var verLine = psOutput?.Trim();
+                if (!string.IsNullOrEmpty(verLine) && Version.TryParse(verLine, out var waVer))
+                {
+                    sb.AppendLine($"Windows App (Store): {waVer}");
+                    primaryClient = "Windows App";
+                    primaryVersion = waVer;
+                    foundAny = true;
+                }
+            }
+            catch { /* AppX query failed — not installed or access denied */ }
+
+            // ── 2. Standalone MSRDC installer (non-Store) ──
+            if (!foundAny)
+            {
+                var msrdcPaths = new[]
+                {
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Apps\Remote Desktop\msrdcw.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Remote Desktop\msrdcw.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Remote Desktop\msrdcw.exe"),
+                };
+                foreach (var p in msrdcPaths)
+                {
+                    if (File.Exists(p))
+                    {
+                        var fvi = System.Diagnostics.FileVersionInfo.GetVersionInfo(p);
+                        if (Version.TryParse(fvi.FileVersion?.Split(' ')[0], out var msrdcVer))
+                        {
+                            sb.AppendLine($"Remote Desktop Client (standalone): {msrdcVer}");
+                            sb.AppendLine($"  Path: {p}");
+                            if (primaryClient == null) { primaryClient = "MSRDC"; primaryVersion = msrdcVer; }
+                            foundAny = true;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // ── 3. Built-in MSTSC (always present) ──
+            var mstscPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "mstsc.exe");
+            if (File.Exists(mstscPath))
+            {
+                var fvi = System.Diagnostics.FileVersionInfo.GetVersionInfo(mstscPath);
+                if (Version.TryParse(fvi.FileVersion?.Split(' ')[0], out var mstscVer))
+                {
+                    sb.AppendLine($"Built-in RDP Client (mstsc.exe): {mstscVer}");
+                    if (primaryClient == null) { primaryClient = "mstsc"; primaryVersion = mstscVer; }
+                    foundAny = true;
+                }
+            }
+
+            // ── Version currency check ──
+            // Source: https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=windows
+            // MSIX package version (e.g. 2.1.344.0) differs from marketing version (e.g. 2.0.964.0).
+            // Latest known MSIX package version and minimum supported are maintained here.
+            var latestKnownMsix = new Version(2, 1, 344, 0);   // = display 2.0.964.0, released 2026-02-10
+            var minimumMsix     = new Version(2, 1, 184, 0);   // = display 2.0.804.0, released 2025-11-12
+            var latestDate = new DateTime(2026, 2, 10);
+
+            if (primaryClient == "Windows App" && primaryVersion != null)
+            {
+                sb.AppendLine();
+
+                if (primaryVersion >= latestKnownMsix)
+                {
+                    sb.AppendLine($"\u2714 Running latest known version (released {latestDate:yyyy-MM-dd})");
+                    result.Status = "Passed";
+                    result.ResultValue = $"Windows App {primaryVersion} \u2014 up to date";
+                }
+                else if (primaryVersion > latestKnownMsix)
+                {
+                    // Newer than our database — likely a newer insider/public release
+                    sb.AppendLine($"\u2714 Version is newer than latest known ({latestKnownMsix})");
+                    result.Status = "Passed";
+                    result.ResultValue = $"Windows App {primaryVersion} \u2014 up to date";
+                }
+                else if (primaryVersion >= minimumMsix)
+                {
+                    sb.AppendLine($"\u26a0 Update available: latest known MSIX version is {latestKnownMsix} (released {latestDate:yyyy-MM-dd})");
+                    result.Status = "Warning";
+                    result.ResultValue = $"Windows App {primaryVersion} \u2014 update available";
+                    result.RemediationUrl = "https://learn.microsoft.com/windows-app/whats-new?tabs=windows";
+                }
+                else
+                {
+                    sb.AppendLine($"\u2718 Version is below minimum supported (MSIX {minimumMsix})");
+                    sb.AppendLine($"  Latest known: {latestKnownMsix} (released {latestDate:yyyy-MM-dd})");
+                    result.Status = "Failed";
+                    result.ResultValue = $"Windows App {primaryVersion} \u2014 below minimum supported version";
+                    result.RemediationUrl = "https://learn.microsoft.com/windows-app/whats-new?tabs=windows";
+                }
+            }
+            else if (primaryClient == "mstsc" && primaryVersion != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine("\u26a0 Only the built-in RDP client (mstsc.exe) is installed.");
+                sb.AppendLine("  Windows App is recommended for the best Windows 365 / AVD experience.");
+                sb.AppendLine("  It supports RDP Shortpath, Teams AV redirect, and auto-updates.");
+                result.Status = "Warning";
+                result.ResultValue = $"mstsc.exe only — Windows App recommended";
+                result.RemediationUrl = "https://learn.microsoft.com/windows-app/get-started-connect-devices-desktops-apps";
+            }
+            else if (!foundAny)
+            {
+                result.Status = "Warning";
+                result.ResultValue = "No RDP client detected";
+                sb.AppendLine("Could not detect any RDP client installation.");
+                result.RemediationUrl = "https://learn.microsoft.com/windows-app/get-started-connect-devices-desktops-apps";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"{primaryClient} {primaryVersion}";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
     }
 

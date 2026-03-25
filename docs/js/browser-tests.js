@@ -86,6 +86,11 @@ const ALL_TESTS = [
         description: 'Scans nearby WiFi networks to detect channel congestion (requires Local Scanner)',
         category: 'local', source: 'local'
     },
+    {
+        id: 'L-LE-13', name: 'RDP Client Version',
+        description: 'Checks installed Windows App / Remote Desktop client version and currency (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
 
     // ── TCP Based RDP Connectivity ──
     {

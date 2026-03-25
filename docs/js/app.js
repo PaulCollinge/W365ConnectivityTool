@@ -2607,6 +2607,18 @@ async function updateKeyFindings(results) {
         }
     }
 
+    // ── 12. RDP Client Version ──
+    const rdpClient = r('L-LE-13');
+    if (rdpClient && rdpClient.status !== 'NotRun' && rdpClient.status !== 'Pending') {
+        if (rdpClient.status === 'Passed') {
+            add('kf-pass', 'RDP Client', esc(rdpClient.resultValue));
+        } else if (rdpClient.status === 'Warning') {
+            add('kf-issue', 'RDP Client', esc(rdpClient.resultValue));
+        } else {
+            add('kf-error', 'RDP Client', esc(rdpClient.resultValue));
+        }
+    }
+
     // ── Render ──
     if (rows.length === 0) return;
 
