@@ -2718,60 +2718,58 @@ class Program
         {
             var sb = new StringBuilder();
 
-            // Targets: RDP gateway (TCP) and TURN relay (UDP) — the two critical paths
-            var targets = new (string host, string label)[]
-            {
-                ("afdfp-rdgateway-r1.wvd.microsoft.com", "RDP Gateway (AFD)"),
-                ("relay.turn.azure.net", "TURN Relay"),
-                ("login.microsoftonline.com", "Authentication"),
-            };
+            // ── Build target list: default gateway + reliable public ICMP responders ──
+            // Cloud endpoints (AFD, TURN) often block/filter ICMP so can't be used for MTU probing.
+            // Instead we test the actual network path segments that matter.
+            var targets = new List<(IPAddress ip, string label)>();
+
+            // 1. Default gateway — tests local segment MTU (VPN/tunnel impact)
+            var gw = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                .SelectMany(n => n.GetIPProperties().GatewayAddresses)
+                .FirstOrDefault(g => g.Address.AddressFamily == AddressFamily.InterNetwork);
+            if (gw != null)
+                targets.Add((gw.Address, "Default Gateway"));
+
+            // 2. Public DNS — tests Internet path MTU (ISP/WAN segment)
+            targets.Add((IPAddress.Parse("8.8.8.8"), "Google DNS (Internet path)"));
+            targets.Add((IPAddress.Parse("1.1.1.1"), "Cloudflare DNS (Internet path)"));
 
             int minMtu = int.MaxValue;
             int testedCount = 0;
             var issues = new List<string>();
 
-            foreach (var (host, label) in targets)
+            foreach (var (targetIp, label) in targets)
             {
-                sb.AppendLine($"Target: {label} ({host})");
+                sb.AppendLine($"Target: {label} ({targetIp})");
 
-                // Resolve to IP first (Ping needs IP for DontFragment to work reliably)
-                IPAddress? targetIp = null;
-                try
-                {
-                    var entry = await Dns.GetHostEntryAsync(host);
-                    targetIp = entry.AddressList.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-                }
-                catch { /* DNS resolution failed */ }
-
-                if (targetIp == null)
-                {
-                    sb.AppendLine($"  DNS resolution failed — skipped");
-                    sb.AppendLine();
-                    continue;
-                }
-
-                sb.AppendLine($"  Resolved: {targetIp}");
-
-                // Binary search for max payload that gets through with DF bit set
-                // IP header = 20 bytes, ICMP header = 8 bytes → total overhead = 28 bytes
-                // So payload of N means MTU = N + 28
-                const int icmpOverhead = 28;
-                int lo = 0, hi = 1472; // 1472 + 28 = 1500 (standard Ethernet MTU)
+                const int icmpOverhead = 28; // IP header (20) + ICMP header (8)
+                int lo = 0, hi = 1472;       // 1472 + 28 = 1500 (standard Ethernet)
                 int bestPayload = -1;
 
                 using var ping = new Ping();
                 var options = new PingOptions { DontFragment = true, Ttl = 128 };
 
-                // First test at standard Ethernet payload
+                // Verify host responds to ICMP at all (tiny payload)
+                bool respondsAtAll = await TestPingPayload(ping, targetIp, 1, options);
+                if (!respondsAtAll)
+                {
+                    sb.AppendLine($"  No ICMP response — skipped");
+                    sb.AppendLine();
+                    continue;
+                }
+
+                // Test standard Ethernet payload first
                 bool standardWorks = await TestPingPayload(ping, targetIp, hi, options);
                 if (standardWorks)
                 {
                     bestPayload = hi;
                     sb.AppendLine($"  MTU: ≥1500 (standard Ethernet — OK)");
+                    minMtu = Math.Min(minMtu, 1500);
                 }
                 else
                 {
-                    // Binary search to find the max payload
+                    // Binary search for max payload
                     while (lo <= hi)
                     {
                         int mid = (lo + hi) / 2;
@@ -2810,13 +2808,10 @@ class Program
                     }
                     else
                     {
-                        sb.AppendLine($"  ✘ No ICMP response — host may block ping");
-                        issues.Add($"{label}: ICMP blocked");
+                        sb.AppendLine($"  ✘ Responds to ping but all DF-bit probes failed");
+                        issues.Add($"{label}: DF-bit probes failed");
                     }
                 }
-
-                if (bestPayload >= 0 && standardWorks)
-                    minMtu = Math.Min(minMtu, 1500);
 
                 testedCount++;
                 sb.AppendLine();
