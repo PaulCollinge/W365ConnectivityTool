@@ -329,6 +329,11 @@ const ALL_TESTS = [
         id: 'C-UDP-07', name: 'CPC TURN Proxy/VPN',
         description: 'Checks if TURN relay traffic from the Cloud PC is routed via VPN/proxy',
         category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-LE-04', name: 'Shortpath Managed Config',
+        description: 'Checks RDP Shortpath for managed networks prerequisites: registry, UDP 3390 listener, firewall, and ICE/STUN OS support (requires Local Scanner on session host)',
+        category: 'cloudpc', source: 'cloudpc'
     }
 ];
 

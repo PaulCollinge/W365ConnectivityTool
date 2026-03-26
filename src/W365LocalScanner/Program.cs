@@ -1139,6 +1139,9 @@ class Program
             new("C-NET-01", "Azure IMDS Metadata", "Reads VM metadata from Azure Instance Metadata Service", "cloudpc-env", RunCpcImdsMetadata),
             new("C-NET-02", "RDP Egress in Azure", "Checks that RDP traffic to Gateway/TURN stays within Azure", "cloudpc-tcp", RunCpcRdpEgressInAzure),
 
+            // ── Cloud PC Shortpath Config ──
+            new("C-LE-04", "Shortpath Managed Config", "Checks RDP Shortpath for managed networks prerequisites on session host", "cloudpc-env", RunCpcShortpathManagedConfig),
+
             // ── Cloud PC Endpoint & Speed ──
             new("C-EP-01", "CPC Endpoint Reachability", "Tests required endpoint reachability from the Cloud PC", "cloudpc-env", RunCpcEndpointReachability),
             new("C-EP-02", "Session Host Required Endpoints", "Tests all required FQDNs for AVD/W365 session hosts", "cloudpc-env", RunCpcRequiredEndpoints),
@@ -7872,6 +7875,256 @@ class Program
         var r = await RunBandwidthTest();
         r.Id = "C-LE-03"; r.Name = "CPC Connection Speed"; r.Category = "cloudpc-env";
         return r;
+    }
+
+    // ═══════════════════════════════════════════
+    //  SHORTPATH MANAGED NETWORK CONFIG CHECK
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// C-LE-04: Checks RDP Shortpath for managed networks prerequisites on the session host.
+    /// Validates registry config, UDP 3390 listener, and Windows Firewall inbound rule.
+    /// </summary>
+    static async Task<TestResult> RunCpcShortpathManagedConfig()
+    {
+        var result = new TestResult { Id = "C-LE-04", Name = "Shortpath Managed Config", Category = "cloudpc-env" };
+        try
+        {
+            var sb = new StringBuilder();
+            var issues = new List<string>();
+            var info = new List<string>();
+
+            // ── 1. Registry: RDP Shortpath for managed networks ──
+            sb.AppendLine("══ Registry Configuration ══");
+            bool legacyListenerEnabled = false;
+            int configuredPort = 3390;
+
+            try
+            {
+                using var tsKey = Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp");
+                if (tsKey != null)
+                {
+                    // ICE-based Shortpath (modern) — enabled by default since Windows 11 24H2 / Server 2025
+                    // fUseUDPPortRedirector=1 enables the legacy direct-port listener (3390)
+                    var useRedirector = tsKey.GetValue("fUseUDPPortRedirector");
+                    if (useRedirector != null && Convert.ToInt32(useRedirector) == 1)
+                    {
+                        legacyListenerEnabled = true;
+                        sb.AppendLine("  fUseUDPPortRedirector = 1 (legacy listener ENABLED)");
+                        info.Add("Legacy 3390 listener enabled");
+                    }
+                    else
+                    {
+                        sb.AppendLine("  fUseUDPPortRedirector = 0 or not set (legacy listener disabled)");
+                        sb.AppendLine("    ICE/STUN-based Shortpath may still work on supported OS versions");
+                    }
+
+                    // Custom port override
+                    var portVal = tsKey.GetValue("UdpRedirectorPort");
+                    if (portVal != null)
+                    {
+                        configuredPort = Convert.ToInt32(portVal);
+                        sb.AppendLine($"  UdpRedirectorPort = {configuredPort}");
+                    }
+                    else if (legacyListenerEnabled)
+                    {
+                        sb.AppendLine($"  UdpRedirectorPort = 3390 (default)");
+                    }
+
+                    // ICE candidate disabling check
+                    var disableStun = tsKey.GetValue("ICEControl");
+                    if (disableStun != null && Convert.ToInt32(disableStun) == 2)
+                    {
+                        sb.AppendLine("  ICEControl = 2 (ICE/STUN Shortpath DISABLED by policy)");
+                        issues.Add("ICE/STUN Shortpath disabled by ICEControl=2");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("  Registry key not found (RDP-Tcp WinStation)");
+                }
+            }
+            catch (Exception ex) { sb.AppendLine($"  Registry read error: {ex.Message}"); }
+
+            // Also check Group Policy override path
+            try
+            {
+                using var gpKey = Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services");
+                if (gpKey != null)
+                {
+                    var gpUdpRedirector = gpKey.GetValue("fUseUDPPortRedirector");
+                    if (gpUdpRedirector != null)
+                    {
+                        sb.AppendLine($"  GP Override: fUseUDPPortRedirector = {gpUdpRedirector}");
+                        if (Convert.ToInt32(gpUdpRedirector) == 1)
+                            legacyListenerEnabled = true;
+                    }
+
+                    var gpSelectTransport = gpKey.GetValue("SelectTransport");
+                    if (gpSelectTransport != null && Convert.ToInt32(gpSelectTransport) == 2)
+                    {
+                        sb.AppendLine("  GP: SelectTransport = 2 (TCP only — ALL Shortpath disabled!)");
+                        issues.Add("Group Policy forces TCP-only transport");
+                    }
+
+                    var gpDisableUdp = gpKey.GetValue("fClientDisableUDP");
+                    if (gpDisableUdp != null && Convert.ToInt32(gpDisableUdp) == 1)
+                    {
+                        sb.AppendLine("  GP: fClientDisableUDP = 1 (UDP disabled for clients)");
+                        issues.Add("Group Policy disables UDP transport");
+                    }
+                }
+            }
+            catch { /* GP key may not exist */ }
+
+            sb.AppendLine();
+
+            // ── 2. UDP listener check (only for legacy 3390 mode) ──
+            if (legacyListenerEnabled)
+            {
+                sb.AppendLine($"══ UDP {configuredPort} Listener ══");
+                try
+                {
+                    // Use netstat to check for UDP listener on the configured port
+                    var netstat = await RunProcessAsync("netstat", $"-anp UDP", 5000);
+                    if (netstat != null)
+                    {
+                        var lines = netstat.Split('\n')
+                            .Where(l => l.Contains("UDP") && l.Contains($":{configuredPort}"))
+                            .Select(l => l.Trim())
+                            .ToList();
+
+                        if (lines.Count > 0)
+                        {
+                            sb.AppendLine($"  ✓ UDP port {configuredPort} is actively listening");
+                            foreach (var line in lines.Take(3))
+                                sb.AppendLine($"    {line}");
+                            info.Add($"UDP {configuredPort} listening");
+                        }
+                        else
+                        {
+                            sb.AppendLine($"  ✘ UDP port {configuredPort} is NOT listening");
+                            sb.AppendLine($"    The RDP service may need to be restarted after enabling fUseUDPPortRedirector");
+                            issues.Add($"UDP {configuredPort} not listening (restart RDP service?)");
+                        }
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine($"  Listener check error: {ex.Message}"); }
+                sb.AppendLine();
+            }
+
+            // ── 3. Windows Firewall: inbound UDP rule ──
+            sb.AppendLine("══ Windows Firewall ══");
+            try
+            {
+                // Check for inbound UDP rules on port 3390 (or custom port)
+                var fwOutput = await RunProcessAsync("powershell",
+                    $"-NoProfile -Command \"Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow | " +
+                    $"Where-Object {{ $_.DisplayName -match 'Shortpath|RDP|3390|Remote Desktop' }} | " +
+                    $"Select-Object -Property DisplayName, Profile | Format-List\"", 10000);
+
+                bool foundRule = false;
+                if (!string.IsNullOrWhiteSpace(fwOutput))
+                {
+                    sb.AppendLine("  Matching inbound allow rules:");
+                    foreach (var line in fwOutput.Split('\n').Where(l => !string.IsNullOrWhiteSpace(l)).Take(12))
+                        sb.AppendLine($"    {line.Trim()}");
+                    foundRule = true;
+                }
+
+                // Also check specifically for port-based rule
+                var portCheck = await RunProcessAsync("powershell",
+                    $"-NoProfile -Command \"Get-NetFirewallPortFilter | Where-Object {{ $_.LocalPort -eq '{configuredPort}' -and $_.Protocol -eq 'UDP' }} | " +
+                    $"Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }} | " +
+                    $"Select-Object -ExpandProperty DisplayName\"", 10000);
+
+                if (!string.IsNullOrWhiteSpace(portCheck))
+                {
+                    sb.AppendLine($"  ✓ Inbound UDP {configuredPort} explicitly allowed:");
+                    foreach (var rule in portCheck.Split('\n').Where(l => !string.IsNullOrWhiteSpace(l)).Take(5))
+                        sb.AppendLine($"    {rule.Trim()}");
+                    info.Add($"Firewall allows inbound UDP {configuredPort}");
+                }
+                else if (legacyListenerEnabled)
+                {
+                    sb.AppendLine($"  ⚠ No explicit inbound allow rule found for UDP {configuredPort}");
+                    sb.AppendLine($"    Legacy Shortpath listener is enabled but firewall may block incoming connections");
+                    issues.Add($"No firewall rule for inbound UDP {configuredPort}");
+                }
+                else if (!foundRule)
+                {
+                    sb.AppendLine("  No specific Shortpath firewall rules found (may not be needed for ICE/STUN mode)");
+                }
+            }
+            catch (Exception ex) { sb.AppendLine($"  Firewall check error: {ex.Message}"); }
+
+            sb.AppendLine();
+
+            // ── 4. OS version check for ICE/STUN support ──
+            sb.AppendLine("══ ICE/STUN Shortpath Support ══");
+            var osVer = Environment.OSVersion.Version;
+            // ICE-based Shortpath is supported on:
+            //   Windows 11 22H2+ (build 22621+)
+            //   Windows Server 2022 with KB5035857+
+            //   Windows Server 2025+ (build 26100+)
+            if (osVer.Build >= 26100)
+            {
+                sb.AppendLine($"  ✓ Windows Server 2025+ (build {osVer.Build}) — ICE Shortpath supported natively");
+                info.Add("ICE Shortpath supported");
+            }
+            else if (osVer.Build >= 22621)
+            {
+                sb.AppendLine($"  ✓ Windows 11 22H2+ (build {osVer.Build}) — ICE Shortpath supported");
+                info.Add("ICE Shortpath supported");
+            }
+            else if (osVer.Build >= 20348)
+            {
+                sb.AppendLine($"  ⚠ Windows Server 2022 (build {osVer.Build}) — ICE Shortpath requires KB5035857+");
+                sb.AppendLine("    Check Windows Update for the latest cumulative update");
+                // Not an issue per se — may be patched
+            }
+            else
+            {
+                sb.AppendLine($"  ⚠ Build {osVer.Build} — ICE Shortpath may not be supported on this OS version");
+                sb.AppendLine("    Consider upgrading to Windows 11 22H2+ or Server 2025");
+            }
+
+            // ── Set status ──
+            if (issues.Any(i => i.Contains("TCP-only") || i.Contains("disables UDP")))
+            {
+                result.Status = "Failed";
+                result.ResultValue = "Shortpath blocked by Group Policy";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/configure-rdp-shortpath?tabs=managed-networks";
+            }
+            else if (issues.Any(i => i.Contains("ICE/STUN Shortpath disabled")))
+            {
+                result.Status = "Failed";
+                result.ResultValue = "ICE/STUN Shortpath disabled (ICEControl=2)";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/configure-rdp-shortpath?tabs=managed-networks";
+            }
+            else if (issues.Count > 0)
+            {
+                result.Status = "Warning";
+                result.ResultValue = string.Join("; ", issues.Take(2));
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/configure-rdp-shortpath?tabs=managed-networks";
+            }
+            else if (legacyListenerEnabled)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"Legacy listener (UDP {configuredPort}) + ICE/STUN ready";
+            }
+            else
+            {
+                result.Status = "Passed";
+                result.ResultValue = "ICE/STUN Shortpath ready (modern mode)";
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
     }
 }
 

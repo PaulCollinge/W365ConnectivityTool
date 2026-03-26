@@ -2643,6 +2643,18 @@ async function updateKeyFindings(results) {
         }
     }
 
+    // ── 15. Shortpath Managed Config ──
+    const shortpath = r('C-LE-04');
+    if (shortpath && shortpath.status !== 'NotRun' && shortpath.status !== 'Pending') {
+        if (shortpath.status === 'Passed') {
+            add('kf-pass', 'Shortpath Config', esc(shortpath.resultValue));
+        } else if (shortpath.status === 'Warning') {
+            add('kf-issue', 'Shortpath Config', esc(shortpath.resultValue));
+        } else {
+            add('kf-error', 'Shortpath Config', esc(shortpath.resultValue));
+        }
+    }
+
     // ── Render ──
     if (rows.length === 0) return;
 
