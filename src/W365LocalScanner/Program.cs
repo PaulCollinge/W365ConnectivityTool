@@ -5106,6 +5106,8 @@ class Program
             var sb = new StringBuilder();
             bool udpConnected = false, udpFailed = false, shortpathConnected = false, hasConnection = false;
             string protocol = "";
+            string shortpathType = "";     // "Managed (direct UDP 3390)", "Managed (ICE/STUN)", "Public (TURN relay)"
+            string shortpathEndpoint = ""; // IP:port of the Shortpath peer
 
             // 1. Try RdpCoreTS (inside remote session)
             try
@@ -5138,13 +5140,36 @@ class Program
                             _ => $"Event {eid}"
                         };
                         sb.AppendLine($"  [{record.TimeCreated:HH:mm:ss}] {label}");
-                        if (msg.Length is > 0 and < 200)
+                        if (msg.Length is > 0 and < 300)
                             sb.AppendLine($"    {msg}");
                         if (eid == 131) hasConnection = true;
-                        if (eid is 137 or 138) { shortpathConnected = true; protocol = "UDP (RDP Shortpath)"; }
+                        if (eid is 137 or 138 or 143)
+                        {
+                            shortpathConnected = true;
+                            protocol = "UDP (RDP Shortpath)";
+                            // Event 138/143 message often contains the transport endpoint IP:port
+                            // e.g. "Shortpath connected to 10.0.0.5:3390" or "...to 51.5.x.x:3478"
+                            // Extract IP to classify managed vs public
+                            var ipMatch = Regex.Match(msg, @"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)");
+                            if (ipMatch.Success)
+                            {
+                                var spIp = ipMatch.Groups[1].Value;
+                                var spPort = int.Parse(ipMatch.Groups[2].Value);
+                                shortpathEndpoint = $"{spIp}:{spPort}";
+                                if (IsPrivateIp(spIp))
+                                {
+                                    shortpathType = spPort == 3390 ? "Managed (direct UDP 3390)" : $"Managed (ICE/STUN, port {spPort})";
+                                    protocol = $"UDP Shortpath — {shortpathType}";
+                                }
+                                else
+                                {
+                                    shortpathType = spPort == 3478 ? "Public (TURN relay)" : $"Public (port {spPort})";
+                                    protocol = $"UDP Shortpath — {shortpathType}";
+                                }
+                            }
+                        }
                         if (eid == 141) { udpConnected = true; protocol = "UDP (RDP Shortpath)"; }
                         if (eid == 142) { udpFailed = true; protocol = "TCP (Reverse Connect)"; }
-                        if (eid == 143) { shortpathConnected = true; protocol = "UDP (RDP Shortpath)"; }
                     }
                 }
                 if (count == 0) sb.AppendLine("  (no events)");
@@ -5215,21 +5240,54 @@ class Program
             }
             catch { sb.AppendLine("RDP Client log: not available"); }
 
-            // 3. Check for active UDP connections to TURN relay (port 3478)
-            // This is the most reliable indicator of Shortpath in use
+            // 3. Check for active network connections indicating Shortpath type
+            // - TURN relay: UDP to 51.5.x.x:3478 or TCP to port 3478
+            // - Managed (legacy): UDP to private IP on port 3390
+            // - Managed (ICE/STUN): UDP to private IP on ephemeral port
             try
             {
-                var udpListeners = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
-                    .GetActiveUdpListeners();
-                var udpConns = udpListeners.Where(ep => ep.Port == 3478 || ep.Port >= 49152).ToList();
-
-                // Also check for established TCP connections to known TURN/gateway endpoints
+                // Parse netstat for UDP connections (GetActiveUdpListeners only shows local listeners)
+                var netstatOutput = await RunProcessAsync("netstat", "-anp UDP", 5000);
+                if (netstatOutput != null)
+                {
+                    var udpLines = netstatOutput.Split('\n')
+                        .Where(l => l.TrimStart().StartsWith("UDP") && l.Contains("*:*") == false)
+                        .Select(l => l.Trim())
+                        .ToList();
+                    
+                    // Look for UDP connections to known Shortpath indicators
+                    var turnUdpConns = new List<string>();
+                    var managedConns = new List<string>();
+                    
+                    foreach (var line in udpLines)
+                    {
+                        // Parse remote endpoint from netstat line: "UDP  local:port  remote:port"
+                        var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 2)
+                        {
+                            // For UDP netstat on Windows, format is: UDP  localAddr:port  *:*
+                            // Active UDP sessions don't show remote endpoint in basic netstat,
+                            // but local high-port bindings suggest active STUN/ICE sessions
+                            var localEp = parts[1];
+                            var colonIdx = localEp.LastIndexOf(':');
+                            if (colonIdx > 0 && int.TryParse(localEp[(colonIdx + 1)..], out var localPort))
+                            {
+                                if (localPort == 3390)
+                                {
+                                    sb.AppendLine($"\n  UDP listener on port 3390 detected (managed Shortpath legacy)");
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Check established TCP connections for TURN relay or gateway
                 var tcpConns = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
                     .GetActiveTcpConnections()
                     .Where(c => c.State == TcpState.Established)
                     .ToList();
 
-                // Look for connections to TURN relay port 3478
+                // TURN relay connections (port 3478)
                 var turnConns = tcpConns.Where(c => c.RemoteEndPoint.Port == 3478).ToList();
                 if (turnConns.Count > 0)
                 {
@@ -5237,10 +5295,36 @@ class Program
                     foreach (var tc in turnConns.Take(3))
                         sb.AppendLine($"  → {tc.RemoteEndPoint}");
                     udpConnected = true;
-                    protocol = "UDP (RDP Shortpath via TURN)";
+                    if (string.IsNullOrEmpty(shortpathType))
+                    {
+                        shortpathType = "Public (TURN relay)";
+                        protocol = "UDP Shortpath — Public (TURN relay)";
+                    }
+                }
+
+                // Connections to port 3390 = managed Shortpath (legacy listener)
+                var managedLegacyConns = tcpConns.Where(c => c.RemoteEndPoint.Port == 3390).ToList();
+                if (managedLegacyConns.Count > 0)
+                {
+                    sb.AppendLine($"\nActive connections to port 3390: {managedLegacyConns.Count}");
+                    foreach (var mc in managedLegacyConns.Take(3))
+                        sb.AppendLine($"  → {mc.RemoteEndPoint}");
+                    shortpathConnected = true;
+                    shortpathType = "Managed (direct UDP 3390)";
+                    protocol = "UDP Shortpath — Managed (direct UDP 3390)";
+                }
+
+                // Connections to RDP gateway on 443 with private remote IPs could indicate managed network
+                var privateRdpConns = tcpConns.Where(c =>
+                    c.RemoteEndPoint.Port == 443 && IsPrivateIp(c.RemoteEndPoint.Address.ToString())).ToList();
+                if (privateRdpConns.Count > 0 && !shortpathConnected)
+                {
+                    sb.AppendLine($"\nTCP 443 to private IPs: {privateRdpConns.Count} (internal gateway/proxy)");
+                    foreach (var pc in privateRdpConns.Take(3))
+                        sb.AppendLine($"  → {pc.RemoteEndPoint}");
                 }
             }
-            catch { /* netstat-like checks may require elevation */ }
+            catch { /* netstat/connection checks may require elevation */ }
 
             // 4. Check RemoteFX UDP bandwidth if inside remote session
             if (IsRemoteSession())
@@ -5267,8 +5351,23 @@ class Program
             if (udpConnected || shortpathConnected)
             {
                 result.Status = "Passed";
-                result.ResultValue = "UDP (RDP Shortpath) ⚡";
-                sb.AppendLine("✓ Session is using UDP transport (RDP Shortpath).");
+                if (!string.IsNullOrEmpty(shortpathType))
+                {
+                    result.ResultValue = $"UDP Shortpath — {shortpathType} ⚡";
+                    sb.AppendLine($"\n✓ Session is using UDP transport (RDP Shortpath).");
+                    sb.AppendLine($"  Type: {shortpathType}");
+                    if (!string.IsNullOrEmpty(shortpathEndpoint))
+                        sb.AppendLine($"  Endpoint: {shortpathEndpoint}");
+                    if (shortpathType.Contains("Managed"))
+                        sb.AppendLine("  ✓ Direct private connectivity — lowest latency path");
+                    else
+                        sb.AppendLine("  ✓ Relayed via TURN — good, but managed network may offer lower latency");
+                }
+                else
+                {
+                    result.ResultValue = "UDP (RDP Shortpath) ⚡";
+                    sb.AppendLine("\n✓ Session is using UDP transport (RDP Shortpath).");
+                }
             }
             else if (udpFailed)
             {
