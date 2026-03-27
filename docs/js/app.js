@@ -2655,6 +2655,15 @@ async function updateKeyFindings(results) {
         }
     }
 
+    // ── 16. Connection Type Warning ──
+    const ispResult = r('B-LE-02');
+    if (ispResult && ispResult.status === 'Warning') {
+        add('kf-issue', 'Connection Type', esc(ispResult.resultValue));
+    } else if (ispResult && ispResult.status === 'Failed') {
+        add('kf-error', 'Connection Type', esc(ispResult.resultValue),
+            'This network is not suitable for interactive Cloud PC sessions');
+    }
+
     // ── Render ──
     if (rows.length === 0) return;
 

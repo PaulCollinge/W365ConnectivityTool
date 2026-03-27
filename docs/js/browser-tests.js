@@ -654,9 +654,96 @@ async function testIspDetection(test) {
         return makeResult(test, 'Warning', 'Could not detect ISP', 'GeoIP lookup failed.', duration);
     }
 
-    const value = `${geo.isp}`;
-    const detail = `ISP: ${geo.isp}\nOrganisation: ${geo.org}\nAS: ${geo.as}`;
-    return makeResult(test, 'Passed', value, detail, duration);
+    // Classify the network type from ISP/org name
+    const netType = classifyNetworkType(geo.isp || '', geo.org || '');
+
+    let value = `${geo.isp}`;
+    let detail = `ISP: ${geo.isp}\nOrganisation: ${geo.org}\nAS: ${geo.as}`;
+    let status = 'Passed';
+    let remediation = '';
+
+    if (netType) {
+        detail += `\n\nNetwork Type: ${netType.type}`;
+        if (netType.warning) {
+            detail += `\n\u26a0 ${netType.warning}`;
+            value = `${geo.isp} (${netType.type})`;
+            status = netType.severity === 'fail' ? 'Failed' : 'Warning';
+            remediation = netType.remediation || '';
+        }
+    }
+
+    return makeResult(test, status, value, detail, duration, '', remediation);
+}
+
+/**
+ * Classify ISP/org into network type and flag high-latency or problematic connections.
+ * Returns { type, warning, severity, remediation } or null.
+ */
+function classifyNetworkType(isp, org) {
+    const combined = `${isp} ${org}`.toLowerCase();
+
+    // Satellite Internet providers (500-800ms+ RTT)
+    const satPatterns = [
+        'inmarsat', 'viasat', 'hughesnet', 'starlink', 'ses s.a', 'eutelsat',
+        'telesat', 'oneweb', 'iridium', 'globalstar', 'thuraya', 'bgan',
+        'ses astra', 'sky muster', 'tooway', 'konnect'
+    ];
+    if (satPatterns.some(p => combined.includes(p))) {
+        return {
+            type: 'Satellite Internet',
+            warning: 'Satellite connections have 500-800ms+ latency. RDP sessions will be noticeably laggy and UDP Shortpath may not work reliably.',
+            severity: 'warn',
+            remediation: 'Consider using a wired broadband or cellular connection for interactive Cloud PC sessions.'
+        };
+    }
+
+    // Aircraft WiFi (satellite-backed, high latency + throttled)
+    const aircraftPatterns = [
+        'gogo', 'panasonic avionics', 'global eagle', 'anuvu',
+        'thales inflyt', 'inflyt', 'smartsky', 'honeywell aerospace',
+        'sitaonair', 'sita onair', 'aeromobile', 'boingo wireless'
+    ];
+    if (aircraftPatterns.some(p => combined.includes(p))) {
+        return {
+            type: 'Aircraft WiFi',
+            warning: 'Aircraft WiFi uses satellite backhaul with 600ms+ latency, packet loss, and bandwidth caps. RDP will be severely degraded.',
+            severity: 'fail',
+            remediation: 'Aircraft WiFi is not suitable for interactive Cloud PC sessions. Wait for ground connectivity.'
+        };
+    }
+
+    // Aircraft WiFi often exits through satellite ISPs — check for known combos
+    // Inmarsat is already caught above, but some show as generic A2N or similar
+    const inflight = ['a2n', 'immarsat', 'inmarsatplc', 'cobham satcom'];
+    if (inflight.some(p => combined.includes(p))) {
+        return {
+            type: 'Satellite/Aircraft WiFi',
+            warning: 'This appears to be satellite-backed connectivity (likely aircraft WiFi). Expect 600ms+ latency.',
+            severity: 'warn',
+            remediation: 'Satellite-backed WiFi is not ideal for interactive Cloud PC sessions.'
+        };
+    }
+
+    // Hotel/captive portal networks (already detected by B-NET-01 but worth noting)
+    const hotelPatterns = ['nomadix', 'guest-tek', 'guesttek', 'ruckus hospitality'];
+    if (hotelPatterns.some(p => combined.includes(p))) {
+        return {
+            type: 'Hotel/Guest WiFi',
+            warning: 'Hotel/guest WiFi may have bandwidth caps, high latency, or blocking of UDP traffic needed for RDP Shortpath.',
+            severity: 'warn'
+        };
+    }
+
+    // Cellular / mobile hotspot (variable latency)
+    const cellPatterns = ['t-mobile', 'verizon wireless', 'at&t mobility', 'vodafone', 'ee limited', 'three uk', 'o2'];
+    if (cellPatterns.some(p => combined.includes(p))) {
+        return {
+            type: 'Cellular/Mobile',
+            warning: null // Cellular is fine for RDP, just informational
+        };
+    }
+
+    return null;
 }
 
 // ── Captive Portal Detection ──

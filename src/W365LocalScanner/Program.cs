@@ -2707,6 +2707,36 @@ class Program
             || (bytes[0] == 169 && bytes[1] == 254);
     }
 
+    /// <summary>
+    /// Classify an ISP/org string into a network type. Returns (type, warning) or null.
+    /// Detects satellite, aircraft WiFi, hotel, and other high-latency connections.
+    /// </summary>
+    static (string type, string? warning)? ClassifyNetworkType(string org)
+    {
+        var lower = org.ToLowerInvariant();
+
+        // Satellite Internet providers (500-800ms+ RTT)
+        string[] satPatterns = ["inmarsat", "viasat", "hughesnet", "starlink", "ses s.a", "eutelsat",
+            "telesat", "oneweb", "iridium", "globalstar", "thuraya", "bgan", "ses astra",
+            "sky muster", "tooway", "konnect", "cobham satcom"];
+        if (satPatterns.Any(p => lower.Contains(p)))
+            return ("Satellite Internet", "Satellite connections have 500-800ms+ latency. RDP sessions will be noticeably laggy and UDP Shortpath may not work reliably.");
+
+        // Aircraft WiFi (satellite-backed)
+        string[] aircraftPatterns = ["gogo", "panasonic avionics", "global eagle", "anuvu",
+            "thales inflyt", "inflyt", "smartsky", "honeywell aerospace",
+            "sitaonair", "sita onair", "aeromobile", "boingo wireless", "a2n"];
+        if (aircraftPatterns.Any(p => lower.Contains(p)))
+            return ("Aircraft WiFi", "Aircraft WiFi uses satellite backhaul with 600ms+ latency, packet loss, and bandwidth caps. RDP will be severely degraded.");
+
+        // Hotel/guest WiFi
+        string[] hotelPatterns = ["nomadix", "guest-tek", "guesttek", "ruckus hospitality"];
+        if (hotelPatterns.Any(p => lower.Contains(p)))
+            return ("Hotel/Guest WiFi", "Hotel/guest WiFi may have bandwidth caps, high latency, or blocking of UDP traffic.");
+
+        return null;
+    }
+
     // ═══════════════════════════════════════════
     //  PATH MTU DISCOVERY
     // ═══════════════════════════════════════════
@@ -7516,7 +7546,21 @@ class Program
 
             result.Status = "Passed";
             result.ResultValue = org;
-            if (!isMicrosoft)
+
+            // Classify network type for high-latency warnings
+            var netType = ClassifyNetworkType(org);
+            if (netType != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"Network Type: {netType.Value.type}");
+                if (netType.Value.warning != null)
+                {
+                    sb.AppendLine($"⚠ {netType.Value.warning}");
+                    result.Status = "Warning";
+                    result.ResultValue = $"{org} ({netType.Value.type})";
+                }
+            }
+            else if (!isMicrosoft)
             {
                 sb.AppendLine();
                 sb.AppendLine("Note: Network org is not Microsoft/Azure. General internet traffic may be routed via VPN/proxy — this is expected if Entra Private Access or similar is configured.");
