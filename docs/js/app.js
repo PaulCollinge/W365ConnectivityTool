@@ -48,6 +48,40 @@ const BROWSER_TO_CPC_ID = {
     'B-UDP-02': 'C-UDP-04'
 };
 
+function dedupeResultsById(results) {
+    const byId = new Map();
+    for (const result of results) {
+        byId.set(String(result.id), result);
+    }
+    return Array.from(byId.values());
+}
+
+function extractCoordinatesFromDetailedInfo(detailedInfo, prefixes = ['Coordinates:']) {
+    if (!detailedInfo) return null;
+    const lines = detailedInfo.split('\n');
+    const line = lines.find(l => prefixes.some(prefix => l.trim().startsWith(prefix)));
+    if (!line) return null;
+    const value = line.replace(/^[^:]+:\s*/, '').trim();
+    const parts = value.split(',').map(p => Number.parseFloat(p.trim()));
+    if (parts.length !== 2 || parts.some(Number.isNaN)) return null;
+    return { lat: parts[0], lon: parts[1] };
+}
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+    const toRad = deg => deg * Math.PI / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistanceKmMi(kilometers) {
+    const miles = kilometers * 0.621371;
+    return `~${Math.round(kilometers)} km (${Math.round(miles)} mi)`;
+}
+
 // ── Cross-tab communication (bidirectional sync) ──
 // When the scanner opens a NEW tab with results, both tabs exchange data:
 //   New tab  → sends scanner results  → Existing tab
@@ -434,6 +468,7 @@ async function runAllBrowserTests() {
             } else {
                 result.source = 'browser';
             }
+            allResults = allResults.filter(r => String(r.id) !== String(targetId));
             allResults.push(result);
             updateTestUI(targetId, result);
         } catch (err) {
@@ -447,6 +482,7 @@ async function runAllBrowserTests() {
                 detailedInfo: err.stack || err.message,
                 duration: 0
             };
+            allResults = allResults.filter(r => String(r.id) !== String(targetId));
             allResults.push(errorResult);
             updateTestUI(targetId, errorResult);
         }
@@ -1052,14 +1088,22 @@ async function generateExportText() {
     const egress27 = r('27');
     if (egress27 && egress27.detailedInfo) {
         const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
-        lines.push(`  RDP Egress:        ${eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue}`);
+        const egressVal = eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue;
+        lines.push(`  RDP Egress:        ${egressVal}`);
+        const gpsCoords = freshLoc ? { lat: Number(freshLoc.lat), lon: Number(freshLoc.lon) } : extractCoordinatesFromDetailedInfo(r('B-LE-01')?.detailedInfo);
+        const egressCoords = extractCoordinatesFromDetailedInfo(egress27.detailedInfo, ['Egress coordinates:']);
+        if (gpsCoords && egressCoords) {
+            const distance = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon);
+            lines.push(`  User GPS → Egress:${' '.repeat(1)}${formatDistanceKmMi(distance)}`);
+        }
     } else {
         // Fallback: L-TCP-09 (Gateway Used) includes the scanner's own GeoIP as "Your location:"
         const gw09f = r('L-TCP-09');
         if (gw09f && gw09f.detailedInfo) {
-            const locLine = gw09f.detailedInfo.split('\n').find(l => l.trim().startsWith('Your location:'));
+            const locLine = gw09f.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:') || l.trim().startsWith('Your location:'));
             if (locLine) {
-                lines.push(`  RDP Egress:        ${locLine.replace(/.*Your location:\s*/i, '').trim()}  (scanner GeoIP)`);
+                const egressVal = locLine.replace(/.*Your egress location:\s*/i, '').replace(/.*Your location:\s*/i, '').trim();
+                lines.push(`  RDP Egress:        ${egressVal}  (scanner GeoIP)`);
             } else {
                 lines.push(`  RDP Egress:        (requires Local Scanner)`);
             }
@@ -1090,12 +1134,12 @@ async function generateExportText() {
     if (gw09 && gw09.detailedInfo) {
         const regionLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Azure Region:'));
         const geoLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('GeoIP Location:'));
-        const distLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Distance from you:'));
+        const distLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Distance from egress:') || l.trim().startsWith('Distance from you:'));
         const regionVal = regionLine ? regionLine.replace(/.*Azure Region:\s*/i, '').trim() : '';
         const geoVal = geoLine ? geoLine.replace(/.*GeoIP Location:\s*/i, '').trim() : '';
         let gwSummary = regionVal || geoVal || gw09.resultValue;
         if (geoVal && regionVal) gwSummary = `${regionVal}  (${geoVal})`;
-        if (distLine) gwSummary += `  — ${distLine.replace(/.*Distance from you:\s*/i, '').trim()}`;
+        if (distLine) gwSummary += `  — ${distLine.replace(/.*Distance from egress:\s*/i, '').replace(/.*Distance from you:\s*/i, '').trim()}`;
         // try to find TCP latency from L-TCP-04
         const gw04 = r('L-TCP-04');
         if (gw04 && gw04.detailedInfo) {
@@ -1446,10 +1490,12 @@ function updateExportButton() {
 async function sendResultsToIT() {
     if (allResults.length === 0) return;
 
-    const critical = allResults.filter(r => r.status === 'Failed' || r.status === 'Error').length;
-    const warnings = allResults.filter(r => r.status === 'Warning').length;
-    const passed   = allResults.filter(r => r.status === 'Passed').length;
-    const total    = allResults.length;
+    const exportResults = dedupeResultsById(allResults);
+
+    const critical = exportResults.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+    const warnings = exportResults.filter(r => r.status === 'Warning').length;
+    const passed   = exportResults.filter(r => r.status === 'Passed').length;
+    const total    = exportResults.length;
 
     const machineName = _importedMachineName || 'Unknown Device';
     const dateStr     = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -1461,7 +1507,7 @@ async function sendResultsToIT() {
     else if (warnings > 0) statusLabel = `${warnings} Warning${warnings > 1 ? 's' : ''}`;
 
     // Critical/warning details for the body
-    const issueLines = allResults
+    const issueLines = exportResults
         .filter(r => r.status === 'Failed' || r.status === 'Error' || r.status === 'Warning')
         .map(r => `  [${r.status.toUpperCase()}] ${r.name}: ${r.resultValue || ''}`.trimEnd())
         .join('\n');
@@ -1484,7 +1530,7 @@ async function sendResultsToIT() {
         machineName,
         userAgent: navigator.userAgent,
         scannerTimestamp: _importedScanTimestamp || null,
-        results: allResults.map(r => ({
+        results: exportResults.map(r => ({
             id: r.id, name: r.name, category: r.category, source: r.source,
             status: r.status, resultValue: r.resultValue || '',
             detailedInfo: r.detailedInfo || '', duration: r.duration || 0,
@@ -1532,6 +1578,8 @@ async function sendResultsToIT() {
 function exportCsvReport() {
     if (allResults.length === 0) return;
 
+    const exportResults = dedupeResultsById(allResults);
+
     const machineName = _importedMachineName || 'Unknown';
     const scanDate    = _importedScanTimestamp || new Date().toLocaleString();
 
@@ -1542,7 +1590,7 @@ function exportCsvReport() {
     };
 
     const headers = ['Machine', 'Scan Date', 'Test ID', 'Test Name', 'Category', 'Source', 'Status', 'Result', 'Detail', 'Remediation'];
-    const rows = allResults.map(r => [
+    const rows = exportResults.map(r => [
         csv(machineName),
         csv(scanDate),
         csv(r.id),
@@ -1570,11 +1618,12 @@ function exportCsvReport() {
 
 function exportJsonReport() {
     if (allResults.length === 0) return;
+    const exportResults = dedupeResultsById(allResults);
     const output = {
         timestamp: new Date().toISOString(),
         userAgent: navigator.userAgent,
         scannerTimestamp: _importedScanTimestamp || null,
-        results: allResults.map(r => ({
+        results: exportResults.map(r => ({
             id: r.id,
             name: r.name,
             category: r.category,
@@ -2230,11 +2279,16 @@ async function updateKeyFindings(results) {
     if (egress27 && egress27.detailedInfo) {
         const eLine = egress27.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:'));
         const val = eLine ? eLine.replace(/.*Your egress location:\s*/i, '').trim() : egress27.resultValue;
-        if (val) add('kf-info', 'RDP Egress', flagImg(val) + esc(val));
+        const gpsCoords = extractCoordinatesFromDetailedInfo(loc?.detailedInfo);
+        const egressCoords = extractCoordinatesFromDetailedInfo(egress27.detailedInfo, ['Egress coordinates:']);
+        const sub = gpsCoords && egressCoords
+            ? `Device GPS → egress ${formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon))}`
+            : '';
+        if (val) add('kf-info', 'RDP Egress', flagImg(val) + esc(val), sub);
     } else if (gw09 && gw09.detailedInfo) {
-        const locLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Your location:'));
+        const locLine = gw09.detailedInfo.split('\n').find(l => l.trim().startsWith('Your egress location:') || l.trim().startsWith('Your location:'));
         if (locLine) {
-            const val = locLine.replace(/.*Your location:\s*/i, '').trim();
+            const val = locLine.replace(/.*Your egress location:\s*/i, '').replace(/.*Your location:\s*/i, '').trim();
             add('kf-info', 'RDP Egress', flagImg(val) + esc(val));
         }
     }
@@ -2271,7 +2325,7 @@ async function updateKeyFindings(results) {
     if (gw09 && gw09.detailedInfo) {
         const regionVal = extractLine(gw09.detailedInfo, 'Azure Region:');
         const geoVal = extractLine(gw09.detailedInfo, 'GeoIP Location:');
-        const distVal = extractLine(gw09.detailedInfo, 'Distance from you:');
+        const distVal = extractLine(gw09.detailedInfo, 'Distance from egress:') || extractLine(gw09.detailedInfo, 'Distance from you:');
         let gwStr = regionVal || geoVal || gw09.resultValue || '';
         if (geoVal && regionVal) gwStr = `${regionVal} (${geoVal})`;
         // TCP latency

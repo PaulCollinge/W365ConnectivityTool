@@ -659,6 +659,12 @@ async function testIspDetection(test) {
 
     let value = `${geo.isp}`;
     let detail = `ISP: ${geo.isp}\nOrganisation: ${geo.org}\nAS: ${geo.as}`;
+    if (geo.city || geo.regionName || geo.country) {
+        detail += `\nEgress location: ${geo.city}, ${geo.regionName}, ${geo.country}`;
+    }
+    if (Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
+        detail += `\nEgress coordinates: ${Number(geo.lat).toFixed(4)}, ${Number(geo.lon).toFixed(4)}`;
+    }
     let status = 'Passed';
     let remediation = '';
 

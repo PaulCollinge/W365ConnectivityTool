@@ -294,6 +294,43 @@ function extractLine(detailedInfo, prefix) {
     return '';
 }
 
+function extractCoordinatesFromDetailedInfo(detailedInfo, prefixes = ['Coordinates:']) {
+    if (!detailedInfo) return null;
+    for (const line of detailedInfo.split('\n')) {
+        const trimmed = line.trim();
+        const prefix = prefixes.find(p => trimmed.toLowerCase().startsWith(p.toLowerCase()));
+        if (!prefix) continue;
+        const value = trimmed.substring(prefix.length).trim();
+        const parts = value.split(',').map(p => Number.parseFloat(p.trim()));
+        if (parts.length === 2 && !parts.some(Number.isNaN)) {
+            return { lat: parts[0], lon: parts[1] };
+        }
+    }
+    return null;
+}
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+    const toRad = deg => deg * Math.PI / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistanceKmMi(kilometers) {
+    const miles = kilometers * 0.621371;
+    return `~${Math.round(kilometers)} km (${Math.round(miles)} mi)`;
+}
+
+function formatEgressLine(city, distance) {
+    const parts = [];
+    if (city) parts.push(`📍 ${city}`);
+    if (distance) parts.push(`GPS→egress ${distance}`);
+    return parts.join(' · ');
+}
+
 // ── OS Detection for client icon ──
 function detectClientOS() {
     const ua = navigator.userAgent || '';
@@ -500,6 +537,7 @@ function setIspLogo(ispName) {
 // ── ISP Card ──
 function updateMapIspCard(lookup) {
     const isp = lookup['B-LE-02'] || lookup['C-LE-02'];
+    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
     if (!isp || isp.status === 'NotRun') {
         setText('map-isp-detail', 'Awaiting results...');
         setText('map-isp-detail2', '');
@@ -517,22 +555,57 @@ function updateMapIspCard(lookup) {
     // egress country (e.g. US) rather than the GPS-cached departure city (e.g. UK).
     // Priority: result 27 egress location → L-TCP-09 location → GPS fallback (B-LE-01).
     let egressCity = '';
+    let egressDistance = '';
     const egressResult = lookup['27'];
+    const ispGeo = lookup['B-LE-02'] || lookup['C-LE-02'];
+    const gpsCoords = extractCoordinatesFromDetailedInfo(userLoc?.detailedInfo);
     if (egressResult && egressResult.detailedInfo) {
         egressCity = extractLine(egressResult.detailedInfo, 'Your egress location:');
+        const egressCoords = extractCoordinatesFromDetailedInfo(egressResult.detailedInfo, ['Egress coordinates:']);
+        if (gpsCoords && egressCoords) {
+            egressDistance = formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon));
+        }
     }
     if (!egressCity) {
         const gwUsedForIsp = lookup['L-TCP-09'];
         if (gwUsedForIsp && gwUsedForIsp.detailedInfo) {
-            egressCity = extractLine(gwUsedForIsp.detailedInfo, 'Your location:');
+            egressCity = extractLine(gwUsedForIsp.detailedInfo, 'Your egress location:') || extractLine(gwUsedForIsp.detailedInfo, 'Your location:');
+        }
+    }
+    if (!egressCity && ispGeo && ispGeo.detailedInfo) {
+        egressCity = extractLine(ispGeo.detailedInfo, 'Egress location:');
+        const geoCoords = extractCoordinatesFromDetailedInfo(ispGeo.detailedInfo, ['Egress coordinates:']);
+        if (!egressDistance && gpsCoords && geoCoords) {
+            egressDistance = formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoCoords.lat, geoCoords.lon));
         }
     }
     if (!egressCity) {
         // Final fallback: GPS-based location (may mismatch on satellite/aircraft)
-        const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
         egressCity = userLoc ? userLoc.resultValue : '';
     }
-    setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
+    let egressLine = formatEgressLine(egressCity, egressDistance);
+    if (egressCity && !egressDistance && egressResult && egressResult.detailedInfo && !extractLine(egressResult.detailedInfo, 'Egress coordinates:')) {
+        egressLine += `${egressLine ? ' · ' : ''}re-run Local Scanner for distance`;
+    }
+    setFlaggedText('map-isp-detail3', egressLine);
+
+    // Final fallback: derive egress from live GeoIP whenever we still don't have a
+    // GPS→egress distance. This covers browser-only runs and older imported local
+    // scanner results that predate the new egress-coordinate fields.
+    if (!egressDistance && gpsCoords && typeof fetchGeoIp === 'function') {
+        fetchGeoIp()
+            .then(geo => {
+                if (!geo) return;
+                const fallbackCity = [geo.city, geo.regionName, geo.country].filter(Boolean).join(', ');
+                const geoLat = Number.parseFloat(geo.lat);
+                const geoLon = Number.parseFloat(geo.lon);
+                if (!fallbackCity || Number.isNaN(geoLat) || Number.isNaN(geoLon)) return;
+                const fallbackDistance = formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoLat, geoLon));
+                const bestCity = egressCity || fallbackCity;
+                setFlaggedText('map-isp-detail3', formatEgressLine(bestCity, fallbackDistance));
+            })
+            .catch(() => { /* best-effort */ });
+    }
 
     setAccentStatus('map-isp-accent', isp.status);
     setDeviceDot('device-isp-dot', isp.status);
@@ -933,9 +1006,14 @@ function extractRdGwLocationWithProximity(detailedInfo) {
         const stMatch = gwBlock[0].match(/^\s*Location:\s*([^\n\r]+)/m);
         if (stMatch && !stMatch[0].includes('GeoIP')) {
             const full = stMatch[1].trim();
-            const proxMatch = full.match(/(.+?)\s+([✔≈⚠].+)/);
-            if (proxMatch) return { location: proxMatch[1].trim(), proximity: proxMatch[2].trim() };
-            return { location: full, proximity: '' };
+            const proximity = extractLine(gwBlock[0], 'Distance from egress:') || extractLine(gwBlock[0], 'Distance from you:');
+            if (/far from your (egress )?location/i.test(gwBlock[0])) {
+                return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+            }
+            if (/near your (egress )?location/i.test(gwBlock[0])) {
+                return { location: full, proximity: `✔ Near · ${proximity}`.trim() };
+            }
+            return { location: full, proximity };
         }
     }
 
@@ -945,9 +1023,14 @@ function extractRdGwLocationWithProximity(detailedInfo) {
     const locMatch = matches.length > 1 ? matches[1] : matches[0];
     if (!locMatch) return { location: '', proximity: '' };
     const full = locMatch[1].trim();
-    const proxMatch = full.match(/(.+?)\s+([✔≈⚠].+)/);
-    if (proxMatch) return { location: proxMatch[1].trim(), proximity: proxMatch[2].trim() };
-    return { location: full, proximity: '' };
+    const proximity = extractLine(detailedInfo, 'Distance from egress:') || extractLine(detailedInfo, 'Distance from you:');
+    if (/far from your (egress )?location/i.test(detailedInfo)) {
+        return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+    }
+    if (/near your (egress )?location/i.test(detailedInfo)) {
+        return { location: full, proximity: `✔ Near · ${proximity}`.trim() };
+    }
+    return { location: full, proximity };
 }
 
 // ── Security Status Bar ──
