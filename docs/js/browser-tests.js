@@ -665,6 +665,22 @@ async function testIspDetection(test) {
     if (Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
         detail += `\nEgress coordinates: ${Number(geo.lat).toFixed(4)}, ${Number(geo.lon).toFixed(4)}`;
     }
+
+    // Compute GPS→egress distance if device location is available (B-LE-01 runs first)
+    const userLoc = _userLocCache;  // populated by testUserLocation which runs before ISP
+    if (userLoc && Number.isFinite(userLoc.lat) && Number.isFinite(userLoc.lon)
+        && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
+        const toRad = d => d * Math.PI / 180;
+        const R = 6371;
+        const dLat = toRad(geo.lat - userLoc.lat);
+        const dLon = toRad(geo.lon - userLoc.lon);
+        const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(userLoc.lat)) * Math.cos(toRad(geo.lat)) * Math.sin(dLon / 2) ** 2;
+        const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distMi = distKm * 0.621371;
+        detail += `\nGPS to egress: ~${Math.round(distKm)} km (${Math.round(distMi)} mi)`;
+    }
+
     let status = 'Passed';
     let remediation = '';
 
@@ -677,6 +693,10 @@ async function testIspDetection(test) {
             remediation = netType.remediation || '';
         }
     }
+
+    // Append egress city to the visible result line so it's not hidden behind Details
+    const egressSuffix = (geo.city && geo.country) ? ` · ${geo.city}, ${geo.country}` : '';
+    if (egressSuffix) value += egressSuffix;
 
     return makeResult(test, status, value, detail, duration, '', remediation);
 }

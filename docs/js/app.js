@@ -58,13 +58,17 @@ function dedupeResultsById(results) {
 
 function extractCoordinatesFromDetailedInfo(detailedInfo, prefixes = ['Coordinates:']) {
     if (!detailedInfo) return null;
-    const lines = detailedInfo.split('\n');
-    const line = lines.find(l => prefixes.some(prefix => l.trim().startsWith(prefix)));
-    if (!line) return null;
-    const value = line.replace(/^[^:]+:\s*/, '').trim();
-    const parts = value.split(',').map(p => Number.parseFloat(p.trim()));
-    if (parts.length !== 2 || parts.some(Number.isNaN)) return null;
-    return { lat: parts[0], lon: parts[1] };
+    for (const line of detailedInfo.split('\n')) {
+        const trimmed = line.trim();
+        const prefix = prefixes.find(p => trimmed.toLowerCase().startsWith(p.toLowerCase()));
+        if (!prefix) continue;
+        const value = trimmed.substring(prefix.length).trim();
+        const parts = value.split(',').map(p => Number.parseFloat(p.trim()));
+        if (parts.length === 2 && !parts.some(Number.isNaN)) {
+            return { lat: parts[0], lon: parts[1] };
+        }
+    }
+    return null;
 }
 
 function haversineDistanceKm(lat1, lon1, lat2, lon2) {
@@ -985,6 +989,8 @@ function extractVpnNames(tests) {
 async function generateExportText() {
     if (allResults.length === 0) return '';
 
+    const exportResults = dedupeResultsById(allResults);
+
     // Always fetch fresh location at export time — use shared resolver
     const freshLoc = await fetchUserLocation();
 
@@ -1369,7 +1375,7 @@ async function generateExportText() {
     const categories = ['local', 'endpoint', 'tcp', 'udp', 'cloud', 'cloudpc'];
 
     for (const cat of categories) {
-        const catResults = allResults.filter(r => r.category === cat);
+        const catResults = exportResults.filter(r => r.category === cat);
         if (catResults.length === 0) continue;
 
         lines.push(divider);

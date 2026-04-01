@@ -553,9 +553,9 @@ function updateMapIspCard(lookup) {
 
     // Show egress city from IP GeoIP (not GPS), so satellite/aircraft WiFi shows network
     // egress country (e.g. US) rather than the GPS-cached departure city (e.g. UK).
-    // Priority: result 27 egress location → L-TCP-09 location → GPS fallback (B-LE-01).
+    // Priority: result 27 egress location → L-TCP-09 location → browser ISP → GPS fallback.
     let egressCity = '';
-    let egressDistance = '';
+    let egressDistanceKm = null;
     const egressResult = lookup['27'];
     const ispGeo = lookup['B-LE-02'] || lookup['C-LE-02'];
     const gpsCoords = extractCoordinatesFromDetailedInfo(userLoc?.detailedInfo);
@@ -563,7 +563,7 @@ function updateMapIspCard(lookup) {
         egressCity = extractLine(egressResult.detailedInfo, 'Your egress location:');
         const egressCoords = extractCoordinatesFromDetailedInfo(egressResult.detailedInfo, ['Egress coordinates:']);
         if (gpsCoords && egressCoords) {
-            egressDistance = formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon));
+            egressDistanceKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon);
         }
     }
     if (!egressCity) {
@@ -575,24 +575,29 @@ function updateMapIspCard(lookup) {
     if (!egressCity && ispGeo && ispGeo.detailedInfo) {
         egressCity = extractLine(ispGeo.detailedInfo, 'Egress location:');
         const geoCoords = extractCoordinatesFromDetailedInfo(ispGeo.detailedInfo, ['Egress coordinates:']);
-        if (!egressDistance && gpsCoords && geoCoords) {
-            egressDistance = formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoCoords.lat, geoCoords.lon));
+        if (egressDistanceKm == null && gpsCoords && geoCoords) {
+            egressDistanceKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoCoords.lat, geoCoords.lon);
         }
     }
     if (!egressCity) {
         // Final fallback: GPS-based location (may mismatch on satellite/aircraft)
         egressCity = userLoc ? userLoc.resultValue : '';
     }
-    let egressLine = formatEgressLine(egressCity, egressDistance);
-    if (egressCity && !egressDistance && egressResult && egressResult.detailedInfo && !extractLine(egressResult.detailedInfo, 'Egress coordinates:')) {
-        egressLine += `${egressLine ? ' · ' : ''}re-run Local Scanner for distance`;
-    }
-    setFlaggedText('map-isp-detail3', egressLine);
 
-    // Final fallback: derive egress from live GeoIP whenever we still don't have a
-    // GPS→egress distance. This covers browser-only runs and older imported local
-    // scanner results that predate the new egress-coordinate fields.
-    if (!egressDistance && gpsCoords && typeof fetchGeoIp === 'function') {
+    // Detail3: just the egress city with flag
+    setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
+
+    // Egress location badge
+    if (egressCity) {
+        setFlaggedBadge('map-isp-egress-badge', `📍 ${egressCity}`, 'location-badge', egressCity);
+    }
+
+    // Distance badge with proximity colouring
+    setEgressDistanceBadge(egressDistanceKm);
+
+    // Final fallback: derive egress from live GeoIP when we still don't have a distance.
+    // Covers browser-only runs and older imported scanner results.
+    if (egressDistanceKm == null && gpsCoords && typeof fetchGeoIp === 'function') {
         fetchGeoIp()
             .then(geo => {
                 if (!geo) return;
@@ -600,9 +605,11 @@ function updateMapIspCard(lookup) {
                 const geoLat = Number.parseFloat(geo.lat);
                 const geoLon = Number.parseFloat(geo.lon);
                 if (!fallbackCity || Number.isNaN(geoLat) || Number.isNaN(geoLon)) return;
-                const fallbackDistance = formatDistanceKmMi(haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoLat, geoLon));
+                const distKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoLat, geoLon);
                 const bestCity = egressCity || fallbackCity;
-                setFlaggedText('map-isp-detail3', formatEgressLine(bestCity, fallbackDistance));
+                setFlaggedText('map-isp-detail3', `📍 ${bestCity}`);
+                setFlaggedBadge('map-isp-egress-badge', `📍 ${bestCity}`, 'location-badge', bestCity);
+                setEgressDistanceBadge(distKm);
             })
             .catch(() => { /* best-effort */ });
     }
@@ -610,6 +617,23 @@ function updateMapIspCard(lookup) {
     setAccentStatus('map-isp-accent', isp.status);
     setDeviceDot('device-isp-dot', isp.status);
     setIspLogo(isp.resultValue);
+}
+
+/** Set the GPS→egress distance badge with proximity colouring. */
+function setEgressDistanceBadge(distKm) {
+    const el = document.getElementById('map-isp-distance-badge');
+    if (!el) return;
+    if (distKm == null) {
+        el.classList.add('hidden');
+        return;
+    }
+    const label = formatDistanceKmMi(distKm);
+    const proxClass = distKm < 100 ? 'proximity-near'
+        : distKm < 500 ? 'proximity-moderate'
+        : 'proximity-far';
+    const icon = distKm < 100 ? '✔' : distKm < 500 ? '≈' : '⚠';
+    el.textContent = `${icon} GPS→egress ${label}`;
+    el.className = `map-card-badge ${proxClass}`;
 }
 
 // ── AFD Edge Card ──
