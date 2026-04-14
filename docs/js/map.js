@@ -1383,9 +1383,28 @@ function updateMapSecurityBar(lookup) {
                 gwText.textContent = 'Gateway Far Away';
                 gwBadge.className = 'security-badge warn';
             } else if (info.proximity) {
-                gwIcon.textContent = '≈';
-                gwText.textContent = 'Gateway Moderate Distance';
-                gwBadge.className = 'security-badge warn';
+                // Parse km value from proximity string (e.g. "~59 km")
+                const kmMatch = info.proximity.match(/([\d,.]+)\s*km/);
+                if (kmMatch) {
+                    const km = parseFloat(kmMatch[1].replace(/,/g, ''));
+                    if (km < 2000) {
+                        gwIcon.textContent = '✓';
+                        gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge';
+                    } else if (km < 5000) {
+                        gwIcon.textContent = '≈';
+                        gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge warn';
+                    } else {
+                        gwIcon.textContent = '✗';
+                        gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge warn';
+                    }
+                } else {
+                    gwIcon.textContent = '≈';
+                    gwText.textContent = 'Gateway Moderate Distance';
+                    gwBadge.className = 'security-badge warn';
+                }
             } else if (info.location) {
                 gwIcon.textContent = '✓';
                 gwText.textContent = `Gateway: ${info.location}`;
