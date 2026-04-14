@@ -643,6 +643,156 @@ function runAnalysisEngine(results) {
             'Review if both proxies are necessary. Typically only the client side needs web filtering — the Cloud PC should have direct Azure network access.'));
     }
 
+    // Correlation 8: DNS resolver region mismatch — corporate DNS in a different region
+    // TURN relay uses Azure Traffic Manager (DNS-based geographic routing), so a remote
+    // DNS resolver causes Traffic Manager to return a distant TURN relay.
+    const userLoc = r('B-LE-01') || r('L-LE-01');
+    const adapters = r('L-LE-06');
+    const turnLoc = r('L-UDP-04');
+    if (userLoc && adapters && adapters.detailedInfo) {
+        const userCountry = ((userLoc.resultValue || '').match(/,\s*([A-Z]{2})\s*$/i) || [])[1];
+        // Extract DNS server hostnames from adapter details
+        const dnsHostnames = (adapters.detailedInfo.match(/\(([^)]*\.internal[^)]*)\)/gi) || [])
+            .map(m => m.replace(/[()]/g, '').trim());
+        if (userCountry && dnsHostnames.length > 0) {
+            // Check if DNS hostname contains a country/region code that differs from user location
+            const dnsRegionHints = dnsHostnames.map(h => {
+                const parts = h.toLowerCase().split('.');
+                // Look for segments like "uk1", "us2", "eu1", "ap1" etc.
+                return parts.find(p => /^(uk|us|eu|ap|jp|au|de|fr|nl|sg|in|br|za|ae|ca|kr)\d*$/.test(p));
+            }).filter(Boolean);
+            if (dnsRegionHints.length > 0) {
+                const userCC = userCountry.toLowerCase();
+                const DNS_CC_MAP = {'uk':'gb','us':'us','eu':'eu','ap':'sg','jp':'jp','au':'au','de':'de',
+                                    'fr':'fr','nl':'nl','sg':'sg','in':'in','br':'br','za':'za','ae':'ae',
+                                    'ca':'ca','kr':'kr'};
+                const dnsRegion = dnsRegionHints[0].replace(/\d+$/, '');
+                const dnsCC = DNS_CC_MAP[dnsRegion] || dnsRegion;
+                // Simple mismatch: DNS region code doesn't match user country
+                const isMismatch = dnsCC !== userCC &&
+                    !(dnsCC === 'eu' && ['gb','de','fr','nl','ie','be','at','ch','se','no','dk','fi','es','it','pt','pl','cz'].includes(userCC));
+                if (isMismatch) {
+                    const dnsNames = dnsHostnames.slice(0, 2).join(', ');
+                    findings.push(finding(SEV.WARNING,
+                        'DNS servers are in a different region from user',
+                        `Your DNS servers (${dnsNames}) appear to be in the "${dnsRegion.toUpperCase()}" region, but you are located in ${userCountry}. `
+                        + 'TURN relay selection (world.relay.avd.microsoft.com) uses Azure Traffic Manager, which routes based on DNS resolver location, not client location. '
+                        + 'This can cause the TURN relay to be selected far from you, adding latency even when IP split-tunnelling is correct.',
+                        'Use DNS resolvers local to the user for *.avd.microsoft.com queries. Public resolvers like Google (8.8.8.8) or Cloudflare (1.1.1.1) support EDNS Client Subnet, which provides accurate geographic routing regardless of resolver location.'));
+                }
+            }
+        }
+    }
+
+    // Correlation 9: Scanner vs browser TURN relay region mismatch
+    // The scanner uses OS DNS (may go through VPN/corporate DNS) while the browser
+    // uses the SWG/local DNS. If they get different TURN regions, DNS routing is split.
+    const browserTurnRoute = r('B-TCP-04');
+    if (turnLoc && browserTurnRoute && turnLoc.status === 'Passed') {
+        const scannerTurnVal = (turnLoc.resultValue || '').toLowerCase();
+        const browserDetail = (browserTurnRoute.detailedInfo || '').toLowerCase();
+        // Extract TURN relay region from browser DNS chain (e.g. "southindia.cloudapp.azure.com")
+        const browserTurnMatch = browserDetail.match(/turn relay[\s\S]*?([\w]+)\.cloudapp\.azure\.com/);
+        const scannerRegionMatch = scannerTurnVal.match(/(\w+)\s*\(/); // e.g. "UK South (uksouth)"
+        if (browserTurnMatch && scannerRegionMatch) {
+            const browserRegion = browserTurnMatch[1].toLowerCase();
+            const scannerRegion = scannerTurnVal;
+            // Check if they reference different Azure regions
+            if (!scannerRegion.includes(browserRegion)) {
+                findings.push(finding(SEV.WARNING,
+                    'TURN relay differs between scanner and browser',
+                    `Scanner resolved TURN relay to: ${turnLoc.resultValue}\n`
+                    + `Browser resolved TURN relay to: ${browserRegion} region\n`
+                    + 'This happens when the scanner uses corporate DNS (via VPN) while the browser resolves via a local SWG/proxy. '
+                    + 'The actual RDP session will use whichever DNS path the Windows App or MSTSC client takes — typically the OS DNS, which may return the more distant relay.',
+                    'Ensure DNS for *.avd.microsoft.com resolves locally. If a VPN pushes remote corporate DNS servers, configure split-tunnel DNS for this domain, or use a public resolver with EDNS Client Subnet support.'));
+            }
+        }
+    }
+
+    // Correlation 10: TLS inspection + specific proxy vendor correlation
+    // Combine TLS detection with identified proxy vendor for actionable guidance
+    const browserIsp = r('B-LE-02');
+    const tlsTests = [r('L-TCP-06'), r('L-UDP-06'), r('25')].filter(t => t && t.status !== 'Passed' && t.status !== 'Skipped');
+    if (tlsTests.length > 0 && browserIsp) {
+        const ispVal = (browserIsp.resultValue || '').toLowerCase();
+        const allTlsDetail = tlsTests.map(t => (t.detailedInfo || t.resultValue || '')).join(' ').toLowerCase();
+        const vendorMap = {
+            'zscaler':   { name: 'Zscaler',   guide: 'In ZIA, go to Administration > SSL Inspection Policy, add *.wvd.microsoft.com and *.avd.microsoft.com to the bypass list. Also bypass 40.64.144.0/20 and 51.5.0.0/16 by destination IP. See: https://techcommunity.microsoft.com/discussions/windows365discussions/optimizing-rdp-connectivity-for-windows-365/3554327' },
+            'netskope':  { name: 'Netskope',  guide: 'In the Netskope admin console, add *.wvd.microsoft.com and *.avd.microsoft.com to the SSL Do Not Decrypt policy. Bypass 40.64.144.0/20 and 51.5.0.0/16.' },
+            'palo alto': { name: 'Palo Alto', guide: 'In Panorama/Prisma Access, add *.wvd.microsoft.com and *.avd.microsoft.com to the SSL Decryption exclusion list. Bypass 40.64.144.0/20 and 51.5.0.0/16.' },
+            'forcepoint':{ name: 'Forcepoint',guide: 'Add *.wvd.microsoft.com and *.avd.microsoft.com to the SSL inspection bypass list in your Forcepoint policy. Bypass 40.64.144.0/20 and 51.5.0.0/16.' }
+        };
+        const detectedVendor = Object.keys(vendorMap).find(v => ispVal.includes(v) || allTlsDetail.includes(v));
+        if (detectedVendor) {
+            const vendor = vendorMap[detectedVendor];
+            findings.push(finding(SEV.CRITICAL,
+                `${vendor.name} is TLS-inspecting W365 RDP traffic`,
+                `${vendor.name} is intercepting and re-signing TLS certificates for Windows 365 gateway and/or TURN relay connections. `
+                + 'Microsoft does not support TLS inspection of RDP traffic — it adds latency and jitter with no security benefit, since RDP uses nested TLS encryption.',
+                vendor.guide));
+        }
+    }
+
+    // Correlation 11: Gateway region instability (multiple different gateways in one scan)
+    const gwTests = ['L-TCP-04', 'L-TCP-05', 'L-TCP-06', 'L-TCP-08', 'L-TCP-09', '18', '20', '21']
+        .map(id => r(id)).filter(Boolean);
+    const gwRegions = new Set();
+    for (const t of gwTests) {
+        const combined = ((t.resultValue || '') + ' ' + (t.detailedInfo || '')).toLowerCase();
+        // Match gateway FQDN patterns like rdgateway-c210-SIN-r1 or region codes in parens
+        const fqdnMatches = combined.match(/rdgateway-\w+-(\w+)-r\d/g) || [];
+        for (const m of fqdnMatches) {
+            const region = m.match(/rdgateway-\w+-(\w+)-r\d/)[1].toUpperCase();
+            gwRegions.add(region);
+        }
+    }
+    if (gwRegions.size > 1) {
+        const regions = [...gwRegions].join(', ');
+        findings.push(finding(SEV.INFO,
+            `Multiple gateway regions detected (${regions})`,
+            `During this scan, Azure Front Door routed to ${gwRegions.size} different gateway regions: ${regions}. `
+            + 'This is normal AFD load-balancing behaviour — AFD may distribute requests across nearby backend regions. '
+            + 'If one region is significantly farther than others, check that your egress location is consistent during the scan.',
+            null));
+    }
+
+    // Correlation 12: SASE-specific remediation when detected as ISP
+    if (browserIsp && browserIsp.status === 'Passed') {
+        const ispVal = (browserIsp.resultValue || '').toLowerCase();
+        const saseVendors = {
+            'zscaler': {
+                name: 'Zscaler',
+                tips: 'Zscaler resolved as your ISP, meaning all HTTP/HTTPS traffic exits via Zscaler\'s nearest PoP. '
+                    + 'Verify: (1) RDP traffic (40.64.144.0/20 TCP/443, 51.5.0.0/16 UDP/3478) is in the ZIA bypass/direct policy, '
+                    + '(2) SSL inspection is disabled for *.wvd.microsoft.com and *.avd.microsoft.com, '
+                    + '(3) DNS for *.avd.microsoft.com resolves at the local Zscaler PoP (not a remote corporate resolver).'
+            },
+            'netskope': {
+                name: 'Netskope',
+                tips: 'Netskope resolved as your ISP. Verify: (1) RDP traffic is in the Netskope real-time bypass policy, '
+                    + '(2) SSL Do Not Decrypt includes *.wvd.microsoft.com and *.avd.microsoft.com, '
+                    + '(3) DNS steering resolves AVD endpoints at the nearest Netskope PoP.'
+            },
+            'cloudflare': {
+                name: 'Cloudflare Gateway',
+                tips: 'Cloudflare Gateway detected. Ensure W365 RDP endpoints are in the Do Not Inspect and Do Not Gateway policies.'
+            }
+        };
+        const detectedSase = Object.keys(saseVendors).find(v => ispVal.includes(v));
+        if (detectedSase) {
+            const sase = saseVendors[detectedSase];
+            // Only add if we haven't already flagged this vendor via TLS correlation
+            const alreadyFlagged = findings.some(f => f.title.toLowerCase().includes(sase.name.toLowerCase()) && f.severity === 'critical');
+            if (!alreadyFlagged) {
+                findings.push(finding(SEV.INFO,
+                    `${sase.name} detected as network proxy`,
+                    sase.tips,
+                    'See https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp for full RDP optimization guidance.'));
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  Session Quality Score (0-100)
     // ═══════════════════════════════════════════════════════════════
