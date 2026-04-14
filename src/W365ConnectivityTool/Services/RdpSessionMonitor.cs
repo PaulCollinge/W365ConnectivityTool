@@ -98,7 +98,7 @@ public static class RdpSessionMonitor
         {
             const string logName = "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational";
             var query = new EventLogQuery(logName, PathType.LogName,
-                "*[System[(EventID=131 or EventID=140 or EventID=141 or EventID=142 or EventID=143) and TimeCreated[timediff(@SystemTime) <= 86400000]]]");
+                "*[System[(EventID=131 or EventID=135 or EventID=137 or EventID=138 or EventID=140 or EventID=141 or EventID=142 or EventID=143) and TimeCreated[timediff(@SystemTime) <= 86400000]]]");
 
             using var reader = new EventLogReader(query);
 
@@ -122,6 +122,16 @@ public static class RdpSessionMonitor
                         case 131: // Connection accepted
                             info.HasConnection = true;
                             break;
+                        case 135: // Shortpath connection closing
+                            break;
+                        case 137: // Shortpath connecting
+                            break;
+                        case 138: // Shortpath connected (contains endpoint IP:port)
+                        case 143: // RDP Shortpath connected (contains endpoint IP:port)
+                            info.ShortpathConnected = true;
+                            info.Protocol = "UDP (RDP Shortpath)";
+                            ClassifyShortpathFromMessage(info, message);
+                            break;
                         case 140: // Transport negotiated — message contains transport type
                             info.TransportNegotiated = true;
                             info.NegotiatedTransport = message;
@@ -135,15 +145,49 @@ public static class RdpSessionMonitor
                             info.Protocol = "TCP (Reverse Connect)";
                             info.UdpFailReason = message;
                             break;
-                        case 143: // Shortpath connected
-                            info.ShortpathConnected = true;
-                            info.Protocol = "UDP (RDP Shortpath)";
-                            break;
                     }
                 }
             }
         }
         catch { /* Log not available — expected on client-only machines */ }
+    }
+
+    /// <summary>
+    /// Extracts IP:port from Shortpath event messages (events 138/143) and classifies
+    /// as Managed (private IP) or Public (TURN relay) Shortpath.
+    /// Event messages typically contain patterns like "...to 10.0.0.5:3390" or "...to 51.5.x.x:3478".
+    /// </summary>
+    private static void ClassifyShortpathFromMessage(TransportInfo info, string message)
+    {
+        var ipMatch = System.Text.RegularExpressions.Regex.Match(
+            message, @"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)");
+        if (!ipMatch.Success) return;
+
+        var ip = ipMatch.Groups[1].Value;
+        var port = int.Parse(ipMatch.Groups[2].Value);
+        info.ShortpathEndpoint = $"{ip}:{port}";
+
+        if (IsPrivateIp(ip))
+        {
+            info.ShortpathType = port == 3390
+                ? "Managed (direct UDP 3390)"
+                : $"Managed (ICE/STUN, port {port})";
+        }
+        else
+        {
+            info.ShortpathType = port == 3478
+                ? "Public (TURN relay)"
+                : $"Public (port {port})";
+        }
+
+        info.Protocol = $"UDP Shortpath — {info.ShortpathType}";
+    }
+
+    private static bool IsPrivateIp(string ip)
+    {
+        return ip.StartsWith("10.") ||
+               ip.StartsWith("192.168.") ||
+               System.Text.RegularExpressions.Regex.IsMatch(ip, @"^172\.(1[6-9]|2[0-9]|3[01])\.");
     }
 
     private static void ReadRdpClientEvents(TransportInfo info)
@@ -555,6 +599,14 @@ public class TransportInfo
     public bool UdpFailed { get; set; }
     public string UdpFailReason { get; set; } = string.Empty;
     public bool ShortpathConnected { get; set; }
+    /// <summary>
+    /// Classifies the Shortpath type: "Managed (direct UDP 3390)", "Managed (ICE/STUN)", or "Public (TURN relay)".
+    /// </summary>
+    public string ShortpathType { get; set; } = string.Empty;
+    /// <summary>
+    /// The IP:port of the Shortpath peer endpoint (extracted from event log messages).
+    /// </summary>
+    public string ShortpathEndpoint { get; set; } = string.Empty;
     public DateTime? LastConnectionTime { get; set; }
     public List<TransportEvent> Events { get; set; } = [];
     public List<TransportEvent> ClientEvents { get; set; } = [];

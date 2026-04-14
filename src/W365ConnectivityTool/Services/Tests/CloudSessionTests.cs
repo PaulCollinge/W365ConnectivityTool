@@ -133,6 +133,9 @@ public class TransportProtocolTest : BaseTest
                     string label = evt.EventId switch
                     {
                         131 => "Connection Accepted",
+                        135 => "Shortpath Connection Closing",
+                        137 => "Shortpath Connecting",
+                        138 => "Shortpath Connected",
                         140 => "Transport Negotiated",
                         141 => "UDP Connected",
                         142 => "TCP Transport (UDP Unavailable)",
@@ -176,10 +179,26 @@ public class TransportProtocolTest : BaseTest
         if (udpActive || transport.ShortpathConnected || transport.UdpConnected)
         {
             result.Status = TestStatus.Passed;
-            result.ResultValue = "UDP (RDP Shortpath) ⚡";
             sb.AppendLine();
-            sb.AppendLine("✓ Session is using UDP transport (RDP Shortpath).");
-            sb.AppendLine("  This provides optimal latency and connection resilience.");
+
+            if (!string.IsNullOrEmpty(transport.ShortpathType))
+            {
+                result.ResultValue = $"UDP Shortpath — {transport.ShortpathType} ⚡";
+                sb.AppendLine($"✓ Session is using UDP transport (RDP Shortpath).");
+                sb.AppendLine($"  Type: {transport.ShortpathType}");
+                if (!string.IsNullOrEmpty(transport.ShortpathEndpoint))
+                    sb.AppendLine($"  Endpoint: {transport.ShortpathEndpoint}");
+                if (transport.ShortpathType.Contains("Managed"))
+                    sb.AppendLine("  ✓ Direct private connectivity — lowest latency path");
+                else
+                    sb.AppendLine("  ✓ Relayed via TURN — good, but managed network may offer lower latency");
+            }
+            else
+            {
+                result.ResultValue = "UDP (RDP Shortpath) ⚡";
+                sb.AppendLine("✓ Session is using UDP transport (RDP Shortpath).");
+                sb.AppendLine("  This provides optimal latency and connection resilience.");
+            }
         }
         else if (transport.UdpFailed)
         {

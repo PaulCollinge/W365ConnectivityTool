@@ -513,8 +513,8 @@ class Program
                     userLocation = trimmed.Replace("Your egress location:", "").Trim();
                 else if (trimmed.StartsWith("Location:") && gwLocation == null && !trimmed.Contains("TURN"))
                     gwLocation = trimmed.Replace("Location:", "").Trim();
-                else if (trimmed.StartsWith("Distance from you:") && gwDistance == null)
-                    gwDistance = trimmed.Replace("Distance from you:", "").Trim();
+                else if ((trimmed.StartsWith("Distance from egress:") || trimmed.StartsWith("Distance from you:")) && gwDistance == null)
+                    gwDistance = trimmed.Replace("Distance from egress:", "").Replace("Distance from you:", "").Trim();
             }
 
             // Parse TURN section separately
@@ -526,13 +526,13 @@ class Program
                     inTurn = true;
                 if (inTurn && trimmed.StartsWith("Location:"))
                     turnLocation = trimmed.Replace("Location:", "").Trim();
-                if (inTurn && trimmed.StartsWith("Distance from you:"))
-                    turnDistance = trimmed.Replace("Distance from you:", "").Trim();
+                if (inTurn && (trimmed.StartsWith("Distance from egress:") || trimmed.StartsWith("Distance from you:")))
+                    turnDistance = trimmed.Replace("Distance from egress:", "").Replace("Distance from you:", "").Trim();
             }
         }
 
         if (userLocation != null)
-            Console.WriteLine($"  User location:     {userLocation}");
+            Console.WriteLine($"  RDP Egress:        {userLocation}");
         if (gwLocation != null)
             Console.WriteLine($"  RDP Gateway:       {gwLocation} ({gwDistance ?? "distance unknown"})");
         if (turnLocation != null)
@@ -1250,9 +1250,9 @@ class Program
                 && key.Contains("SSID", StringComparison.OrdinalIgnoreCase))
             { ssid = value; continue; }
 
-            // Channel: value is a small integer (1-165), appears after signal in the output
-            // Guard: only match after we found signal (to avoid matching other numeric fields)
-            if (channel == null && signal != null && int.TryParse(value, out var ch) && ch >= 1 && ch <= 165)
+            // Channel: value is a small integer (1-165).
+            // Some WLAN drivers emit Channel before Signal, so don't make this order-dependent.
+            if (channel == null && int.TryParse(value, out var ch) && ch >= 1 && ch <= 165)
             { channel = value; continue; }
         }
         return (signal, ssid, radioType, channel);
@@ -1479,6 +1479,73 @@ class Program
             return output;
         }
         catch { return null; }
+    }
+
+    /// <summary>Parsed Windows Firewall rule from registry (locale-independent, no process spawning).</summary>
+    record struct FwRule(string Name, string Dir, string Action, int Protocol, string LocalPort);
+
+    /// <summary>Read firewall rules from the Windows Firewall registry store.
+    /// Avoids spawning powershell.exe which triggers Defender behavioural heuristics.</summary>
+    static List<FwRule> ReadFirewallRulesFromRegistry()
+    {
+        var rules = new List<FwRule>();
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules");
+            if (key == null) return rules;
+
+            foreach (var valueName in key.GetValueNames())
+            {
+                var data = key.GetValue(valueName) as string;
+                if (string.IsNullOrEmpty(data)) continue;
+
+                string? name = null;
+                bool active = false;
+                string dir = "", action = "";
+                int protocol = 0; // 6=TCP, 17=UDP, 256=Any
+                string localPort = "Any";
+
+                foreach (var part in data.Split('|'))
+                {
+                    if (part.StartsWith("Name=", StringComparison.OrdinalIgnoreCase))
+                        name = part[5..];
+                    else if (part.StartsWith("Active=", StringComparison.OrdinalIgnoreCase))
+                        active = part[7..].Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                    else if (part.StartsWith("Dir=", StringComparison.OrdinalIgnoreCase))
+                        dir = part[4..];
+                    else if (part.StartsWith("Action=", StringComparison.OrdinalIgnoreCase))
+                        action = part[7..];
+                    else if (part.StartsWith("Protocol=", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(part[9..], out protocol);
+                    else if (part.StartsWith("LPort=", StringComparison.OrdinalIgnoreCase))
+                        localPort = part[6..];
+                }
+
+                if (name != null && active)
+                    rules.Add(new FwRule(name, dir, action, protocol, localPort));
+            }
+        }
+        catch { }
+        return rules;
+    }
+
+    /// <summary>Check if a firewall rule's port field matches a given port number.</summary>
+    static bool FwPortMatches(string rulePort, int targetPort)
+    {
+        if (string.IsNullOrEmpty(rulePort) || rulePort.Equals("Any", StringComparison.OrdinalIgnoreCase))
+            return true;
+        foreach (var segment in rulePort.Split(','))
+        {
+            var s = segment.Trim();
+            if (s == targetPort.ToString()) return true;
+            // Handle ranges like "1000-2000"
+            var dash = s.IndexOf('-');
+            if (dash > 0 && int.TryParse(s[..dash], out var lo) && int.TryParse(s[(dash + 1)..], out var hi)
+                && targetPort >= lo && targetPort <= hi)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>UPnP SSDP discovery result.</summary>
@@ -1953,7 +2020,7 @@ class Program
             sb.AppendLine(fwOutput.Trim());
             sb.AppendLine();
 
-            // Check for blocking rules on key ports using PowerShell (locale-independent)
+            // Check for blocking rules on key ports using Windows Firewall registry (locale-independent, no powershell)
             var portsToCheck = new[] {
                 (443, "TCP", "HTTPS (RDP gateway, AFD, auth)"),
                 (3478, "UDP", "TURN relay (UDP Shortpath)"),
@@ -1963,65 +2030,48 @@ class Program
             sb.AppendLine("═══ Outbound Blocking Rules ═══");
             try
             {
-                // Get-NetFirewallRule returns structured objects — no localized text parsing needed
-                var fwPsi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | ForEach-Object { $pf = $_ | Get-NetFirewallPortFilter 2>$null; if($pf) { $_.DisplayName + '|' + $pf.LocalPort + '|' + $pf.Protocol } }\"")
+                // Read firewall rules directly from registry — avoids spawning powershell.exe
+                var allRules = ReadFirewallRulesFromRegistry();
+                var outboundBlocks = allRules
+                    .Where(r => r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase)
+                             && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var rule in outboundBlocks)
                 {
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                };
-                using var fwProc = Process.Start(fwPsi);
-                var fwReadTask = fwProc!.StandardOutput.ReadToEndAsync();
-                if (await Task.WhenAny(fwReadTask, Task.Delay(30000)) == fwReadTask)
-                {
-                    var fwRules = fwReadTask.Result;
-                    fwProc.WaitForExit(1000);
-                    foreach (var ruleLine in fwRules.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    foreach (var (port, proto, desc) in portsToCheck)
                     {
-                        var ruleParts = ruleLine.Trim().Split('|');
-                        if (ruleParts.Length < 3) continue;
-                        var ruleName = ruleParts[0];
-                        var localPort = ruleParts[1];
-                        var protocol = ruleParts[2];
+                        int protoNum = proto == "TCP" ? 6 : proto == "UDP" ? 17 : 0;
+                        bool matchesProto = rule.Protocol == 256 || rule.Protocol == protoNum;
+                        bool matchesPort = FwPortMatches(rule.LocalPort, port);
 
-                        foreach (var (port, proto, desc) in portsToCheck)
+                        if (matchesPort && matchesProto)
                         {
-                            bool matchesPort = localPort == "Any" || localPort == port.ToString()
-                                || localPort.Split(',').Any(p => p.Trim() == port.ToString());
-                            bool matchesProto = protocol.Equals("Any", StringComparison.OrdinalIgnoreCase)
-                                || protocol.Equals(proto, StringComparison.OrdinalIgnoreCase);
-
-                            if (matchesPort && matchesProto)
-                            {
-                                var issue = $"Outbound {proto} {port} ({desc}) blocked by rule: {ruleName}";
-                                issues.Add(issue);
-                                sb.AppendLine($"  ✗ {issue}");
-                            }
+                            var issue = $"Outbound {proto} {port} ({desc}) blocked by rule: {rule.Name}";
+                            issues.Add(issue);
+                            sb.AppendLine($"  ✗ {issue}");
                         }
                     }
                 }
-                else
+
+                // Also check if msrdcw or mstsc is explicitly blocked by rule name
+                var rdpPatterns = new[] { "Remote Desktop", "RDP", "msrdc", "mstsc" };
+                var rdpBlocks = outboundBlocks
+                    .Where(r => rdpPatterns.Any(p => r.Name.Contains(p, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+
+                if (rdpBlocks.Count > 0)
                 {
-                    try { fwProc.Kill(); } catch { }
-                    sb.AppendLine("  Firewall rule check timed out (30s) — skipped");
+                    sb.AppendLine();
+                    sb.AppendLine("═══ RDP Application Block Rules ═══");
+                    foreach (var rule in rdpBlocks)
+                    {
+                        sb.AppendLine($"  DisplayName : {rule.Name}");
+                        issues.Add("Outbound firewall rule explicitly blocks RDP client application");
+                    }
                 }
             }
             catch { sb.AppendLine("  Could not enumerate firewall blocking rules"); }
-
-            // Also check if msrdcw or mstsc is explicitly blocked
-            var appBlockPsi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | Where-Object { $_.DisplayName -match 'Remote Desktop|RDP|msrdc|mstsc' } | Select-Object -Property DisplayName,Profile | Format-List\"")
-            {
-                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-            };
-            using var appBlockProc = Process.Start(appBlockPsi);
-            var appBlockOutput = await appBlockProc!.StandardOutput.ReadToEndAsync();
-            await appBlockProc.WaitForExitAsync();
-
-            if (!string.IsNullOrWhiteSpace(appBlockOutput))
-            {
-                sb.AppendLine();
-                sb.AppendLine("═══ RDP Application Block Rules ═══");
-                sb.AppendLine(appBlockOutput.Trim());
-                issues.Add("Outbound firewall rule explicitly blocks RDP client application");
-            }
 
             if (issues.Count == 0)
             {
@@ -2368,17 +2418,30 @@ class Program
             // ── 1. Windows App (Store MSIX) — MicrosoftCorporationII.Windows365 ──
             try
             {
-                var psOutput = await RunProcessAsync("powershell", "-NoProfile -Command \"Get-AppxPackage 'MicrosoftCorporationII.Windows365' | Select-Object -ExpandProperty Version\"");
-                var verLine = psOutput?.Trim();
-                if (!string.IsNullOrEmpty(verLine) && Version.TryParse(verLine, out var waVer))
+                // Read MSIX package version from registry (avoids spawning powershell.exe)
+                using var pkgKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\PackageRepository\Packages");
+                if (pkgKey != null)
                 {
-                    sb.AppendLine($"Windows App (Store): {waVer}");
-                    primaryClient = "Windows App";
-                    primaryVersion = waVer;
-                    foundAny = true;
+                    foreach (var subKeyName in pkgKey.GetSubKeyNames())
+                    {
+                        if (subKeyName.Contains("MicrosoftCorporationII.Windows365", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Package key format: MicrosoftCorporationII.Windows365_1.2.3.4_x64__8wekyb3d8bbwe
+                            var parts = subKeyName.Split('_');
+                            if (parts.Length >= 2 && Version.TryParse(parts[1], out var waVer))
+                            {
+                                sb.AppendLine($"Windows App (Store): {waVer}");
+                                primaryClient = "Windows App";
+                                primaryVersion = waVer;
+                                foundAny = true;
+                            }
+                            break;
+                        }
+                    }
                 }
             }
-            catch { /* AppX query failed — not installed or access denied */ }
+            catch { /* Registry query failed — not installed or access denied */ }
 
             // ── 2. Standalone MSRDC installer (non-Store) ──
             if (!foundAny)
@@ -2421,40 +2484,32 @@ class Program
 
             // ── Version currency check ──
             // Source: https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=windows
-            // MSIX package version (e.g. 2.1.344.0) differs from marketing version (e.g. 2.0.964.0).
-            // Latest known MSIX package version and minimum supported are maintained here.
-            var latestKnownMsix = new Version(2, 1, 344, 0);   // = display 2.0.964.0, released 2026-02-10
-            var minimumMsix     = new Version(2, 1, 184, 0);   // = display 2.0.804.0, released 2025-11-12
+            // Windows App for Windows currently publishes 2.0.x package versions.
+            var latestKnownWindowsApp = new Version(2, 0, 964, 0);  // Public release, 2026-02-10
+            var minimumSupported      = new Version(2, 0, 804, 0);  // Public release, 2025-11-12
             var latestDate = new DateTime(2026, 2, 10);
 
             if (primaryClient == "Windows App" && primaryVersion != null)
             {
                 sb.AppendLine();
 
-                if (primaryVersion >= latestKnownMsix)
+                if (primaryVersion >= latestKnownWindowsApp)
                 {
                     sb.AppendLine($"\u2714 Running latest known version (released {latestDate:yyyy-MM-dd})");
                     result.Status = "Passed";
                     result.ResultValue = $"Windows App {primaryVersion} \u2014 up to date";
                 }
-                else if (primaryVersion > latestKnownMsix)
+                else if (primaryVersion >= minimumSupported)
                 {
-                    // Newer than our database — likely a newer insider/public release
-                    sb.AppendLine($"\u2714 Version is newer than latest known ({latestKnownMsix})");
-                    result.Status = "Passed";
-                    result.ResultValue = $"Windows App {primaryVersion} \u2014 up to date";
-                }
-                else if (primaryVersion >= minimumMsix)
-                {
-                    sb.AppendLine($"\u26a0 Update available: latest known MSIX version is {latestKnownMsix} (released {latestDate:yyyy-MM-dd})");
+                    sb.AppendLine($"\u26a0 Update available: latest known version is {latestKnownWindowsApp} (released {latestDate:yyyy-MM-dd})");
                     result.Status = "Warning";
                     result.ResultValue = $"Windows App {primaryVersion} \u2014 update available";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-app/whats-new?tabs=windows";
                 }
                 else
                 {
-                    sb.AppendLine($"\u2718 Version is below minimum supported (MSIX {minimumMsix})");
-                    sb.AppendLine($"  Latest known: {latestKnownMsix} (released {latestDate:yyyy-MM-dd})");
+                    sb.AppendLine($"\u2718 Version is below minimum supported ({minimumSupported})");
+                    sb.AppendLine($"  Latest known: {latestKnownWindowsApp} (released {latestDate:yyyy-MM-dd})");
                     result.Status = "Failed";
                     result.ResultValue = $"Windows App {primaryVersion} \u2014 below minimum supported version";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-app/whats-new?tabs=windows";
@@ -2575,32 +2630,30 @@ class Program
             }
 
             // ── 2. Detect actual resolver via whoami-style check ──
-            // Resolve o-o.myaddr.l.google.com TXT → returns the resolver's IP as seen by Google
+            // Detect actual resolver via DNS-over-HTTPS whoami (avoids spawning nslookup)
             sb.AppendLine("═══ Actual Resolver Detection ═══");
             try
             {
-                var nslookup = await RunProcessAsync("nslookup", "-type=TXT o-o.myaddr.l.google.com", 8000);
-                if (nslookup != null)
+                using var dohHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+                // Google DoH: resolve o-o.myaddr.l.google.com TXT → returns resolver's IP
+                var dohResp = await dohHttp.GetStringAsync("https://dns.google/resolve?name=o-o.myaddr.l.google.com&type=TXT");
+                var txtMatch = Regex.Match(dohResp, @"""(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})""");
+                if (txtMatch.Success)
                 {
-                    // Parse the TXT record value which contains the resolver's egress IP
-                    var txtMatch = Regex.Match(nslookup, @"text\s*=\s*""?([\d\.]+)", RegexOptions.IgnoreCase);
-                    if (txtMatch.Success)
-                    {
-                        var resolverEgressIp = txtMatch.Groups[1].Value;
-                        sb.AppendLine($"Resolver egress IP (as seen by Google): {resolverEgressIp}");
-                        var resolverClass = ClassifyDnsServer(resolverEgressIp);
-                        sb.AppendLine($"Resolver classification: {resolverClass}");
+                    var resolverEgressIp = txtMatch.Groups[1].Value;
+                    sb.AppendLine($"Resolver egress IP (as seen by Google): {resolverEgressIp}");
+                    var resolverClass = ClassifyDnsServer(resolverEgressIp);
+                    sb.AppendLine($"Resolver classification: {resolverClass}");
 
-                        // Check if this differs from configured DNS
-                        if (!uniqueDns.Any(d => d.ip == resolverEgressIp))
-                        {
-                            sb.AppendLine("Note: Resolver egress IP differs from configured DNS — DNS forwarding or encrypted DNS may be in use");
-                        }
-                    }
-                    else
+                    // Check if this differs from configured DNS
+                    if (!uniqueDns.Any(d => d.ip == resolverEgressIp))
                     {
-                        sb.AppendLine("Could not determine resolver egress IP (TXT record not found)");
+                        sb.AppendLine("Note: Resolver egress IP differs from configured DNS — DNS forwarding or encrypted DNS may be in use");
                     }
+                }
+                else
+                {
+                    sb.AppendLine("Could not determine resolver egress IP (TXT record not found)");
                 }
             }
             catch { sb.AppendLine("Resolver detection query failed"); }
@@ -3513,7 +3566,8 @@ class Program
     }
 
     /// <summary>
-    /// Resolves DNS CNAME chain for a hostname using system DNS, returning the chain and routing flags.
+    /// Resolves DNS CNAME chain for a hostname using .NET DNS APIs, returning the chain and routing flags.
+    /// Uses Dns.GetHostEntryAsync to walk the CNAME chain without spawning external processes.
     /// </summary>
     static async Task<(List<string> chain, string? gsaIndicator)> ResolveDnsCnameChainAsync(string host)
     {
@@ -3522,40 +3576,35 @@ class Program
 
         try
         {
-            // Use nslookup to get CNAME chain (system DNS doesn't expose CNAMEs in .NET)
-            var psi = new ProcessStartInfo("nslookup", $"-type=any {host}")
+            // Walk the CNAME chain using .NET DNS — each GetHostEntryAsync returns
+            // the canonical name, so we iterate until it stops changing.
+            var current = host;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { current };
+
+            for (int i = 0; i < 10; i++) // max 10 hops
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi);
-            if (proc != null)
-            {
-                var outputTask = proc.StandardOutput.ReadToEndAsync();
-                if (await Task.WhenAny(outputTask, Task.Delay(3000)) == outputTask)
+                using var cts = new CancellationTokenSource(3000);
+                try
                 {
-                    var output = await outputTask;
-                    // Parse "canonical name = xxx" lines
-                    foreach (var line in output.Split('\n'))
+                    var entry = await Dns.GetHostEntryAsync(current, cts.Token);
+                    if (!string.IsNullOrEmpty(entry.HostName) &&
+                        !entry.HostName.Equals(current, StringComparison.OrdinalIgnoreCase) &&
+                        !seen.Contains(entry.HostName))
                     {
-                        var trimmed = line.Trim();
-                        if (trimmed.Contains("canonical name", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var parts = trimmed.Split('=');
-                            if (parts.Length > 1)
-                            {
-                                var cname = parts[1].Trim().TrimEnd('.');
-                                chain.Add(cname);
-                            }
-                        }
+                        var cname = entry.HostName.TrimEnd('.');
+                        chain.Add(cname);
+                        seen.Add(cname);
+                        current = cname;
+                    }
+                    else
+                    {
+                        break;
                     }
                 }
-                try { proc.Kill(); } catch { }
+                catch { break; }
             }
         }
-        catch { /* nslookup not available */ }
+        catch { /* DNS resolution not available */ }
 
         // Check chain for GSA/Entra Private Access / SASE indicators
         var chainStr = string.Join(" ", chain).ToLowerInvariant();
@@ -4785,47 +4834,25 @@ class Program
                     sb.AppendLine("\n  \u2714 VPN is active but UDP/TURN traffic correctly bypasses it (split-tunnel)");
             }
 
-            // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall (30s timeout)
+            // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall registry
             try
             {
-                // Use PowerShell for locale-independent firewall check
-                var psi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | ForEach-Object { $pf = $_ | Get-NetFirewallPortFilter 2>$null; if($pf) { $pf.LocalPort + '|' + $pf.Protocol } }\"")
-                {
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi);
-                var fwReadTask = proc!.StandardOutput.ReadToEndAsync();
-                if (await Task.WhenAny(fwReadTask, Task.Delay(30000)) == fwReadTask)
-                {
-                    var output = fwReadTask.Result;
-                    proc.WaitForExit(1000);
+                // Read firewall rules from registry — avoids spawning powershell.exe
+                var allRules = ReadFirewallRulesFromRegistry();
+                bool found3478Block = allRules.Any(r =>
+                    r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase) &&
+                    r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase) &&
+                    (r.Protocol == 17 || r.Protocol == 256) && // UDP or Any
+                    FwPortMatches(r.LocalPort, 3478));
 
-                    bool found3478Block = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                        .Any(line =>
-                        {
-                            var ruleParts = line.Trim().Split('|');
-                            if (ruleParts.Length < 2) return false;
-                            var port = ruleParts[0];
-                            var proto = ruleParts[1];
-                            bool matchesPort = port == "Any" || port == "3478" || port.Split(',').Any(p => p.Trim() == "3478");
-                            bool matchesProto = proto.Contains("Any", StringComparison.OrdinalIgnoreCase) || proto.Contains("UDP", StringComparison.OrdinalIgnoreCase);
-                            return matchesPort && matchesProto;
-                        });
-
-                    if (found3478Block)
-                    {
-                        issues.Add("Firewall rule blocks UDP 3478");
-                        sb.AppendLine("\u26A0 Windows Firewall rule found that may block UDP 3478");
-                    }
-                    else
-                    {
-                        sb.AppendLine("\u2714 No Windows Firewall rules blocking UDP 3478 detected");
-                    }
+                if (found3478Block)
+                {
+                    issues.Add("Firewall rule blocks UDP 3478");
+                    sb.AppendLine("\u26A0 Windows Firewall rule found that may block UDP 3478");
                 }
                 else
                 {
-                    try { proc.Kill(); } catch { }
-                    sb.AppendLine("\u2714 Firewall rule check timed out (30s) — skipped (too many rules to enumerate)");
+                    sb.AppendLine("\u2714 No Windows Firewall rules blocking UDP 3478 detected");
                 }
             }
             catch { sb.AppendLine("Could not check Windows Firewall rules"); }
@@ -5276,39 +5303,13 @@ class Program
             // - Managed (ICE/STUN): UDP to private IP on ephemeral port
             try
             {
-                // Parse netstat for UDP connections (GetActiveUdpListeners only shows local listeners)
-                var netstatOutput = await RunProcessAsync("netstat", "-anp UDP", 5000);
-                if (netstatOutput != null)
+                // Check for UDP listeners using .NET API (avoids spawning netstat.exe)
+                var udpListeners = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+                    .GetActiveUdpListeners();
+                
+                if (udpListeners.Any(ep => ep.Port == 3390))
                 {
-                    var udpLines = netstatOutput.Split('\n')
-                        .Where(l => l.TrimStart().StartsWith("UDP") && l.Contains("*:*") == false)
-                        .Select(l => l.Trim())
-                        .ToList();
-                    
-                    // Look for UDP connections to known Shortpath indicators
-                    var turnUdpConns = new List<string>();
-                    var managedConns = new List<string>();
-                    
-                    foreach (var line in udpLines)
-                    {
-                        // Parse remote endpoint from netstat line: "UDP  local:port  remote:port"
-                        var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 2)
-                        {
-                            // For UDP netstat on Windows, format is: UDP  localAddr:port  *:*
-                            // Active UDP sessions don't show remote endpoint in basic netstat,
-                            // but local high-port bindings suggest active STUN/ICE sessions
-                            var localEp = parts[1];
-                            var colonIdx = localEp.LastIndexOf(':');
-                            if (colonIdx > 0 && int.TryParse(localEp[(colonIdx + 1)..], out var localPort))
-                            {
-                                if (localPort == 3390)
-                                {
-                                    sb.AppendLine($"\n  UDP listener on port 3390 detected (managed Shortpath legacy)");
-                                }
-                            }
-                        }
-                    }
+                    sb.AppendLine($"\n  UDP listener on port 3390 detected (managed Shortpath legacy)");
                 }
                 
                 // Check established TCP connections for TURN relay or gateway
@@ -6596,7 +6597,8 @@ class Program
             sb.AppendLine("user prevents traffic from backhauling through corporate networks, VPNs, SWGs.\"");
             sb.AppendLine();
 
-            // Get user's public IP and location
+            // Get public-IP egress location. This reflects where traffic breaks out,
+            // not necessarily the device's physical/GPS location.
             string userCity = "", userRegion = "", userCountry = "", userOrg = "";
             double userLat = 0, userLon = 0;
             bool hasUserGeo = false;
@@ -6615,6 +6617,9 @@ class Program
                         hasUserGeo = true;
                 }
                 sb.AppendLine($"Your egress location: {userCity}, {userRegion}, {userCountry}");
+                if (hasUserGeo)
+                    sb.AppendLine($"Egress coordinates: {userLat:F4}, {userLon:F4}");
+                sb.AppendLine("Note: This is the public IP breakout location, not device GPS.");
                 sb.AppendLine($"Your ISP/org: {userOrg}");
                 sb.AppendLine();
             }
@@ -6660,16 +6665,17 @@ class Program
                         if (parts?.Length == 2 && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLat) && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLon))
                         {
                             var distKm = HaversineDistance(userLat, userLon, gwLat, gwLon);
-                            sb.AppendLine($"Distance from you: ~{distKm:F0} km");
+                            sb.AppendLine($"Gateway coordinates: {gwLat:F4}, {gwLon:F4}");
+                            sb.AppendLine($"Distance from egress: {FormatDistance(distKm)}");
 
                             if (distKm > 1500)
                             {
-                                sb.AppendLine("⚠ Gateway is far from your location — possible traffic backhauling.");
+                                sb.AppendLine("⚠ Gateway is far from your egress location — possible traffic backhauling.");
                                 sb.AppendLine("  RDP traffic may be exiting through a remote corporate network or VPN.");
                             }
                             else
                             {
-                                sb.AppendLine("✓ Gateway is near your location — traffic appears to egress locally.");
+                                sb.AppendLine("✓ Gateway is near your egress location — traffic appears to egress locally.");
                             }
                         }
                     }
@@ -6734,7 +6740,8 @@ class Program
                             if (parts?.Length == 2 && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tLat) && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tLon))
                             {
                                 var distKm = HaversineDistance(userLat, userLon, tLat, tLon);
-                                sb.AppendLine($"Distance from you: ~{distKm:F0} km");
+                                sb.AppendLine($"TURN coordinates: {tLat:F4}, {tLon:F4}");
+                                sb.AppendLine($"Distance from egress: {FormatDistance(distKm)}");
 
                                 if (distKm > 1500)
                                     sb.AppendLine("⚠ TURN relay is far — possible backhauling or non-local egress.");
@@ -6790,6 +6797,12 @@ class Program
                 Math.Cos(lat1 * Math.PI / 180) * Math.Cos(lat2 * Math.PI / 180) *
                 Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
         return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+    }
+
+    static string FormatDistance(double kilometers)
+    {
+        var miles = kilometers * 0.621371;
+        return $"~{kilometers:F0} km ({miles:F0} mi)";
     }
 
     static float? TryReadPerfCounter(string category, string counter, string instance)
@@ -6957,19 +6970,30 @@ class Program
                 bool cnameHasPrivateLink = false;
                 try
                 {
-                    var psi = new ProcessStartInfo("nslookup", $"-type=CNAME {host}")
+                    // Walk CNAME chain using .NET DNS (avoids spawning nslookup)
+                    var current = host;
+                    var cnamesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { current };
+                    for (int hop = 0; hop < 10; hop++)
                     {
-                        RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-                    };
-                    using var proc = Process.Start(psi);
-                    var nsOutput = await proc!.StandardOutput.ReadToEndAsync();
-                    await proc.WaitForExitAsync();
-                    cnameHasAfd = nsOutput.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
-                                  nsOutput.Contains("azurefd", StringComparison.OrdinalIgnoreCase);
-                    cnameHasPrivateLink = nsOutput.Contains("privatelink", StringComparison.OrdinalIgnoreCase) &&
-                                         !nsOutput.Contains("privatelink-global", StringComparison.OrdinalIgnoreCase);
+                        var entry = await Dns.GetHostEntryAsync(current);
+                        if (!string.IsNullOrEmpty(entry.HostName) &&
+                            !entry.HostName.Equals(current, StringComparison.OrdinalIgnoreCase) &&
+                            !cnamesSeen.Contains(entry.HostName))
+                        {
+                            var cname = entry.HostName.TrimEnd('.');
+                            cnamesSeen.Add(cname);
+                            if (cname.Contains("afd", StringComparison.OrdinalIgnoreCase) ||
+                                cname.Contains("azurefd", StringComparison.OrdinalIgnoreCase))
+                                cnameHasAfd = true;
+                            if (cname.Contains("privatelink", StringComparison.OrdinalIgnoreCase) &&
+                                !cname.Contains("privatelink-global", StringComparison.OrdinalIgnoreCase))
+                                cnameHasPrivateLink = true;
+                            current = cname;
+                        }
+                        else break;
+                    }
                 }
-                catch { /* nslookup unavailable, rely on other checks */ }
+                catch { /* DNS walk failed, rely on other checks */ }
 
                 // TLS cert validation as secondary check
                 bool validCert = false;
@@ -7088,7 +7112,7 @@ class Program
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
-            // ── Fetch user's location via GeoIP ──
+            // ── Fetch egress location via GeoIP ──
             string userCity = null, userCountry = null;
             double userLat = 0, userLon = 0;
             try
@@ -7107,11 +7131,13 @@ class Program
                             double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out userLon);
                         }
                     }
-                    sb.AppendLine($"Your location: {userCity}, {userCountry}");
+                    sb.AppendLine($"Your egress location: {userCity}, {userCountry}");
+                    sb.AppendLine($"Egress coordinates: {userLat:F4}, {userLon:F4}");
+                    sb.AppendLine("Note: This is public IP geolocation, not device GPS.");
                     sb.AppendLine();
                 }
             }
-            catch { sb.AppendLine("Could not determine your location (GeoIP unavailable)\n"); }
+            catch { sb.AppendLine("Could not determine your egress location (GeoIP unavailable)\n"); }
 
             // ── Part 1: AFD Edge Location (anycast — use X-MSEdge-Ref for PoP) ──
             sb.AppendLine("═══ AFD Edge Location (Anycast) ═══");
@@ -7257,11 +7283,12 @@ class Program
                                         double.TryParse(gwParts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLat);
                                         double.TryParse(gwParts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gwLon);
                                         var distKm = HaversineDistanceKm(userLat, userLon, gwLat, gwLon);
-                                        sb.AppendLine($"    Distance from you: {distKm:N0} km");
+                                        sb.AppendLine($"    Gateway coordinates: {gwLat:F4}, {gwLon:F4}");
+                                        sb.AppendLine($"    Distance from egress: {FormatDistance(distKm)}");
                                         if (distKm > 1500)
                                         {
-                                            sb.AppendLine($"    ⚠ Gateway is far from your location — possible suboptimal routing");
-                                            issues.Add($"Gateway is {distKm:N0} km from your location");
+                                            sb.AppendLine($"    ⚠ Gateway is far from your egress location — possible suboptimal routing");
+                                            issues.Add($"Gateway is {FormatDistance(distKm)} from your egress location");
                                         }
                                     }
                                 }
@@ -8130,28 +8157,23 @@ class Program
                 sb.AppendLine($"══ UDP {configuredPort} Listener ══");
                 try
                 {
-                    // Use netstat to check for UDP listener on the configured port
-                    var netstat = await RunProcessAsync("netstat", $"-anp UDP", 5000);
-                    if (netstat != null)
-                    {
-                        var lines = netstat.Split('\n')
-                            .Where(l => l.Contains("UDP") && l.Contains($":{configuredPort}"))
-                            .Select(l => l.Trim())
-                            .ToList();
+                    // Use .NET API to check for UDP listener (avoids spawning netstat.exe)
+                    var udpListeners = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+                        .GetActiveUdpListeners();
+                    var matchingListeners = udpListeners.Where(ep => ep.Port == configuredPort).ToList();
 
-                        if (lines.Count > 0)
-                        {
-                            sb.AppendLine($"  ✓ UDP port {configuredPort} is actively listening");
-                            foreach (var line in lines.Take(3))
-                                sb.AppendLine($"    {line}");
-                            info.Add($"UDP {configuredPort} listening");
-                        }
-                        else
-                        {
-                            sb.AppendLine($"  ✘ UDP port {configuredPort} is NOT listening");
-                            sb.AppendLine($"    The RDP service may need to be restarted after enabling fUseUDPPortRedirector");
-                            issues.Add($"UDP {configuredPort} not listening (restart RDP service?)");
-                        }
+                    if (matchingListeners.Count > 0)
+                    {
+                        sb.AppendLine($"  ✓ UDP port {configuredPort} is actively listening");
+                        foreach (var ep in matchingListeners.Take(3))
+                            sb.AppendLine($"    UDP  {ep.Address}:{ep.Port}");
+                        info.Add($"UDP {configuredPort} listening");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  ✘ UDP port {configuredPort} is NOT listening");
+                        sb.AppendLine($"    The RDP service may need to be restarted after enabling fUseUDPPortRedirector");
+                        issues.Add($"UDP {configuredPort} not listening (restart RDP service?)");
                     }
                 }
                 catch (Exception ex) { sb.AppendLine($"  Listener check error: {ex.Message}"); }
@@ -8162,32 +8184,39 @@ class Program
             sb.AppendLine("══ Windows Firewall ══");
             try
             {
-                // Check for inbound UDP rules on port 3390 (or custom port)
-                var fwOutput = await RunProcessAsync("powershell",
-                    $"-NoProfile -Command \"Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow | " +
-                    $"Where-Object {{ $_.DisplayName -match 'Shortpath|RDP|3390|Remote Desktop' }} | " +
-                    $"Select-Object -Property DisplayName, Profile | Format-List\"", 10000);
+                // Read firewall rules from registry — avoids spawning powershell.exe
+                var allRules = ReadFirewallRulesFromRegistry();
+                var inboundAllows = allRules
+                    .Where(r => r.Dir.Equals("In", StringComparison.OrdinalIgnoreCase)
+                             && r.Action.Equals("Allow", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // Check for inbound allow rules matching Shortpath/RDP by name
+                var shortpathPatterns = new[] { "Shortpath", "RDP", "3390", "Remote Desktop" };
+                var matchingRules = inboundAllows
+                    .Where(r => shortpathPatterns.Any(p => r.Name.Contains(p, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
 
                 bool foundRule = false;
-                if (!string.IsNullOrWhiteSpace(fwOutput))
+                if (matchingRules.Count > 0)
                 {
                     sb.AppendLine("  Matching inbound allow rules:");
-                    foreach (var line in fwOutput.Split('\n').Where(l => !string.IsNullOrWhiteSpace(l)).Take(12))
-                        sb.AppendLine($"    {line.Trim()}");
+                    foreach (var rule in matchingRules.Take(12))
+                        sb.AppendLine($"    DisplayName : {rule.Name}");
                     foundRule = true;
                 }
 
                 // Also check specifically for port-based rule
-                var portCheck = await RunProcessAsync("powershell",
-                    $"-NoProfile -Command \"Get-NetFirewallPortFilter | Where-Object {{ $_.LocalPort -eq '{configuredPort}' -and $_.Protocol -eq 'UDP' }} | " +
-                    $"Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }} | " +
-                    $"Select-Object -ExpandProperty DisplayName\"", 10000);
+                var portRules = inboundAllows
+                    .Where(r => (r.Protocol == 17 || r.Protocol == 256) && // UDP or Any
+                                FwPortMatches(r.LocalPort, configuredPort))
+                    .ToList();
 
-                if (!string.IsNullOrWhiteSpace(portCheck))
+                if (portRules.Count > 0)
                 {
                     sb.AppendLine($"  ✓ Inbound UDP {configuredPort} explicitly allowed:");
-                    foreach (var rule in portCheck.Split('\n').Where(l => !string.IsNullOrWhiteSpace(l)).Take(5))
-                        sb.AppendLine($"    {rule.Trim()}");
+                    foreach (var rule in portRules.Take(5))
+                        sb.AppendLine($"    {rule.Name}");
                     info.Add($"Firewall allows inbound UDP {configuredPort}");
                 }
                 else if (legacyListenerEnabled)

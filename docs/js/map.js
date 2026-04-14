@@ -705,10 +705,12 @@ function updateMapRdGwCard(lookup) {
 
     // Show gateway location + proximity as badges from L-TCP-09
     // Use rdweb/client location (not the AFD anycast IP which GeoIP maps to Redmond)
+    let rdgwLocationStr = '';
     if (gwUsed && gwUsed.detailedInfo) {
         const locInfo = extractRdGwLocationWithProximity(gwUsed.detailedInfo);
         if (locInfo.location) {
             setFlaggedBadge('map-rdgw-loc-badge', `📍 ${locInfo.location}`, 'location-badge', locInfo.location);
+            rdgwLocationStr = locInfo.location;
         }
         if (locInfo.proximity) {
             if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near')) {
@@ -717,6 +719,16 @@ function updateMapRdGwCard(lookup) {
                 setBadge('map-rdgw-prox-badge', '⚠ Far', 'proximity-far');
             } else if (locInfo.proximity.includes('≈') || locInfo.proximity.includes('Moderate')) {
                 setBadge('map-rdgw-prox-badge', '≈ Moderate', 'proximity-moderate');
+            }
+        } else if (rdgwLocationStr) {
+            // Scanner didn't include proximity — compute from region groups
+            const user = getUserLocationContext(lookup);
+            const serviceCoords = getServiceCoords(rdgwLocationStr);
+            const prox = checkServiceProximity(user.countryCode, rdgwLocationStr, user.coords, serviceCoords);
+            if (prox && prox.level === 'far') {
+                setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
+            } else if (prox && prox.level === 'ok') {
+                setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
             }
         }
     }
@@ -756,16 +768,32 @@ function updateMapTurnCard(lookup) {
     }
 
     // Location badge from L-UDP-04 (scanner)
+    let turnLocationStr = '';
     if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
         const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
         const city = locMatch ? locMatch[1] : '';
         if (city) {
             setFlaggedBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge', city);
+            turnLocationStr = city;
         }
         status = worstStatus(status, turnLoc.status);
     } else if (stunTest && stunTest.status === 'Passed') {
         // No scanner data — do a browser-based relay geolocation via DoH + GeoIP
         geolocateTurnRelay();
+    }
+
+    // Proximity badge — flag when TURN relay is far from user
+    if (turnLocationStr) {
+        const user = getUserLocationContext(lookup);
+        const serviceCoords = getServiceCoords(turnLocationStr);
+        const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
+        if (prox && prox.level === 'far') {
+            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
+            status = worstStatus(status, 'Warning');
+        } else if (prox && prox.level === 'ok') {
+            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
+        }
+        // 'near' = normal, no badge needed
     }
 
     // Reachability badge
@@ -827,6 +855,7 @@ async function geolocateTurnRelay() {
             const friendly = (typeof getAzureRegionFriendlyName === 'function') ? getAzureRegionFriendlyName(azureRegion) : null;
             const label = friendly ? `${friendly} (${azureRegion})` : azureRegion;
             setFlaggedBadge('map-turn-loc-badge', `📍 ${label}`, 'location-badge', label);
+            checkTurnProximityAsync(label);
             return;
         }
 
@@ -841,6 +870,28 @@ async function geolocateTurnRelay() {
 
         const locStr = `${geo.city}, ${geo.region || ''}, ${geo.country || ''}`.replace(/, ,/g, ',');
         setFlaggedBadge('map-turn-loc-badge', `📍 ${locStr}`, 'location-badge', locStr);
+        checkTurnProximityAsync(locStr);
+    } catch { /* best-effort */ }
+}
+
+/**
+ * Checks TURN relay proximity after async geolocation and sets the prox badge.
+ * Uses allResults global to get user location context.
+ */
+function checkTurnProximityAsync(turnLocationStr) {
+    try {
+        const lookup = {};
+        if (typeof allResults !== 'undefined') {
+            for (const r of allResults) lookup[r.id] = r;
+        }
+        const user = getUserLocationContext(lookup);
+        const serviceCoords = getServiceCoords(turnLocationStr);
+        const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
+        if (prox && prox.level === 'far') {
+            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
+        } else if (prox && prox.level === 'ok') {
+            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
+        }
     } catch { /* best-effort */ }
 }
 
@@ -993,6 +1044,205 @@ function latencyClassLine(ms, type) {
     if (type === 'udp') return ms < 150 ? 'lat-good' : ms < 300 ? 'lat-warn' : 'lat-bad';
     return ms < 100 ? 'lat-good' : ms < 200 ? 'lat-warn' : 'lat-bad';
 }
+
+// ═══════════════════════════════════════════════════════════
+//  Service proximity detection
+//  Groups countries into broad geographic regions so that
+//  load-balanced routing within the same continent (e.g. UK
+//  user → Paris AFD) is not flagged, but cross-continent
+//  routing (e.g. UK user → US East) is clearly flagged.
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Map 2-letter country codes to broad geographic regions.
+ * Countries in the same region are expected to share service infrastructure.
+ */
+const REGION_GROUPS = {
+    // Western & Northern Europe
+    'gb':'europe-west', 'ie':'europe-west', 'fr':'europe-west', 'nl':'europe-west',
+    'be':'europe-west', 'lu':'europe-west', 'de':'europe-west', 'at':'europe-west',
+    'ch':'europe-west', 'dk':'europe-west', 'no':'europe-west', 'se':'europe-west',
+    'fi':'europe-west', 'is':'europe-west', 'pt':'europe-west', 'es':'europe-west',
+    'it':'europe-west', 'mc':'europe-west', 'li':'europe-west', 'mt':'europe-west',
+    // Central & Eastern Europe
+    'pl':'europe-east', 'cz':'europe-east', 'sk':'europe-east', 'hu':'europe-east',
+    'ro':'europe-east', 'bg':'europe-east', 'hr':'europe-east', 'si':'europe-east',
+    'rs':'europe-east', 'ba':'europe-east', 'mk':'europe-east', 'al':'europe-east',
+    'me':'europe-east', 'xk':'europe-east', 'gr':'europe-east', 'cy':'europe-east',
+    'ee':'europe-east', 'lv':'europe-east', 'lt':'europe-east',
+    // North America
+    'us':'north-america', 'ca':'north-america', 'mx':'north-america',
+    // South America
+    'br':'south-america', 'ar':'south-america', 'cl':'south-america',
+    'co':'south-america', 'pe':'south-america', 've':'south-america',
+    'ec':'south-america', 'uy':'south-america', 'py':'south-america',
+    // Middle East
+    'ae':'middle-east', 'sa':'middle-east', 'qa':'middle-east', 'bh':'middle-east',
+    'kw':'middle-east', 'om':'middle-east', 'il':'middle-east', 'jo':'middle-east',
+    'lb':'middle-east', 'iq':'middle-east', 'tr':'middle-east',
+    // East Asia
+    'jp':'east-asia', 'kr':'east-asia', 'cn':'east-asia', 'tw':'east-asia',
+    'hk':'east-asia', 'mo':'east-asia', 'mn':'east-asia',
+    // Southeast Asia
+    'sg':'southeast-asia', 'my':'southeast-asia', 'th':'southeast-asia',
+    'ph':'southeast-asia', 'id':'southeast-asia', 'vn':'southeast-asia',
+    // South Asia
+    'in':'south-asia', 'pk':'south-asia', 'bd':'south-asia', 'lk':'south-asia',
+    'np':'south-asia',
+    // Oceania
+    'au':'oceania', 'nz':'oceania',
+    // Africa
+    'za':'africa', 'ke':'africa', 'ng':'africa', 'eg':'africa',
+    'gh':'africa', 'tz':'africa', 'et':'africa', 'dz':'africa',
+    'ma':'africa', 'tn':'africa',
+};
+
+/**
+ * Adjacent region pairs — routing between these is acceptable (moderate, not alarming).
+ * E.g. Western Europe ↔ Eastern Europe, Middle East ↔ South Asia.
+ */
+const ADJACENT_REGIONS = [
+    ['europe-west', 'europe-east'],
+    ['europe-east', 'middle-east'],
+    ['europe-west', 'middle-east'],
+    ['middle-east', 'south-asia'],
+    ['east-asia', 'southeast-asia'],
+    ['southeast-asia', 'south-asia'],
+    ['southeast-asia', 'oceania'],
+    ['north-america', 'south-america'],
+];
+
+function areRegionsAdjacent(r1, r2) {
+    return ADJACENT_REGIONS.some(([a, b]) => (a === r1 && b === r2) || (a === r2 && b === r1));
+}
+
+/**
+ * Determine service proximity relative to user.
+ * Returns { level: 'near'|'ok'|'far', label, cssClass } or null if insufficient data.
+ *
+ * Logic:
+ *   - Same region group → near (no badge needed, normal routing)
+ *   - Adjacent region groups → ok (might be load-balanced, show subtle indicator)
+ *   - Different region groups → far (clearly wrong routing, flag it)
+ *   - Falls back to haversine distance if coordinates are available:
+ *     < 2000 km → near, 2000-5000 km → ok, > 5000 km → far
+ */
+function checkServiceProximity(userCountryCode, serviceLocationStr, userCoords, serviceCoords) {
+    // Try coordinate-based distance first (most accurate)
+    if (userCoords && serviceCoords) {
+        const distKm = haversineDistanceKm(userCoords.lat, userCoords.lon, serviceCoords.lat, serviceCoords.lon);
+        const distLabel = formatDistanceKmMi(distKm);
+        if (distKm < 2000) {
+            return { level: 'near', label: `✔ Nearby · ${distLabel}`, cssClass: 'proximity-near' };
+        } else if (distKm < 5000) {
+            return { level: 'ok', label: `≈ Moderate · ${distLabel}`, cssClass: 'proximity-moderate' };
+        } else {
+            return { level: 'far', label: `⚠ Distant · ${distLabel}`, cssClass: 'proximity-far' };
+        }
+    }
+
+    // Fall back to region-group comparison
+    const userCC = (userCountryCode || '').toLowerCase();
+    const serviceCC = resolveCountryCode(serviceLocationStr || '').toLowerCase();
+    if (!userCC || !serviceCC) return null;
+
+    // Same country
+    if (userCC === serviceCC) {
+        return { level: 'near', label: '✔ Same country', cssClass: 'proximity-near' };
+    }
+
+    const userRegion = REGION_GROUPS[userCC];
+    const serviceRegion = REGION_GROUPS[serviceCC];
+    if (!userRegion || !serviceRegion) return null;
+
+    if (userRegion === serviceRegion) {
+        return { level: 'near', label: '✔ Same region', cssClass: 'proximity-near' };
+    }
+
+    if (areRegionsAdjacent(userRegion, serviceRegion)) {
+        return { level: 'ok', label: '≈ Adjacent region', cssClass: 'proximity-moderate' };
+    }
+
+    return { level: 'far', label: '⚠ Different continent', cssClass: 'proximity-far' };
+}
+
+/**
+ * Get user location context from results for proximity checks.
+ * Returns { countryCode, coords } or nulls.
+ */
+function getUserLocationContext(lookup) {
+    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+    let countryCode = '';
+    let coords = null;
+    if (userLoc && userLoc.status !== 'NotRun') {
+        countryCode = resolveCountryCode(userLoc.resultValue || '');
+        coords = extractCoordinatesFromDetailedInfo(userLoc.detailedInfo, ['Coordinates:', 'GeoData: lat=']);
+        // Parse GeoData format: "GeoData: lat=51.5074,lon=-0.1278"
+        if (!coords && userLoc.detailedInfo) {
+            const gd = userLoc.detailedInfo.match(/GeoData:\s*lat=([-\d.]+),\s*lon=([-\d.]+)/);
+            if (gd) coords = { lat: parseFloat(gd[1]), lon: parseFloat(gd[2]) };
+        }
+    }
+    return { countryCode, coords };
+}
+
+/**
+ * Get approximate coordinates for a service location string by matching
+ * against known Azure region names/coordinates, AFD PoP codes, or country centroids.
+ */
+function getServiceCoords(locationStr) {
+    if (!locationStr) return null;
+    const lower = locationStr.toLowerCase().replace(/[📍]/g, '').trim();
+
+    // Match against AZURE_REGIONS names
+    for (const r of AZURE_REGIONS) {
+        if (lower.includes(r.name.toLowerCase()) || lower.includes(r.code.toLowerCase())) {
+            return { lat: r.lat, lon: r.lon };
+        }
+    }
+
+    // Extract AFD PoP code and use known coordinates
+    const popMatch = locationStr.match(/\b([A-Z]{2,5})\b/);
+    if (popMatch) {
+        const popCoords = AFD_POP_COORDS[popMatch[1]];
+        if (popCoords) return popCoords;
+    }
+
+    return null;
+}
+
+/** Approximate coordinates for AFD PoP codes (major cities). */
+const AFD_POP_COORDS = {
+    'LON': {lat:51.51, lon:-0.13}, 'LHR': {lat:51.47, lon:-0.46}, 'LTS': {lat:51.51, lon:-0.13},
+    'MAN': {lat:53.48, lon:-2.24}, 'EDG': {lat:55.95, lon:-3.19}, 'DUB': {lat:53.35, lon:-6.26},
+    'AMS': {lat:52.37, lon:4.89}, 'FRA': {lat:50.11, lon:8.68}, 'BER': {lat:52.52, lon:13.41},
+    'MUC': {lat:48.14, lon:11.58}, 'PAR': {lat:48.86, lon:2.35}, 'MRS': {lat:43.30, lon:5.37},
+    'MAD': {lat:40.42, lon:-3.70}, 'BCN': {lat:41.39, lon:2.17}, 'MIL': {lat:45.46, lon:9.19},
+    'ROM': {lat:41.90, lon:12.50}, 'ZRH': {lat:47.38, lon:8.54}, 'GVA': {lat:46.20, lon:6.14},
+    'VIE': {lat:48.21, lon:16.37}, 'CPH': {lat:55.68, lon:12.57}, 'HEL': {lat:60.17, lon:24.94},
+    'OSL': {lat:59.91, lon:10.75}, 'STO': {lat:59.33, lon:18.07}, 'WAW': {lat:52.23, lon:21.01},
+    'PRG': {lat:50.08, lon:14.44}, 'BUD': {lat:47.50, lon:19.04}, 'BUH': {lat:44.43, lon:26.10},
+    'LIS': {lat:38.72, lon:-9.14}, 'ATH': {lat:37.98, lon:23.73}, 'BRU': {lat:50.85, lon:4.35},
+    'IAD': {lat:38.95, lon:-77.45}, 'DCA': {lat:38.85, lon:-77.04}, 'JFK': {lat:40.64, lon:-73.78},
+    'EWR': {lat:40.69, lon:-74.17}, 'BOS': {lat:42.36, lon:-71.01}, 'ATL': {lat:33.64, lon:-84.43},
+    'MIA': {lat:25.80, lon:-80.29}, 'ORD': {lat:41.97, lon:-87.91}, 'DFW': {lat:32.90, lon:-97.04},
+    'LAX': {lat:33.94, lon:-118.41}, 'SJC': {lat:37.36, lon:-121.93}, 'SEA': {lat:47.45, lon:-122.31},
+    'DEN': {lat:39.86, lon:-104.67}, 'PHX': {lat:33.44, lon:-112.01}, 'MSP': {lat:44.88, lon:-93.22},
+    'SLC': {lat:40.79, lon:-111.98}, 'YYZ': {lat:43.68, lon:-79.63}, 'YUL': {lat:45.47, lon:-73.74},
+    'YVR': {lat:49.19, lon:-123.18}, 'QRO': {lat:20.62, lon:-100.39},
+    'SIN': {lat:1.35, lon:103.99}, 'HKG': {lat:22.31, lon:113.91}, 'NRT': {lat:35.77, lon:140.39},
+    'KIX': {lat:34.43, lon:135.23}, 'ICN': {lat:37.46, lon:126.44},
+    'BOM': {lat:19.09, lon:72.87}, 'MAA': {lat:12.99, lon:80.17}, 'DEL': {lat:28.56, lon:77.10},
+    'HYD': {lat:17.24, lon:78.43},
+    'SYD': {lat:-33.95, lon:151.18}, 'MEL': {lat:-37.67, lon:144.84},
+    'PER': {lat:-31.94, lon:115.97}, 'BNE': {lat:-27.38, lon:153.12}, 'AKL': {lat:-37.01, lon:174.78},
+    'DXB': {lat:25.25, lon:55.36}, 'AUH': {lat:24.43, lon:54.65}, 'FJR': {lat:25.11, lon:56.33},
+    'DOH': {lat:25.26, lon:51.57}, 'BAH': {lat:26.27, lon:50.64},
+    'JNB': {lat:-26.13, lon:28.23}, 'CPT': {lat:-33.97, lon:18.60},
+    'GRU': {lat:-23.43, lon:-46.47}, 'GIG': {lat:-22.81, lon:-43.25},
+    'SCL': {lat:-33.39, lon:-70.79}, 'BOG': {lat:4.70, lon:-74.15}, 'EZE': {lat:-34.82, lon:-58.54},
+    'LIM': {lat:-12.02, lon:-77.11}
+};
 
 // ── Helper: extract location from gateway detailedInfo ──
 // L-TCP-09 detailedInfo contains multiple endpoint blocks. The first is the AFD
