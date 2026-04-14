@@ -271,7 +271,7 @@ function latencyClass(ms, isTcp) {
 function latencyLabel(ms, type) {
     if (type === 'gw') return ms < 20 ? 'Healthy' : ms < 50 ? 'Moderate' : 'Poor';
     if (type === 'udp') return ms < 150 ? 'Healthy' : ms < 300 ? 'Moderate' : 'Poor';
-    if (type === 'dns') return ms < 80 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
+    if (type === 'dns') return ms < 150 ? 'Healthy' : ms < 300 ? 'Moderate' : 'Poor';
     // tcp default
     return ms < 100 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
 }
@@ -713,12 +713,21 @@ function updateMapRdGwCard(lookup) {
             rdgwLocationStr = locInfo.location;
         }
         if (locInfo.proximity) {
-            if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near')) {
+            if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near') || locInfo.proximity.includes('near')) {
                 setBadge('map-rdgw-prox-badge', '✔ Near', 'proximity-near');
-            } else if (locInfo.proximity.includes('⚠') || locInfo.proximity.includes('Far')) {
+            } else if (locInfo.proximity.includes('⚠') || locInfo.proximity.includes('Far') || locInfo.proximity.includes('far')) {
                 setBadge('map-rdgw-prox-badge', '⚠ Far', 'proximity-far');
             } else if (locInfo.proximity.includes('≈') || locInfo.proximity.includes('Moderate')) {
                 setBadge('map-rdgw-prox-badge', '≈ Moderate', 'proximity-moderate');
+            } else {
+                // Scanner provided a distance value but no near/far judgment — parse km
+                const kmMatch = locInfo.proximity.match(/(\d[\d,]*)\s*km/i);
+                if (kmMatch) {
+                    const km = parseInt(kmMatch[1].replace(/,/g, ''), 10);
+                    if (km < 2000) setBadge('map-rdgw-prox-badge', `✔ ${locInfo.proximity}`, 'proximity-near');
+                    else if (km < 5000) setBadge('map-rdgw-prox-badge', `≈ ${locInfo.proximity}`, 'proximity-moderate');
+                    else setBadge('map-rdgw-prox-badge', `⚠ ${locInfo.proximity}`, 'proximity-far');
+                }
             }
         } else if (rdgwLocationStr) {
             // Scanner didn't include proximity — compute from region groups
@@ -897,7 +906,8 @@ function checkTurnProximityAsync(turnLocationStr) {
 
 // ── DNS Card ──
 function updateMapDnsCard(lookup) {
-    const dnsPerf = lookup['B-TCP-03'] || lookup['C-TCP-05'];
+    // Prefer L-TCP-03 (scanner — pure DNS timing) over B-TCP-03 (browser — DNS+TCP+TLS combined)
+    const dnsPerf = lookup['L-TCP-03'] || lookup['B-TCP-03'] || lookup['C-TCP-05'];
     const dnsCname = lookup['L-TCP-05'];
 
     let status = 'NotRun';
