@@ -791,14 +791,14 @@ function updateMapTurnCard(lookup) {
         geolocateTurnRelay();
     }
 
-    // Proximity badge — flag when TURN relay is far from user
+    // Proximity badge — DNS-resolved TURN location vs user (informational only,
+    // actual session TURN relay is assigned by RDP gateway via CRLB anycast)
     if (turnLocationStr) {
         const user = getUserLocationContext(lookup);
         const serviceCoords = getServiceCoords(turnLocationStr);
         const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
         if (prox && prox.level === 'far') {
-            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
-            status = worstStatus(status, 'Warning');
+            setBadge('map-turn-prox-badge', 'ℹ DNS relay distant — session unaffected', 'status-info');
         } else if (prox && prox.level === 'ok') {
             setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
         }
@@ -897,7 +897,7 @@ function checkTurnProximityAsync(turnLocationStr) {
         const serviceCoords = getServiceCoords(turnLocationStr);
         const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
         if (prox && prox.level === 'far') {
-            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
+            setBadge('map-turn-prox-badge', 'ℹ DNS relay distant — session unaffected', 'status-info');
         } else if (prox && prox.level === 'ok') {
             setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
         }

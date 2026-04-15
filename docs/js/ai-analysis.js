@@ -644,8 +644,9 @@ function runAnalysisEngine(results) {
     }
 
     // Correlation 8: DNS resolver region mismatch — corporate DNS in a different region
-    // TURN relay uses Azure Traffic Manager (DNS-based geographic routing), so a remote
-    // DNS resolver causes Traffic Manager to return a distant TURN relay.
+    // The client resolves world.relay.avd.microsoft.com via ATM for ICE candidate gathering,
+    // but the actual session TURN relay is assigned by the RDP gateway via CRLB anycast.
+    // A DNS mismatch indicates non-local DNS but does not affect session TURN relay selection.
     const userLoc = r('B-LE-01') || r('L-LE-01');
     const adapters = r('L-LE-06');
     const turnLoc = r('L-UDP-04');
@@ -676,9 +677,10 @@ function runAnalysisEngine(results) {
                     findings.push(finding(SEV.WARNING,
                         'DNS servers are in a different region from user',
                         `Your DNS servers (${dnsNames}) appear to be in the "${dnsRegion.toUpperCase()}" region, but you are located in ${userCountry}. `
-                        + 'TURN relay selection (world.relay.avd.microsoft.com) uses Azure Traffic Manager, which routes based on DNS resolver location, not client location. '
-                        + 'This can cause the TURN relay to be selected far from you, adding latency even when IP split-tunnelling is correct.',
-                        'Use DNS resolvers local to the user for *.avd.microsoft.com queries. Public resolvers like Google (8.8.8.8) or Cloudflare (1.1.1.1) support EDNS Client Subnet, which provides accurate geographic routing regardless of resolver location.'));
+                        + 'Client DNS resolves world.relay.avd.microsoft.com via Azure Traffic Manager, which returns a TURN relay based on DNS resolver location. '
+                        + 'However, the actual RDP session TURN relay is assigned by the RDP gateway via CRLB anycast routing based on network proximity — not client DNS. '
+                        + 'This DNS mismatch does not affect session quality, but indicates your DNS resolvers are not local to the user.',
+                        'This is informational — session TURN relay selection is not affected. If other ATM-routed services are impacted, consider using DNS resolvers local to the user, or public resolvers with EDNS Client Subnet support.'));
                 }
             }
         }
@@ -704,8 +706,9 @@ function runAnalysisEngine(results) {
                     `Scanner resolved TURN relay to: ${turnLoc.resultValue}\n`
                     + `Browser resolved TURN relay to: ${browserRegion} region\n`
                     + 'This happens when the scanner uses corporate DNS (via VPN) while the browser resolves via a local SWG/proxy. '
-                    + 'The actual RDP session will use whichever DNS path the Windows App or MSTSC client takes — typically the OS DNS, which may return the more distant relay.',
-                    'Ensure DNS for *.avd.microsoft.com resolves locally. If a VPN pushes remote corporate DNS servers, configure split-tunnel DNS for this domain, or use a public resolver with EDNS Client Subnet support.'));
+                    + 'However, the actual RDP session TURN relay is assigned by the RDP gateway via CRLB anycast — not by client DNS resolution. '
+                    + 'This mismatch indicates different DNS paths but does not affect session TURN relay selection.',
+                    'This is informational. The session TURN relay is correctly assigned regardless of client DNS. The mismatch indicates different DNS resolver paths between the scanner (OS DNS) and browser (SWG/local DNS).'));
             }
         }
     }

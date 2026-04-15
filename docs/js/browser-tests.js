@@ -245,7 +245,7 @@ const ALL_TESTS = [
     },
     {
         id: '27', name: 'RDP Local Egress',
-        description: 'Checks that traffic egresses locally to the nearest W365 gateway and TURN relay',
+        description: 'Checks that RDP traffic egresses locally to the nearest W365 gateway',
         category: 'cloud', source: 'local'
     },
 

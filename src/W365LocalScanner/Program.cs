@@ -561,7 +561,7 @@ class Program
                 if (gwConcern)
                     Console.WriteLine($"    Gateway in {gwLocation} — consider checking VPN/proxy routing");
                 if (turnConcern)
-                    Console.WriteLine($"    TURN relay in {turnLocation} — may indicate non-local egress");
+                    Console.WriteLine($"    TURN relay (DNS) in {turnLocation} — indicates non-local DNS resolvers (does not affect session — TURN is assigned by gateway via CRLB)");
                 Console.ResetColor();
             }
             else
@@ -4031,7 +4031,7 @@ class Program
                     var response = receiveTask.Result;
                     result.Status = "Passed";
                     result.ResultValue = $"TURN relay reachable at {ip}:{port} — {rttMs}ms RTT";
-                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {response.Buffer.Length} bytes\nLatency: {rttMs}ms";
+                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {response.Buffer.Length} bytes\nLatency: {rttMs}ms\n\nNote: This tests UDP 3478 reachability via DNS-resolved IP. The actual session TURN relay is assigned by the RDP gateway (via CRLB anycast), not by client DNS.";
                 }
                 else
                 {
@@ -4073,8 +4073,8 @@ class Program
             {
                 var friendlyName = GetAzureRegionFriendlyName(azureRegion);
                 var label = friendlyName != null ? $"{friendlyName} ({azureRegion})" : azureRegion;
-                result.ResultValue = $"TURN relay: {label} ({ip})";
-                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nAzure Region: {label}\nSource: Azure Service Tags (subnet mapping)";
+                result.ResultValue = $"TURN relay (DNS): {label} ({ip})";
+                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nAzure Region: {label}\nSource: Azure Service Tags (subnet mapping)\n\nNote: This is the TURN relay returned by client DNS (Azure Traffic Manager). The actual session TURN relay is assigned by the RDP gateway via CRLB anycast routing, which selects the nearest relay based on network proximity — not DNS. A mismatch between this location and your region indicates non-local DNS resolvers but does not affect session quality.";
                 result.Status = "Passed";
             }
             else
@@ -4088,8 +4088,8 @@ class Program
                         var city = cityProp.GetString();
                         var region = geo.TryGetProperty("region", out var rProp) ? rProp.GetString() : "";
                         var country = geo.TryGetProperty("country", out var cProp) ? cProp.GetString() : "";
-                        result.ResultValue = $"TURN relay: {city}, {region}, {country} ({ip})";
-                        result.DetailedInfo = $"Host: {host}\nIP: {ip}\nLocation: {city}, {region}, {country}\nSource: GeoIP (IP not in known Service Tags subnets)";
+                        result.ResultValue = $"TURN relay (DNS): {city}, {region}, {country} ({ip})";
+                        result.DetailedInfo = $"Host: {host}\nIP: {ip}\nLocation: {city}, {region}, {country}\nSource: GeoIP (IP not in known Service Tags subnets)\n\nNote: This is the TURN relay returned by client DNS. The actual session TURN relay is assigned by the RDP gateway via CRLB anycast, not by client DNS.";
                         result.Status = "Passed";
                     }
                     else
@@ -6744,9 +6744,9 @@ class Program
                                 sb.AppendLine($"Distance from egress: {FormatDistance(distKm)}");
 
                                 if (distKm > 1500)
-                                    sb.AppendLine("⚠ TURN relay is far — possible backhauling or non-local egress.");
+                                    sb.AppendLine("ℹ DNS-resolved TURN relay is far — indicates non-local DNS resolvers. The actual session TURN relay is assigned by the RDP gateway via CRLB anycast and is not affected.");
                                 else
-                                    sb.AppendLine("✓ TURN relay is near — local egress confirmed.");
+                                    sb.AppendLine("✓ DNS-resolved TURN relay is near your location.");
                             }
                         }
                     }
@@ -6761,13 +6761,13 @@ class Program
 
             // Determine overall result
             var text = sb.ToString();
-            if (text.Contains("⚠ Gateway is far") || text.Contains("⚠ TURN relay is far") || text.Contains("⚠ High latency"))
+            if (text.Contains("⚠ Gateway is far") || text.Contains("⚠ High latency"))
             {
                 result.Status = "Warning";
                 result.ResultValue = "Traffic may not be egressing locally";
-                result.RemediationText = "RDP traffic appears to be backhauling through a remote network. " +
-                    "Ensure local internet breakout for 40.64.144.0/20 and 51.5.0.0/16. " +
-                    "This allows the nearest RDP Gateway or TURN relay to be selected.";
+                result.RemediationText = "RDP gateway traffic appears to be backhauling through a remote network. " +
+                    "Ensure local internet breakout for 40.64.144.0/20 (TCP/443). " +
+                    "The TURN relay (51.5.0.0/16, UDP/3478) is assigned by the gateway via CRLB anycast and is not affected by client DNS or egress location.";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#3-local-network-egress";
             }
             else if (gw == null)
