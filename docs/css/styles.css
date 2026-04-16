@@ -1357,14 +1357,18 @@ main {
 
 .map-g-client  { grid-column: 1; grid-row: 1 / 6; align-self: center; }
 .map-g-arrow1  { grid-column: 2; grid-row: 1 / 6; align-self: center; justify-self: center; }
-.map-g-localgw { grid-column: 3; grid-row: 1 / 6; align-self: center; }
+.map-g-localgw { grid-column: 3; grid-row: 1 / 6; align-self: start; }
 .map-g-arrow2  { grid-column: 4; grid-row: 1 / 6; align-self: center; justify-self: center; }
 .map-g-isp     { grid-column: 5; grid-row: 1 / 6; align-self: center; }
 .map-g-fanout  { grid-column: 6; grid-row: 1 / 6; align-self: stretch; }
 .map-g-afd     { grid-column: 7; grid-row: 1; }
 .map-g-rdgw    { grid-column: 7; grid-row: 3; }
 .map-g-turn    { grid-column: 7; grid-row: 5; }
-.map-g-dnsline { grid-column: 3; grid-row: 6; justify-self: center; align-self: stretch; z-index: 1; }
+/* DNS line spans from below the LocalGW card down through the connector row.
+   LocalGW is pinned to row-start with align-self:start so the line begins directly
+   beneath it. Spanning multiple rows keeps the line connected to the DNS card below
+   regardless of how tall the surrounding cards grow. */
+.map-g-dnsline { grid-column: 3; grid-row: 2 / 7; justify-self: center; align-self: stretch; z-index: 0; }
 .map-g-dns     { grid-column: 3; grid-row: 7; }
 
 /* ── Cloud PC right-side cards (hidden until .has-cloudpc or .cpc-mode) ── */
@@ -1658,6 +1662,15 @@ main {
     flex-direction: column;
     align-items: center;
     gap: 6px;
+}
+/* ISP card carries extra badges (egress location + GPS distance) which otherwise
+   cause the card to grow taller than its peers and visually misalign.
+   Allow its info column to be wider so badges fit on a single row. */
+#map-isp .device-info {
+    max-width: 180px;
+}
+#map-isp .map-card-badges {
+    justify-content: center;
 }
 .device-laptop {
     position: relative;
