@@ -10,19 +10,19 @@
       - script-src 'self' 'unsafe-inline' : the page includes a small inline bootstrap
       - style-src  'self' 'unsafe-inline' https://fonts.googleapis.com : inline styles + Google Fonts CSS
       - font-src   https://fonts.gstatic.com : Inter font files
-      - img-src    'self' data: https://flagcdn.com https://logo.clearbit.com https://www.google.com : flags + ISP logo fallbacks
+      - img-src    'self' data: https://flagcdn.com https://logo.clearbit.com https://www.google.com https://*.gstatic.com https://icons.duckduckgo.com : flags + ISP favicon providers (Google/DuckDuckGo/Clearbit)
       - connect-src lists every remote endpoint the tests fetch from (GeoIP providers, DoH, Nominatim, Microsoft service tags, etc.)
       - frame-src  https://copilot.microsoft.com : embedded Copilot help
       - object-src 'none' and base-uri 'self' : lock down plugin/base hijack vectors
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://flagcdn.com https://logo.clearbit.com https://www.google.com; connect-src 'self' https://ipinfo.io https://freeipapi.com https://get.geojs.io https://ipwho.is https://ipapi.co https://nominatim.openstreetmap.org https://dns.google https://cloudflare-dns.com https://www.msftconnecttest.com https://www.microsoft.com https://learn.microsoft.com https://speed.cloudflare.com https://*.wvd.microsoft.com https://*.infra.windows365.microsoft.com https://*.azure.com https://*.microsoft.com https://raw.githubusercontent.com; frame-src https://copilot.microsoft.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://flagcdn.com https://logo.clearbit.com https://www.google.com https://*.gstatic.com https://icons.duckduckgo.com; connect-src 'self' https://ipinfo.io https://freeipapi.com https://get.geojs.io https://ipwho.is https://ipapi.co https://nominatim.openstreetmap.org https://dns.google https://cloudflare-dns.com https://www.msftconnecttest.com https://www.microsoft.com https://learn.microsoft.com https://speed.cloudflare.com https://*.wvd.microsoft.com https://*.infra.windows365.microsoft.com https://*.azure.com https://*.microsoft.com https://raw.githubusercontent.com; frame-src https://copilot.microsoft.com; object-src 'none'; base-uri 'self'; form-action 'self'">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=176">
+    <link rel="stylesheet" href="css/styles.css?v=177">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -806,11 +806,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=176"></script>
-    <script src="js/browser-tests.js?v=176"></script>
-    <script src="js/ui.js?v=176"></script>
-    <script src="js/map.js?v=176"></script>
-    <script src="js/ai-analysis.js?v=176"></script>
-    <script src="js/app.js?v=176"></script>
+    <script src="js/config.js?v=177"></script>
+    <script src="js/browser-tests.js?v=177"></script>
+    <script src="js/ui.js?v=177"></script>
+    <script src="js/map.js?v=177"></script>
+    <script src="js/ai-analysis.js?v=177"></script>
+    <script src="js/app.js?v=177"></script>
 </body>
 </html>

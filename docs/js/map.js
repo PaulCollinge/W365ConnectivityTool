@@ -523,15 +523,21 @@ function setIspLogo(ispName) {
     if (!img) return;
     const domain = guessIspDomain(ispName);
     if (!domain) { img.style.display = 'none'; return; }
-    // Use Clearbit Logo API (returns 128px square logo)
-    const url = `https://logo.clearbit.com/${domain}?size=80`;
-    img.src = url;
-    img.style.display = 'block';
-    img.onerror = function() {
-        // Fallback to Google favicons
-        this.src = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-        this.onerror = function() { this.style.display = 'none'; };
+    // Try favicon providers in order of reliability. Clearbit's free logo API was
+    // retired in 2023 so we start with Google favicons, then DuckDuckGo.
+    const providers = [
+        `https://www.google.com/s2/favicons?domain=${domain}&sz=64`,
+        `https://icons.duckduckgo.com/ip3/${domain}.ico`,
+        `https://logo.clearbit.com/${domain}?size=80`
+    ];
+    let idx = 0;
+    const tryNext = () => {
+        if (idx >= providers.length) { img.style.display = 'none'; return; }
+        img.src = providers[idx++];
     };
+    img.onerror = tryNext;
+    img.style.display = 'block';
+    tryNext();
 }
 
 // ── ISP Card ──
