@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -91,7 +94,9 @@ public class TestResultViewModel : ViewModelBase
 
     public ICommand OpenRemediationCommand => new RelayCommand(() =>
     {
-        if (!string.IsNullOrEmpty(RemediationUrl))
+        if (!string.IsNullOrEmpty(RemediationUrl) &&
+            Uri.TryCreate(RemediationUrl, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
         {
             Process.Start(new ProcessStartInfo(RemediationUrl) { UseShellExecute = true });
         }

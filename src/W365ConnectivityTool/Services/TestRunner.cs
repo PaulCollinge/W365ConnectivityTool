@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using W365ConnectivityTool.Models;
 using W365ConnectivityTool.Services.Tests;
 

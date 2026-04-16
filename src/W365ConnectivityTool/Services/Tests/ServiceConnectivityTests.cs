@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -7,6 +10,7 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using W365ConnectivityTool.Models;
 
 namespace W365ConnectivityTool.Services.Tests;
@@ -1178,6 +1182,7 @@ public class TurnRelayLocationTest : BaseTest
             string? trafficManagerCname = null;
             try
             {
+                if (!NetworkHelpers.IsValidFqdn(endpoint)) throw new ArgumentException("Invalid FQDN");
                 var psi = new System.Diagnostics.ProcessStartInfo("nslookup", endpoint)
                 {
                     RedirectStandardOutput = true,
@@ -1490,6 +1495,7 @@ public class GatewayLocationTest : BaseTest
                 var tmFqdn = fqdn.Replace(".wvd.microsoft.com", "-prod.trafficmanager.net");
                 try
                 {
+                    if (!NetworkHelpers.IsValidFqdn(tmFqdn)) throw new ArgumentException("Invalid FQDN");
                     var psi = new System.Diagnostics.ProcessStartInfo("nslookup", $"-type=CNAME {tmFqdn}")
                     {
                         RedirectStandardOutput = true,
@@ -2509,39 +2515,20 @@ public class TurnProxyVpnDetectionTest : BaseTest
         if (!issues.Any(i => i.Contains("SWG")))
             details.Add("✓ No known SWG processes detected");
 
-        // 4. Check Windows Firewall for UDP 3478 block rules
+        // 4. Check Windows Firewall for UDP 3478 block rules (registry-based, no process spawning)
         try
         {
-            // Use PowerShell Get-NetFirewallRule for locale-independent firewall check
-            var psi = new ProcessStartInfo("powershell", "-NoProfile -Command \"Get-NetFirewallRule -Direction Outbound -Action Block -Enabled True 2>$null | ForEach-Object { $pf = $_ | Get-NetFirewallPortFilter 2>$null; if($pf) { $pf.LocalPort + '|' + $pf.Protocol } }\"")
-            {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi);
-            if (proc != null)
-            {
-                var output = await proc.StandardOutput.ReadToEndAsync(ct);
-                await proc.WaitForExitAsync(ct);
+            var fwRules = NetworkHelpers.ReadFirewallRulesFromRegistry();
+            bool found3478Block = fwRules.Any(r =>
+                r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase) &&
+                r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase) &&
+                (r.Protocol == 17 || r.Protocol == 256) && // 17=UDP, 256=Any
+                NetworkHelpers.FwPortMatches(r.LocalPort, 3478));
 
-                bool found3478Block = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                    .Any(line =>
-                    {
-                        var parts = line.Trim().Split('|');
-                        if (parts.Length < 2) return false;
-                        var port = parts[0];
-                        var proto = parts[1];
-                        bool matchesPort = port == "Any" || port == "3478" || port.Split(',').Any(p => p.Trim() == "3478");
-                        bool matchesProto = proto.Contains("Any", StringComparison.OrdinalIgnoreCase) || proto.Contains("UDP", StringComparison.OrdinalIgnoreCase);
-                        return matchesPort && matchesProto;
-                    });
-
-                if (found3478Block)
-                    details.Add("⚠ Windows Firewall has outbound rules that may block UDP 3478");
-                else
-                    details.Add("✓ No Windows Firewall rules blocking UDP 3478 detected");
-            }
+            if (found3478Block)
+                details.Add("⚠ Windows Firewall has outbound rules that may block UDP 3478");
+            else
+                details.Add("✓ No Windows Firewall rules blocking UDP 3478 detected");
         }
         catch { details.Add("— Could not check Windows Firewall rules"); }
 
@@ -2718,4 +2705,82 @@ public class EndpointAccessTest : BaseTest
                                      "Azure Virtual Desktop traffic. Review the required FQDN list and update your network rules.";
         }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Firewall & validation helpers (locale-independent, no process spawning)
+// ════════════════════════════════════════════════════════════════════
+
+/// <summary>Parsed Windows Firewall rule from registry.</summary>
+internal record struct FwRule(string Name, string Dir, string Action, int Protocol, string LocalPort);
+
+internal static class NetworkHelpers
+{
+    /// <summary>Read firewall rules from the Windows Firewall registry store.
+    /// Avoids spawning powershell.exe which triggers Defender behavioural heuristics.</summary>
+    internal static List<FwRule> ReadFirewallRulesFromRegistry()
+    {
+        var rules = new List<FwRule>();
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules");
+            if (key == null) return rules;
+
+            foreach (var valueName in key.GetValueNames())
+            {
+                var data = key.GetValue(valueName) as string;
+                if (string.IsNullOrEmpty(data)) continue;
+
+                string? name = null;
+                bool active = false;
+                string dir = "", action = "";
+                int protocol = 0; // 6=TCP, 17=UDP, 256=Any
+                string localPort = "Any";
+
+                foreach (var part in data.Split('|'))
+                {
+                    if (part.StartsWith("Name=", StringComparison.OrdinalIgnoreCase))
+                        name = part[5..];
+                    else if (part.StartsWith("Active=", StringComparison.OrdinalIgnoreCase))
+                        active = part[7..].Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                    else if (part.StartsWith("Dir=", StringComparison.OrdinalIgnoreCase))
+                        dir = part[4..];
+                    else if (part.StartsWith("Action=", StringComparison.OrdinalIgnoreCase))
+                        action = part[7..];
+                    else if (part.StartsWith("Protocol=", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(part[9..], out protocol);
+                    else if (part.StartsWith("LPort=", StringComparison.OrdinalIgnoreCase))
+                        localPort = part[6..];
+                }
+
+                if (name != null && active)
+                    rules.Add(new FwRule(name, dir, action, protocol, localPort));
+            }
+        }
+        catch { }
+        return rules;
+    }
+
+    /// <summary>Check if a firewall rule's port field matches a given port number.</summary>
+    internal static bool FwPortMatches(string rulePort, int targetPort)
+    {
+        if (string.IsNullOrEmpty(rulePort) || rulePort.Equals("Any", StringComparison.OrdinalIgnoreCase))
+            return true;
+        foreach (var segment in rulePort.Split(','))
+        {
+            var s = segment.Trim();
+            if (s == targetPort.ToString()) return true;
+            var dash = s.IndexOf('-');
+            if (dash > 0 && int.TryParse(s[..dash], out var lo) && int.TryParse(s[(dash + 1)..], out var hi)
+                && targetPort >= lo && targetPort <= hi)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Validate that a string is a safe FQDN (letters, digits, hyphens, dots only).
+    /// Prevents command injection when passing values to external processes like nslookup.</summary>
+    internal static bool IsValidFqdn(string value) =>
+        !string.IsNullOrWhiteSpace(value) && Regex.IsMatch(value, @"^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$");
 }

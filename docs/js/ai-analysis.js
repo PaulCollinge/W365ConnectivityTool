@@ -41,11 +41,15 @@ function parseSignal(str) {
 //  Spike detector
 // ═══════════════════════════════════════════════════════════════════
 function detectLatencySpikes(sampleLine) {
-    const nums = (sampleLine.match(/[\d.]+/g) || []).map(Number).filter(n => n > 0 && n < 10000);
+    // Parse all positive latency values. Allow up to 60 000 ms so genuine
+    // timeouts / severe hangs still participate in the median calculation.
+    const nums = (sampleLine.match(/[\d.]+/g) || []).map(Number).filter(n => n > 0 && n < 60000);
     if (nums.length < 10) return null;
 
     const sorted = [...nums].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
+    // Proper median — average the two middle elements for even-length samples
+    const mid = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
     const threshold = Math.max(median * 3, 200);
     const spikePositions = [];
     nums.forEach((v, i) => { if (v > threshold) spikePositions.push(i); });

@@ -778,7 +778,7 @@ async function testCaptivePortal(test) {
     // Microsoft's own NCSI endpoint — same URL Windows uses for network connectivity detection
     const NCSI_URL = 'https://www.msftconnecttest.com/connecttest.txt';
     const EXPECTED  = 'Microsoft Connect Test';
-    const REMEDIATION = 'Open a browser and navigate to any HTTP website (e.g. http://example.com) to trigger the captive portal login page, then authenticate and try again.';
+    const REMEDIATION = 'Open a browser and navigate to any HTTP website (e.g. http://example.com) to trigger the captive portal login page, then authenticate and try again.'; // DevSkim: ignore DS137138 - intentional HTTP URL in user-facing remediation text
 
     try {
         let body = null;

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -485,65 +488,79 @@ public class BandwidthTest : BaseTest
 {
     public override string Id => "07";
     public override string Name => "Local Bandwidth";
-    public override string Description => "Measures download/upload throughput using Speedtest.net (Ookla CLI) with Cloudflare as a fallback.";
+    public override string Description => "Measures download throughput using Cloudflare and OVH HTTPS download endpoints.";
     public override TestCategory Category => TestCategory.LocalEnvironment;
     public override TestPriority Priority => TestPriority.Important;
     public override int TimeoutSeconds => 120;
 
-    private static readonly string SpeedtestDir = FindSpeedtestDir();
-
-    private static string FindSpeedtestDir()
-    {
-        // 1. Next to the running exe (deployed scenario)
-        var exeDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)!;
-        var candidate = Path.Combine(exeDir, "tools", "speedtest");
-        if (Directory.Exists(candidate)) return candidate;
-
-        // 2. Project root /tools/speedtest (development scenario)
-        candidate = Path.Combine(exeDir, "..", "..", "..", "..", "tools", "speedtest");
-        candidate = Path.GetFullPath(candidate);
-        if (Directory.Exists(candidate)) return candidate;
-
-        // 3. Default to %LOCALAPPDATA%\W365ConnectivityTool\speedtest
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "W365ConnectivityTool", "speedtest");
-    }
-
-    private static string SpeedtestExe => Path.Combine(SpeedtestDir, "speedtest.exe");
-
-    private const string SpeedtestDownloadUrl =
-        "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip";
-
-    private const string CloudflareUrl = "https://speed.cloudflare.com/__down?bytes=10000000"; // 10MB
+    private static readonly (string Url, long ExpectedBytes)[] TestEndpoints =
+    [
+        ("https://speed.cloudflare.com/__down?bytes=25000000", 25_000_000L),
+        ("https://speed.cloudflare.com/__down?bytes=10000000", 10_000_000L),
+        ("https://speed.cloudflare.com/__down?bytes=5000000", 5_000_000L)
+    ];
 
     protected override async Task ExecuteAsync(TestResult result, CancellationToken ct)
     {
         var details = new List<string>();
+        details.Add("── HTTPS Download Test ──");
 
-        // ── Try Speedtest.net (Ookla CLI) first ──
-        var speedtestResult = await RunSpeedtestCliAsync(details, ct);
+        double bestMbps = 0;
+        string bestSource = "";
 
-        // ── Always run Cloudflare as a second data point ──
-        var cloudflareResult = await RunCloudflareTestAsync(details, ct);
-
-        // ── Evaluate results ──
-        double bestDownMbps = 0;
-        string bestSource = "none";
-
-        if (speedtestResult != null)
+        using var http = new HttpClient(new HttpClientHandler
         {
-            bestDownMbps = speedtestResult.Value.DownMbps;
-            bestSource = "Speedtest.net";
+            DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials
+        })
+        { Timeout = TimeSpan.FromSeconds(30) };
+
+        foreach (var (testUrl, _) in TestEndpoints)
+        {
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                using var response = await http.GetAsync(testUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+                response.EnsureSuccessStatusCode();
+
+                long totalBytes = 0;
+                var buffer = new byte[81920];
+                using var stream = await response.Content.ReadAsStreamAsync(ct);
+                var measureDuration = TimeSpan.FromSeconds(10);
+
+                int bytesRead;
+                while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
+                {
+                    totalBytes += bytesRead;
+                    if (sw.Elapsed > measureDuration) break;
+                }
+                sw.Stop();
+
+                if (totalBytes < 50_000 || sw.Elapsed.TotalSeconds < 0.5)
+                    continue;
+
+                var sizeMB = totalBytes / (1024.0 * 1024.0);
+                var mbps = (sizeMB * 8) / sw.Elapsed.TotalSeconds;
+                var host = new Uri(testUrl).Host;
+
+                details.Add($"  {host}: {mbps:F1} Mbps ({sizeMB:F1} MB in {sw.Elapsed.TotalSeconds:F1}s)");
+
+                if (mbps > bestMbps)
+                {
+                    bestMbps = mbps;
+                    bestSource = host;
+                }
+
+                if (totalBytes > 1_000_000) break;
+            }
+            catch (Exception ex)
+            {
+                details.Add($"  ✗ {new Uri(testUrl).Host}: {ex.Message}");
+            }
         }
 
-        if (cloudflareResult != null && cloudflareResult.Value.Mbps > bestDownMbps)
-        {
-            bestDownMbps = cloudflareResult.Value.Mbps;
-            bestSource = "Cloudflare";
-        }
+        details.Add("");
 
-        if (bestDownMbps <= 0)
+        if (bestMbps <= 0)
         {
             result.Status = TestStatus.Failed;
             result.ResultValue = "All tests failed";
@@ -553,23 +570,14 @@ public class BandwidthTest : BaseTest
             return;
         }
 
-        // Build summary
-        if (speedtestResult != null)
-        {
-            result.ResultValue = $"↓ {speedtestResult.Value.DownMbps:F0} / ↑ {speedtestResult.Value.UpMbps:F0} Mbps (Speedtest.net)";
-        }
-        else
-        {
-            result.ResultValue = $"↓ {bestDownMbps:F1} Mbps ({bestSource})";
-        }
-
+        result.ResultValue = $"↓ {bestMbps:F1} Mbps ({bestSource})";
         result.DetailedInfo = string.Join("\n", details);
 
-        if (bestDownMbps >= 20)
+        if (bestMbps >= 20)
         {
             result.Status = TestStatus.Passed;
         }
-        else if (bestDownMbps >= 5)
+        else if (bestMbps >= 5)
         {
             result.Status = TestStatus.Warning;
             result.RemediationText = "Bandwidth is below the recommended 20 Mbps for optimal remote desktop experience.";
@@ -581,182 +589,6 @@ public class BandwidthTest : BaseTest
         }
 
         result.RemediationUrl = EndpointConfiguration.Docs.Bandwidth;
-    }
-
-    private record struct SpeedtestCliResult(
-        double DownMbps, double UpMbps, double PingMs, double Jitter,
-        string Isp, string Server, string ServerLocation, string ResultUrl);
-
-    private async Task<SpeedtestCliResult?> RunSpeedtestCliAsync(List<string> details, CancellationToken ct)
-    {
-        try
-        {
-            // Auto-download Speedtest CLI if not present
-            if (!File.Exists(SpeedtestExe))
-            {
-                await DownloadSpeedtestCliAsync(details, ct);
-                if (!File.Exists(SpeedtestExe))
-                {
-                    details.Add("⚠ Speedtest CLI not available — skipping");
-                    details.Add("");
-                    return null;
-                }
-            }
-
-            details.Add("── Speedtest.net (Ookla CLI) ──");
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = SpeedtestExe,
-                Arguments = "--accept-license --accept-gdpr --format=json",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process == null)
-            {
-                details.Add("✗ Failed to start speedtest.exe");
-                details.Add("");
-                return null;
-            }
-
-            var outputTask = process.StandardOutput.ReadToEndAsync(ct);
-            var errorTask = process.StandardError.ReadToEndAsync(ct);
-
-            // 90 second timeout for the full speedtest
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(90_000);
-
-            try
-            {
-                await process.WaitForExitAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(true); } catch { }
-                details.Add("✗ Speedtest timed out (90s)");
-                details.Add("");
-                return null;
-            }
-
-            var json = await outputTask;
-
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                details.Add($"✗ No output from speedtest.exe");
-                details.Add("");
-                return null;
-            }
-
-            // Parse JSON results
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            // bandwidth is in bytes/sec, convert to Mbps
-            var downBps = root.GetProperty("download").GetProperty("bandwidth").GetInt64();
-            var upBps = root.GetProperty("upload").GetProperty("bandwidth").GetInt64();
-            var downMbps = downBps * 8.0 / 1_000_000;
-            var upMbps = upBps * 8.0 / 1_000_000;
-            var pingMs = root.GetProperty("ping").GetProperty("latency").GetDouble();
-            var jitter = root.GetProperty("ping").GetProperty("jitter").GetDouble();
-
-            var isp = root.GetProperty("isp").GetString() ?? "?";
-            var server = root.GetProperty("server");
-            var serverName = server.GetProperty("name").GetString() ?? "?";
-            var serverLoc = server.GetProperty("location").GetString() ?? "?";
-            var serverCountry = server.GetProperty("country").GetString() ?? "?";
-            var resultUrl = root.GetProperty("result").GetProperty("url").GetString() ?? "";
-
-            var isVpn = root.GetProperty("interface").GetProperty("isVpn").GetBoolean();
-            var packetLoss = root.TryGetProperty("packetLoss", out var pl) ? pl.GetDouble() : -1;
-
-            details.Add($"  Download: {downMbps:F1} Mbps");
-            details.Add($"  Upload:   {upMbps:F1} Mbps");
-            details.Add($"  Ping:     {pingMs:F1}ms (jitter: {jitter:F1}ms)");
-            if (packetLoss >= 0)
-                details.Add($"  Packet Loss: {packetLoss:F1}%");
-            details.Add($"  ISP:      {isp}");
-            details.Add($"  Server:   {serverName} ({serverLoc}, {serverCountry})");
-            if (isVpn)
-                details.Add($"  ⚠ VPN detected on active interface");
-            if (!string.IsNullOrEmpty(resultUrl))
-                details.Add($"  Result:   {resultUrl}");
-            details.Add("");
-
-            return new SpeedtestCliResult(downMbps, upMbps, pingMs, jitter,
-                isp, serverName, serverLoc, resultUrl);
-        }
-        catch (Exception ex)
-        {
-            details.Add($"✗ Speedtest.net error: {ex.Message}");
-            details.Add("");
-            return null;
-        }
-    }
-
-    private record struct CloudflareResult(double Mbps, long Bytes, double Seconds);
-
-    private async Task<CloudflareResult?> RunCloudflareTestAsync(List<string> details, CancellationToken ct)
-    {
-        try
-        {
-            details.Add("── Cloudflare Speed Test ──");
-
-            using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(30) };
-            var sw = Stopwatch.StartNew();
-
-            using var response = await http.GetAsync(CloudflareUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            long totalBytes = 0;
-            var buffer = new byte[81920];
-            using var stream = await response.Content.ReadAsStreamAsync(ct);
-
-            int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
-                totalBytes += bytesRead;
-
-            sw.Stop();
-            var mbps = (totalBytes * 8.0 / 1_000_000) / sw.Elapsed.TotalSeconds;
-
-            details.Add($"  Download: {mbps:F1} Mbps ({totalBytes / 1_000_000.0:F1} MB in {sw.Elapsed.TotalSeconds:F1}s)");
-            details.Add("");
-
-            return new CloudflareResult(mbps, totalBytes, sw.Elapsed.TotalSeconds);
-        }
-        catch (Exception ex)
-        {
-            details.Add($"  ✗ Cloudflare error: {ex.Message}");
-            details.Add("");
-            return null;
-        }
-    }
-
-    private async Task DownloadSpeedtestCliAsync(List<string> details, CancellationToken ct)
-    {
-        try
-        {
-            details.Add("Downloading Speedtest CLI...");
-            Directory.CreateDirectory(SpeedtestDir);
-
-            using var http = new HttpClient(new HttpClientHandler { DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials }) { Timeout = TimeSpan.FromSeconds(30) };
-            var zipBytes = await http.GetByteArrayAsync(SpeedtestDownloadUrl, ct);
-
-            var zipPath = Path.Combine(Path.GetTempPath(), "speedtest-cli.zip");
-            await File.WriteAllBytesAsync(zipPath, zipBytes, ct);
-
-            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, SpeedtestDir, true);
-            File.Delete(zipPath);
-
-            details.Add("✓ Speedtest CLI downloaded");
-        }
-        catch (Exception ex)
-        {
-            details.Add($"✗ Failed to download Speedtest CLI: {ex.Message}");
-        }
     }
 }
 

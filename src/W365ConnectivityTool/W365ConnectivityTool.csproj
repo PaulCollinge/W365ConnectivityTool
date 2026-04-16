@@ -6,6 +6,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+
+    <!-- Assembly metadata -->
+    <Product>Windows 365 Connectivity Tool</Product>
+    <Company>Microsoft</Company>
+    <Authors>Paul Collinge</Authors>
+    <Description>Connectivity diagnostics tool for Windows 365 and Azure Virtual Desktop.</Description>
+    <Copyright>Copyright © Microsoft 2025-2026</Copyright>
+    <NeutralLanguage>en</NeutralLanguage>
   </PropertyGroup>
 
   <ItemGroup>

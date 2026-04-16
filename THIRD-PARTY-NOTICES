@@ -1,0 +1,68 @@
+THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
+
+This project incorporates components from the projects listed below.
+
+========================================================================
+
+1. NuGet Packages (MIT License)
+------------------------------------------------------------------------
+- System.Text.Json (https://github.com/dotnet/runtime)
+- System.Diagnostics.EventLog (https://github.com/dotnet/runtime)
+- System.Diagnostics.PerformanceCounter (https://github.com/dotnet/runtime)
+
+Licensed under the MIT License.
+https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+
+2. Microsoft.Web.WebView2 (BSD-style License)
+------------------------------------------------------------------------
+https://www.nuget.org/packages/Microsoft.Web.WebView2
+https://learn.microsoft.com/en-us/microsoft-edge/webview2/
+
+Licensed under the Microsoft Edge WebView2 Runtime License.
+
+3. Inter Font (SIL Open Font License 1.1)
+------------------------------------------------------------------------
+Used in the web dashboard (docs/).
+https://github.com/rsms/inter
+Loaded from Google Fonts CDN (https://fonts.googleapis.com).
+
+Licensed under the SIL Open Font License, Version 1.1.
+https://github.com/rsms/inter/blob/master/LICENSE.txt
+
+========================================================================
+
+EXTERNAL SERVICES
+
+This tool makes runtime requests to external services for diagnostic
+purposes. No user credentials are transmitted. The user's public IP
+address may be visible to these services as part of standard HTTPS
+requests.
+
+4. Cloudflare Speed Test
+------------------------------------------------------------------------
+Used for bandwidth estimation via HTTPS download.
+https://speed.cloudflare.com/
+Subject to Cloudflare Terms of Service: https://www.cloudflare.com/terms/
+
+5. GeoIP Providers (cascading fallback)
+------------------------------------------------------------------------
+Used to determine the user's public IP and approximate geographic
+location for network path analysis. The user's public IP address is
+sent to these services.
+
+- ipinfo.io (primary) — https://ipinfo.io — Terms: https://ipinfo.io/terms
+- freeipapi.com — https://freeipapi.com
+- geojs.io — https://get.geojs.io — Terms: https://www.geojs.io/docs/v1/endpoints/geo/
+- ipwho.is — https://ipwho.is — Terms: https://ipwho.is/
+- ipapi.co — https://ipapi.co — Terms: https://ipapi.co/terms/
+
+6. Google DNS-over-HTTPS
+------------------------------------------------------------------------
+Used for CNAME chain resolution to identify Traffic Manager routing.
+https://dns.google/
+Subject to Google Terms of Service: https://policies.google.com/terms
+
+7. flagcdn.com
+------------------------------------------------------------------------
+Used for country flag images in the web dashboard.
+https://flagcdn.com/

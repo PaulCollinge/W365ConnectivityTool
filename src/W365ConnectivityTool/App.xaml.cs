@@ -1,4 +1,7 @@
-﻿using System.Configuration;
+﻿// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+using System.Configuration;
 using System.Data;
 using System.Windows;
 

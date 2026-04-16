@@ -5,26 +5,31 @@
 // Import diagnostic log (set up by inline script in index.html)
 function ilog(msg) { if (window._importLog) window._importLog(msg); else console.log('[W365]', msg); }
 
+// Render an error banner safely using textContent (no HTML injection from error strings)
+function showErrorBanner(label, detail) {
+    const info = document.getElementById('info-banner');
+    if (!info) return;
+    const textEl = info.querySelector('.info-text');
+    if (!textEl) return;
+    info.classList.remove('hidden');
+    textEl.textContent = '';
+    const strong = document.createElement('strong');
+    strong.textContent = label;
+    textEl.appendChild(strong);
+    textEl.appendChild(document.createTextNode(' ' + detail));
+}
+
 // Global error handler — show JS errors visibly so import issues are not silent
 window.onerror = function(msg, url, line, col, error) {
     console.error('Global error:', msg, url, line, col, error);
     ilog('JS ERROR: ' + msg + ' at ' + url + ':' + line);
-    const info = document.getElementById('info-banner');
-    if (info) {
-        info.classList.remove('hidden');
-        info.querySelector('.info-text').innerHTML =
-            `<strong>JavaScript error:</strong> ${msg} (${url}:${line})`;
-    }
+    showErrorBanner('JavaScript error:', `${msg} (${url}:${line})`);
 };
 window.addEventListener('unhandledrejection', function(event) {
     console.error('Unhandled promise rejection:', event.reason);
-    ilog('ASYNC ERROR: ' + (event.reason?.message || event.reason));
-    const info = document.getElementById('info-banner');
-    if (info) {
-        info.classList.remove('hidden');
-        info.querySelector('.info-text').innerHTML =
-            `<strong>Async error:</strong> ${event.reason?.message || event.reason}`;
-    }
+    const reasonText = event.reason?.message || String(event.reason);
+    ilog('ASYNC ERROR: ' + reasonText);
+    showErrorBanner('Async error:', reasonText);
 });
 
 // All collected results (browser + imported)
@@ -219,7 +224,7 @@ async function detectCloudPcEnvironment() {
     try {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), 3000);
-        const resp = await fetch('http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01', {
+        const resp = await fetch('http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01', { // DevSkim: ignore DS137138 - Azure IMDS is HTTP-only by design (link-local)
             headers: { 'Metadata': 'true' },
             signal: ctrl.signal
         });
@@ -239,7 +244,7 @@ async function detectCloudPcEnvironment() {
     try {
         const ctrl2 = new AbortController();
         const t2 = setTimeout(() => ctrl2.abort(), 3000);
-        await fetch('http://169.254.169.254/metadata/instance?api-version=2021-02-01', {
+        await fetch('http://169.254.169.254/metadata/instance?api-version=2021-02-01', { // DevSkim: ignore DS137138 - Azure IMDS is HTTP-only by design (link-local)
             mode: 'no-cors',
             signal: ctrl2.signal
         });
@@ -722,9 +727,54 @@ function decodeUncompressedHash(raw) {
 }
 
 // ── Shared import logic ──
+const VALID_IMPORT_STATUSES = new Set(['Passed', 'Failed', 'Warning', 'Error', 'Skipped', 'NotRun', 'Pending', 'Info']);
+const MAX_IMPORT_RESULTS = 2000;
+const MAX_IMPORT_STRING_LEN = 200000; // 200 KB per field — detailedInfo can be large but not unbounded
+
+function sanitizeImportedResult(lr) {
+    if (!lr || typeof lr !== 'object') return null;
+    // id is required and must be a primitive that can be coerced to a short string
+    const rawId = lr.id;
+    if (rawId === null || rawId === undefined) return null;
+    if (typeof rawId !== 'string' && typeof rawId !== 'number') return null;
+    const id = String(rawId);
+    if (id.length === 0 || id.length > 100) return null;
+
+    const clampStr = (v, max = MAX_IMPORT_STRING_LEN) => {
+        if (v === null || v === undefined) return '';
+        const s = typeof v === 'string' ? v : String(v);
+        return s.length > max ? s.slice(0, max) : s;
+    };
+
+    let status = typeof lr.status === 'string' ? lr.status : 'Passed';
+    if (!VALID_IMPORT_STATUSES.has(status)) status = 'NotRun';
+
+    let duration = Number(lr.duration);
+    if (!Number.isFinite(duration) || duration < 0) duration = 0;
+    if (duration > 3_600_000) duration = 3_600_000; // cap at 1 hour
+
+    return {
+        id,
+        name: clampStr(lr.name || id, 500),
+        description: clampStr(lr.description, 2000),
+        category: clampStr(lr.category, 100),
+        status,
+        resultValue: clampStr(lr.resultValue || lr.result, 10000),
+        detailedInfo: clampStr(lr.detailedInfo || lr.details),
+        duration,
+        remediationUrl: clampStr(lr.remediationUrl, 2000),
+        remediationText: clampStr(lr.remediationText, 5000),
+        source: typeof lr.source === 'string' ? lr.source : ''
+    };
+}
+
 function processImportedData(data) {
     ilog('processImportedData called. data type=' + typeof data + ', has results=' + Array.isArray(data?.results) + ', count=' + (data?.results?.length ?? 'N/A'));
     // The local scanner outputs: { timestamp, machineName, scanMode, azureRegion, results: [...] }
+    if (!data || typeof data !== 'object') {
+        alert('Invalid results file. Expected a JSON object.');
+        return;
+    }
     let localResults = [];
     if (Array.isArray(data.results)) {
         localResults = data.results;
@@ -734,6 +784,18 @@ function processImportedData(data) {
         alert('Invalid results file. Expected JSON with a "results" array.');
         return;
     }
+    if (localResults.length > MAX_IMPORT_RESULTS) {
+        ilog('Import truncated: ' + localResults.length + ' results exceeds cap of ' + MAX_IMPORT_RESULTS);
+        localResults = localResults.slice(0, MAX_IMPORT_RESULTS);
+    }
+    // Filter/sanitize each entry up-front. Invalid entries are dropped rather than crashing the import.
+    const skipped = [];
+    localResults = localResults.map((lr, idx) => {
+        const clean = sanitizeImportedResult(lr);
+        if (!clean) skipped.push(idx);
+        return clean;
+    }).filter(Boolean);
+    if (skipped.length > 0) ilog('Skipped ' + skipped.length + ' invalid result entries during import');
 
     // Detect Cloud PC vs AVD session host
     const isCloudPcImport = data.scanMode === 'cloudpc';

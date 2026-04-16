@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 using System.Diagnostics;
 using System.Diagnostics.Eventing.Reader;
 using System.IO.Compression;
@@ -71,7 +74,7 @@ class Program
                 imdsClient.DefaultRequestHeaders.Add("Metadata", "true");
                 imdsClient.Timeout = TimeSpan.FromSeconds(3);
                 var imdsResp = await imdsClient.GetAsync(
-                    "http://169.254.169.254/metadata/instance?api-version=2021-02-01");
+                    "http://169.254.169.254/metadata/instance?api-version=2021-02-01"); // DevSkim: ignore DS137138 - Azure IMDS is HTTP-only by design (link-local)
                 if (imdsResp.IsSuccessStatusCode)
                 {
                     var imdsJson = await imdsResp.Content.ReadAsStringAsync();
@@ -1801,47 +1804,7 @@ class Program
         var result = new TestResult { Id = "L-LE-07", Name = "Bandwidth Estimation", Category = "local" };
         try
         {
-            // Try Ookla Speedtest CLI first (bundled in tools/speedtest/)
-            var speedtestPath = Path.Combine(AppContext.BaseDirectory, "tools", "speedtest", "speedtest.exe");
-            if (!File.Exists(speedtestPath))
-                speedtestPath = Path.Combine(Directory.GetCurrentDirectory(), "tools", "speedtest", "speedtest.exe");
-
-            if (File.Exists(speedtestPath))
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = speedtestPath,
-                    Arguments = "--accept-license --accept-gdpr --format=json",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi)!;
-                var output = await proc.StandardOutput.ReadToEndAsync();
-                await proc.WaitForExitAsync();
-
-                if (proc.ExitCode == 0 && output.Contains("download"))
-                {
-                    using var doc = JsonDocument.Parse(output);
-                    var root = doc.RootElement;
-                    var dlBandwidth = root.GetProperty("download").GetProperty("bandwidth").GetDouble();
-                    var ulBandwidth = root.GetProperty("upload").GetProperty("bandwidth").GetDouble();
-                    var ping = root.GetProperty("ping").GetProperty("latency").GetDouble();
-                    var server = root.GetProperty("server").GetProperty("name").GetString();
-                    var dlMbps = dlBandwidth * 8 / 1_000_000;
-                    var ulMbps = ulBandwidth * 8 / 1_000_000;
-
-                    result.ResultValue = $"Download: {dlMbps:F1} Mbps | Upload: {ulMbps:F1} Mbps | Ping: {ping:F0}ms";
-                    result.DetailedInfo = $"Speedtest by Ookla\nServer: {server}\nDownload: {dlMbps:F1} Mbps\nUpload: {ulMbps:F1} Mbps\nPing: {ping:F1} ms";
-                    result.Status = dlMbps > 5 ? "Passed" : dlMbps > 1 ? "Warning" : "Failed";
-                    if (result.Status != "Passed")
-                        result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#bandwidth-requirements";
-                    return result;
-                }
-            }
-
-            // Fallback: streaming HTTPS download for 10 seconds
+            // Streaming HTTPS download test (~10 seconds)
             Console.Write("(measuring ~10s) ");
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(30));
             http.DefaultRequestHeaders.Add("User-Agent", "W365ConnectivityTool/2.0");
@@ -1851,7 +1814,7 @@ class Program
             {
                 ("https://speed.cloudflare.com/__down?bytes=25000000", 25_000_000L),
                 ("https://speed.cloudflare.com/__down?bytes=10000000", 10_000_000L),
-                ("https://proof.ovh.net/files/10Mb.dat", 10_000_000L)
+                ("https://speed.cloudflare.com/__down?bytes=5000000", 5_000_000L)
             };
 
             double bestMbps = 0;
@@ -1902,8 +1865,8 @@ class Program
 
             if (bestMbps > 0)
             {
-                result.ResultValue = $"~{bestMbps:F1} Mbps (HTTPS streaming download test)";
-                result.DetailedInfo = $"Measured via HTTPS streaming download.\n{bestDetail}\n\nFor more accurate results, install Ookla Speedtest CLI in tools/speedtest/";
+                result.ResultValue = $"~{bestMbps:F1} Mbps (HTTPS download test)";
+                result.DetailedInfo = $"Measured via HTTPS streaming download.\n{bestDetail}";
                 result.Status = bestMbps > 5 ? "Passed" : bestMbps > 1 ? "Warning" : "Failed";
             }
             else
@@ -6395,7 +6358,7 @@ class Program
                 result.ResultValue = "TLS inspection detected on RDP gateway";
                 result.RemediationText = "TLS inspection of RDP traffic is not supported by Microsoft. " +
                     "Disable TLS inspection for 40.64.144.0/20 (TCP/443) and 51.5.0.0/16 (UDP/3478). " +
-                    "RDP uses nested encryption — the inner session is already TLS 1.3 encrypted.";
+                    "RDP uses nested encryption — the inner session is already TLS 1.3 encrypted."; // DevSkim: ignore DS440001 - documentation string, not protocol configuration
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#1-disabling-tls-inspection";
             }
             else if (checked_ == 0)
@@ -7680,7 +7643,7 @@ class Program
             client.DefaultRequestHeaders.Add("Metadata", "true");
             client.Timeout = TimeSpan.FromSeconds(5);
             var resp = await client.GetAsync(
-                "http://169.254.169.254/metadata/instance?api-version=2021-02-01");
+                "http://169.254.169.254/metadata/instance?api-version=2021-02-01"); // DevSkim: ignore DS137138 - Azure IMDS is HTTP-only by design (link-local)
 
             if (!resp.IsSuccessStatusCode)
             {
