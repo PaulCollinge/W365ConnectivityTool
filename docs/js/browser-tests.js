@@ -376,10 +376,11 @@ const ALL_TESTS = [
 //  Shared helpers
 // ═════════════════════════════════════════════════════
 
-let _geoCache = null;
+let _geoCache = null;      // resolved result (legacy cache for backwards-compat checks)
+let _geoPromise = null;    // in-flight / settled promise (prevents concurrent stampede)
 
 /** Clear the GeoIP cache so the next fetchGeoIp() call fetches fresh data. */
-function resetGeoCache() { _geoCache = null; }
+function resetGeoCache() { _geoCache = null; _geoPromise = null; }
 
 // ═══════════════════════════════════════════════════════════════════
 //  Shared user-location resolver (browser geolocation + GeoIP)
@@ -475,6 +476,20 @@ async function fetchUserLocation() {
 }
 
 async function fetchGeoIp() {
+    // Dedupe concurrent callers. On first load, several render paths (user
+    // location test, ISP test, CPC auto-detect, map) call fetchGeoIp() in
+    // parallel before any of them populates _geoCache, firing 3–4 parallel
+    // ipinfo.io requests. Cache the promise itself so concurrent callers
+    // await the same in-flight fetch, and subsequent callers get the
+    // already-resolved value. Also caches rejected promises so a total
+    // provider failure doesn't re-run the whole 4-provider chain on every
+    // re-render.
+    if (_geoPromise) return _geoPromise;
+    _geoPromise = _fetchGeoIpUncached();
+    return _geoPromise;
+}
+
+async function _fetchGeoIpUncached() {
     if (_geoCache) return _geoCache;
     // Primary: ipinfo.io (most accurate city-level geo, HTTPS, CORS-friendly)
     try {
