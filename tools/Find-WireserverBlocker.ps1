@@ -1,192 +1,146 @@
 <#
 .SYNOPSIS
-    One-shot: reproduces the 168.63.129.16 block from an unsigned test exe,
-    captures the Windows Filtering Platform drop event (5157), and names the
-    filter/driver that rejected the connection.
+    Names the local driver / filter that is rejecting the W365LocalScanner
+    scanner's connect to 168.63.129.16:80 with WSAEACCES.
 
 .DESCRIPTION
-    Read-mostly. The only state it changes is enabling WFP connection-drop
-    auditing for the duration of the run (auditpol), which it restores on exit.
-
-    Run elevated:
-        irm https://raw.githubusercontent.com/PaulCollinge/W365ConnectivityTool/main/tools/Find-WireserverBlocker.ps1 | iex
-
-.NOTES
-    No admin = no event log access. The script will tell you and exit.
+    Read-only. Enables WFP failure auditing, asks you to re-run the scanner
+    so a fresh drop event is generated, then parses event 5157 to identify
+    the rejecting filter, and cross-checks Defender / GSA / common EDRs.
 #>
-
 [CmdletBinding()] param()
-
 $ErrorActionPreference = 'Stop'
 
-function Write-Section($text) {
+function Hdr($t) {
     Write-Host ""
     Write-Host ("=" * 70) -ForegroundColor DarkGray
-    Write-Host $text -ForegroundColor Cyan
+    Write-Host $t -ForegroundColor Cyan
     Write-Host ("=" * 70) -ForegroundColor DarkGray
 }
 
-# --- elevation check -------------------------------------------------------
-$isAdmin = ([Security.Principal.WindowsPrincipal]`
-    [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Host "This script must run elevated. Right-click PowerShell -> Run as administrator." -ForegroundColor Red
+    Write-Host "Must run elevated. Start an admin PowerShell and re-run." -ForegroundColor Red
     return
 }
 
-Write-Section "Step 1/5 - Baseline reachability from PowerShell"
-$psBaseline = $null
+Hdr "Step 1/4 - Baseline: PowerShell can reach 168.63.129.16:80"
 try {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $tcp = New-Object Net.Sockets.TcpClient
-    $tcp.Connect('168.63.129.16', 80)
-    $sw.Stop()
-    $psBaseline = [int]$sw.ElapsedMilliseconds
-    $tcp.Close()
-    Write-Host ("  OK - PowerShell connected in {0} ms" -f $psBaseline) -ForegroundColor Green
+    $tcp.Connect('168.63.129.16', 80); $sw.Stop(); $tcp.Close()
+    Write-Host ("  OK ({0} ms) - network is fine; any block is process-scoped." -f $sw.ElapsedMilliseconds) -ForegroundColor Green
 } catch {
-    Write-Host ("  FAIL - PowerShell itself cannot connect: {0}" -f $_.Exception.Message) -ForegroundColor Red
-    Write-Host "  That points at a blanket network/destination block, not a per-process filter." -ForegroundColor Yellow
-    Write-Host "  Run tools/Diagnose-WireserverBlock.ps1 for a broad-scope diagnostic instead." -ForegroundColor Yellow
+    Write-Host ("  FAIL from PS too: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    Write-Host "  This is NOT a per-process filter - run tools/Diagnose-WireserverBlock.ps1 instead." -ForegroundColor Yellow
     return
 }
 
-Write-Section "Step 2/5 - Enable WFP connection-drop auditing"
-$auditBefore = & auditpol /get /subcategory:"Filtering Platform Connection" 2>$null
+Hdr "Step 2/4 - Enabling WFP connection-drop audit"
 & auditpol /set /subcategory:"Filtering Platform Connection" /failure:enable | Out-Null
-Write-Host "  Enabled (will restore at end)." -ForegroundColor DarkGray
+Write-Host "  Enabled." -ForegroundColor DarkGray
 
-# --- build a tiny unsigned test exe in temp -------------------------------
-Write-Section "Step 3/5 - Reproduce block with a local unsigned probe"
-$tempExe = Join-Path $env:TEMP ("wsprobe_{0}.exe" -f ([guid]::NewGuid().ToString('N').Substring(0,8)))
-$src = @'
-using System;
-using System.Net.Sockets;
-class P {
-  static int Main() {
-    try {
-      using var c = new TcpClient();
-      var t = c.ConnectAsync("168.63.129.16", 80);
-      if (!t.Wait(8000)) { Console.WriteLine("TIMEOUT"); return 2; }
-      Console.WriteLine("OK");
-      return 0;
-    } catch (Exception ex) {
-      Console.WriteLine("ERR: " + (ex.InnerException?.Message ?? ex.Message));
-      return 1;
-    }
-  }
-}
-'@
-$csc = Get-ChildItem -Path "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" -ErrorAction SilentlyContinue
-if (-not $csc) {
-    Write-Host "  .NET Framework csc.exe not found; skipping local-exe repro, relying on existing events." -ForegroundColor Yellow
-} else {
-    $srcFile = [IO.Path]::ChangeExtension($tempExe, '.cs')
-    Set-Content -Path $srcFile -Value $src -Encoding Ascii
-    $cscOut = & $csc.FullName /nologo /target:exe /out:$tempExe $srcFile 2>&1
-    Remove-Item $srcFile -Force -ErrorAction SilentlyContinue
+Hdr "Step 3/4 - Run the scanner now"
+Write-Host "  1. Leave this window open." -ForegroundColor Yellow
+Write-Host "  2. In another window, run W365LocalScanner.exe and wait for 'Session Host Required Endpoints' to finish (it will fail with 'forbidden')." -ForegroundColor Yellow
+Write-Host "  3. Come back here and press Enter." -ForegroundColor Yellow
+Read-Host "  Press Enter after the scanner finishes" | Out-Null
 
-    if (-not (Test-Path $tempExe)) {
-        Write-Host "  csc failed to produce an exe. Output:" -ForegroundColor Yellow
-        $cscOut | ForEach-Object { Write-Host ("    {0}" -f $_) -ForegroundColor DarkYellow }
-        Write-Host "  Falling back: running connect from this PowerShell process so at least one 5157 event lands (may not be blocked since powershell.exe isn't the target process)." -ForegroundColor Yellow
-        try {
-            $tcp2 = New-Object Net.Sockets.TcpClient
-            $tcp2.Connect('168.63.129.16', 80)
-            $tcp2.Close()
-        } catch { }
-    } else {
-        $out = ''
-        try {
-            $out = & $tempExe 2>&1 | Out-String
-        } catch {
-            $out = "invoke error: $($_.Exception.Message)"
-        }
-        $out = $out.Trim()
-        $color = if ($out -match 'OK') { 'Green' } elseif ($out -match 'forbidden|access permissions|10013') { 'Red' } else { 'Yellow' }
-        Write-Host ("  Probe exit: {0}" -f $out) -ForegroundColor $color
-    }
-
-    # small wait so the audit event lands
-    Start-Sleep -Seconds 2
-}
-
-Write-Section "Step 4/5 - Scan WFP drops (Security log, event 5157)"
+Hdr "Step 4/4 - Finding the filter that rejected 168.63.129.16"
+Start-Sleep -Seconds 2
 $events = @()
 try {
     $events = Get-WinEvent -FilterHashtable @{
         LogName   = 'Security'
         Id        = 5157
-        StartTime = (Get-Date).AddMinutes(-3)
+        StartTime = (Get-Date).AddMinutes(-10)
     } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match '168\.63\.129\.16' }
 } catch { }
 
 if (-not $events -or $events.Count -eq 0) {
-    Write-Host "  No WFP drops found for 168.63.129.16 in the last 3 minutes." -ForegroundColor Yellow
-    Write-Host "  If the scanner still shows 'forbidden', re-run it NOW and then re-run this script." -ForegroundColor Yellow
+    Write-Host "  No 5157 drops for 168.63.129.16 in the last 10 min." -ForegroundColor Yellow
+    Write-Host "  Audit may not have been active when the scanner ran. Re-run the scanner NOW (audit is on)," -ForegroundColor Yellow
+    Write-Host "  then re-run this script and press Enter again at step 3." -ForegroundColor Yellow
 } else {
-    Write-Host ("  Found {0} drop event(s). Summary:" -f $events.Count) -ForegroundColor Green
+    Write-Host ("  Found {0} drop event(s) for 168.63.129.16." -f $events.Count) -ForegroundColor Green
+    Write-Host ""
+    $filterIds = @{}
     $events | Select-Object -First 5 | ForEach-Object {
         $m = $_.Message
         $app    = ([regex]::Match($m, 'Application Name:\s*(.+)')).Groups[1].Value.Trim()
         $filter = ([regex]::Match($m, 'Filter Run-Time ID:\s*(\d+)')).Groups[1].Value.Trim()
         $layer  = ([regex]::Match($m, 'Layer Name:\s*(.+)')).Groups[1].Value.Trim()
         $dport  = ([regex]::Match($m, 'Destination Port:\s*(\d+)')).Groups[1].Value.Trim()
+        Write-Host ("  Time:   {0}" -f $_.TimeCreated)
+        Write-Host ("  App:    {0}" -f $app)
+        Write-Host ("  Layer:  {0}" -f $layer)
+        Write-Host ("  DPort:  {0}" -f $dport)
+        Write-Host ("  Filter: {0}" -f $filter) -ForegroundColor Cyan
         Write-Host ""
-        Write-Host ("    Time:   {0}" -f $_.TimeCreated)
-        Write-Host ("    App:    {0}" -f $app)
-        Write-Host ("    Layer:  {0}" -f $layer)
-        Write-Host ("    DPort:  {0}" -f $dport)
-        Write-Host ("    Filter: {0}" -f $filter) -ForegroundColor Cyan
-        if ($filter) {
-            $fw = & netsh wfp show filters dir=out 2>$null | Out-String
-            $match = ($fw -split "`r?`n" | Select-String -Pattern "\s$filter\b" -Context 0,15 -SimpleMatch:$false)
-            if (-not $match) {
-                # fallback: dump one filter by id
-                $xml = & netsh wfp show state file="$env:TEMP\wfp_state.xml" 2>$null
-                Write-Host "    (Could not match filter in live enumeration. Dumped state to $env:TEMP\wfp_state.xml)" -ForegroundColor DarkGray
-            } else {
-                Write-Host "    -- filter details (first match) --" -ForegroundColor DarkGray
-                $match | ForEach-Object { Write-Host ("      {0}" -f $_.Line) }
+        if ($filter) { $filterIds[$filter] = $true }
+    }
+
+    if ($filterIds.Count -gt 0) {
+        Write-Host "  Dumping WFP state and matching filter IDs..." -ForegroundColor DarkGray
+        $xmlPath = Join-Path $env:TEMP "wfp_state.xml"
+        & netsh wfp show state file="$xmlPath" | Out-Null
+        if (Test-Path $xmlPath) {
+            try {
+                [xml]$wfp = Get-Content $xmlPath
+                foreach ($fid in $filterIds.Keys) {
+                    $node = $wfp.SelectSingleNode("//item[filterId='$fid']")
+                    if (-not $node) { $node = $wfp.SelectSingleNode("//filter[filterId='$fid']") }
+                    if ($node) {
+                        $name = $node.displayData.name
+                        $desc = $node.displayData.description
+                        $provName = $null
+                        if ($node.providerKey) {
+                            $pk = $node.providerKey
+                            $provNode = $wfp.SelectSingleNode("//provider[providerKey='$pk']")
+                            if ($provNode) { $provName = $provNode.displayData.name }
+                        }
+                        Write-Host ("  --- Filter {0} ---" -f $fid) -ForegroundColor Cyan
+                        Write-Host ("    Name:        {0}" -f $name)
+                        Write-Host ("    Description: {0}" -f $desc)
+                        Write-Host ("    Provider:    {0}" -f $provName) -ForegroundColor Yellow
+                    } else {
+                        Write-Host ("  Filter {0}: not found in WFP state snapshot" -f $fid) -ForegroundColor DarkYellow
+                    }
+                }
+            } catch {
+                Write-Host ("  Could not parse WFP state XML: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                Write-Host ("  Raw dump kept at {0} for manual inspection." -f $xmlPath) -ForegroundColor Yellow
             }
+            Remove-Item $xmlPath -ErrorAction SilentlyContinue
         }
     }
 }
 
-Write-Section "Step 5/5 - Cross-check Defender + common EDR/agents"
+Hdr "Cross-checks"
 try {
-    $nppref = (Get-MpPreference).EnableNetworkProtection
-    $npText = switch ($nppref) { 0 {'Disabled'} 1 {'Enabled'} 2 {'AuditMode'} default {"$nppref"} }
-    Write-Host ("  Defender network protection: {0}" -f $npText)
-    if ($nppref -eq 1) {
-        Write-Host "  Suggest: Set-MpPreference -EnableNetworkProtection AuditMode ; re-run scanner ; if green, MDE is the culprit." -ForegroundColor Yellow
+    $np = (Get-MpPreference).EnableNetworkProtection
+    $t  = @{0='Disabled';1='Enabled';2='AuditMode'}[[int]$np]
+    Write-Host ("  Defender network protection: {0}" -f $t)
+    if ($np -eq 1) {
+        Write-Host "  Try: Set-MpPreference -EnableNetworkProtection AuditMode ; re-run scanner." -ForegroundColor Yellow
+        Write-Host "       If it then passes, MDE network protection is the blocker." -ForegroundColor Yellow
     }
 } catch { }
 
-$drivers = @(
-    @{ Name='Global Secure Access';   Match='GlobalSecureAccess' }
-    @{ Name='Defender NDIS filter';   Match='WdNisDrv' }
-    @{ Name='Defender WFP callout';   Match='WdFilter' }
-    @{ Name='CrowdStrike Falcon';     Match='CSAgent|csagent' }
-    @{ Name='SentinelOne';            Match='SentinelAgent|sentinelone' }
-    @{ Name='Cisco Umbrella/AnyConnect'; Match='umbrella|vpnagent' }
-    @{ Name='Zscaler';                Match='Zscaler|ZSATray' }
-    @{ Name='Netskope';               Match='stagentsvc|nsclient' }
+$checks = @(
+    @{N='Global Secure Access'; M='GlobalSecureAccess'}
+    @{N='Defender NDIS filter'; M='WdNisDrv'}
+    @{N='Defender WFP callout'; M='WdFilter'}
+    @{N='CrowdStrike';          M='CSAgent|csagent'}
+    @{N='SentinelOne';          M='SentinelAgent|sentinelone'}
+    @{N='Cisco AnyConnect/Umbrella'; M='umbrella|vpnagent'}
+    @{N='Zscaler';              M='Zscaler|ZSATray'}
+    @{N='Netskope';             M='stagentsvc|nsclient'}
 )
-$services = Get-Service | Select-Object -ExpandProperty Name
-foreach ($d in $drivers) {
-    if ($services -match $d.Match) {
-        Write-Host ("  Present: {0}" -f $d.Name) -ForegroundColor Yellow
-    }
+$svc = (Get-Service).Name
+foreach ($c in $checks) {
+    if ($svc -match $c.M) { Write-Host ("  Present: {0}" -f $c.N) -ForegroundColor Yellow }
 }
-
-# --- restore audit policy --------------------------------------------------
-if ($auditBefore -match 'No Auditing') {
-    & auditpol /set /subcategory:"Filtering Platform Connection" /failure:disable | Out-Null
-}
-if (Test-Path $tempExe) { Remove-Item $tempExe -Force -ErrorAction SilentlyContinue }
 
 Write-Host ""
-Write-Host "Done. Share the 'Filter:' value and the surrounding 'filter details' block." -ForegroundColor Green
-Write-Host "That uniquely identifies which driver/policy rejected the connection." -ForegroundColor Green
+Write-Host "Share the 'Name / Description / Provider' lines - they identify the blocker." -ForegroundColor Green
