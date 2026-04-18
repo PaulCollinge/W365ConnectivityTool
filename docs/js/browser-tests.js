@@ -833,19 +833,23 @@ async function testCaptivePortal(test) {
             finalUrl = resp.url;
             body = await resp.text();
         } catch (_corsErr) {
-            // CORS blocked the read — fall back to no-cors to at least confirm HTTPS reachability
+            // CORS blocked the read. We can still probe reachability with
+            // no-cors, but an opaque response does NOT prove "no captive
+            // portal" - a portal returning its own 200 OK response would
+            // be indistinguishable. Report Warning (indeterminate) instead
+            // of Passed so we don't green-wash the very case this test
+            // exists to catch.
             try {
                 await fetch(NCSI_URL, {
                     mode: 'no-cors',
                     signal: AbortSignal.timeout(15000),
                     cache: 'no-store'
                 });
-                // Opaque response means a server answered — HTTPS path is open
                 const duration = Math.round(performance.now() - t0);
-                return makeResult(test, 'Passed',
-                    'No captive portal detected',
-                    `HTTPS connectivity to ${NCSI_URL} confirmed.\nNote: HTTP-level captive portals cannot be detected from a secure (HTTPS) browser context. If you are on guest or public Wi-Fi and Windows 365 is still failing, try opening any HTTP website to trigger the portal login.`,
-                    duration, '', '');
+                return makeResult(test, 'Warning',
+                    'Captive portal check inconclusive (CORS)',
+                    `HTTPS reachability to ${NCSI_URL} confirmed, but CORS prevented reading the response body, so a captive portal returning its own 200 OK cannot be distinguished from a real NCSI reply. If you are on guest/public Wi-Fi and Cloud PC connectivity is failing, open http://example.com in a browser to trigger any portal login, then re-run.`,
+                    duration, '', REMEDIATION);
             } catch (netErr) {
                 throw netErr; // genuine network failure — handled below
             }
@@ -894,10 +898,16 @@ async function testCaptivePortal(test) {
                 `Connectivity check to ${NCSI_URL} timed out (15s).\nThis typically indicates a very slow or high-latency connection (e.g. satellite / aircraft WiFi) rather than a captive portal — captive portals respond immediately with a login redirect rather than dropping the connection.\nIf you cannot browse the web, try opening any HTTP website to trigger a portal login.`,
                 duration, '', '');
         }
-        return makeResult(test, 'Passed',
-            'No captive portal detected',
-            `Could not reach ${NCSI_URL} (${errMsg}).\nNo captive portal redirect was detected. This is typically caused by a network security policy or proxy blocking the connectivity check endpoint — not a captive portal.\nIf you can browse the web normally, no portal is active.`,
-            duration, '', '');
+        // Any other network error (DNS failure, TCP reset, TLS error, proxy
+        // block) is ambiguous: it could be a captive portal refusing NCSI, a
+        // corporate proxy blocking the endpoint, or a general network failure.
+        // We cannot claim 'No captive portal detected' - that is exactly the
+        // fake-green this test used to produce. Report Warning so the user
+        // investigates.
+        return makeResult(test, 'Warning',
+            'Captive portal check inconclusive',
+            `Could not reach ${NCSI_URL} (${errMsg}).\nThis could be a captive portal blocking the connectivity check, a corporate proxy/SWG blocking the NCSI endpoint, or a general network failure. If you can browse the web normally the most likely cause is a policy blocking the NCSI endpoint specifically.`,
+            duration, '', REMEDIATION);
     }
 }
 
