@@ -4,6 +4,40 @@
  */
 
 // ═════════════════════════════════════════════════════
+//  DoH resolver with fallback
+// ═════════════════════════════════════════════════════
+// Tries dns.google first, falls back to cloudflare-dns.com. Enterprise SSE
+// products (Zscaler, Netskope, iboss, Forcepoint) routinely block one or the
+// other under the "public DNS resolver" content category, so trying both
+// ASNs/vendors meaningfully improves the chance of recovering the CNAME chain
+// in locked-down networks. Returns a parsed DoH JSON object ({ Answer: [...] })
+// or null when both providers fail. Schema is identical across providers when
+// Cloudflare is called with Accept: application/dns-json.
+async function dohResolve(name, type = 'A', timeoutMs = 5000) {
+    const providers = [
+        { url: `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`, headers: {} },
+        { url: `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`, headers: { 'Accept': 'application/dns-json' } },
+    ];
+    for (const p of providers) {
+        try {
+            const resp = await fetch(p.url, {
+                headers: p.headers,
+                signal: AbortSignal.timeout(timeoutMs),
+                cache: 'no-store',
+            });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data && Array.isArray(data.Answer)) return data;
+                // No Answer field but response was valid — return as-is so
+                // callers can still check Status / Authority records.
+                return data || null;
+            }
+        } catch (e) { /* try next provider */ }
+    }
+    return null;
+}
+
+// ═════════════════════════════════════════════════════
 //  Test definitions: what runs in-browser vs local-only
 // ═════════════════════════════════════════════════════
 
@@ -1080,11 +1114,8 @@ async function testGatewayLatency(test) {
 
     // Step 3: Resolve CNAME chain via DoH to show routing path
     try {
-        const dnsResp = await fetch(`https://dns.google/resolve?name=${ep}&type=A`, {
-            signal: AbortSignal.timeout(5000)
-        });
-        const dnsData = await dnsResp.json();
-        if (dnsData.Answer) {
+        const dnsData = await dohResolve(ep, 'A', 5000);
+        if (dnsData && dnsData.Answer) {
             for (const rec of dnsData.Answer) {
                 if (rec.type === 5) { // CNAME
                     cnameChain.push(rec.data.replace(/\.$/, ''));
@@ -1572,12 +1603,8 @@ async function testNetworkPathTrace(test) {
         let finalIp = '';
         let cnameChain = [];
         try {
-            const dnsResp = await fetch(
-                `https://dns.google/resolve?name=${target.host}&type=A`,
-                { signal: AbortSignal.timeout(5000), cache: 'no-store' }
-            );
-            if (dnsResp.ok) {
-                const dnsData = await dnsResp.json();
+            const dnsData = await dohResolve(target.host, 'A', 5000);
+            if (dnsData) {
                 if (dnsData.Answer) {
                     for (const rec of dnsData.Answer) {
                         if (rec.type === 5) { // CNAME
@@ -1688,12 +1715,8 @@ async function testNetworkPathTrace(test) {
 
         // Step 3: Also resolve AAAA (IPv6) — useful for dual-stack diagnostics
         try {
-            const dns6Resp = await fetch(
-                `https://dns.google/resolve?name=${target.host}&type=AAAA`,
-                { signal: AbortSignal.timeout(3000), cache: 'no-store' }
-            );
-            if (dns6Resp.ok) {
-                const dns6Data = await dns6Resp.json();
+            const dns6Data = await dohResolve(target.host, 'AAAA', 3000);
+            if (dns6Data) {
                 const aaaa = dns6Data.Answer?.filter(r => r.type === 28).map(r => r.data) || [];
                 if (aaaa.length > 0) {
                     lines.push(`║  IPv6: ${aaaa[0]}`);
