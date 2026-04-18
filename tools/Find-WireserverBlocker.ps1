@@ -84,12 +84,29 @@ if (-not $csc) {
 } else {
     $srcFile = [IO.Path]::ChangeExtension($tempExe, '.cs')
     Set-Content -Path $srcFile -Value $src -Encoding Ascii
-    & $csc.FullName /nologo /target:exe /out:$tempExe $srcFile | Out-Null
+    $cscOut = & $csc.FullName /nologo /target:exe /out:$tempExe $srcFile 2>&1
     Remove-Item $srcFile -Force -ErrorAction SilentlyContinue
 
-    $t0 = Get-Date
-    $out = & $tempExe 2>&1
-    Write-Host ("  Probe exit: {0}" -f $out) -ForegroundColor $(if ($out -match 'OK') { 'Green' } else { 'Yellow' })
+    if (-not (Test-Path $tempExe)) {
+        Write-Host "  csc failed to produce an exe. Output:" -ForegroundColor Yellow
+        $cscOut | ForEach-Object { Write-Host ("    {0}" -f $_) -ForegroundColor DarkYellow }
+        Write-Host "  Falling back: running connect from this PowerShell process so at least one 5157 event lands (may not be blocked since powershell.exe isn't the target process)." -ForegroundColor Yellow
+        try {
+            $tcp2 = New-Object Net.Sockets.TcpClient
+            $tcp2.Connect('168.63.129.16', 80)
+            $tcp2.Close()
+        } catch { }
+    } else {
+        $out = ''
+        try {
+            $out = & $tempExe 2>&1 | Out-String
+        } catch {
+            $out = "invoke error: $($_.Exception.Message)"
+        }
+        $out = $out.Trim()
+        $color = if ($out -match 'OK') { 'Green' } elseif ($out -match 'forbidden|access permissions|10013') { 'Red' } else { 'Yellow' }
+        Write-Host ("  Probe exit: {0}" -f $out) -ForegroundColor $color
+    }
 
     # small wait so the audit event lands
     Start-Sleep -Seconds 2
