@@ -1,11 +1,11 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Windows 365 Connectivity Diagnostics</title>
     <!--
-      Content Security Policy — defence in depth.
+      Content Security Policy â€” defence in depth.
       - default-src 'self'  : only load resources from same origin by default
       - script-src 'self' 'unsafe-inline' : the page includes a small inline bootstrap
       - style-src  'self' 'unsafe-inline' https://fonts.googleapis.com : inline styles + Google Fonts CSS
@@ -22,8 +22,8 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=179">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
+    <link rel="stylesheet" href="css/styles.css?v=180">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>ðŸ”</text></svg>">
 </head>
 <body>
     <!-- Background decoration -->
@@ -104,10 +104,10 @@
         <!-- Before/After Comparison Panel -->
         <div id="compare-panel" class="compare-panel hidden">
             <div class="compare-header">
-                <span class="compare-icon">⚖️</span>
+                <span class="compare-icon">âš–ï¸</span>
                 <h2 class="compare-title">Before / After Comparison</h2>
                 <div class="compare-meta" id="compare-meta"></div>
-                <button class="btn btn-secondary btn-sm" onclick="clearComparison()">✕ Close</button>
+                <button class="btn btn-secondary btn-sm" onclick="clearComparison()">âœ• Close</button>
             </div>
             <div class="compare-summary" id="compare-summary"></div>
             <div class="compare-grid" id="compare-grid"></div>
@@ -141,15 +141,15 @@
 
         <!-- Host-type picker (shown when Azure VM detected but type unknown) -->
         <div id="host-type-picker" class="host-type-picker hidden">
-            <span class="htp-icon">☁️</span>
-            <span class="htp-text">Azure VM detected — what type of host is this?</span>
+            <span class="htp-icon">â˜ï¸</span>
+            <span class="htp-text">Azure VM detected â€” what type of host is this?</span>
             <button class="htp-btn htp-btn-cpc" onclick="pickHostType('cloudpc')">Cloud PC <span class="htp-hint">(Windows 365)</span></button>
             <button class="htp-btn htp-btn-avd" onclick="pickHostType('avd')">AVD Session Host</button>
         </div>
 
         <div id="key-findings" class="key-findings hidden">
             <div class="kf-header">
-                <span class="kf-icon">🎯</span>
+                <span class="kf-icon">ðŸŽ¯</span>
                 <h2>Key Findings</h2>
                 <span class="kf-verdict" id="kf-verdict"></span>
             </div>
@@ -159,7 +159,7 @@
         <!-- Remediation Checklist -->
         <div id="remediation-panel" class="remediation-panel hidden">
             <div class="rem-header">
-                <span class="rem-icon">🔧</span>
+                <span class="rem-icon">ðŸ”§</span>
                 <h2>What to Fix</h2>
                 <span class="rem-count" id="rem-count"></span>
             </div>
@@ -169,7 +169,7 @@
         <!-- History Bar -->
         <div id="history-bar" class="history-bar hidden">
             <div class="history-header">
-                <span class="history-icon">📊</span>
+                <span class="history-icon">ðŸ“Š</span>
                 <span class="history-title">Previous Results</span>
                 <select id="history-select" class="history-select" onchange="loadHistoryEntry(this.value)">
                     <option value="">Select a previous scan...</option>
@@ -195,38 +195,38 @@
             <div class="info-text">
                 <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser
                 (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy,
-                registry), download and run the <strong>Local Scanner</strong> — it will automatically open this page with results.
+                registry), download and run the <strong>Local Scanner</strong> â€” it will automatically open this page with results.
             </div>
         </div>
 
         <!-- Aircraft / Satellite WiFi Banner -->
         <div id="satellite-banner" class="satellite-banner hidden">
-            <div class="satellite-banner-icon">✈</div>
+            <div class="satellite-banner-icon">âœˆ</div>
             <div class="satellite-banner-body">
                 <div class="satellite-banner-title">Aircraft / Satellite WiFi detected</div>
-                <div class="satellite-banner-detail" id="satellite-banner-detail">Some results will differ from normal broadband — this is expected.</div>
+                <div class="satellite-banner-detail" id="satellite-banner-detail">Some results will differ from normal broadband â€” this is expected.</div>
                 <ul class="satellite-banner-list">
-                    <li><strong>High latency &amp; jitter</strong> — inherent to geostationary satellite links (~550–700 ms base RTT)</li>
-                    <li><strong>Symmetric / Carrier-Grade NAT</strong> — STUN hole-punching unavailable; TURN relay is used instead (works fine)</li>
-                    <li><strong>Gateway &amp; TURN relay distance</strong> — traffic exits through the provider's ground station, not your GPS location</li>
-                    <li><strong>Connectivity checks</strong> — some HTTPS probes may be blocked by CORS on this network</li>
+                    <li><strong>High latency &amp; jitter</strong> â€” inherent to geostationary satellite links (~550â€“700 ms base RTT)</li>
+                    <li><strong>Symmetric / Carrier-Grade NAT</strong> â€” STUN hole-punching unavailable; TURN relay is used instead (works fine)</li>
+                    <li><strong>Gateway &amp; TURN relay distance</strong> â€” traffic exits through the provider's ground station, not your GPS location</li>
+                    <li><strong>Connectivity checks</strong> â€” some HTTPS probes may be blocked by CORS on this network</li>
                 </ul>
             </div>
-            <button class="satellite-banner-dismiss" onclick="document.getElementById('satellite-banner').classList.add('hidden')" title="Dismiss">✕</button>
+            <button class="satellite-banner-dismiss" onclick="document.getElementById('satellite-banner').classList.add('hidden')" title="Dismiss">âœ•</button>
         </div>
 
         <!-- Download Banner -->
         <div id="download-banner" class="download-banner hidden">
             <div class="download-content">
-                <div class="download-icon">⬇️</div>
+                <div class="download-icon">â¬‡ï¸</div>
                 <div class="download-text">
                     <h3>Complete your diagnostics with the Local Scanner</h3>
                     <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
-                    VPN detection). Download and run the scanner — it will automatically open this page with results.</p>
+                    VPN detection). Download and run the scanner â€” it will automatically open this page with results.</p>
                 </div>
                 <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
                    class="btn btn-download">
-                    <span class="btn-icon">⬇️</span> Download Scanner (.exe)
+                    <span class="btn-icon">â¬‡ï¸</span> Download Scanner (.exe)
                 </a>
             </div>
         </div>
@@ -234,10 +234,10 @@
         <!-- Connectivity Map -->
         <div id="connectivity-map" class="connectivity-map hidden">
             <div class="map-header">
-                <span class="map-icon">🔗</span>
+                <span class="map-icon">ðŸ”—</span>
                 <h2>Connectivity Path</h2>
                 <span class="map-subtitle">Network flow diagram</span>
-                <span class="cpc-detected-badge hidden" id="cpc-detected-badge">☁ Cloud PC / Session Host Detected</span>
+                <span class="cpc-detected-badge hidden" id="cpc-detected-badge">â˜ Cloud PC / Session Host Detected</span>
             </div>
             <div class="map-diagram">
                 <div class="map-client-device map-g-client" id="map-client">
@@ -278,7 +278,7 @@
                             <!-- Trackpad -->
                             <rect x="46" y="66" width="28" height="8" rx="2" fill="none" stroke="#21262d" stroke-width="1"/>
                         </svg>
-                        <!-- Aircraft overlay — shown when satellite/in-flight WiFi detected -->
+                        <!-- Aircraft overlay â€” shown when satellite/in-flight WiFi detected -->
                         <div class="inflight-frame" id="map-client-inflight-frame">
                             <svg class="inflight-aircraft" viewBox="0 0 120 38" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <!-- Fuselage -->
@@ -310,7 +310,7 @@
                     </div>
                 </div>
 
-                <div class="map-arrow-cell map-g-arrow1"><div class="map-wifi-badge hidden" id="map-wifi-badge"></div><span class="map-hline"></span><span class="map-arrow">▸</span><span class="map-line-label" id="map-lat-gw"></span></div>
+                <div class="map-arrow-cell map-g-arrow1"><div class="map-wifi-badge hidden" id="map-wifi-badge"></div><span class="map-hline"></span><span class="map-arrow">â–¸</span><span class="map-line-label" id="map-lat-gw"></span></div>
 
                 <div class="map-client-device map-g-localgw" id="map-localgw">
                     <div class="device-laptop">
@@ -366,7 +366,7 @@
                     </div>
                 </div>
 
-                <div class="map-arrow-cell map-g-arrow2"><span class="map-hline"></span><span class="map-arrow">▸</span></div>
+                <div class="map-arrow-cell map-g-arrow2"><span class="map-hline"></span><span class="map-arrow">â–¸</span></div>
 
                 <div class="map-client-device map-g-isp" id="map-isp">
                     <div class="device-laptop">
@@ -420,7 +420,7 @@
                 <div class="map-card map-g-afd" id="map-afd">
                     <div class="map-card-accent" id="map-afd-accent"></div>
                     <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">⚡</span> AFD Edge</div>
+                        <div class="map-card-title"><span class="map-emoji">âš¡</span> AFD Edge</div>
                         <div class="map-card-detail" id="map-afd-detail">Awaiting results...</div>
                         <div class="map-card-badges">
                             <div class="map-card-badge hidden" id="map-afd-route-badge"></div>
@@ -433,7 +433,7 @@
                 <div class="map-card map-g-rdgw" id="map-rdgw">
                     <div class="map-card-accent" id="map-rdgw-accent"></div>
                     <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">🖥</span> RD Gateway <span class="map-proto-label">TCP RDP</span></div>
+                        <div class="map-card-title"><span class="map-emoji">ðŸ–¥</span> RD Gateway <span class="map-proto-label">TCP RDP</span></div>
                         <div class="map-card-detail" id="map-rdgw-detail">Awaiting results...</div>
                         <div class="map-card-badges">
                             <div class="map-card-badge hidden" id="map-rdgw-loc-badge"></div>
@@ -446,7 +446,7 @@
                 <div class="map-card map-g-turn" id="map-turn">
                     <div class="map-card-accent" id="map-turn-accent"></div>
                     <div class="map-card-body">
-                        <div class="map-card-title"><span class="map-emoji">🔄</span> TURN Relay <span class="map-proto-label">UDP RDP</span></div>
+                        <div class="map-card-title"><span class="map-emoji">ðŸ”„</span> TURN Relay <span class="map-proto-label">UDP RDP</span></div>
                         <div class="map-card-detail" id="map-turn-detail">Awaiting results...</div>
                         <div class="map-card-badges">
                             <div class="map-card-badge hidden" id="map-turn-loc-badge"></div>
@@ -458,7 +458,7 @@
                     </div>
                 </div>
 
-                <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div><span class="map-dns-arw">▾</span></div>
+                <div class="map-dns-connector map-g-dnsline"><div class="map-vline"></div><span class="map-dns-arw">â–¾</span></div>
 
                 <div class="map-client-device map-g-dns" id="map-dns">
                     <div class="device-laptop device-dns-size">
@@ -485,7 +485,7 @@
                     </div>
                 </div>
 
-                <!-- ═══ Cloud PC right-side cards (hidden until Cloud PC data imported) ═══ -->
+                <!-- â•â•â• Cloud PC right-side cards (hidden until Cloud PC data imported) â•â•â• -->
                 <div class="map-fanin map-g-fanin">
                     <svg class="map-fanout-svg" viewBox="0 0 60 200" preserveAspectRatio="none">
                         <!-- Normal mode: 3-branch fan (AFD / RDGw / TURN at 33/100/167) -->
@@ -576,9 +576,9 @@
                     </div>
                 </div>
 
-                <div class="map-arrow-cell map-g-arrow4"><span class="map-arrow map-arrow-left">◂</span><span class="map-hline map-hline-left"></span></div>
+                <div class="map-arrow-cell map-g-arrow4"><span class="map-arrow map-arrow-left">â—‚</span><span class="map-hline map-hline-left"></span></div>
 
-                <div class="map-arrow-cell map-g-arrow3"><span class="map-arrow map-arrow-left">◂</span><span class="map-hline map-hline-left"></span><span class="map-line-label" id="map-lat-cpc-gw"></span></div>
+                <div class="map-arrow-cell map-g-arrow3"><span class="map-arrow map-arrow-left">â—‚</span><span class="map-hline map-hline-left"></span><span class="map-line-label" id="map-lat-cpc-gw"></span></div>
 
                 <div class="map-client-device map-g-cloudpc" id="map-cloudpc">
                     <div class="device-laptop">
@@ -627,14 +627,14 @@
             </div>
             <div class="map-legend">
                 <div class="legend-lines">
-                    <div class="legend-item"><span class="legend-line line-afd"></span><span class="legend-label">TCP 443 → AFD Edge</span></div>
-                    <div class="legend-item"><span class="legend-line line-rdgw"></span><span class="legend-label">TCP 443 → RD Gateway</span></div>
-                    <div class="legend-item"><span class="legend-line line-turn"></span><span class="legend-label">UDP 3478 → TURN Relay (shortpath)</span></div>
+                    <div class="legend-item"><span class="legend-line line-afd"></span><span class="legend-label">TCP 443 â†’ AFD Edge</span></div>
+                    <div class="legend-item"><span class="legend-line line-rdgw"></span><span class="legend-label">TCP 443 â†’ RD Gateway</span></div>
+                    <div class="legend-item"><span class="legend-line line-turn"></span><span class="legend-label">UDP 3478 â†’ TURN Relay (shortpath)</span></div>
                 </div>
                 <div class="legend-badges">
-                    <span class="legend-badge ok">✓ OK</span>
-                    <span class="legend-badge warn">⚠ Warning</span>
-                    <span class="legend-badge fail">✗ Failed</span>
+                    <span class="legend-badge ok">âœ“ OK</span>
+                    <span class="legend-badge warn">âš  Warning</span>
+                    <span class="legend-badge fail">âœ— Failed</span>
                 </div>
             </div>
         </div>
@@ -654,7 +654,7 @@
         <div id="test-results" class="test-categories">
             <section class="category" id="cat-endpoint">
                 <div class="category-header">
-                    <span class="category-icon">🌐</span>
+                    <span class="category-icon">ðŸŒ</span>
                     <h2>Required Endpoint Access</h2>
                     <span class="category-badge" id="badge-endpoint"></span>
                 </div>
@@ -663,7 +663,7 @@
 
             <section class="category" id="cat-local">
                 <div class="category-header">
-                    <span class="category-icon">💻</span>
+                    <span class="category-icon">ðŸ’»</span>
                     <h2>Local Environment</h2>
                     <span class="category-badge" id="badge-local"></span>
                     <span class="source-tag local-only">Requires Local Scanner</span>
@@ -673,7 +673,7 @@
 
             <section class="category" id="cat-tcp">
                 <div class="category-header">
-                    <span class="category-icon">🔗</span>
+                    <span class="category-icon">ðŸ”—</span>
                     <h2>TCP Based RDP Connectivity</h2>
                     <span class="category-badge" id="badge-tcp"></span>
                 </div>
@@ -682,7 +682,7 @@
 
             <section class="category" id="cat-udp">
                 <div class="category-header">
-                    <span class="category-icon">⚡</span>
+                    <span class="category-icon">âš¡</span>
                     <h2>UDP Based RDP Connectivity</h2>
                     <span class="category-badge" id="badge-udp"></span>
                 </div>
@@ -691,13 +691,13 @@
 
         </div>
 
-        <!-- ═══════════════════════════════════════════════════════════ -->
-        <!-- Cloud PC Diagnostics — server-side test results           -->
-        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+        <!-- Cloud PC Diagnostics â€” server-side test results           -->
+        <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
         <div id="cloudpc-diagnostics-section" class="live-diagnostics-section">
             <div class="live-header cloudpc-header">
                 <div class="live-header-left">
-                    <span class="live-icon">☁️</span>
+                    <span class="live-icon">â˜ï¸</span>
                     <div>
                         <h2 class="live-title">Cloud PC Diagnostics</h2>
                         <p class="live-subtitle">Connectivity tests run from within the Cloud PC (Azure VM)</p>
@@ -706,19 +706,19 @@
                 <span class="category-badge" id="badge-cloudpc"></span>
             </div>
             <div class="live-info-bar" id="cloudpc-info-bar">
-                <span class="live-info-icon">ℹ️</span>
+                <span class="live-info-icon">â„¹ï¸</span>
                 <span>Run <code>W365LocalScanner.exe --cloudpc</code> inside your Cloud PC, then drag &amp; drop the <code>W365ScanResults.json</code> file here, or&nbsp;<button class="info-bar-link" onclick="document.getElementById('file-import').click()">browse to import it</button>.</span>
             </div>
             <div class="test-list" id="tests-cloudpc"></div>
         </div>
 
-        <!-- ═══════════════════════════════════════════════════════════ -->
-        <!-- Live Connection Diagnostics — separate visual section     -->
-        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+        <!-- Live Connection Diagnostics â€” separate visual section     -->
+        <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
         <div id="live-diagnostics-section" class="live-diagnostics-section">
             <div class="live-header">
                 <div class="live-header-left">
-                    <span class="live-icon">📡</span>
+                    <span class="live-icon">ðŸ“¡</span>
                     <div>
                         <h2 class="live-title">Live Connection Diagnostics</h2>
                         <p class="live-subtitle">Real-time analysis of your active Cloud PC session</p>
@@ -727,7 +727,7 @@
                 <span class="category-badge" id="badge-cloud"></span>
             </div>
             <div class="live-info-bar" id="cloud-info-bar">
-                <span class="live-info-icon">ℹ️</span>
+                <span class="live-info-icon">â„¹ï¸</span>
                 <span>Run the desktop tool while connected to your Cloud PC, or from within the Cloud PC session itself.</span>
             </div>
             <div class="test-list" id="tests-cloud"></div>
@@ -747,7 +747,7 @@
             </div>
             <div class="footer-links">
                 <a href="https://learn.microsoft.com/windows-365/enterprise/requirements-network" target="_blank">Network Requirements</a>
-                <span class="footer-sep">·</span>
+                <span class="footer-sep">Â·</span>
                 <a href="https://github.com/PaulCollinge/W365ConnectivityTool" target="_blank">GitHub</a>
             </div>
         </div>
@@ -806,11 +806,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=179"></script>
-    <script src="js/browser-tests.js?v=179"></script>
-    <script src="js/ui.js?v=179"></script>
-    <script src="js/map.js?v=179"></script>
-    <script src="js/ai-analysis.js?v=179"></script>
-    <script src="js/app.js?v=179"></script>
+    <script src="js/config.js?v=180"></script>
+    <script src="js/browser-tests.js?v=180"></script>
+    <script src="js/ui.js?v=180"></script>
+    <script src="js/map.js?v=180"></script>
+    <script src="js/ai-analysis.js?v=180"></script>
+    <script src="js/app.js?v=180"></script>
 </body>
 </html>

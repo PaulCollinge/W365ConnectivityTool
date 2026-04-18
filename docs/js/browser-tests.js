@@ -365,9 +365,15 @@ async function fetchUserLocation() {
     // Start GeoIP in parallel (always needed for public IP)
     const geoPromise = fetchGeoIp();
 
-    // Try browser geolocation for accurate physical position
+    // Try browser geolocation for accurate physical position.
+    // SKIP when running inside a Cloud PC / AVD session: RDP location
+    // redirection (redirectlocation:i:1) forwards the *client's* GPS/WiFi
+    // coordinates into the remote session, so navigator.geolocation would
+    // report where the user is physically sitting, not where the CPC lives.
+    // Public egress IP (GeoIP) is authoritative for the CPC's location.
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
     let browserLoc = null;
-    if (navigator.geolocation) {
+    if (navigator.geolocation && !isCpcMode) {
         try {
             const pos = await new Promise((resolve, reject) => {
                 navigator.geolocation.getCurrentPosition(resolve, reject, {
