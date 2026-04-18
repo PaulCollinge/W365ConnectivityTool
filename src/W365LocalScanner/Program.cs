@@ -7958,35 +7958,45 @@ class Program
                 }
             }
 
-            // Run all checks in parallel (with concurrency limit to avoid socket exhaustion).
+            // Pre-flight warmup. The first TCP connection a self-extracted
+            // single-file exe makes pays some one-time cost (IP stack config,
+            // WFP/MDE callout registration, first-use of the socket layer)
+            // that subsequent connections don't. Historically this showed up
+            // as the wireserver probe \u2014 often the first one to complete in
+            // the parallel fan-out \u2014 timing out on perfectly healthy CPCs.
+            // Do a single sequential connection up front to warm the stack.
+            // ~10ms on a healthy VM; if it fails fast we still proceed to
+            // the full fan-out (the soft-endpoint logic handles the result).
+            try
+            {
+                using var warm = new TcpClient();
+                using var warmCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await warm.ConnectAsync("168.63.129.16", 80, warmCts.Token);
+            }
+            catch { /* swallow \u2014 the real probe below will record the result */ }
+
+            // Run all checks in parallel (with a conservative concurrency limit
+            // to avoid thread-pool starvation on machines with behavioural
+            // network filters like Defender for Endpoint).
             //
-            // Timeout is deliberately 8s (up from 5s): on CPCs with Microsoft
-            // Defender for Endpoint's NDIS filter active, the first outbound
-            // connection to a given destination can incur a noticeable cold-start
-            // stall while Sense inspects/learns the flow. 5s was marginal and
-            // caused false-positive timeouts on healthy CPCs \u2014 particularly for
-            // the wireserver (168.63.129.16:80), which is often the first probe
-            // to complete in the parallel fan-out.
-            //
-            // On top of that, we retry exactly once on a pure timeout (not on
-            // other socket errors \u2014 retrying ConnectionRefused is pointless and
-            // just doubles the wait). This eliminates the "first cold probe
-            // loses the race" pattern without changing the healthy-path latency
-            // budget.
+            // Per-attempt timeout is 8s, with a single retry on timeout only.
+            // Other socket errors (ConnectionRefused, HostUnreachable, etc.)
+            // are not retried because they aren't transient. Timeout is the
+            // only failure mode consistent with contention/cold-start.
             const int PerAttemptTimeoutMs = 8000;
             async Task<(bool ok, long ms, string? err)> TryConnectAsync(string host, int port)
             {
                 using var tcp = new TcpClient();
+                using var cts = new CancellationTokenSource(PerAttemptTimeoutMs);
                 var sw = Stopwatch.StartNew();
                 try
                 {
-                    var connectTask = tcp.ConnectAsync(host, port);
-                    if (await Task.WhenAny(connectTask, Task.Delay(PerAttemptTimeoutMs)) == connectTask
-                        && connectTask.IsCompletedSuccessfully)
-                    {
-                        sw.Stop();
-                        return (true, sw.ElapsedMilliseconds, null);
-                    }
+                    await tcp.ConnectAsync(host, port, cts.Token);
+                    sw.Stop();
+                    return (true, sw.ElapsedMilliseconds, null);
+                }
+                catch (OperationCanceledException)
+                {
                     return (false, 0L, $"Timeout ({PerAttemptTimeoutMs / 1000}s)");
                 }
                 catch (Exception ex)
@@ -7995,15 +8005,14 @@ class Program
                 }
             }
 
-            var semaphore = new SemaphoreSlim(10);
+            var semaphore = new SemaphoreSlim(6);
             var tasks = endpoints.Select(async ep =>
             {
                 await semaphore.WaitAsync();
                 try
                 {
                     var attempt = await TryConnectAsync(ep.host, ep.port);
-                    // Retry once on timeout only. A timeout is consistent with a
-                    // cold-stack stall; other socket errors are not.
+                    // Retry once on timeout only.
                     if (!attempt.ok && attempt.err != null && attempt.err.StartsWith("Timeout"))
                     {
                         var retry = await TryConnectAsync(ep.host, ep.port);
