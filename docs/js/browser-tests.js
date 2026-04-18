@@ -950,6 +950,31 @@ async function testConnectionSpeed(test) {
     const t0 = performance.now();
     const lines = [];
 
+    // Respect the Network Information API hints: if the user has saveData on
+    // (metered / tethered) or the effective type is 2g/slow-2g, skip the
+    // multi-MB download. Running it anyway would either burn their data cap
+    // or stall the rest of the test suite for 60+ seconds. The API is
+    // Chromium/Edge only, so feature-detect.
+    const conn = (typeof navigator !== 'undefined' && navigator.connection) || null;
+    if (conn) {
+        const slow = conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g';
+        if (conn.saveData || slow) {
+            const reasonParts = [];
+            if (conn.saveData) reasonParts.push('Data Saver is enabled');
+            if (slow) reasonParts.push(`effective network type is ${conn.effectiveType}`);
+            const reason = reasonParts.join(' and ');
+            const detail = [
+                `Speed test skipped: ${reason}.`,
+                '',
+                'Reason: downloading several MB of sample data would either consume metered bandwidth or time out on a very slow link, blocking subsequent tests.',
+                conn.downlink ? `Browser-reported downlink estimate: ${conn.downlink} Mbps` : '',
+                conn.rtt ? `Browser-reported RTT estimate: ${conn.rtt} ms` : '',
+            ].filter(Boolean).join('\n');
+            const duration = Math.round(performance.now() - t0);
+            return makeResult(test, 'Warning', `Skipped — ${reason}`, detail, duration);
+        }
+    }
+
     // Use multiple CDN-hosted files of increasing size to gauge throughput.
     // These are public, cache-busted fetches to well-known CDN endpoints.
     const probes = [
