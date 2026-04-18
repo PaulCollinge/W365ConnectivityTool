@@ -8050,18 +8050,24 @@ class Program
             {
                 if (e.host != "168.63.129.16") return "";
                 var lower = (err ?? "").ToLowerInvariant();
-                // WSAEACCES (10013): socket forbidden by access permissions \u2014 a local
-                // WFP / firewall / EDR filter is rejecting this specific process's
-                // connect attempt (not a destination-network issue).
+                // WSAEACCES (10013): socket forbidden by access permissions. On an
+                // Azure VM / Cloud PC this is the EXPECTED result for user-mode
+                // code. The Azure Windows Guest Agent (WaAppAgent, WFP provider
+                // {308b401f-3aa1-4444-94b2-2298d7dd312f}) installs persistent
+                // filters at provisioning that deny 168.63.129.16:80 to every
+                // principal and then permit only NT AUTHORITY\\SYSTEM. The
+                // session-host health traffic this IP carries is performed by
+                // the guest agent (running as SYSTEM); user-mode reachability
+                // is not required and would in fact be a security regression.
                 if (lower.Contains("forbidden") || lower.Contains("access permissions") || lower.Contains("10013"))
                 {
-                    return "The OS rejected this process's connect with 'access forbidden' (WSAEACCES). That is a local process-scoped filter, not a network block. Likely causes on a Cloud PC: (1) Microsoft Defender for Endpoint Attack Surface Reduction or network-protection blocking the self-extracted single-file scanner reaching an Azure-internal IP; (2) Global Secure Access client applying a per-process forwarding decision; (3) a Windows Defender Firewall outbound rule scoped by program path; (4) WDAC/AppLocker enforcement on the extracted binary. Reachability itself is fine \u2014 Test-NetConnection 168.63.129.16 -Port 80 from an elevated PowerShell will succeed on the same CPC.";
+                    return "Expected. The Azure Windows Guest Agent locks 168.63.129.16:80 down to NT AUTHORITY\\SYSTEM via persistent WFP filters at VM provisioning, so user-mode processes correctly receive WSAEACCES. Session-host health reporting is performed by the guest agent (SYSTEM) and is unaffected by this probe result. No action required.";
                 }
                 if (lower.Contains("timeout") || lower.Contains("timed out"))
                 {
-                    return "Azure VMs should be able to reach the wireserver on TCP 80. A timeout usually means outbound 80 to 168.63.129.16 is blocked or delayed locally \u2014 check Windows Firewall outbound rules, Intune endpoint-security profiles, Global Secure Access traffic-forwarding profiles, and any EDR/network-isolation policy.";
+                    return "Azure VMs should be able to reach the wireserver from SYSTEM. A timeout (rather than the expected 'access forbidden' from the Azure Guest Agent's WFP filters) suggests a broader outbound block \u2014 check Windows Firewall rules, Intune endpoint-security profiles, Global Secure Access traffic-forwarding profiles, and any EDR/network-isolation policy scoped to 168.63.129.16.";
                 }
-                return "Azure VMs should be able to reach the wireserver on TCP 80. This probe failed locally; check Windows Firewall, Intune endpoint-security, Global Secure Access, and EDR policies for rules scoped to 168.63.129.16 or to this process.";
+                return "Probe failed locally. Expected result from user-mode is 'access forbidden' (Azure Guest Agent's WFP lockdown); anything else suggests an additional block beyond the platform baseline.";
             }
 
             // Group and format output
@@ -8085,8 +8091,14 @@ class Program
                 }
                 else if (soft)
                 {
-                    // Informational \u2014 does not count toward pass/fail.
-                    sb.AppendLine($"  \u2139 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
+                    // Expected on Azure VMs: the Guest Agent's WFP filters deny
+                    // user-mode access to 168.63.129.16:80. Show as informational
+                    // and do NOT count toward pass/fail or warning.
+                    var lower = (r.err ?? "").ToLowerInvariant();
+                    bool expected = lower.Contains("forbidden") || lower.Contains("access permissions") || lower.Contains("10013");
+                    var glyph = expected ? "\u2714" : "\u2139";
+                    var tail  = expected ? " (expected: Guest Agent lockdown)" : $" \u2014 {r.err}";
+                    sb.AppendLine($"  {glyph} {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose}{tail}");
                     var note = SoftNote(r.ep, r.err);
                     if (!string.IsNullOrEmpty(note)) sb.AppendLine($"      note: {note}");
                 }
@@ -8106,10 +8118,16 @@ class Program
 
             result.ResultValue = $"{passed}/{total} session host endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
-            // Count any soft endpoints that failed \u2014 they don't force Failed,
-            // but should degrade an otherwise-clean run to Warning so the issue
-            // is visible rather than silently excluded.
-            var softFailed = results.Count(r => IsSoft(r.ep) && !r.ok);
+            // Count any soft endpoints that failed UNEXPECTEDLY (i.e. not the
+            // Azure Guest Agent's SYSTEM-only lockdown, which produces WSAEACCES
+            // and is the designed behaviour on every Azure VM / Cloud PC).
+            var softFailed = results.Count(r =>
+            {
+                if (!IsSoft(r.ep) || r.ok) return false;
+                var l = (r.err ?? "").ToLowerInvariant();
+                bool expected = l.Contains("forbidden") || l.Contains("access permissions") || l.Contains("10013");
+                return !expected;
+            });
             if (passed < total - 2) result.Status = "Failed";
             else if (passed < total || softFailed > 0) result.Status = "Warning";
             else result.Status = "Passed";
