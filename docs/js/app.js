@@ -72,6 +72,59 @@ function dedupeResultsById(results) {
     return Array.from(byId.values());
 }
 
+// ── Environment snapshot for exported reports ──
+// Captures client context that support engineers need to interpret shared
+// results: timezone (explains timestamp skew), locale (explains UI-language
+// quirks), platform / UA-hints (explains browser-specific behaviour like
+// Firefox lacking navigator.connection), screen geometry (hints at remote
+// session vs local), and Network Information API hints when available.
+// All fields are feature-detected so missing APIs don't throw.
+function collectEnvironmentSnapshot() {
+    const env = {
+        capturedAt: new Date().toISOString(),
+        timezone: (() => {
+            try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; }
+            catch { return null; }
+        })(),
+        timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+        locale: (() => {
+            try { return Intl.DateTimeFormat().resolvedOptions().locale || null; }
+            catch { return null; }
+        })(),
+        languages: Array.isArray(navigator.languages) ? navigator.languages.slice(0, 5) : [navigator.language || ''],
+        userAgent: navigator.userAgent,
+        platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '',
+        mobile: !!(navigator.userAgentData && navigator.userAgentData.mobile),
+        hardwareConcurrency: typeof navigator.hardwareConcurrency === 'number' ? navigator.hardwareConcurrency : null,
+        deviceMemoryGb: typeof navigator.deviceMemory === 'number' ? navigator.deviceMemory : null,
+        screen: (typeof screen !== 'undefined') ? {
+            width: screen.width || null,
+            height: screen.height || null,
+            devicePixelRatio: typeof window !== 'undefined' ? (window.devicePixelRatio || null) : null,
+            colorDepth: screen.colorDepth || null
+        } : null,
+        connection: navigator.connection ? {
+            effectiveType: navigator.connection.effectiveType || null,
+            downlinkMbps: typeof navigator.connection.downlink === 'number' ? navigator.connection.downlink : null,
+            rttMs: typeof navigator.connection.rtt === 'number' ? navigator.connection.rtt : null,
+            saveData: !!navigator.connection.saveData,
+            type: navigator.connection.type || null
+        } : null,
+        pageUrl: (typeof location !== 'undefined') ? location.href : null,
+        cacheVersion: (() => {
+            // Reads the ?v=NN querystring from one of our script tags so support
+            // engineers can correlate a report with a specific deployed build.
+            try {
+                const script = document.querySelector('script[src*="browser-tests.js"]');
+                if (!script) return null;
+                const match = script.src.match(/[?&]v=(\d+)/);
+                return match ? match[1] : null;
+            } catch { return null; }
+        })()
+    };
+    return env;
+}
+
 function extractCoordinatesFromDetailedInfo(detailedInfo, prefixes = ['Coordinates:']) {
     if (!detailedInfo) return null;
     for (const line of detailedInfo.split('\n')) {
@@ -1146,11 +1199,26 @@ async function generateExportText() {
     const divider = '═'.repeat(72);
     const thinDiv = '─'.repeat(72);
 
+    const env = collectEnvironmentSnapshot();
+
     lines.push(divider);
     lines.push('  Windows 365 Connectivity Diagnostics — Text Report');
     lines.push(divider);
-    lines.push(`  Generated: ${new Date().toLocaleString()}`);
-    lines.push(`  User Agent: ${navigator.userAgent}`);
+    lines.push(`  Generated:  ${new Date().toLocaleString()}`);
+    lines.push(`  Timezone:   ${env.timezone || 'Unknown'} (UTC offset ${-env.timezoneOffsetMinutes / 60}h)`);
+    lines.push(`  Locale:     ${env.locale || 'Unknown'}`);
+    lines.push(`  Platform:   ${env.platform || 'Unknown'}${env.mobile ? ' (mobile)' : ''}`);
+    lines.push(`  User Agent: ${env.userAgent}`);
+    if (env.connection) {
+        const c = env.connection;
+        const bits = [];
+        if (c.effectiveType) bits.push(`type=${c.effectiveType}`);
+        if (c.downlinkMbps != null) bits.push(`downlink=${c.downlinkMbps}Mbps`);
+        if (c.rttMs != null) bits.push(`rtt=${c.rttMs}ms`);
+        if (c.saveData) bits.push('saveData=on');
+        if (bits.length) lines.push(`  NetInfo:    ${bits.join(', ')}`);
+    }
+    if (env.cacheVersion) lines.push(`  Build:      v=${env.cacheVersion}`);
 
     // Current user location — fresh data just fetched above
     if (freshLoc) {
@@ -1668,6 +1736,7 @@ async function sendResultsToIT() {
         timestamp: new Date().toISOString(),
         machineName,
         userAgent: navigator.userAgent,
+        environment: collectEnvironmentSnapshot(),
         scannerTimestamp: _importedScanTimestamp || null,
         results: exportResults.map(r => ({
             id: r.id, name: r.name, category: r.category, source: r.source,
