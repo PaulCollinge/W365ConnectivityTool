@@ -251,10 +251,34 @@ async function detectCloudPcEnvironment() {
         clearTimeout(t2);
         ilog('IMDS reachable (opaque) — Azure VM detected, hostType unknown');
         return { detected: true, hostType: null };
-    } catch {
-        ilog('IMDS not reachable — not an Azure VM environment');
-        return { detected: false, hostType: null };
+    } catch { /* IMDS blocked — expected over HTTPS due to mixed-content / CSP */ }
+
+    // Fallback: GeoIP ASN/org heuristic.
+    // Over HTTPS (e.g. github.io) browsers block the IMDS probes above, so we
+    // lean on the public egress IP: if the org/ASN is Microsoft (AS8075) and
+    // the OS is Windows, we're almost certainly inside a Cloud PC or AVD
+    // session host. False positives are rare — home ISPs are never on AS8075.
+    // This only catches the environment, not the exact host type; the
+    // existing picker banner handles CPC vs AVD disambiguation.
+    try {
+        const platformHint = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+        const isWindows = /win/i.test(platformHint);
+        if (!isWindows) {
+            ilog('GeoIP ASN fallback skipped — OS is not Windows');
+            return { detected: false, hostType: null };
+        }
+        const geo = await fetchGeoIp();
+        const org = ((geo && (geo.org || geo.as || geo.isp)) || '').toString();
+        const isMsAsn = /\bAS8075\b/i.test(org) || /microsoft/i.test(org);
+        if (isMsAsn) {
+            ilog(`GeoIP ASN fallback — egress org "${org}" matches Microsoft AS8075 → assuming remote session host`);
+            return { detected: true, hostType: null, via: 'geoip-asn' };
+        }
+        ilog(`GeoIP ASN fallback — egress org "${org}" is not Microsoft; not a remote session host`);
+    } catch (e) {
+        ilog('GeoIP ASN fallback failed: ' + e.message);
     }
+    return { detected: false, hostType: null };
 }
 
 // ── Host label helper ──
