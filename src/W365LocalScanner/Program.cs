@@ -7984,9 +7984,25 @@ class Program
 
             var results = await Task.WhenAll(tasks);
 
+            // Endpoints whose failure should NOT count against the verdict.
+            // Rationale: some endpoints documented by Microsoft as "required" are
+            // consumed by privileged platform components (the Azure VM agent,
+            // Windows Update's system service, OCSP on port 80), not by user-mode
+            // processes. Enterprise CPC baselines frequently block outbound TCP 80
+            // from normal user processes while still allowing the agent's
+            // privileged path \u2014 so a TCP probe from the scanner fails even though
+            // the CPC itself is working fine. We display these with an info marker
+            // and a note, and exclude them from the pass/fail arithmetic.
+            bool IsSoft((string host, int port, string purpose, string group) e)
+                => e.host == "168.63.129.16";
+            string SoftNote((string host, int port, string purpose, string group) e)
+                => e.host == "168.63.129.16"
+                    ? "consumed by the Azure VM agent, not user-mode apps \u2014 often blocked by host firewall policy, not a real connectivity issue"
+                    : "";
+
             // Group and format output
             var sb = new StringBuilder();
-            int passed = 0, total = results.Length;
+            int passed = 0, total = 0;
             string? currentGroup = null;
 
             foreach (var r in results.OrderBy(x => x.ep.group).ThenBy(x => x.ep.host).ThenBy(x => x.ep.port))
@@ -7997,15 +8013,24 @@ class Program
                     sb.AppendLine($"\u2550\u2550 {r.ep.group} \u2550\u2550");
                     currentGroup = r.ep.group;
                 }
+                var soft = IsSoft(r.ep);
                 if (r.ok)
                 {
                     sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
-                    passed++;
+                    if (!soft) passed++;
+                }
+                else if (soft)
+                {
+                    // Informational \u2014 does not count toward pass/fail.
+                    sb.AppendLine($"  \u2139 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
+                    var note = SoftNote(r.ep);
+                    if (!string.IsNullOrEmpty(note)) sb.AppendLine($"      note: {note}");
                 }
                 else
                 {
                     sb.AppendLine($"  \u2718 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
                 }
+                if (!soft) total++;
             }
 
             // Note untestable wildcard entries
