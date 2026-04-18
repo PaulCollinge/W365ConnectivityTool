@@ -506,12 +506,11 @@ async function runAllBrowserTests() {
     // Show progress
     updateProgress(0, total, browserTests[0]?.name);
 
-    for (const test of browserTests) {
-        // In Cloud PC mode, map B-* IDs to C-* IDs
+    // Run one test and merge its result into allResults / UI. Returns a
+    // promise that never rejects (errors are captured as an Error result).
+    const runOne = async (test) => {
         const targetId = cloudPcMode ? (BROWSER_TO_CPC_ID[test.id] || test.id) : test.id;
         setTestRunning(targetId);
-        updateProgress(completed, total, test.name);
-
         try {
             const result = await test.run(test);
             if (cloudPcMode) {
@@ -539,9 +538,37 @@ async function runAllBrowserTests() {
             allResults.push(errorResult);
             updateTestUI(targetId, errorResult);
         }
-
         completed++;
         updateProgress(completed, total);
+    };
+
+    // Split tests into serial-first and parallel groups.
+    //
+    // Serial-first tests must run before the parallel batch because they
+    // either:
+    //   • saturate the link (speed test) and would corrupt concurrent
+    //     latency/throughput measurements, or
+    //   • trigger a native browser permission prompt (geolocation) which
+    //     browsers serialise anyway, and which the user needs to see
+    //     cleanly before dozens of other network requests fire.
+    //
+    // Everything else hits independent hosts (AFD, Entra, DNS providers,
+    // STUN servers, GeoIP providers, captive-portal check, etc.) and can
+    // run concurrently via Promise.allSettled. This cuts a healthy-run
+    // wall-clock from ~25–40 s to ~8–12 s; a worst-case all-timeouts run
+    // from ~3 min to ~15 s (dominated by the longest individual timeout).
+    const SERIAL_IDS = new Set(['B-LE-01', 'B-LE-03']); // user location (geolocation prompt) + connection speed
+    const serialTests   = browserTests.filter(t => SERIAL_IDS.has(t.id));
+    const parallelTests = browserTests.filter(t => !SERIAL_IDS.has(t.id));
+
+    for (const test of serialTests) {
+        updateProgress(completed, total, test.name);
+        await runOne(test);
+    }
+
+    if (parallelTests.length > 0) {
+        updateProgress(completed, total, `${parallelTests.length} tests in parallel…`);
+        await Promise.allSettled(parallelTests.map(runOne));
     }
 
     hideProgress();
