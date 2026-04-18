@@ -556,13 +556,22 @@ function makeResult(test, status, value, detail, duration, remediation, remediat
 // Tests connectivity using a two-phase approach:
 //   Phase 1: no-cors GET — opaque response = reachable.
 //   Phase 2: If phase 1 throws TypeError (not timeout), measure elapsed time.
-//            A fast error (< 3s) means the server responded but CORS blocked
-//            reading it — the endpoint IS reachable.  A slow error likely means
-//            a genuine network problem (DNS, TCP, TLS).
+//            A FAST TypeError below the TLS-RTT floor is indistinguishable
+//            from DNS NXDOMAIN / local ECONNREFUSED / SWG block page / proxy
+//            reset, so we must NOT classify it as reachable. Only a TypeError
+//            that completed a real TLS handshake (>= ~80ms, but clearly < the
+//            AbortSignal timeout) suggests "server responded but browser
+//            blocked reading the response for CORS reasons", which is a
+//            plausible reachable-but-opaque case.
 async function testEndpointReachability(test) {
     const t0 = performance.now();
     const results = [];
     let anyFailed = false;
+    // Any fetch() that rejects faster than this almost certainly did NOT
+    // complete a TCP+TLS handshake to a live remote server. SYN + TLS needs
+    // at least one RTT plus crypto; sub-80ms rejections are network-stack
+    // errors (DNS lookup failure, local reset, captured by on-host proxy).
+    const TLS_HANDSHAKE_FLOOR_MS = 80;
 
     const checks = EndpointConfig.requiredEndpoints.map(async (ep) => {
         const url = `https://${ep.url}/`;
@@ -581,10 +590,18 @@ async function testEndpointReachability(test) {
             if (e.name === 'AbortError' || e.name === 'TimeoutError') {
                 results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
                 anyFailed = true;
+            } else if (elapsed < TLS_HANDSHAKE_FLOOR_MS) {
+                // Below TLS-handshake floor: almost certainly DNS/local stack
+                // error, NOT "server reached but CORS-blocked". Do not green-
+                // wash this.
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed, note: 'failed below TLS RTT floor' });
+                anyFailed = true;
             } else if (elapsed < 3000) {
-                // Fast TypeError = server responded but browser blocked reading
-                // the response (no CORS headers).  The endpoint IS reachable.
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed, note: 'no CORS headers' });
+                // Plausibly a CORS-opaque response after a real handshake.
+                // Mark as Indeterminate rather than Reachable so an actual
+                // broken endpoint that merely happened to reset mid-TLS
+                // doesn't silently show green.
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Indeterminate', time: elapsed, note: 'CORS blocked definitive check' });
             } else {
                 // Slow TypeError — likely a genuine network issue
                 results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed });
@@ -596,16 +613,32 @@ async function testEndpointReachability(test) {
     await Promise.all(checks);
     const duration = Math.round(performance.now() - t0);
 
-    const reachable = results.filter(r => r.status === 'Reachable').length;
+    const reachable    = results.filter(r => r.status === 'Reachable').length;
+    const indeterminate = results.filter(r => r.status === 'Indeterminate').length;
+    const unreachable  = results.filter(r => r.status === 'Unreachable' || r.status === 'Timeout').length;
+
     const detail = results.map(r => {
-        const icon = r.status === 'Reachable' ? '\u2714' : '\u2716';
+        const icon = r.status === 'Reachable' ? '\u2714'
+                   : r.status === 'Indeterminate' ? '\u003F'
+                   : '\u2716';
         const timing = r.time > 0 ? ` (${r.time}ms)` : '';
         const note = r.note ? ` [${r.note}]` : '';
         return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
     }).join('\n');
 
-    const status = anyFailed ? (reachable === 0 ? 'Failed' : 'Warning') : 'Passed';
-    const value = `${reachable}/${results.length} endpoints reachable (browser check)`;
+    // Verdict: any confirmed unreachable = Warning/Failed; indeterminate-only
+    // runs are Warning (we can't prove reachability from the browser sandbox).
+    let status;
+    if (unreachable === results.length) status = 'Failed';
+    else if (unreachable > 0) status = 'Warning';
+    else if (indeterminate > 0) status = 'Warning';
+    else status = 'Passed';
+
+    const totalOk = reachable + indeterminate;
+    const parts = [`${reachable}/${results.length} confirmed reachable`];
+    if (indeterminate) parts.push(`${indeterminate} indeterminate (CORS)`);
+    if (unreachable) parts.push(`${unreachable} unreachable`);
+    const value = parts.join(', ') + ' (browser check)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
 }
