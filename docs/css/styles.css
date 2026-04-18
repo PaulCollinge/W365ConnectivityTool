@@ -657,7 +657,7 @@ main {
 }
 .kf-row {
     display: grid;
-    grid-template-columns: 10px 130px 1fr;
+    grid-template-columns: 10px 170px 1fr;
     gap: 0 12px;
     padding: 9px 14px;
     background: var(--bg-card);
@@ -683,7 +683,10 @@ main {
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    white-space: nowrap;
+    /* Allow wrapping if a label is longer than the fixed column, so the
+       value lane can't be overrun (e.g. "Session Host Endpoints"). */
+    overflow-wrap: anywhere;
+    min-width: 0;
 }
 .kf-row-val {
     font-size: var(--text-sm);
