@@ -8025,6 +8025,47 @@ class Program
 
             var results = await Task.WhenAll(tasks);
 
+            // For 168.63.129.16:80 the user-mode probe will legitimately be
+            // denied by the Azure Guest Agent's WFP filters (it restricts
+            // wireserver access to SYSTEM). We therefore cannot prove
+            // reachability by connecting ourselves. Instead, look at the
+            // agent's own log (WaAppAgent.log) \u2014 the agent rewrites it every
+            // ~30s when it successfully polls wireserver goal state. A recent
+            // modification time is strong positive evidence that the agent is
+            // actively heartbeating RIGHT NOW, which proves wireserver is
+            // reachable from SYSTEM (including through any on-host filter such
+            // as Zscaler/MDE/GSA that might otherwise break it). Only promote
+            // the synthetic result to pass when that evidence is present.
+            static (bool healthy, string detail) CheckAgentHeartbeat()
+            {
+                try
+                {
+                    var logPath = @"C:\WindowsAzure\Logs\WaAppAgent.log";
+                    var fi = new FileInfo(logPath);
+                    if (!fi.Exists) return (false, "WaAppAgent.log not present");
+                    var ageSec = (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalSeconds;
+                    if (ageSec <= 180)
+                        return (true, $"WaAppAgent.log updated {(int)ageSec}s ago");
+                    return (false, $"WaAppAgent.log last updated {(int)ageSec}s ago (stale)");
+                }
+                catch (Exception ex)
+                {
+                    return (false, $"cannot read agent log: {ex.Message}");
+                }
+            }
+            var (agentHealthy, agentDetail) = CheckAgentHeartbeat();
+            if (agentHealthy)
+            {
+                for (int i = 0; i < results.Length; i++)
+                {
+                    var r = results[i];
+                    if (r.ep.host == "168.63.129.16" && !r.ok)
+                    {
+                        results[i] = (r.ep, ok: true, ms: 0L, err: "via-agent:" + agentDetail);
+                    }
+                }
+            }
+
             // Endpoints flagged as "soft": their failure doesn't single-handedly
             // fail the overall verdict, but IS still surfaced as a finding and
             // contributes to a Warning if other checks are fine.
@@ -8086,7 +8127,15 @@ class Program
                 var soft = IsSoft(r.ep);
                 if (r.ok)
                 {
-                    sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
+                    if (soft && r.err != null && r.err.StartsWith("via-agent:"))
+                    {
+                        var detail = r.err.Substring("via-agent:".Length);
+                        sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} (verified via guest-agent heartbeat: {detail})");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
+                    }
                     if (!soft) passed++;
                 }
                 else if (soft)
