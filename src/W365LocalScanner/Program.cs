@@ -7984,20 +7984,30 @@ class Program
 
             var results = await Task.WhenAll(tasks);
 
-            // Endpoints whose failure should NOT count against the verdict.
-            // Rationale: some endpoints documented by Microsoft as "required" are
-            // consumed by privileged platform components (the Azure VM agent,
-            // Windows Update's system service, OCSP on port 80), not by user-mode
-            // processes. Enterprise CPC baselines frequently block outbound TCP 80
-            // from normal user processes while still allowing the agent's
-            // privileged path \u2014 so a TCP probe from the scanner fails even though
-            // the CPC itself is working fine. We display these with an info marker
-            // and a note, and exclude them from the pass/fail arithmetic.
+            // Endpoints flagged as "soft": their failure doesn't single-handedly
+            // fail the overall verdict, but IS still surfaced as a finding and
+            // contributes to a Warning if other checks are fine.
+            //
+            // 168.63.129.16:80 is the Azure "wireserver" \u2014 a link-local IP used
+            // for DHCP options, the guest-agent control plane, and session-host
+            // health reporting. On a stock Azure VM it is reachable from
+            // user-mode processes by design; a TCP timeout here almost always
+            // indicates a local block, not a platform issue. Most common causes:
+            //   - an outbound Windows Firewall rule applied by an Intune
+            //     configuration profile or a hardened CPC security baseline,
+            //   - an EDR / network-isolation policy (MDE, Crowdstrike,
+            //     SentinelOne) restricting egress to link-local addresses,
+            //   - a custom proxy/host-based policy rewriting or dropping
+            //     traffic to RFC-reserved prefixes.
+            // The guest agent uses a privileged code path and often still works
+            // while user-mode is blocked, which is why CPCs "look fine" despite
+            // this failing \u2014 but session-host health reporting relies on this
+            // endpoint and can silently degrade. It is worth investigating.
             bool IsSoft((string host, int port, string purpose, string group) e)
                 => e.host == "168.63.129.16";
             string SoftNote((string host, int port, string purpose, string group) e)
                 => e.host == "168.63.129.16"
-                    ? "consumed by the Azure VM agent, not user-mode apps \u2014 often blocked by host firewall policy, not a real connectivity issue"
+                    ? "Azure VMs should be able to reach the wireserver on TCP 80. A timeout usually means outbound 80 to 168.63.129.16 is blocked locally \u2014 check Windows Firewall outbound rules, Intune endpoint-security profiles, and any EDR/network-isolation policy."
                     : "";
 
             // Group and format output
@@ -8042,7 +8052,13 @@ class Program
 
             result.ResultValue = $"{passed}/{total} session host endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = passed == total ? "Passed" : passed >= total - 2 ? "Warning" : "Failed";
+            // Count any soft endpoints that failed \u2014 they don't force Failed,
+            // but should degrade an otherwise-clean run to Warning so the issue
+            // is visible rather than silently excluded.
+            var softFailed = results.Count(r => IsSoft(r.ep) && !r.ok);
+            if (passed < total - 2) result.Status = "Failed";
+            else if (passed < total || softFailed > 0) result.Status = "Warning";
+            else result.Status = "Passed";
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
         }
