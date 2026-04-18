@@ -110,7 +110,13 @@ function collectEnvironmentSnapshot() {
             saveData: !!navigator.connection.saveData,
             type: navigator.connection.type || null
         } : null,
-        pageUrl: (typeof location !== 'undefined') ? location.href : null,
+        pageUrl: (typeof location !== 'undefined')
+            // Origin + pathname only. location.href can include share tokens
+            // (?share=...), imported-result hashes (#results=...), or other
+            // transient state that's irrelevant to the diagnostic context and
+            // would leak into any shared report.
+            ? (location.origin + location.pathname)
+            : null,
         cacheVersion: (() => {
             // Reads the ?v=NN querystring from one of our script tags so support
             // engineers can correlate a report with a specific deployed build.
@@ -764,10 +770,25 @@ async function checkForAutoImport() {
         // Show a helpful message to the user instead of failing silently
         if (info) {
             info.classList.remove('hidden');
-            info.querySelector('.info-text').innerHTML =
-                `<strong>Auto-import failed:</strong> ${e.message || e}. ` +
-                `Please drag and drop the <strong>W365ScanResults.json</strong> file onto this page, ` +
-                `or open the file manually from the folder where you ran the scanner.`;
+            const textEl = info.querySelector('.info-text');
+            if (textEl) {
+                // Build the message with DOM APIs so the untrusted e.message
+                // cannot inject HTML. Previously interpolated via innerHTML,
+                // which would execute any <img onerror> / <script> inside an
+                // error string originating from the imported JSON.
+                textEl.textContent = '';
+                const strong = document.createElement('strong');
+                strong.textContent = 'Auto-import failed:';
+                textEl.appendChild(strong);
+                const reason = (e && e.message) ? String(e.message) : String(e);
+                textEl.appendChild(document.createTextNode(
+                    ' ' + reason + '. Please drag and drop the '));
+                const fileName = document.createElement('strong');
+                fileName.textContent = 'W365ScanResults.json';
+                textEl.appendChild(fileName);
+                textEl.appendChild(document.createTextNode(
+                    ' file onto this page, or open the file manually from the folder where you ran the scanner.'));
+            }
         }
         // Clear the hash
         history.replaceState(null, '', window.location.pathname + window.location.search);
