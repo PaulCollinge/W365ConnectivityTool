@@ -8046,10 +8046,23 @@ class Program
             // endpoint and can silently degrade. It is worth investigating.
             bool IsSoft((string host, int port, string purpose, string group) e)
                 => e.host == "168.63.129.16";
-            string SoftNote((string host, int port, string purpose, string group) e)
-                => e.host == "168.63.129.16"
-                    ? "Azure VMs should be able to reach the wireserver on TCP 80. A timeout usually means outbound 80 to 168.63.129.16 is blocked locally \u2014 check Windows Firewall outbound rules, Intune endpoint-security profiles, and any EDR/network-isolation policy."
-                    : "";
+            string SoftNote((string host, int port, string purpose, string group) e, string? err)
+            {
+                if (e.host != "168.63.129.16") return "";
+                var lower = (err ?? "").ToLowerInvariant();
+                // WSAEACCES (10013): socket forbidden by access permissions \u2014 a local
+                // WFP / firewall / EDR filter is rejecting this specific process's
+                // connect attempt (not a destination-network issue).
+                if (lower.Contains("forbidden") || lower.Contains("access permissions") || lower.Contains("10013"))
+                {
+                    return "The OS rejected this process's connect with 'access forbidden' (WSAEACCES). That is a local process-scoped filter, not a network block. Likely causes on a Cloud PC: (1) Microsoft Defender for Endpoint Attack Surface Reduction or network-protection blocking the self-extracted single-file scanner reaching an Azure-internal IP; (2) Global Secure Access client applying a per-process forwarding decision; (3) a Windows Defender Firewall outbound rule scoped by program path; (4) WDAC/AppLocker enforcement on the extracted binary. Reachability itself is fine \u2014 Test-NetConnection 168.63.129.16 -Port 80 from an elevated PowerShell will succeed on the same CPC.";
+                }
+                if (lower.Contains("timeout") || lower.Contains("timed out"))
+                {
+                    return "Azure VMs should be able to reach the wireserver on TCP 80. A timeout usually means outbound 80 to 168.63.129.16 is blocked or delayed locally \u2014 check Windows Firewall outbound rules, Intune endpoint-security profiles, Global Secure Access traffic-forwarding profiles, and any EDR/network-isolation policy.";
+                }
+                return "Azure VMs should be able to reach the wireserver on TCP 80. This probe failed locally; check Windows Firewall, Intune endpoint-security, Global Secure Access, and EDR policies for rules scoped to 168.63.129.16 or to this process.";
+            }
 
             // Group and format output
             var sb = new StringBuilder();
@@ -8074,7 +8087,7 @@ class Program
                 {
                     // Informational \u2014 does not count toward pass/fail.
                     sb.AppendLine($"  \u2139 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
-                    var note = SoftNote(r.ep);
+                    var note = SoftNote(r.ep, r.err);
                     if (!string.IsNullOrEmpty(note)) sb.AppendLine($"      note: {note}");
                 }
                 else
