@@ -7895,9 +7895,32 @@ class Program
             endpoints.Add(("wvdportalstorageblob.blob.core.windows.net", 443, "Azure portal support", "AVD Required"));
             endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", "AVD Required"));
 
-            // *.prod.warm.ingest.monitor.core.windows.net — use region-specific exemplar
-            var monitorRegion = _azureVmRegion ?? "eastus2";
-            endpoints.Add(($"{monitorRegion}-1.prod.warm.ingest.monitor.core.windows.net", 443,
+            // *.prod.warm.ingest.monitor.core.windows.net — Log Analytics / Azure Monitor
+            // ingestion wildcard. The real hostnames follow the pattern
+            // "{region}-{n}.prod.warm.ingest.monitor.core.windows.net" where {n} is
+            // 0, 1, or 2 depending on the region's cluster. Not every region has
+            // -1 (e.g. ukwest is -0 only) and some regions (westeurope, eastasia,
+            // koreacentral, japanwest, australiasoutheast) route to a neighbouring
+            // region and have no {region}-N subdomain of their own. We test the
+            // *wildcard's* reachability by picking an exemplar that actually resolves:
+            //   1. Try {region}-0, -1, -2 in order for the VM's own region.
+            //   2. If none resolve, fall back to eastus-0 as a universal canary —
+            //      the point is to prove the firewall isn't blocking the wildcard,
+            //      not to hit the user's region-specific cluster.
+            var monitorRegion = _azureVmRegion ?? "eastus";
+            string? monitorExemplar = null;
+            foreach (var suffix in new[] { "-0", "-1", "-2" })
+            {
+                var candidate = $"{monitorRegion}{suffix}.prod.warm.ingest.monitor.core.windows.net";
+                try
+                {
+                    var addrs = await System.Net.Dns.GetHostAddressesAsync(candidate);
+                    if (addrs != null && addrs.Length > 0) { monitorExemplar = candidate; break; }
+                }
+                catch { /* NXDOMAIN — try next suffix */ }
+            }
+            monitorExemplar ??= "eastus-0.prod.warm.ingest.monitor.core.windows.net";
+            endpoints.Add((monitorExemplar, 443,
                 "Agent diagnostics (*.prod.warm.ingest.monitor.core.windows.net)", "AVD Required"));
 
             // TCP 80
