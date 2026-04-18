@@ -116,7 +116,7 @@ const ALL_TESTS = [
     },
     {
         id: 'B-TCP-02', name: 'AFD Connectivity',
-        description: 'Tests connectivity to Azure Front Door and measures latency to the AFD edge',
+        description: 'Tests connectivity to Azure Front Door and measures HTTPS round-trip time (TCP + TLS handshake) to the AFD edge. Not comparable to ICMP ping — for pure network RTT, see the Local Scanner gateway tests.',
         category: 'tcp', source: 'browser', run: testGatewayLatency
     },
     {
@@ -1159,7 +1159,8 @@ async function testGatewayLatency(test) {
         }
         const valid = times.filter(t => t > 0);
         const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
-        lines.push(`Latency: avg ${avg}ms over ${valid.length} samples`);
+        lines.push(`HTTPS RTT (TCP + TLS handshake): avg ${avg}ms over ${valid.length} samples`);
+        lines.push(`Note: This is application-layer round-trip time, not ICMP ping. Typical range is 50–300ms; compare to Local Scanner for network-layer RTT.`);
     }
 
     const duration = Math.round(performance.now() - t0);
@@ -1171,11 +1172,11 @@ async function testGatewayLatency(test) {
 
     let value;
     if (afdPopCity) {
-        value = `✓ ${afdPopCity} (${afdPop}) — ${latencyMs}ms`;
+        value = `✓ ${afdPopCity} (${afdPop}) — ${latencyMs}ms HTTPS RTT`;
     } else if (afdPop) {
-        value = `✓ PoP: ${afdPop} — ${latencyMs}ms`;
+        value = `✓ PoP: ${afdPop} — ${latencyMs}ms HTTPS RTT`;
     } else {
-        value = `✓ Connected — ${latencyMs}ms`;
+        value = `✓ Connected — ${latencyMs}ms HTTPS RTT`;
     }
     return makeResult(test, 'Passed', value, lines.join('\n'), duration);
 }
