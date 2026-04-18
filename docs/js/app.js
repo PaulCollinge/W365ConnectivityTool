@@ -269,12 +269,21 @@ async function detectCloudPcEnvironment() {
         }
         const geo = await fetchGeoIp();
         const org = ((geo && (geo.org || geo.as || geo.isp)) || '').toString();
-        const isMsAsn = /\bAS8075\b/i.test(org) || /microsoft/i.test(org);
+        // Match explicit Microsoft-owned AS numbers only. AS8075 = Microsoft
+        // Corp (covers Cloud PC / AVD / Azure compute); AS12076 = Azure global
+        // edges; AS8068 = Microsoft Office 365. Name-based matching (e.g.
+        // /microsoft/i) produces false positives against resellers, university
+        // tenants, and partner hosters, which mis-brands a machine as a remote
+        // session host and skips relevant remediation.
+        const MS_ASNS = [8075, 12076, 8068];
+        const asnMatch = org.match(/\bAS(\d+)\b/i);
+        const asnNum = asnMatch ? parseInt(asnMatch[1], 10) : null;
+        const isMsAsn = asnNum !== null && MS_ASNS.includes(asnNum);
         if (isMsAsn) {
-            ilog(`GeoIP ASN fallback — egress org "${org}" matches Microsoft AS8075 → assuming remote session host`);
+            ilog(`GeoIP ASN fallback — egress AS${asnNum} ("${org}") is Microsoft-owned → assuming remote session host`);
             return { detected: true, hostType: null, via: 'geoip-asn' };
         }
-        ilog(`GeoIP ASN fallback — egress org "${org}" is not Microsoft; not a remote session host`);
+        ilog(`GeoIP ASN fallback — egress org "${org}" (AS${asnNum ?? '?'}) is not a Microsoft ASN; not a remote session host`);
     } catch (e) {
         ilog('GeoIP ASN fallback failed: ' + e.message);
     }
