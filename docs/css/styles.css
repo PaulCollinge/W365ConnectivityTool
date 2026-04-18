@@ -1260,6 +1260,7 @@ main {
 .test-status-icon.skipped { background: var(--bg-surface); color: var(--text-muted); border: 1px solid var(--border-default); }
 .test-status-icon.error   { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 .test-status-icon.pending { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-border); }
+.test-status-icon.info    { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 

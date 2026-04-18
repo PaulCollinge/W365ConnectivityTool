@@ -32,7 +32,8 @@ const STATUS_ICONS = {
     'Running': '\u27F3',
     'NotRun': '\u2014',
     'Skipped': '\u2014',
-    'Pending': '\u231B'
+    'Pending': '\u231B',
+    'Info': '\u2139'
 };
 
 const STATUS_CLASSES = {
@@ -43,7 +44,8 @@ const STATUS_CLASSES = {
     'Running': 'running',
     'NotRun': 'not-run',
     'Skipped': 'skipped',
-    'Pending': 'pending'
+    'Pending': 'pending',
+    'Info': 'info'
 };
 
 /**
@@ -86,7 +88,7 @@ function createTestElement(test, result) {
 
     const statusClass = STATUS_CLASSES[result.status] || 'not-run';
     const statusIcon = STATUS_ICONS[result.status] || '\u2014';
-    const statusLabel = result.status || 'Not Run';
+    const statusLabel = result.status || 'NotRun';
 
     const sourceBadge = test.source === 'browser'
         ? '<span class="test-source-badge browser">Browser</span>'
@@ -142,7 +144,7 @@ function updateTestUI(testId, result) {
 
     const statusClass = STATUS_CLASSES[result.status] || 'not-run';
     const statusIcon = STATUS_ICONS[result.status] || '\u2014';
-    const statusLabel = result.status || 'Not Run';
+    const statusLabel = result.status || 'NotRun';
 
     const sourceBadge = test.source === 'browser'
         ? '<span class="test-source-badge browser">Browser</span>'
