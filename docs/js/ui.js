@@ -94,23 +94,35 @@ function createTestElement(test, result) {
             ? '<span class="test-source-badge cloudpc">Cloud PC</span>'
             : '<span class="test-source-badge local">Local</span>';
 
+    const nameSafe  = escapeHtml(test.name);
+    const descSafe  = escapeHtml(test.description);
+    const idSafe    = escapeHtml(String(test.id));
+    const statusLabelSafe = escapeHtml(statusLabel);
+    const durationSafe = Number.isFinite(Number(result.duration)) ? Number(result.duration) : 0;
+
     div.innerHTML = `
-        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabel}"><span aria-hidden="true">${statusIcon}</span></div>
+        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabelSafe}"><span aria-hidden="true">${statusIcon}</span></div>
         <div class="test-info">
             <div class="test-name">
-                ${test.name}
+                ${nameSafe}
                 ${sourceBadge}
             </div>
-            <div class="test-description">${test.description}</div>
+            <div class="test-description">${descSafe}</div>
             ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
-            ${result.detailedInfo ? `<div class="test-details" id="details-${test.id}">${escapeHtml(result.detailedInfo)}</div>` : ''}
+            ${result.detailedInfo ? `<div class="test-details" id="details-${idSafe}">${escapeHtml(result.detailedInfo)}</div>` : ''}
             ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
         </div>
         <div class="test-meta">
-            ${result.duration > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${result.duration}ms</span>` : ''}
-            ${result.detailedInfo ? `<button class="test-expand" onclick="toggleDetails('${test.id}')" aria-expanded="false" aria-controls="details-${test.id}">Details</button>` : ''}
+            ${durationSafe > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${durationSafe}ms</span>` : ''}
+            ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
         </div>
     `;
+
+    // Wire details toggle via addEventListener (avoids putting test.id in an inline
+    // JS string context, which would be an XSS foothold if the id came from an
+    // imported scanner JSON or share link).
+    const expandBtn = div.querySelector('.test-expand');
+    if (expandBtn) expandBtn.addEventListener('click', () => toggleDetails(test.id));
 
     return div;
 }
@@ -141,24 +153,33 @@ function updateTestUI(testId, result) {
     // Tag with data-status for CSS filter
     el.dataset.status = statusClass;
 
+    const nameSafe  = escapeHtml(test.name);
+    const descSafe  = escapeHtml(test.description);
+    const idSafe    = escapeHtml(String(testId));
+    const statusLabelSafe = escapeHtml(statusLabel);
+    const durationSafe = Number.isFinite(Number(result.duration)) ? Number(result.duration) : 0;
+
     el.innerHTML = `
-        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabel}"><span aria-hidden="true">${statusIcon}</span></div>
+        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabelSafe}"><span aria-hidden="true">${statusIcon}</span></div>
         <div class="test-info">
             <div class="test-name">
-                ${test.name}
+                ${nameSafe}
                 ${sourceBadge}
             </div>
-            <div class="test-description">${test.description}</div>
+            <div class="test-description">${descSafe}</div>
             ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
-            ${result.detailedInfo ? `<div class="test-details" id="details-${testId}">${escapeHtml(result.detailedInfo)}</div>` : ''}
+            ${result.detailedInfo ? `<div class="test-details" id="details-${idSafe}">${escapeHtml(result.detailedInfo)}</div>` : ''}
             ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
             ${result.remediationText ? `<div class="test-remediation-text">${escapeHtml(result.remediationText)}</div>` : ''}
         </div>
         <div class="test-meta">
-            ${result.duration > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${result.duration}ms</span>` : ''}
-            ${result.detailedInfo ? `<button class="test-expand" onclick="toggleDetails('${testId}')" aria-expanded="false" aria-controls="details-${testId}">Details</button>` : ''}
+            ${durationSafe > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${durationSafe}ms</span>` : ''}
+            ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
         </div>
     `;
+
+    const expandBtn = el.querySelector('.test-expand');
+    if (expandBtn) expandBtn.addEventListener('click', () => toggleDetails(testId));
 }
 
 /**

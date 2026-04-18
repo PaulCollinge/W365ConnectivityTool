@@ -2084,17 +2084,21 @@ function updateRemediationPanel() {
         (FAILED.includes(a.status) ? 0 : 1) - (FAILED.includes(b.status) ? 0 : 1)
     );
 
-    const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const esc = s => String(s || '')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
 
     listEl.innerHTML = items.map(r => {
         const isFailed = FAILED.includes(r.status);
         const badgeCls  = isFailed ? 'rem-badge-fail' : 'rem-badge-warn';
         const badgeText = isFailed ? 'Failed' : 'Warning';
-        const anchorId  = `test-${r.id}`;
-        const scrollJs  = `document.getElementById('${esc(anchorId)}')?.scrollIntoView({behavior:'smooth',block:'center'})`;
-        return `<li class="rem-item" onclick="${scrollJs}" title="Click to jump to test">
+        const idSafe    = esc(r.id);
+        return `<li class="rem-item" role="button" tabindex="0" data-anchor="test-${idSafe}" title="Click to jump to test">
             <span class="rem-badge ${badgeCls}">${badgeText}</span>
-            <span class="rem-test-id">${esc(r.id)}</span>
+            <span class="rem-test-id">${idSafe}</span>
             <div class="rem-body">
                 <span class="rem-test-name">${esc(r.name || r.id)}</span>
                 <span class="rem-text">${esc(r.remediationText)}</span>
@@ -2102,6 +2106,21 @@ function updateRemediationPanel() {
             <span class="rem-arrow">→</span>
         </li>`;
     }).join('');
+
+    // Wire click + keyboard activation via addEventListener so the raw test id
+    // never enters an inline JS string context (which would be an XSS foothold
+    // if r.id came from imported scanner JSON or a share link).
+    listEl.querySelectorAll('.rem-item').forEach(li => {
+        const anchor = li.dataset.anchor;
+        const go = () => {
+            const target = document.getElementById(anchor);
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        };
+        li.addEventListener('click', go);
+        li.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+        });
+    });
 
     const failCount = items.filter(r => FAILED.includes(r.status)).length;
     const warnCount = items.length - failCount;
