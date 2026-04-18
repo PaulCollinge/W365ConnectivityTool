@@ -19,9 +19,20 @@ function showErrorBanner(label, detail) {
     textEl.appendChild(document.createTextNode(' ' + detail));
 }
 
-// Global error handler — show JS errors visibly so import issues are not silent
+// Global error handler — show JS errors visibly so import issues are not silent.
+// Filter out cross-origin noise: browsers deliver exceptions from scripts on
+// other origins (extensions, injected corporate-agent overlays, captive-portal
+// interstitials, CDN scripts without crossorigin=anonymous) as the sanitised
+// string "Script error." with lineno=0 and no filename. We cannot act on those,
+// so suppress them from the user-facing banner but keep the console log.
 window.onerror = function(msg, url, line, col, error) {
     console.error('Global error:', msg, url, line, col, error);
+    const isCorsSanitised = msg === 'Script error.' && !url && !line;
+    const sameOrigin = url && typeof url === 'string' && url.startsWith(window.location.origin);
+    if (isCorsSanitised || (url && !sameOrigin)) {
+        ilog('JS ERROR (cross-origin, suppressed): ' + msg + ' at ' + (url || '?') + ':' + (line || 0));
+        return; // do not show banner for errors we cannot diagnose
+    }
     ilog('JS ERROR: ' + msg + ' at ' + url + ':' + line);
     showErrorBanner('JavaScript error:', `${msg} (${url}:${line})`);
 };
