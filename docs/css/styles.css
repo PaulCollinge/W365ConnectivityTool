@@ -74,7 +74,7 @@ textarea:focus-visible,
     /* ── Text ── */
     --text-primary:   #e6edf3;
     --text-secondary: #8b949e;
-    --text-muted:     #484f58;
+    --text-muted:     #7d848c;
     --text-link:      #58a6ff;
 
     /* ── Brand / Accent ── */
@@ -1955,8 +1955,18 @@ main {
     100% { left: 100%; opacity: 0; }
 }
 
-/* Respect reduced-motion preference */
+/* Respect reduced-motion preference — disable all non-essential motion. */
 @media (prefers-reduced-motion: reduce) {
+    /* Blanket cut: any animation or transition is reduced to a 1ms flash.
+       Using !important to override per-element animation declarations. */
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        animation-delay: 0ms !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+    /* Map path flow lines — fully off, swap to a static gradient. */
     .map-hline, .map-vline { animation: none !important; }
     .fan-entry, .fan-trunk, .fan-afd, .fan-rdgw, .fan-turn,
     .fan-cpc-entry, .fan-cpc-up, .fan-cpc-down, .fan-cpc-rdgw, .fan-cpc-turn { animation: none !important; }

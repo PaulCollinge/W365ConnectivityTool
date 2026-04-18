@@ -86,6 +86,7 @@ function createTestElement(test, result) {
 
     const statusClass = STATUS_CLASSES[result.status] || 'not-run';
     const statusIcon = STATUS_ICONS[result.status] || '\u2014';
+    const statusLabel = result.status || 'Not Run';
 
     const sourceBadge = test.source === 'browser'
         ? '<span class="test-source-badge browser">Browser</span>'
@@ -94,7 +95,7 @@ function createTestElement(test, result) {
             : '<span class="test-source-badge local">Local</span>';
 
     div.innerHTML = `
-        <div class="test-status-icon ${statusClass}">${statusIcon}</div>
+        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabel}"><span aria-hidden="true">${statusIcon}</span></div>
         <div class="test-info">
             <div class="test-name">
                 ${test.name}
@@ -107,7 +108,7 @@ function createTestElement(test, result) {
         </div>
         <div class="test-meta">
             ${result.duration > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${result.duration}ms</span>` : ''}
-            ${result.detailedInfo ? `<button class="test-expand" onclick="toggleDetails('${test.id}')">Details</button>` : ''}
+            ${result.detailedInfo ? `<button class="test-expand" onclick="toggleDetails('${test.id}')" aria-expanded="false" aria-controls="details-${test.id}">Details</button>` : ''}
         </div>
     `;
 
@@ -129,6 +130,7 @@ function updateTestUI(testId, result) {
 
     const statusClass = STATUS_CLASSES[result.status] || 'not-run';
     const statusIcon = STATUS_ICONS[result.status] || '\u2014';
+    const statusLabel = result.status || 'Not Run';
 
     const sourceBadge = test.source === 'browser'
         ? '<span class="test-source-badge browser">Browser</span>'
@@ -140,7 +142,7 @@ function updateTestUI(testId, result) {
     el.dataset.status = statusClass;
 
     el.innerHTML = `
-        <div class="test-status-icon ${statusClass}">${statusIcon}</div>
+        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabel}"><span aria-hidden="true">${statusIcon}</span></div>
         <div class="test-info">
             <div class="test-name">
                 ${test.name}
@@ -154,7 +156,7 @@ function updateTestUI(testId, result) {
         </div>
         <div class="test-meta">
             ${result.duration > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${result.duration}ms</span>` : ''}
-            ${result.detailedInfo ? `<button class="test-expand" onclick="toggleDetails('${testId}')">Details</button>` : ''}
+            ${result.detailedInfo ? `<button class="test-expand" onclick="toggleDetails('${testId}')" aria-expanded="false" aria-controls="details-${testId}">Details</button>` : ''}
         </div>
     `;
 }
@@ -310,9 +312,12 @@ function updateCategoryBadges(results) {
  */
 function toggleDetails(testId) {
     const details = document.getElementById(`details-${testId}`);
-    if (details) {
-        details.classList.toggle('expanded');
-    }
+    if (!details) return;
+    const nowExpanded = details.classList.toggle('expanded');
+    // Keep the toggle button's aria-expanded in sync so screen readers
+    // announce the current state on subsequent focus.
+    const btn = document.querySelector(`.test-expand[aria-controls="details-${testId}"]`);
+    if (btn) btn.setAttribute('aria-expanded', nowExpanded ? 'true' : 'false');
 }
 
 /**
