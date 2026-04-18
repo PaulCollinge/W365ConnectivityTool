@@ -7901,12 +7901,21 @@ class Program
             // 0, 1, or 2 depending on the region's cluster. Not every region has
             // -1 (e.g. ukwest is -0 only) and some regions (westeurope, eastasia,
             // koreacentral, japanwest, australiasoutheast) route to a neighbouring
-            // region and have no {region}-N subdomain of their own. We test the
-            // *wildcard's* reachability by picking an exemplar that actually resolves:
-            //   1. Try {region}-0, -1, -2 in order for the VM's own region.
-            //   2. If none resolve, fall back to eastus-0 as a universal canary —
-            //      the point is to prove the firewall isn't blocking the wildcard,
-            //      not to hit the user's region-specific cluster.
+            // region and have no {region}-N subdomain of their own. Additionally,
+            // some regional warm-ingest clusters (e.g. ukwest-0 as of 2026)
+            // silently drop raw TCP SYN from arbitrary clients — they only answer
+            // authenticated agent connections through an Azure-internal path — so
+            // a TCP timeout against the VM's local region does not imply the
+            // *wildcard* firewall rule is blocked.
+            //
+            // Strategy:
+            //   1. Probe {region}-0/-1/-2 in the VM's own region (DNS-resolved).
+            //      If the cluster answers, use that as the exemplar.
+            //   2. If none of them resolve OR (at probe time) the local exemplar
+            //      fails with a timeout, retry against eastus-0 and westus-0 as
+            //      canaries. Success on either proves the wildcard firewall rule
+            //      is open — which is what this check is actually trying to
+            //      establish. The fallback happens later, during the main probe.
             var monitorRegion = _azureVmRegion ?? "eastus";
             string? monitorExemplar = null;
             foreach (var suffix in new[] { "-0", "-1", "-2" })
@@ -8025,6 +8034,35 @@ class Program
 
             var results = await Task.WhenAll(tasks);
 
+            // Monitor-ingest fallback: if the VM's local-region warm-ingest
+            // exemplar timed out, retry against canary regions. Success against
+            // any canary proves the *.prod.warm.ingest.monitor.core.windows.net
+            // wildcard firewall rule is open — which is what this check is
+            // trying to establish. Some regional clusters (e.g. ukwest-0 as
+            // observed Apr 2026) silently drop raw TCP SYN from arbitrary
+            // probers even on a perfectly healthy CPC, and we should not fail
+            // the whole session-host verdict on that.
+            for (int i = 0; i < results.Length; i++)
+            {
+                var r = results[i];
+                if (r.ok || !r.ep.host.EndsWith(".prod.warm.ingest.monitor.core.windows.net",
+                                                 StringComparison.OrdinalIgnoreCase))
+                    continue;
+                foreach (var canary in new[] {
+                    "eastus-0.prod.warm.ingest.monitor.core.windows.net",
+                    "westus-0.prod.warm.ingest.monitor.core.windows.net" })
+                {
+                    if (string.Equals(canary, r.ep.host, StringComparison.OrdinalIgnoreCase)) continue;
+                    var c = await TryConnectAsync(canary, 443);
+                    if (c.ok)
+                    {
+                        results[i] = (r.ep, ok: true, ms: c.ms,
+                            err: $"via-canary:{canary} ({c.ms}ms) — local region cluster refused probe");
+                        break;
+                    }
+                }
+            }
+
             // For 168.63.129.16:80 the user-mode probe will legitimately be
             // denied by the Azure Guest Agent's WFP filters (it restricts
             // wireserver access to SYSTEM). We therefore cannot prove
@@ -8131,6 +8169,10 @@ class Program
                     {
                         var detail = r.err.Substring("via-agent:".Length);
                         sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} (verified via guest-agent heartbeat: {detail})");
+                    }
+                    else if (r.err != null && r.err.StartsWith("via-canary:"))
+                    {
+                        sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} (wildcard verified {r.err.Substring("via-canary:".Length)})");
                     }
                     else
                     {
