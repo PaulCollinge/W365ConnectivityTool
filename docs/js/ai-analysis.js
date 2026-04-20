@@ -1083,7 +1083,7 @@ async function copilotAnalysis(btn) {
             btn.classList.remove('btn-copied');
         }, 4000);
         setTimeout(() => {
-            window.open('https://copilot.microsoft.com/', '_blank', 'noopener');
+            window.open('https://copilot.microsoft.com/', '_blank', 'noopener,noreferrer');
         }, 600);
     } catch (e) {
         btn.innerHTML = origHtml;
@@ -1113,7 +1113,7 @@ function showPromptModal(prompt) {
             </p>
             <textarea readonly style="flex:1;margin:0 24px 16px;padding:12px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--r-sm);font-family:monospace;font-size:12px;resize:none;box-sizing:border-box">${prompt.replace(/</g, '&lt;')}</textarea>
             <div class="analysis-footer">
-                <button class="btn btn-ai" onclick="window.open('https://copilot.microsoft.com/','_blank','noopener');this.closest('.analysis-overlay').remove()">Open Copilot</button>
+                <button class="btn btn-ai" onclick="window.open('https://copilot.microsoft.com/','_blank','noopener,noreferrer');this.closest('.analysis-overlay').remove()">Open Copilot</button>
             </div>
         </div>`;
 
