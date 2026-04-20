@@ -663,7 +663,8 @@ async function testEndpointReachability(test) {
         const timing = r.time > 0 ? ` (${r.time}ms)` : '';
         const note = r.note ? ` [${r.note}]` : '';
         return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
-    }).join('\n');
+    }).join('\n')
+      + '\n\n\u2139 *.events.data.microsoft.com (Client telemetry) \u2014 cannot be tested from browser: blocked by built-in tracking prevention in Edge/Chrome/Firefox. Verify with the Local Scanner or external TCP probe if required.';
 
     let status;
     if (unreachable === 0) status = 'Passed';
