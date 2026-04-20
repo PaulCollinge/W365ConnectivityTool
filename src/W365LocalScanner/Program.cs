@@ -1157,7 +1157,8 @@ class Program
             new("C-LE-04", "Shortpath Managed Config", "Checks RDP Shortpath for managed networks prerequisites on session host", "cloudpc-env", RunCpcShortpathManagedConfig),
 
             // ── Cloud PC Endpoint & Speed ──
-            new("C-EP-01", "CPC Endpoint Reachability", "Tests required endpoint reachability from the Cloud PC", "cloudpc-env", RunCpcEndpointReachability),
+            // Note: C-EP-01 was removed in v1.10.1 — it duplicated a subset of C-EP-02
+            // (Session Host Required Endpoints), which is the authoritative list.
             new("C-EP-02", "Session Host Required Endpoints", "Tests all required FQDNs for AVD/W365 session hosts", "cloudpc-env", RunCpcRequiredEndpoints),
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
         ];
@@ -8215,14 +8216,6 @@ class Program
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
-    }
-
-    /// <summary>C-EP-01: Required endpoint reachability from Cloud PC — reuses client endpoint test.</summary>
-    static async Task<TestResult> RunCpcEndpointReachability()
-    {
-        var r = await RunCertEndpointTest();
-        r.Id = "C-EP-01"; r.Name = "CPC Endpoint Reachability"; r.Category = "cloudpc-env";
-        return r;
     }
 
     /// <summary>

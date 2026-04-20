@@ -284,11 +284,7 @@ const ALL_TESTS = [
     },
 
     // ── Cloud PC tests (run from within the Cloud PC) ──
-    {
-        id: 'C-EP-01', name: 'CPC Endpoint Reachability',
-        description: 'Required endpoint reachability from within the Cloud PC',
-        category: 'cloudpc', source: 'cloudpc'
-    },
+    // Note: C-EP-01 was removed in v1.10.1 — it duplicated a subset of C-EP-02.
     {
         id: 'C-EP-02', name: 'Session Host Required Endpoints',
         description: 'Tests all required FQDNs for AVD/W365 session hosts (marketplace, monitoring, activation, CRL/OCSP, IoT provisioning)',

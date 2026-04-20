@@ -53,7 +53,10 @@ let hostType = null;               // 'cloudpc', 'avd', or null (determines labe
 
 // Map browser test IDs to their Cloud PC equivalents
 const BROWSER_TO_CPC_ID = {
-    'B-EP-01': 'C-EP-01',
+    // B-EP-01 has no Cloud PC equivalent: the browser test covers end-user
+    // device required endpoints, while C-EP-02 covers session-host required
+    // endpoints — a different list. C-EP-01 (a redundant wrapper) was removed
+    // in v1.10.1, so B-EP-01 is intentionally unmapped in Cloud PC mode.
     'B-LE-01': 'C-LE-01',
     'B-LE-02': 'C-LE-02',
     'B-LE-03': 'C-LE-03',
