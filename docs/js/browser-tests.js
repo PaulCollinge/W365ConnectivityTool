@@ -1027,14 +1027,14 @@ async function testConnectionSpeed(test) {
     const best = samples.length > 0 ? samples[samples.length - 1] : null;
 
     // Network Information API as supplementary context
-    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (conn) {
+    const connInfo = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (connInfo) {
         lines.push('');
         lines.push('— Browser Network Info API (indicative only, capped ~10 Mbps) —');
-        lines.push(`Effective Type: ${conn.effectiveType || 'unknown'}`);
-        if (conn.downlink) lines.push(`API Downlink: ${conn.downlink} Mbps`);
-        if (conn.rtt) lines.push(`API RTT: ${conn.rtt}ms`);
-        if (conn.saveData) lines.push('Data Saver: enabled');
+        lines.push(`Effective Type: ${connInfo.effectiveType || 'unknown'}`);
+        if (connInfo.downlink) lines.push(`API Downlink: ${connInfo.downlink} Mbps`);
+        if (connInfo.rtt) lines.push(`API RTT: ${connInfo.rtt}ms`);
+        if (connInfo.saveData) lines.push('Data Saver: enabled');
     }
 
     if (!best) {
