@@ -286,8 +286,8 @@ const ALL_TESTS = [
     // ── Cloud PC tests (run from within the Cloud PC) ──
     // Note: C-EP-01 was removed in v1.10.1 — it duplicated a subset of C-EP-02.
     {
-        id: 'C-EP-02', name: 'Session Host Required Endpoints',
-        description: 'Tests all required FQDNs for AVD/W365 session hosts (marketplace, monitoring, activation, CRL/OCSP, IoT provisioning)',
+        id: 'C-EP-02', name: 'Required Endpoints',
+        description: 'Tests all required FQDNs for the detected host type — Cloud PC or AVD session host (marketplace, monitoring, activation, CRL/OCSP, IoT provisioning when applicable)',
         category: 'cloudpc', source: 'cloudpc'
     },
     {

@@ -8297,7 +8297,17 @@ class Program
     /// </summary>
     static async Task<TestResult> RunCpcRequiredEndpoints()
     {
-        var result = new TestResult { Id = "C-EP-02", Name = "Session Host Required Endpoints", Category = "cloudpc-env" };
+        var isCpc = _hostType == "cloudpc";
+        // Cloud PC and AVD session hosts share the same required-endpoint list,
+        // but "Session Host" is an AVD term — on a Cloud PC we call the machine
+        // the "Cloud PC" itself. Use a single hostLabel to keep the test name,
+        // group headers and result summary consistent with the detected host.
+        var hostLabel = isCpc ? "Cloud PC" : "Session Host";
+        var requiredGroup = $"{hostLabel} Required";
+        var optionalGroup = $"{hostLabel} Optional";
+        var healthPurpose = $"{hostLabel} health monitoring (Azure wireserver)";
+
+        var result = new TestResult { Id = "C-EP-02", Name = $"{hostLabel} Required Endpoints", Category = "cloudpc-env" };
         try
         {
             var endpoints = new List<(string host, int port, string purpose, string group)>();
@@ -8305,14 +8315,14 @@ class Program
             // ── AVD base endpoints (apply to both AVD and W365) ──
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
             // TCP 443 — Core service traffic
-            endpoints.Add(("login.microsoftonline.com", 443, "Authentication to Microsoft Online Services", "AVD Required"));
-            endpoints.Add(("rdweb.wvd.microsoft.com", 443, "Service traffic / TCP RDP (*.wvd.microsoft.com)", "AVD Required"));
-            endpoints.Add(("catalogartifact.azureedge.net", 443, "Azure Marketplace", "AVD Required"));
-            endpoints.Add(("gcs.prod.monitoring.core.windows.net", 443, "Agent monitoring", "AVD Required"));
-            endpoints.Add(("mrsglobalsteus2prod.blob.core.windows.net", 443, "Agent/SXS stack updates", "AVD Required"));
-            endpoints.Add(("wvdportalstorageblob.blob.core.windows.net", 443, "Azure portal support", "AVD Required"));
-            endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", "AVD Required"));
-            endpoints.Add(("login.windows.net", 443, "Sign-in to Microsoft Online Services", "AVD Optional"));
+            endpoints.Add(("login.microsoftonline.com", 443, "Authentication to Microsoft Online Services", requiredGroup));
+            endpoints.Add(("rdweb.wvd.microsoft.com", 443, "Service traffic / TCP RDP (*.wvd.microsoft.com)", requiredGroup));
+            endpoints.Add(("catalogartifact.azureedge.net", 443, "Azure Marketplace", requiredGroup));
+            endpoints.Add(("gcs.prod.monitoring.core.windows.net", 443, "Agent monitoring", requiredGroup));
+            endpoints.Add(("mrsglobalsteus2prod.blob.core.windows.net", 443, "Agent/SXS stack updates", requiredGroup));
+            endpoints.Add(("wvdportalstorageblob.blob.core.windows.net", 443, "Azure portal support", requiredGroup));
+            endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", requiredGroup));
+            endpoints.Add(("login.windows.net", 443, "Sign-in to Microsoft Online Services", optionalGroup));
 
             // *.prod.warm.ingest.monitor.core.windows.net — Log Analytics / Azure Monitor
             // ingestion wildcard. The real hostnames follow the pattern
@@ -8349,16 +8359,16 @@ class Program
             }
             monitorExemplar ??= "eastus-0.prod.warm.ingest.monitor.core.windows.net";
             endpoints.Add((monitorExemplar, 443,
-                "Agent diagnostics (*.prod.warm.ingest.monitor.core.windows.net)", "AVD Required"));
+                "Agent diagnostics (*.prod.warm.ingest.monitor.core.windows.net)", requiredGroup));
 
             // TCP 80 — Health monitoring and certificates
-            endpoints.Add(("168.63.129.16", 80, "Session host health monitoring (Azure wireserver)", "AVD Required"));
-            endpoints.Add(("168.63.129.16", 32526, "Session host health monitoring (Azure wireserver)", "AVD Required"));
-            endpoints.Add(("oneocsp.microsoft.com", 80, "CRL/OCSP certificate revocation", "AVD Required"));
-            endpoints.Add(("ctldl.windowsupdate.com", 80, "Certificate trust list updates", "AVD Required"));
+            endpoints.Add(("168.63.129.16", 80, healthPurpose, requiredGroup));
+            endpoints.Add(("168.63.129.16", 32526, healthPurpose, requiredGroup));
+            endpoints.Add(("oneocsp.microsoft.com", 80, "CRL/OCSP certificate revocation", requiredGroup));
+            endpoints.Add(("ctldl.windowsupdate.com", 80, "Certificate trust list updates", requiredGroup));
 
             // TCP 1688
-            endpoints.Add(("azkms.core.windows.net", 1688, "Windows KMS activation", "AVD Required"));
+            endpoints.Add(("azkms.core.windows.net", 1688, "Windows KMS activation", requiredGroup));
 
             // ── W365-specific registration endpoints ──
             if (_hostType == "cloudpc")
@@ -8635,7 +8645,7 @@ class Program
             sb.AppendLine("  \u2139 *eh.servicebus.windows.net:443 \u2014 Event Hub diagnostic settings (optional)");
             sb.AppendLine("  Ensure these wildcard rules are configured in your firewall/proxy.");
 
-            result.ResultValue = $"{passed}/{total} session host endpoints reachable";
+            result.ResultValue = $"{passed}/{total} {hostLabel} endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
             // Count any soft endpoints that failed UNEXPECTEDLY (i.e. not the
             // Azure Guest Agent's SYSTEM-only lockdown, which produces WSAEACCES

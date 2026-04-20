@@ -3146,13 +3146,16 @@ async function updateKeyFindings(results) {
         add(localCls, 'Local Network', localParts.join(' · '));
     }
 
-    // ── 11. Session Host Required Endpoints ──
+    // ── 11. Required Endpoints (host-type-aware label) ──
     const ep02 = r('C-EP-02');
     if (ep02 && ep02.status !== 'NotRun' && ep02.status !== 'Pending') {
+        // Use the scanner-detected host type so the label matches the rest of
+        // the report ("Cloud PC" for W365, "Session Host" for AVD).
+        const ep02Label = hostType === 'avd' ? 'Session Host Endpoints' : 'Cloud PC Endpoints';
         if (ep02.status === 'Passed') {
-            add('kf-pass', 'Session Host Endpoints', esc(ep02.resultValue));
+            add('kf-pass', ep02Label, esc(ep02.resultValue));
         } else if (ep02.status === 'Warning') {
-            add('kf-issue', 'Session Host Endpoints', esc(ep02.resultValue),
+            add('kf-issue', ep02Label, esc(ep02.resultValue),
                 'Some non-critical endpoints unreachable — check detailed results');
         } else {
             // Extract failed endpoint names from detailedInfo
@@ -3161,7 +3164,7 @@ async function updateKeyFindings(results) {
                 .map(l => l.replace(/.*[✘\u2718]\s*/, '').replace(/\s*—.*/, '').trim())
                 .slice(0, 5);
             const failedSummary = failedLines.length > 0 ? failedLines.join(', ') : '';
-            add('kf-error', 'Session Host Endpoints', esc(ep02.resultValue),
+            add('kf-error', ep02Label, esc(ep02.resultValue),
                 failedSummary ? `Blocked: ${esc(failedSummary)}` : 'Multiple required endpoints unreachable');
         }
     }
