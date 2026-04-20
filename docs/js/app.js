@@ -78,15 +78,30 @@ function dedupeResultsById(results) {
 // Local Scanner. When L-EP-02 is imported (the scanner's raw-TCP probe for
 // the same wildcard), rewrite B-EP-01 to show the actual scanner result
 // instead of the "run the Local Scanner" instructions.
+//
+// The pending-text wording is owned by browser-tests.js but both files
+// reference the same `EndpointConfig.browserBlocked` sentinels so they
+// can't drift apart if the wording is ever changed.
 function mergeBrowserBlockedEndpointResult() {
     try {
         const bEp01 = allResults.find(r => String(r.id) === 'B-EP-01');
         const lEp02 = allResults.find(r => String(r.id) === 'L-EP-02');
         if (!bEp01 || !lEp02) return;
 
-        const marker = '\u2550\u2550 Endpoint not tested from browser \u2550\u2550';
+        const sentinels = (typeof EndpointConfig !== 'undefined' && EndpointConfig.browserBlocked) || {
+            // Defensive fallback in case config.js hasn't loaded (shouldn't
+            // happen in production — scripts are loaded in declared order).
+            headlineMarker: '*.events.data.microsoft.com',
+            detailMarker: '\u2550\u2550 Endpoint not tested from browser \u2550\u2550',
+            headlineSeparator: ' \u2022 '
+        };
+
+        // ── Detail block: replace the "not tested from browser" section ──
+        // Locate by the shared detailMarker constant. Everything from the
+        // marker to end-of-string is the pending block; replace it with the
+        // verified/unreachable block derived from L-EP-02.
         const detail = bEp01.detailedInfo || '';
-        const idx = detail.indexOf(marker);
+        const idx = detail.indexOf(sentinels.detailMarker);
         const base = idx >= 0 ? detail.substring(0, idx).replace(/\s+$/, '') : detail;
 
         const reachable = (lEp02.status === 'Passed');
@@ -95,29 +110,39 @@ function mergeBrowserBlockedEndpointResult() {
             ? 'Endpoint verified via Local Scanner (TCP probe)'
             : 'Endpoint unreachable from Local Scanner (TCP probe)';
 
-        // Prefer showing the scanner's own one-liner if it's short; otherwise
-        // fall back to a summary derived from resultValue.
         const scannerSummary = (lEp02.resultValue || '').trim();
-        const scannerDetail  = (lEp02.detailedInfo || '').trim();
+        const scannerDetailLines = (lEp02.detailedInfo || '')
+            .split('\n')
+            .map(l => l.trim())
+            .filter(l => l.startsWith('\u2714') || l.startsWith('\u2718'));
 
         const merged =
             base
             + '\n'
             + '\n\u2550\u2550 ' + headerLabel + ' \u2550\u2550'
-            + '\n' + icon + ' *.events.data.microsoft.com (Client telemetry)'
+            + '\n' + icon + ' ' + sentinels.headlineMarker + ' (Client telemetry)'
             + (scannerSummary ? ('\n    ' + scannerSummary) : '')
-            + (scannerDetail  ? ('\n    ' + scannerDetail.split('\n').filter(l => l.trim().startsWith('\u2714') || l.trim().startsWith('\u2718')).join('\n    ')) : '');
+            + (scannerDetailLines.length ? ('\n    ' + scannerDetailLines.join('\n    ')) : '');
 
         bEp01.detailedInfo = merged;
 
-        // Also update headline: drop the "run Local Scanner" breadcrumb.
+        // ── Headline: structural split on the shared separator ──
+        // Separate the trailing " (browser check via /favicon.ico)" suffix
+        // (parenthesised remark the browser test appends after the joined
+        // segments), split the remainder on the shared headlineSeparator,
+        // drop any segment referencing headlineMarker, append the new
+        // verified/unreachable segment, and rejoin. No regex gymnastics.
         const rv = bEp01.resultValue || '';
-        const trimmedRv = rv
-            .replace(/\s*[\u2022,]\s*\*\.events\.data\.microsoft\.com[^\(]*?(?= \(|$)/i, '')
-            .trim();
-        bEp01.resultValue = trimmedRv + (reachable
-            ? ' \u2022 *.events.data.microsoft.com verified via scanner'
-            : ' \u2022 *.events.data.microsoft.com unreachable (scanner)');
+        const suffixMatch = rv.match(/\s\([^)]*\)\s*$/);
+        const suffix = suffixMatch ? suffixMatch[0] : '';
+        const body = suffix ? rv.substring(0, rv.length - suffix.length) : rv;
+        const segments = body.split(sentinels.headlineSeparator)
+            .map(s => s.trim())
+            .filter(s => s && !s.includes(sentinels.headlineMarker));
+        segments.push(sentinels.headlineMarker + (reachable
+            ? ' verified via scanner'
+            : ' unreachable (scanner)'));
+        bEp01.resultValue = segments.join(sentinels.headlineSeparator) + suffix;
 
         // Push the update to the UI card
         if (typeof updateTestUI === 'function') {

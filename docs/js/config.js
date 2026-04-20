@@ -91,5 +91,23 @@ const EndpointConfig = {
         TcpTransport: 'tcp',
         UdpShortpath: 'udp',
         CloudSession: 'cloud'
+    },
+
+    // Load-bearing sentinels shared between browser-tests.js (writer) and
+    // app.js (mergeBrowserBlockedEndpointResult). They describe the
+    // placeholder block that B-EP-01 emits for *.events.data.microsoft.com
+    // (which the browser cannot probe) so app.js can locate and replace it
+    // when the scanner supplies an L-EP-02 result. Keeping them in config
+    // prevents the two files from drifting out of sync.
+    browserBlocked: {
+        // Unique substring used by the merge to find the pending headline
+        // segment. Matched by ".includes()", so partial/whole-phrase matches
+        // both work — keep the token distinctive enough to be unambiguous.
+        headlineMarker: '*.events.data.microsoft.com',
+        // Start-of-section heading in the detail block. Kept as a full
+        // string so a simple indexOf locates the block to replace.
+        detailMarker: '\u2550\u2550 Endpoint not tested from browser \u2550\u2550',
+        // Separator used when joining headline segments.
+        headlineSeparator: ' \u2022 '
     }
 };

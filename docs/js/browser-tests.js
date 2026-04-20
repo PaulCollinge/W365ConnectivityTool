@@ -665,8 +665,8 @@ async function testEndpointReachability(test) {
         return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
     }).join('\n')
       + '\n'
-      + '\n\u2550\u2550 Endpoint not tested from browser \u2550\u2550'
-      + '\n\u2139 *.events.data.microsoft.com (Client telemetry)'
+      + '\n' + EndpointConfig.browserBlocked.detailMarker
+      + '\n\u2139 ' + EndpointConfig.browserBlocked.headlineMarker + ' (Client telemetry)'
       + '\n    This host is on the built-in tracker-blocking lists shipped by Edge,'
       + '\n    Chrome and Firefox, so fetch() is cancelled by the browser before it'
       + '\n    reaches the network. The endpoint itself is reachable \u2014 the block'
@@ -680,8 +680,10 @@ async function testEndpointReachability(test) {
 
     const parts = [`${reachable}/${results.length} reachable`];
     if (unreachable) parts.push(`${unreachable} unreachable`);
-    parts.push('*.events.data.microsoft.com not tested \u2014 run Local Scanner to verify');
-    const value = parts.join(' \u2022 ') + ' (browser check via /favicon.ico)';
+    // Pending segment: app.js mergeBrowserBlockedEndpointResult identifies
+    // and replaces this segment by matching on browserBlocked.headlineMarker.
+    parts.push(EndpointConfig.browserBlocked.headlineMarker + ' not tested \u2014 run Local Scanner to verify');
+    const value = parts.join(EndpointConfig.browserBlocked.headlineSeparator) + ' (browser check via /favicon.ico)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
 }
