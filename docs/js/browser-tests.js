@@ -854,79 +854,30 @@ function classifyNetworkType(isp, org) {
 // ── Captive Portal Detection ──
 async function testCaptivePortal(test) {
     const t0 = performance.now();
-    // Microsoft's own NCSI endpoint — same URL Windows uses for network connectivity detection
-    const NCSI_URL = 'https://www.msftconnecttest.com/connecttest.txt';
-    const EXPECTED  = 'Microsoft Connect Test';
+    // www.msftconnecttest.com is Microsoft's NCSI endpoint but it is
+    // served HTTP-only (its HTTPS certificate is intentionally invalid:
+    // ERR_CERT_COMMON_NAME_INVALID) because NCSI runs before the user is
+    // authenticated on the captive portal. From an HTTPS page we cannot
+    // reach it — so we use www.microsoft.com instead, which (a) has a
+    // valid cert, (b) is already in our CSP connect-src allowlist, and
+    // (c) is reachable from any network with real internet. A captive
+    // portal cannot MITM an arbitrary HTTPS host without serving an
+    // invalid cert, so if the TLS handshake completes we are not behind
+    // an active portal.
+    const PROBE_URL = 'https://www.microsoft.com/robots.txt';
     const REMEDIATION = 'Open a browser and navigate to any HTTP website (e.g. http://example.com) to trigger the captive portal login page, then authenticate and try again.'; // DevSkim: ignore DS137138 - intentional HTTP URL in user-facing remediation text
 
     try {
-        let body = null;
-        let finalUrl = null;
-
-        // Try with standard CORS first so we can read and validate the body
-        try {
-            const resp = await fetch(NCSI_URL, {
-                signal: AbortSignal.timeout(15000),
-                cache: 'no-store',
-                redirect: 'follow'
-            });
-            finalUrl = resp.url;
-            body = await resp.text();
-        } catch (_corsErr) {
-            // CORS blocked the read. Fall back to no-cors: if the HTTPS
-            // handshake itself succeeds, we can be confident there is no
-            // captive portal in the path — a portal cannot MITM arbitrary
-            // HTTPS hosts without the user accepting a certificate warning
-            // (which would already have blocked every other test). If the
-            // TLS connection completes, the portal is either absent or has
-            // already been satisfied. Report Passed.
-            try {
-                await fetch(NCSI_URL, {
-                    mode: 'no-cors',
-                    signal: AbortSignal.timeout(15000),
-                    cache: 'no-store'
-                });
-                const duration = Math.round(performance.now() - t0);
-                return makeResult(test, 'Passed',
-                    'No captive portal detected',
-                    `HTTPS connection to ${NCSI_URL} succeeded (opaque — CORS blocked body inspection). A captive portal cannot complete a valid TLS handshake for an arbitrary host without serving an invalid certificate, so a successful HTTPS reach strongly implies no active portal.`,
-                    duration, '', '');
-            } catch (netErr) {
-                throw netErr; // genuine network failure — handled below
-            }
-        }
-
+        await fetch(PROBE_URL, {
+            mode: 'no-cors',
+            signal: AbortSignal.timeout(15000),
+            cache: 'no-store'
+        });
         const duration = Math.round(performance.now() - t0);
-
-        // Redirect to a different host = classic captive portal hijack
-        if (finalUrl && finalUrl !== NCSI_URL) {
-            try {
-                const redirectHost = new URL(finalUrl).hostname;
-                const expectedHost = new URL(NCSI_URL).hostname;
-                if (redirectHost !== expectedHost) {
-                    return makeResult(test, 'Failed',
-                        `Captive portal detected — redirected to ${redirectHost}`,
-                        `The connectivity check was redirected to:\n${finalUrl}\n\nA captive portal or network login page is intercepting your traffic.`,
-                        duration, '', REMEDIATION);
-                }
-            } catch (_) { /* URL parse failed */ }
-        }
-
-        // Validate response body
-        const trimmed = (body || '').trim();
-        if (trimmed === EXPECTED) {
-            return makeResult(test, 'Passed',
-                'No captive portal detected',
-                `MSFT NCSI response: "${trimmed}"\nConnectivity confirmed — no captive portal intercepting traffic.`,
-                duration, '', '');
-        }
-
-        // Wrong content = portal injected its own response
-        const preview = trimmed.length > 150 ? trimmed.substring(0, 150) + '…' : trimmed;
-        return makeResult(test, 'Failed',
-            'Captive portal likely — unexpected response from connectivity check',
-            `Expected: "${EXPECTED}"\nReceived: "${preview}"\n\nA captive portal may be serving its own login page instead of allowing through traffic.`,
-            duration, '', REMEDIATION);
+        return makeResult(test, 'Passed',
+            'No captive portal detected',
+            `HTTPS connection to ${PROBE_URL} succeeded. A captive portal cannot complete a valid TLS handshake for an arbitrary host without serving an invalid certificate, so a successful HTTPS reach strongly implies no active portal in the traffic path.`,
+            duration, '', '');
 
     } catch (err) {
         const duration = Math.round(performance.now() - t0);
@@ -936,18 +887,16 @@ async function testCaptivePortal(test) {
         if (isTimeout) {
             return makeResult(test, 'Info',
                 'Captive portal check inconclusive — slow connection',
-                `Connectivity check to ${NCSI_URL} timed out (15s).\nThis typically indicates a very slow or high-latency connection (e.g. satellite / aircraft WiFi) rather than a captive portal — captive portals respond immediately with a login redirect rather than dropping the connection.\nIf you cannot browse the web, try opening any HTTP website to trigger a portal login.`,
+                `Connectivity check to ${PROBE_URL} timed out (15s).\nThis typically indicates a very slow or high-latency connection (e.g. satellite / aircraft WiFi) rather than a captive portal — captive portals respond immediately with a login redirect rather than dropping the connection.\nIf you cannot browse the web, try opening any HTTP website to trigger a portal login.`,
                 duration, '', '');
         }
         // Any other network error (DNS failure, TCP reset, TLS error, proxy
-        // block) is ambiguous: it could be a captive portal refusing NCSI, a
-        // corporate proxy blocking the endpoint, or a general network failure.
-        // We cannot claim 'No captive portal detected' - that is exactly the
-        // fake-green this test used to produce. Report Warning so the user
-        // investigates.
+        // block) is ambiguous: it could be a captive portal refusing the
+        // probe, a corporate proxy/SWG blocking the endpoint, or a general
+        // network failure. Report Warning so the user investigates.
         return makeResult(test, 'Warning',
             'Captive portal check inconclusive',
-            `Could not reach ${NCSI_URL} (${errMsg}).\nThis could be a captive portal blocking the connectivity check, a corporate proxy/SWG blocking the NCSI endpoint, or a general network failure. If you can browse the web normally the most likely cause is a policy blocking the NCSI endpoint specifically.`,
+            `Could not reach ${PROBE_URL} (${errMsg}).\nThis could be a captive portal blocking the check, a corporate proxy/SWG blocking the endpoint, or a general network failure. If you can browse the web normally the most likely cause is a policy blocking this specific endpoint.`,
             duration, '', REMEDIATION);
     }
 }
