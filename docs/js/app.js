@@ -691,6 +691,12 @@ async function runAllBrowserTests() {
     // Reveal the map now that we have results
     if (mapContainer) mapContainer.classList.remove('hidden');
 
+    // If an L-EP-02 scanner result is already present (e.g. the scanner
+    // opened this tab with ?zresults=... before browser tests started),
+    // merge it into the freshly-created B-EP-01 card so the "run Local
+    // Scanner to verify" note is replaced with the actual scanner result.
+    mergeBrowserBlockedEndpointResult();
+
     updateSummary(allResults);
     updateCategoryBadges(allResults);
     updateConnectivityMap(allResults);
