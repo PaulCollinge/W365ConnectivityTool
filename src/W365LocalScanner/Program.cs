@@ -1143,6 +1143,16 @@ class Program
             new("C-NET-01", "Azure IMDS Metadata", "Reads VM metadata from Azure Instance Metadata Service", "cloudpc-env", RunCpcImdsMetadata),
             new("C-NET-02", "RDP Egress in Azure", "Checks that RDP traffic to Gateway/TURN stays within Azure", "cloudpc-tcp", RunCpcRdpEgressInAzure),
 
+            // ── Azure Fabric (WireServer + IMDS) ──
+            // Probes that surface third-party EDR / WFP / proxy / NSG interference with the
+            // Azure fabric communication IPs (168.63.129.16 and 169.254.169.254). A failure
+            // of these frequently manifests elsewhere as Guest Agent heartbeat loss,
+            // provisioning failure, or extension-install failure on the Cloud PC.
+            // Ref: https://learn.microsoft.com/azure/virtual-desktop/azurecommunicationips
+            new("C-AZ-01", "Azure Fabric: WireServer TCP (168.63.129.16:80)", "TCP reachability to the Azure WireServer endpoint", "cloudpc-azure", RunCpcAzureFabricWireServerTcp),
+            new("C-AZ-02", "Azure Fabric: WireServer HTTP (GoalState)", "HTTP GET to WireServer — detects proxy interception and silent blocks", "cloudpc-azure", RunCpcAzureFabricWireServerHttp),
+            new("C-AZ-03", "Azure Fabric: Instance Metadata Service (IMDS)", "HTTP GET to 169.254.169.254 with 'Metadata: true' header — verifies IMDS reachability and that headers are not being stripped by a proxy", "cloudpc-azure", RunCpcAzureFabricImds),
+
             // ── Cloud PC Shortpath Config ──
             new("C-LE-04", "Shortpath Managed Config", "Checks RDP Shortpath for managed networks prerequisites on session host", "cloudpc-env", RunCpcShortpathManagedConfig),
 
@@ -7782,8 +7792,279 @@ class Program
         return result;
     }
 
+    // ═══════════════════════════════════════════
+    //  AZURE FABRIC TESTS (Cloud PC side)
+    // ═══════════════════════════════════════════
+    //
+    // These tests target the Azure communication IPs that the Guest Agent,
+    // extension framework and VM-bootstrap code rely on. A blocked or
+    // intercepted path to these endpoints is a very common root cause of
+    // Cloud PC provisioning failure, Guest Agent heartbeat loss and
+    // Windows-365 extension install failure — symptoms which otherwise
+    // surface nowhere in the W365 connectivity signal.
+    //
+    // Reference: https://learn.microsoft.com/azure/virtual-desktop/azurecommunicationips
+    //
+    // Note: 168.63.129.16:32526 (HostGAPlugin) is NOT probed — Azure's own
+    // WFP filters intentionally restrict that port to the Guest Agent
+    // process, so a non-allowlisted probe would always see WSAEACCES on a
+    // healthy VM. We probe 168.63.129.16:80 (HTTP) and 169.254.169.254
+    // instead — both are open to any process and will catch the same class
+    // of interference (proxy intercept, EDR/WFP block, VPN route hijack).
+
+    private const string AzureFabricDocsUrl =
+        "https://learn.microsoft.com/azure/virtual-desktop/azurecommunicationips";
+
     /// <summary>
-    /// C-NET-02: RDP Egress in Azure — checks that Cloud PC traffic to RDP Gateway
+    /// C-AZ-01: Raw TCP connect to 168.63.129.16:80. A healthy Cloud PC
+    /// completes this in single-digit milliseconds. Failure = network path
+    /// blocked (NSG, third-party firewall, EDR host-firewall, VPN route
+    /// hijack, or WFP filter installed by endpoint protection).
+    /// </summary>
+    static async Task<TestResult> RunCpcAzureFabricWireServerTcp()
+    {
+        var result = new TestResult
+        {
+            Id = "C-AZ-01",
+            Name = "Azure Fabric: WireServer TCP (168.63.129.16:80)",
+            Category = "cloudpc-azure"
+        };
+        try
+        {
+            using var tcp = new TcpClient();
+            var sw = Stopwatch.StartNew();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await tcp.ConnectAsync("168.63.129.16", 80, cts.Token);
+            sw.Stop();
+
+            result.Status = "Passed";
+            result.ResultValue = $"WireServer reachable ({sw.ElapsedMilliseconds}ms)";
+            var sb = new StringBuilder();
+            sb.AppendLine($"\u2714 168.63.129.16:80 connected in {sw.ElapsedMilliseconds}ms");
+            sb.AppendLine();
+            sb.AppendLine("168.63.129.16 is Azure's WireServer — a fabric-only virtual public IP every");
+            sb.AppendLine("Azure VM / Cloud PC uses to talk to the host for Guest Agent heartbeat,");
+            sb.AppendLine("extension management, DHCP, and IMDS-adjacent bootstrap services.");
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (OperationCanceledException)
+        {
+            result.Status = "Failed";
+            result.ResultValue = "Timeout (5s) connecting to 168.63.129.16:80";
+            result.DetailedInfo =
+                "The Azure WireServer is unreachable over TCP 80 from this Cloud PC.\n" +
+                "This typically indicates:\n" +
+                "  \u2022 Third-party EDR / host firewall blocking 168.63.129.16\n" +
+                "  \u2022 NSG or Azure Firewall rule denying the fabric IP\n" +
+                "  \u2022 VPN / ZTNA client route-hijacking non-RFC1918 addresses\n" +
+                "  \u2022 Custom route to a dead next-hop\n" +
+                "Guest Agent heartbeat, extension install and provisioning all depend on this path.";
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        catch (SocketException ex) when ((int)ex.SocketErrorCode == 10013 /* WSAEACCES */)
+        {
+            result.Status = "Failed";
+            result.ResultValue = "Access denied (WSAEACCES) — local filter blocking WireServer";
+            result.DetailedInfo =
+                "WSAEACCES (10013) means the socket was refused by local policy — not by the\n" +
+                "network. The most common causes are:\n" +
+                "  \u2022 Endpoint protection / EDR (CrowdStrike, SentinelOne, Defender ASR, Symantec,\n" +
+                "    Trend, Sophos, Cortex XDR) with a host-firewall rule against 168.63.129.16\n" +
+                "  \u2022 Windows Firewall custom outbound block rule (GPO or Intune)\n" +
+                "  \u2022 VPN client WFP filter redirecting or denying the fabric IP\n" +
+                "  \u2022 Corrupt Azure Guest Agent WFP filter set (reinstall GA to reset)\n\n" +
+                "To find the provider: 'netsh wfp show state file=wfp.xml' then search wfp.xml\n" +
+                "for 168.63.129.16 under BLOCK filters — the providerName names the product.";
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Failed";
+            result.ResultValue = ex.InnerException?.Message ?? ex.Message;
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// C-AZ-02: HTTP GET to WireServer's version endpoint. Catches transparent
+    /// proxies that intercept fabric traffic and return their own HTML error
+    /// page instead of the Azure XML version list.
+    /// </summary>
+    static async Task<TestResult> RunCpcAzureFabricWireServerHttp()
+    {
+        var result = new TestResult
+        {
+            Id = "C-AZ-02",
+            Name = "Azure Fabric: WireServer HTTP (GoalState)",
+            Category = "cloudpc-azure"
+        };
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            // Version probe per Azure fabric spec — same URL the Guest Agent uses.
+            var req = new HttpRequestMessage(HttpMethod.Get,
+                "http://168.63.129.16/?comp=versions"); // DevSkim: ignore DS137138 - WireServer is HTTP-only (link-local fabric IP)
+            req.Headers.TryAddWithoutValidation("x-ms-version", "2012-11-30");
+
+            var sw = Stopwatch.StartNew();
+            var resp = await client.SendAsync(req);
+            sw.Stop();
+            var body = await resp.Content.ReadAsStringAsync();
+
+            // WireServer returns XML like: <Versions><Preferred>...<Supported>
+            bool looksLikeWireServer =
+                resp.IsSuccessStatusCode &&
+                body.Contains("<Versions", StringComparison.OrdinalIgnoreCase) &&
+                body.Contains("Supported", StringComparison.OrdinalIgnoreCase);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} in {sw.ElapsedMilliseconds}ms");
+            sb.AppendLine($"Content-Type: {resp.Content.Headers.ContentType}");
+            sb.AppendLine($"Body length: {body.Length} bytes");
+            if (body.Length > 0)
+            {
+                var preview = body.Length > 300 ? body.Substring(0, 300) + "..." : body;
+                sb.AppendLine();
+                sb.AppendLine("── Response preview ──");
+                sb.AppendLine(preview);
+            }
+
+            if (looksLikeWireServer)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"WireServer responded with Azure version list ({sw.ElapsedMilliseconds}ms)";
+            }
+            else if (resp.IsSuccessStatusCode)
+            {
+                // 2xx but body is not Azure XML — almost certainly a transparent proxy
+                // returning its own OK page.
+                result.Status = "Failed";
+                result.ResultValue = "Response body is NOT Azure WireServer XML — likely a transparent proxy intercepting fabric traffic";
+                result.RemediationUrl = AzureFabricDocsUrl;
+            }
+            else
+            {
+                result.Status = "Failed";
+                result.ResultValue = $"WireServer returned HTTP {(int)resp.StatusCode}";
+                result.RemediationUrl = AzureFabricDocsUrl;
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (TaskCanceledException)
+        {
+            result.Status = "Failed";
+            result.ResultValue = "Timeout (5s) calling http://168.63.129.16/?comp=versions";
+            result.DetailedInfo =
+                "No HTTP response from WireServer. If C-AZ-01 (raw TCP) passed, this suggests a\n" +
+                "proxy or inspection layer is accepting the connection and then hanging the\n" +
+                "request. If C-AZ-01 also failed, see that test's remediation.";
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Failed";
+            result.ResultValue = ex.InnerException?.Message ?? ex.Message;
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// C-AZ-03: HTTP GET to IMDS with the mandatory 'Metadata: true' header.
+    /// Distinguishes network blocks from header-stripping proxies by inspecting
+    /// the response body and status code. Overlaps slightly with C-NET-01
+    /// (which parses the full metadata document) but focuses specifically on
+    /// detecting interference rather than on enumerating VM properties.
+    /// </summary>
+    static async Task<TestResult> RunCpcAzureFabricImds()
+    {
+        var result = new TestResult
+        {
+            Id = "C-AZ-03",
+            Name = "Azure Fabric: Instance Metadata Service (IMDS)",
+            Category = "cloudpc-azure"
+        };
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            client.DefaultRequestHeaders.Add("Metadata", "true");
+
+            var sw = Stopwatch.StartNew();
+            var resp = await client.GetAsync(
+                "http://169.254.169.254/metadata/instance?api-version=2021-02-01"); // DevSkim: ignore DS137138 - IMDS is HTTP-only (link-local)
+            sw.Stop();
+            var body = await resp.Content.ReadAsStringAsync();
+
+            bool looksLikeImds =
+                resp.IsSuccessStatusCode &&
+                (resp.Content.Headers.ContentType?.MediaType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true) &&
+                body.Contains("\"compute\"", StringComparison.Ordinal);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} in {sw.ElapsedMilliseconds}ms");
+            sb.AppendLine($"Content-Type: {resp.Content.Headers.ContentType}");
+
+            if (looksLikeImds)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"IMDS reachable and returning metadata ({sw.ElapsedMilliseconds}ms)";
+                sb.AppendLine();
+                sb.AppendLine("IMDS is reachable, 'Metadata: true' header is preserved end-to-end,");
+                sb.AppendLine("and the response is genuine Azure metadata JSON.");
+            }
+            else if (resp.StatusCode == System.Net.HttpStatusCode.BadRequest)
+            {
+                // IMDS returns 400 when the Metadata header is missing / stripped.
+                // Since we send it, a 400 means a proxy is mutating headers.
+                result.Status = "Failed";
+                result.ResultValue = "IMDS returned 400 — 'Metadata: true' header appears to be stripped by a proxy";
+                result.RemediationUrl = AzureFabricDocsUrl;
+            }
+            else if (resp.IsSuccessStatusCode && !looksLikeImds)
+            {
+                result.Status = "Failed";
+                result.ResultValue = "Response body is NOT Azure IMDS JSON — likely a transparent proxy intercepting 169.254.169.254";
+                sb.AppendLine();
+                sb.AppendLine("── Response preview ──");
+                sb.AppendLine(body.Length > 300 ? body.Substring(0, 300) + "..." : body);
+                result.RemediationUrl = AzureFabricDocsUrl;
+            }
+            else
+            {
+                result.Status = "Failed";
+                result.ResultValue = $"IMDS returned HTTP {(int)resp.StatusCode}";
+                result.RemediationUrl = AzureFabricDocsUrl;
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (TaskCanceledException)
+        {
+            result.Status = "Failed";
+            result.ResultValue = "Timeout (5s) contacting IMDS at 169.254.169.254";
+            result.DetailedInfo =
+                "IMDS is link-local to every Azure VM and should respond in ~1ms. A timeout\n" +
+                "typically indicates:\n" +
+                "  \u2022 A VPN client route-hijacking 169.254.0.0/16\n" +
+                "  \u2022 Host firewall / EDR blocking 169.254.169.254\n" +
+                "  \u2022 The VM is not actually hosted in Azure (test not applicable)";
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        catch (HttpRequestException ex)
+        {
+            result.Status = "Failed";
+            result.ResultValue = ex.InnerException?.Message ?? ex.Message;
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Error";
+            result.ResultValue = ex.Message;
+        }
+        return result;
+    }
+
+
     /// and TURN relay exits from an Azure IP range (not routed outside via VPN/SWG).
     /// Only checks the RDP path, not general internet egress which may legitimately
     /// go through on-prem proxies.

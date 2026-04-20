@@ -368,6 +368,27 @@ const ALL_TESTS = [
         id: 'C-LE-04', name: 'Shortpath Managed Config',
         description: 'Checks RDP Shortpath for managed networks prerequisites: registry, UDP 3390 listener, firewall, and ICE/STUN OS support (requires Local Scanner on session host)',
         category: 'cloudpc', source: 'cloudpc'
+    },
+
+    // ── Azure Fabric (Cloud PC) ──
+    // Detects third-party EDR / WFP / proxy / NSG interference with the
+    // Azure fabric IPs (168.63.129.16 and 169.254.169.254). Failure of
+    // these is a common root cause of Cloud PC provisioning failure,
+    // Guest Agent heartbeat loss and extension-install failure.
+    {
+        id: 'C-AZ-01', name: 'Azure Fabric: WireServer TCP (168.63.129.16:80)',
+        description: 'Raw TCP reachability to the Azure WireServer fabric endpoint',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-AZ-02', name: 'Azure Fabric: WireServer HTTP (GoalState)',
+        description: 'HTTP GET to WireServer version endpoint — detects transparent proxies intercepting fabric traffic',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-AZ-03', name: 'Azure Fabric: Instance Metadata Service (IMDS)',
+        description: "HTTP GET to 169.254.169.254 with 'Metadata: true' header — verifies IMDS reachability and that headers are not being stripped by a proxy",
+        category: 'cloudpc', source: 'cloudpc'
     }
 ];
 
