@@ -602,38 +602,39 @@ function makeResult(test, status, value, detail, duration, remediation, remediat
 // ═════════════════════════════════════════════════════
 
 // ── Endpoint Reachability ──
-// Tests connectivity using a no-cors GET fetch. The browser cannot let JS
-// read the response body for cross-origin requests without CORS headers, so
-// the result is always opaque. What we CAN observe:
-//   * fetch resolves       → a response arrived → endpoint reachable (green).
-//   * fetch rejects with TimeoutError/AbortError → no response in 10s → fail.
-//   * fetch rejects with TypeError → could be anything: DNS NXDOMAIN, local
-//     reset, CORS preflight, or (most commonly in 2024+ Chromium) ORB
-//     (Opaque Response Blocking) rejecting text/html opaque responses. We
-//     genuinely cannot distinguish these from inside the browser sandbox.
+// Probes each required endpoint with a no-cors GET to /favicon.ico.
 //
-// Previous versions tried to use elapsed time as a heuristic (< 80ms = DNS
-// failure, > 80ms = CORS/ORB) but this is wrong: when the browser already
-// has a warm HTTP/2 or HTTP/3 socket to the origin (common for Microsoft
-// endpoints when the user is signed into M365), an ORB rejection can arrive
-// in 10-20ms, well under the floor. That falsely flagged reachable endpoints
-// (login.microsoftonline.com, aka.ms, windows.cloud.microsoft, etc.) as
-// Unreachable. The honest answer for a TypeError is "Indeterminate" — we
-// label it clearly and let the overall verdict reflect the uncertainty.
+// Why /favicon.ico and not / ?
+//   The root path typically returns text/html, which modern Chromium blocks
+//   via ORB (Opaque Response Blocking) — the fetch promise rejects with
+//   'TypeError: Failed to fetch' even though the server responded with
+//   200 OK. That was causing login.microsoftonline.com, aka.ms, etc. to
+//   appear Unreachable or Indeterminate despite being fully functional.
+//
+//   /favicon.ico is served as image/x-icon (or image/png) by every major
+//   host. Image MIME types are NOT ORB-eligible, so the opaque response
+//   is returned cleanly and fetch resolves. Even a 404 at /favicon.ico
+//   still resolves (opaque no-cors fetches resolve for any HTTP status
+//   as long as the TCP/TLS transaction completed).
+//
+// Outcomes:
+//   * fetch resolves   → TCP+TLS+HTTP completed → REACHABLE.
+//   * TimeoutError     → no response in 10s → TIMEOUT.
+//   * Other TypeError  → DNS / TCP / CSP / cert failure → UNREACHABLE.
 async function testEndpointReachability(test) {
     const t0 = performance.now();
     const results = [];
-    let anyFailed = false;
 
     const checks = EndpointConfig.requiredEndpoints.map(async (ep) => {
-        const url = `https://${ep.url}/`;
+        const url = `https://${ep.url}/favicon.ico`;
         const start = performance.now();
         try {
             await fetch(url, {
                 method: 'GET',
                 mode: 'no-cors',
                 cache: 'no-store',
-                signal: AbortSignal.timeout(10000)
+                signal: AbortSignal.timeout(10000),
+                redirect: 'follow',
             });
             const elapsed = Math.round(performance.now() - start);
             results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed });
@@ -641,11 +642,12 @@ async function testEndpointReachability(test) {
             const elapsed = Math.round(performance.now() - start);
             if (e.name === 'AbortError' || e.name === 'TimeoutError') {
                 results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
-                anyFailed = true;
             } else {
-                // TypeError of any speed: could be reachable-but-ORB/CORS, or
-                // could be DNS/proxy/reset. We cannot tell. Report honestly.
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Indeterminate', time: elapsed, note: 'CORS/ORB blocked definitive check' });
+                // With CSP correctly allowing the host and favicon being
+                // ORB-safe, a TypeError here indicates a real network
+                // problem: DNS NXDOMAIN, TCP RST, TLS handshake failure,
+                // or a local firewall/SWG blocking the host.
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed, note: e.name || 'fetch failed' });
             }
         }
     });
@@ -653,32 +655,24 @@ async function testEndpointReachability(test) {
     await Promise.all(checks);
     const duration = Math.round(performance.now() - t0);
 
-    const reachable    = results.filter(r => r.status === 'Reachable').length;
-    const indeterminate = results.filter(r => r.status === 'Indeterminate').length;
-    const unreachable  = results.filter(r => r.status === 'Unreachable' || r.status === 'Timeout').length;
+    const reachable   = results.filter(r => r.status === 'Reachable').length;
+    const unreachable = results.filter(r => r.status === 'Unreachable' || r.status === 'Timeout').length;
 
     const detail = results.map(r => {
-        const icon = r.status === 'Reachable' ? '\u2714'
-                   : r.status === 'Indeterminate' ? '\u003F'
-                   : '\u2716';
+        const icon = r.status === 'Reachable' ? '\u2714' : '\u2716';
         const timing = r.time > 0 ? ` (${r.time}ms)` : '';
         const note = r.note ? ` [${r.note}]` : '';
         return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
     }).join('\n');
 
-    // Verdict: any confirmed unreachable = Warning/Failed; indeterminate-only
-    // runs are Warning (we can't prove reachability from the browser sandbox).
     let status;
-    if (unreachable === results.length) status = 'Failed';
-    else if (unreachable > 0) status = 'Warning';
-    else if (indeterminate > 0) status = 'Warning';
-    else status = 'Passed';
+    if (unreachable === 0) status = 'Passed';
+    else if (unreachable === results.length) status = 'Failed';
+    else status = 'Warning';
 
-    const totalOk = reachable + indeterminate;
-    const parts = [`${reachable}/${results.length} confirmed reachable`];
-    if (indeterminate) parts.push(`${indeterminate} indeterminate (CORS/ORB)`);
-    if (unreachable) parts.push(`${unreachable} timed out`);
-    const value = parts.join(', ') + ' (browser check)';
+    const parts = [`${reachable}/${results.length} reachable`];
+    if (unreachable) parts.push(`${unreachable} unreachable`);
+    const value = parts.join(', ') + ' (browser check via /favicon.ico)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
 }
