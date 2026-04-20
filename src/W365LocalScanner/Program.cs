@@ -3751,7 +3751,14 @@ class Program
                 Console.Write(reached ? "✓" : "✗");
             }
 
-            result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
+            if (completed == 0)
+            {
+                result.ResultValue = $"0/{targets.Count} endpoints traced — ICMP blocked on network (informational only)";
+            }
+            else
+            {
+                result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
+            }
             result.DetailedInfo = sb.ToString().Trim();
             // Traceroute is purely informational — ICMP blocking is extremely common on
             // corporate networks and does not indicate any connectivity issue.
@@ -7888,12 +7895,16 @@ class Program
             var endpoints = new List<(string host, int port, string purpose, string group)>();
 
             // ── AVD base endpoints (apply to both AVD and W365) ──
-            // TCP 443
+            // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
+            // TCP 443 — Core service traffic
+            endpoints.Add(("login.microsoftonline.com", 443, "Authentication to Microsoft Online Services", "AVD Required"));
+            endpoints.Add(("rdweb.wvd.microsoft.com", 443, "Service traffic / TCP RDP (*.wvd.microsoft.com)", "AVD Required"));
             endpoints.Add(("catalogartifact.azureedge.net", 443, "Azure Marketplace", "AVD Required"));
             endpoints.Add(("gcs.prod.monitoring.core.windows.net", 443, "Agent monitoring", "AVD Required"));
             endpoints.Add(("mrsglobalsteus2prod.blob.core.windows.net", 443, "Agent/SXS stack updates", "AVD Required"));
             endpoints.Add(("wvdportalstorageblob.blob.core.windows.net", 443, "Azure portal support", "AVD Required"));
             endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", "AVD Required"));
+            endpoints.Add(("login.windows.net", 443, "Sign-in to Microsoft Online Services", "AVD Optional"));
 
             // *.prod.warm.ingest.monitor.core.windows.net — Log Analytics / Azure Monitor
             // ingestion wildcard. The real hostnames follow the pattern
@@ -7932,8 +7943,9 @@ class Program
             endpoints.Add((monitorExemplar, 443,
                 "Agent diagnostics (*.prod.warm.ingest.monitor.core.windows.net)", "AVD Required"));
 
-            // TCP 80
+            // TCP 80 — Health monitoring and certificates
             endpoints.Add(("168.63.129.16", 80, "Session host health monitoring (Azure wireserver)", "AVD Required"));
+            endpoints.Add(("168.63.129.16", 32526, "Session host health monitoring (Azure wireserver)", "AVD Required"));
             endpoints.Add(("oneocsp.microsoft.com", 80, "CRL/OCSP certificate revocation", "AVD Required"));
             endpoints.Add(("ctldl.windowsupdate.com", 80, "Certificate trust list updates", "AVD Required"));
 
@@ -8203,8 +8215,16 @@ class Program
             // Note untestable wildcard entries
             sb.AppendLine();
             sb.AppendLine("\u2550\u2550 Wildcard Firewall Rules (cannot test directly) \u2550\u2550");
-            sb.AppendLine("  \u2139 *.service.windows.cloud.microsoft:443 \u2014 Service Traffic");
-            sb.AppendLine("  \u2139 *.windows.static.microsoft:443 \u2014 Static Assets");
+            sb.AppendLine("  \u2139 *.wvd.microsoft.com:443 \u2014 Service traffic (exemplar rdweb.wvd.microsoft.com tested above)");
+            sb.AppendLine("  \u2139 *.windows.cloud.microsoft:443 \u2014 Service traffic (no known testable exemplar)");
+            sb.AppendLine("  \u2139 *.service.windows.cloud.microsoft:443 \u2014 Service traffic");
+            sb.AppendLine("  \u2139 *.windows.static.microsoft:443 \u2014 Static assets");
+            sb.AppendLine("  \u2139 *.events.data.microsoft.com:443 \u2014 Telemetry (optional)");
+            sb.AppendLine("  \u2139 *.prod.do.dsp.mp.microsoft.com:443 \u2014 Windows Update (optional)");
+            sb.AppendLine("  \u2139 *.sfx.ms:443 \u2014 OneDrive client updates (optional)");
+            sb.AppendLine("  \u2139 *.digicert.com:80 \u2014 Certificate revocation (optional)");
+            sb.AppendLine("  \u2139 *.azure-dns.com / *.azure-dns.net:443 \u2014 Azure DNS (optional)");
+            sb.AppendLine("  \u2139 *eh.servicebus.windows.net:443 \u2014 Event Hub diagnostic settings (optional)");
             sb.AppendLine("  Ensure these wildcard rules are configured in your firewall/proxy.");
 
             result.ResultValue = $"{passed}/{total} session host endpoints reachable";
