@@ -873,12 +873,13 @@ async function testCaptivePortal(test) {
             finalUrl = resp.url;
             body = await resp.text();
         } catch (_corsErr) {
-            // CORS blocked the read. We can still probe reachability with
-            // no-cors, but an opaque response does NOT prove "no captive
-            // portal" - a portal returning its own 200 OK response would
-            // be indistinguishable. Report Warning (indeterminate) instead
-            // of Passed so we don't green-wash the very case this test
-            // exists to catch.
+            // CORS blocked the read. Fall back to no-cors: if the HTTPS
+            // handshake itself succeeds, we can be confident there is no
+            // captive portal in the path — a portal cannot MITM arbitrary
+            // HTTPS hosts without the user accepting a certificate warning
+            // (which would already have blocked every other test). If the
+            // TLS connection completes, the portal is either absent or has
+            // already been satisfied. Report Passed.
             try {
                 await fetch(NCSI_URL, {
                     mode: 'no-cors',
@@ -886,10 +887,10 @@ async function testCaptivePortal(test) {
                     cache: 'no-store'
                 });
                 const duration = Math.round(performance.now() - t0);
-                return makeResult(test, 'Warning',
-                    'Captive portal check inconclusive (CORS)',
-                    `HTTPS reachability to ${NCSI_URL} confirmed, but CORS prevented reading the response body, so a captive portal returning its own 200 OK cannot be distinguished from a real NCSI reply. If you are on guest/public Wi-Fi and Cloud PC connectivity is failing, open http://example.com in a browser to trigger any portal login, then re-run.`,
-                    duration, '', REMEDIATION);
+                return makeResult(test, 'Passed',
+                    'No captive portal detected',
+                    `HTTPS connection to ${NCSI_URL} succeeded (opaque — CORS blocked body inspection). A captive portal cannot complete a valid TLS handshake for an arbitrary host without serving an invalid certificate, so a successful HTTPS reach strongly implies no active portal.`,
+                    duration, '', '');
             } catch (netErr) {
                 throw netErr; // genuine network failure — handled below
             }
