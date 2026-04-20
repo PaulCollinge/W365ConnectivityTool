@@ -671,7 +671,7 @@ async function testEndpointReachability(test) {
       + '\n    Chrome and Firefox, so fetch() is cancelled by the browser before it'
       + '\n    reaches the network. The endpoint itself is reachable \u2014 the block'
       + '\n    is enforced in the browser only.'
-      + '\n    \u2192 To verify this endpoint, run the W365LocalScanner.exe (test C-EP-02).';
+      + '\n    \u2192 To verify this endpoint, run the W365LocalScanner.exe (test L-EP-02 on client, C-EP-02 on Cloud PC).';
 
     let status;
     if (unreachable === 0) status = 'Passed';

@@ -1082,6 +1082,7 @@ class Program
 
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
+            new("L-EP-02", "Browser-Blocked Endpoints", "Tests required endpoints that browsers block via tracker-prevention (e.g. *.events.data.microsoft.com)", "endpoint", RunBrowserBlockedEndpointsTest),
 
             // ── TCP Based RDP Connectivity ──
             new("L-TCP-03", "DNS Resolution Performance", "Measures pure DNS resolution time for key W365 endpoints", "tcp", RunDnsPerformance),
@@ -1198,6 +1199,67 @@ class Program
             }
 
             result.ResultValue = $"{passed}/{targets.Length} certificate endpoints reachable on port 80";
+            result.DetailedInfo = sb.ToString().Trim();
+            result.Status = passed == targets.Length ? "Passed" : passed > 0 ? "Warning" : "Failed";
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#end-user-devices";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    /// <summary>
+    /// L-EP-02: Probes required endpoints that browsers block via built-in
+    /// tracker-prevention lists. These hosts are fully reachable over the
+    /// network but browser fetch() is cancelled by the browser itself before
+    /// any DNS/TCP occurs, so the web-based B-EP-01 check cannot verify them.
+    /// The scanner is not subject to tracker-prevention and probes via raw TCP.
+    /// </summary>
+    static async Task<TestResult> RunBrowserBlockedEndpointsTest()
+    {
+        var result = new TestResult { Id = "L-EP-02", Name = "Browser-Blocked Endpoints", Category = "endpoint" };
+        try
+        {
+            // Microsoft OneDS telemetry hosts are on Edge / Chrome / Firefox
+            // tracker-blocking lists. Probe a representative subdomain for the
+            // *.events.data.microsoft.com wildcard.
+            // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#end-user-devices
+            var targets = new (string host, int port, string wildcard, string purpose)[]
+            {
+                ("watson.events.data.microsoft.com", 443, "*.events.data.microsoft.com", "Client telemetry (OneDS)")
+            };
+
+            var sb = new StringBuilder();
+            int passed = 0;
+            foreach (var (host, port, wildcard, purpose) in targets)
+            {
+                try
+                {
+                    using var tcp = new TcpClient();
+                    var sw = Stopwatch.StartNew();
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await tcp.ConnectAsync(host, port, cts.Token);
+                    sw.Stop();
+                    sb.AppendLine($"\u2714 {wildcard} ({host}:{port}) \u2014 {purpose} \u2014 Connected in {sw.ElapsedMilliseconds}ms");
+                    passed++;
+                }
+                catch (OperationCanceledException)
+                {
+                    sb.AppendLine($"\u2718 {wildcard} ({host}:{port}) \u2014 {purpose} \u2014 Timeout (5s)");
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"\u2718 {wildcard} ({host}:{port}) \u2014 {purpose} \u2014 {ex.InnerException?.Message ?? ex.Message}");
+                }
+            }
+            sb.AppendLine();
+            sb.AppendLine("These endpoints cannot be probed from a browser because Edge, Chrome");
+            sb.AppendLine("and Firefox ship built-in tracker-blocking lists that cancel fetch()");
+            sb.AppendLine("to them regardless of CSP, redirect, or response type. Raw TCP from");
+            sb.AppendLine("the scanner is not subject to tracker-prevention and reflects the real");
+            sb.AppendLine("network reachability.");
+
+            result.ResultValue = $"{passed}/{targets.Length} browser-blocked endpoints reachable (via scanner)";
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = passed == targets.Length ? "Passed" : passed > 0 ? "Warning" : "Failed";
             if (result.Status != "Passed")
