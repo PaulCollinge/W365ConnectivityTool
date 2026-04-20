@@ -7817,6 +7817,59 @@ class Program
         "https://learn.microsoft.com/azure/virtual-desktop/azurecommunicationips";
 
     /// <summary>
+    /// Returns a pre-filled "Skipped" result when the scanner is clearly not
+    /// running inside an Azure VM. `_azureVmRegion` is populated at startup
+    /// only when IMDS responds; if it's null, the Azure fabric IPs
+    /// (168.63.129.16, 169.254.169.254) are fundamentally unroutable from
+    /// this host and any probe failure is a false positive. The tests are
+    /// intended to run as part of the --cloudpc suite *inside* a Cloud PC.
+    /// </summary>
+    static TestResult? AzureFabricNotApplicable(string id, string name)
+    {
+        if (_azureVmRegion != null) return null; // in Azure — run the real test
+        return new TestResult
+        {
+            Id = id,
+            Name = name,
+            Category = "cloudpc-azure",
+            Status = "Skipped",
+            ResultValue = "Not applicable — this host is not an Azure VM",
+            DetailedInfo =
+                "The Azure fabric communication IPs (168.63.129.16, 169.254.169.254)\n" +
+                "are only reachable from inside an Azure VM. The Instance Metadata\n" +
+                "Service did not respond at startup, so the scanner is not running\n" +
+                "inside an Azure VM and these tests do not apply.\n\n" +
+                "Run 'W365LocalScanner.exe --cloudpc' from inside the Cloud PC to\n" +
+                "exercise these probes against real fabric endpoints."
+        };
+    }
+
+    /// <summary>
+    /// Checks whether an exception chain ends in a socket-level access-denied
+    /// (WSAEACCES / error 10013) — the signature fingerprint of a local WFP /
+    /// EDR / host-firewall block, as opposed to a timeout or remote refusal.
+    /// </summary>
+    static bool IsWsaEAccess(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is SocketException se && (int)se.SocketErrorCode == 10013) return true;
+        }
+        return false;
+    }
+
+    private const string WsaEAccessDetailedInfo =
+        "WSAEACCES (10013) means the socket was refused by local policy — not by the\n" +
+        "network. The most common causes are:\n" +
+        "  \u2022 Endpoint protection / EDR (CrowdStrike, SentinelOne, Defender ASR, Symantec,\n" +
+        "    Trend, Sophos, Cortex XDR) with a host-firewall rule against 168.63.129.16\n" +
+        "  \u2022 Windows Firewall custom outbound block rule (GPO or Intune)\n" +
+        "  \u2022 VPN client WFP filter redirecting or denying the fabric IP\n" +
+        "  \u2022 Corrupt Azure Guest Agent WFP filter set (reinstall GA to reset)\n\n" +
+        "To find the provider: 'netsh wfp show state file=wfp.xml' then search wfp.xml\n" +
+        "for 168.63.129.16 under BLOCK filters — the providerName names the product.";
+
+    /// <summary>
     /// C-AZ-01: Raw TCP connect to 168.63.129.16:80. A healthy Cloud PC
     /// completes this in single-digit milliseconds. Failure = network path
     /// blocked (NSG, third-party firewall, EDR host-firewall, VPN route
@@ -7824,6 +7877,10 @@ class Program
     /// </summary>
     static async Task<TestResult> RunCpcAzureFabricWireServerTcp()
     {
+        var skip = AzureFabricNotApplicable("C-AZ-01",
+            "Azure Fabric: WireServer TCP (168.63.129.16:80)");
+        if (skip != null) return skip;
+
         var result = new TestResult
         {
             Id = "C-AZ-01",
@@ -7866,16 +7923,7 @@ class Program
         {
             result.Status = "Failed";
             result.ResultValue = "Access denied (WSAEACCES) — local filter blocking WireServer";
-            result.DetailedInfo =
-                "WSAEACCES (10013) means the socket was refused by local policy — not by the\n" +
-                "network. The most common causes are:\n" +
-                "  \u2022 Endpoint protection / EDR (CrowdStrike, SentinelOne, Defender ASR, Symantec,\n" +
-                "    Trend, Sophos, Cortex XDR) with a host-firewall rule against 168.63.129.16\n" +
-                "  \u2022 Windows Firewall custom outbound block rule (GPO or Intune)\n" +
-                "  \u2022 VPN client WFP filter redirecting or denying the fabric IP\n" +
-                "  \u2022 Corrupt Azure Guest Agent WFP filter set (reinstall GA to reset)\n\n" +
-                "To find the provider: 'netsh wfp show state file=wfp.xml' then search wfp.xml\n" +
-                "for 168.63.129.16 under BLOCK filters — the providerName names the product.";
+            result.DetailedInfo = WsaEAccessDetailedInfo;
             result.RemediationUrl = AzureFabricDocsUrl;
         }
         catch (Exception ex)
@@ -7894,6 +7942,10 @@ class Program
     /// </summary>
     static async Task<TestResult> RunCpcAzureFabricWireServerHttp()
     {
+        var skip = AzureFabricNotApplicable("C-AZ-02",
+            "Azure Fabric: WireServer HTTP (GoalState)");
+        if (skip != null) return skip;
+
         var result = new TestResult
         {
             Id = "C-AZ-02",
@@ -7962,6 +8014,13 @@ class Program
                 "request. If C-AZ-01 also failed, see that test's remediation.";
             result.RemediationUrl = AzureFabricDocsUrl;
         }
+        catch (Exception ex) when (IsWsaEAccess(ex))
+        {
+            result.Status = "Failed";
+            result.ResultValue = "Access denied (WSAEACCES) — local filter blocking WireServer";
+            result.DetailedInfo = WsaEAccessDetailedInfo;
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
         catch (Exception ex)
         {
             result.Status = "Failed";
@@ -7980,6 +8039,10 @@ class Program
     /// </summary>
     static async Task<TestResult> RunCpcAzureFabricImds()
     {
+        var skip = AzureFabricNotApplicable("C-AZ-03",
+            "Azure Fabric: Instance Metadata Service (IMDS)");
+        if (skip != null) return skip;
+
         var result = new TestResult
         {
             Id = "C-AZ-03",
@@ -8051,6 +8114,13 @@ class Program
                 "  \u2022 The VM is not actually hosted in Azure (test not applicable)";
             result.RemediationUrl = AzureFabricDocsUrl;
         }
+        catch (Exception ex) when (IsWsaEAccess(ex))
+        {
+            result.Status = "Failed";
+            result.ResultValue = "Access denied (WSAEACCES) \u2014 local filter blocking IMDS";
+            result.DetailedInfo = WsaEAccessDetailedInfo;
+            result.RemediationUrl = AzureFabricDocsUrl;
+        }
         catch (HttpRequestException ex)
         {
             result.Status = "Failed";
@@ -8066,6 +8136,8 @@ class Program
     }
 
 
+    /// <summary>
+    /// C-NET-02: RDP Egress in Azure — checks that Cloud PC traffic to RDP Gateway
     /// and TURN relay exits from an Azure IP range (not routed outside via VPN/SWG).
     /// Only checks the RDP path, not general internet egress which may legitimately
     /// go through on-prem proxies.
