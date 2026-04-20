@@ -1109,15 +1109,21 @@ function showPromptModal(prompt) {
             </div>
             <p style="padding:16px 24px;color:var(--text-secondary);font-size:13px;margin:0">
                 Clipboard access was blocked. Select all text below (Ctrl+A), copy it (Ctrl+C),
-                then paste it into <a href="https://copilot.microsoft.com/" target="_blank" rel="noopener" style="color:var(--accent)">Microsoft Copilot</a>.
+                then paste it into <a href="https://copilot.microsoft.com/" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Microsoft Copilot</a>.
             </p>
-            <textarea readonly style="flex:1;margin:0 24px 16px;padding:12px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--r-sm);font-family:monospace;font-size:12px;resize:none;box-sizing:border-box">${prompt.replace(/</g, '&lt;')}</textarea>
+            <textarea readonly style="flex:1;margin:0 24px 16px;padding:12px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--r-sm);font-family:monospace;font-size:12px;resize:none;box-sizing:border-box"></textarea>
             <div class="analysis-footer">
                 <button class="btn btn-ai" onclick="window.open('https://copilot.microsoft.com/','_blank','noopener,noreferrer');this.closest('.analysis-overlay').remove()">Open Copilot</button>
             </div>
         </div>`;
 
     document.body.appendChild(overlay);
+    // Populate the textarea via .value so the browser's text node handling
+    // guarantees safety regardless of prompt content. Previously we used
+    // innerHTML interpolation with a partial < -> &lt; escape which missed
+    // & and was inconsistent with the rest of the file's escaping.
+    const ta = overlay.querySelector('textarea');
+    if (ta) ta.value = prompt;
 }
 
 function escapeHtml(str) {
