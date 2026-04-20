@@ -637,17 +637,17 @@ async function testEndpointReachability(test) {
                 redirect: 'follow',
             });
             const elapsed = Math.round(performance.now() - start);
-            results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed });
+            results.push({ endpoint: ep.url, purpose: ep.purpose, optional: !!ep.optional, status: 'Reachable', time: elapsed });
         } catch (e) {
             const elapsed = Math.round(performance.now() - start);
             if (e.name === 'AbortError' || e.name === 'TimeoutError') {
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
+                results.push({ endpoint: ep.url, purpose: ep.purpose, optional: !!ep.optional, status: 'Timeout', time: elapsed });
             } else {
                 // With CSP correctly allowing the host and favicon being
                 // ORB-safe, a TypeError here indicates a real network
                 // problem: DNS NXDOMAIN, TCP RST, TLS handshake failure,
                 // or a local firewall/SWG blocking the host.
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed, note: e.name || 'fetch failed' });
+                results.push({ endpoint: ep.url, purpose: ep.purpose, optional: !!ep.optional, status: 'Unreachable', time: elapsed, note: e.name || 'fetch failed' });
             }
         }
     });
@@ -655,23 +655,31 @@ async function testEndpointReachability(test) {
     await Promise.all(checks);
     const duration = Math.round(performance.now() - t0);
 
-    const reachable   = results.filter(r => r.status === 'Reachable').length;
-    const unreachable = results.filter(r => r.status === 'Unreachable' || r.status === 'Timeout').length;
+    // Optional endpoints (e.g. telemetry) are commonly blocked by SWG/GSA
+    // policies and should not drag the verdict down. Track them separately.
+    const requiredResults = results.filter(r => !r.optional);
+    const optionalResults = results.filter(r =>  r.optional);
+    const reachable   = requiredResults.filter(r => r.status === 'Reachable').length;
+    const unreachable = requiredResults.filter(r => r.status === 'Unreachable' || r.status === 'Timeout').length;
+    const optionalBlocked = optionalResults.filter(r => r.status !== 'Reachable').length;
 
     const detail = results.map(r => {
-        const icon = r.status === 'Reachable' ? '\u2714' : '\u2716';
+        const bad = r.status !== 'Reachable';
+        const icon = !bad ? '\u2714' : (r.optional ? '\u2139' : '\u2716');
         const timing = r.time > 0 ? ` (${r.time}ms)` : '';
         const note = r.note ? ` [${r.note}]` : '';
-        return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
+        const tag  = bad && r.optional ? ' — optional endpoint, commonly blocked by SWG/telemetry policies (informational)' : '';
+        return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}${tag}`;
     }).join('\n');
 
     let status;
     if (unreachable === 0) status = 'Passed';
-    else if (unreachable === results.length) status = 'Failed';
+    else if (unreachable === requiredResults.length) status = 'Failed';
     else status = 'Warning';
 
-    const parts = [`${reachable}/${results.length} reachable`];
+    const parts = [`${reachable}/${requiredResults.length} reachable`];
     if (unreachable) parts.push(`${unreachable} unreachable`);
+    if (optionalBlocked) parts.push(`${optionalBlocked} optional blocked`);
     const value = parts.join(', ') + ' (browser check via /favicon.ico)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
