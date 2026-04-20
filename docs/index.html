@@ -23,7 +23,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=206">
+    <link rel="stylesheet" href="css/styles.css?v=207">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -549,6 +549,22 @@
             </div>
         </div>
 
+        <!-- Download Banner -->
+        <div id="download-banner" class="download-banner hidden">
+            <div class="download-content">
+                <div class="download-icon">⬇️</div>
+                <div class="download-text">
+                    <h3>Complete your diagnostics with the Local Scanner</h3>
+                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
+                    VPN detection). Download and run the scanner — it will automatically open this page with results.</p>
+                </div>
+                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
+                   class="btn btn-download">
+                    <span class="btn-icon">⬇️</span> Download Scanner (.exe)
+                </a>
+            </div>
+        </div>
+
         <!-- Key Findings (shown after tests run) -->
 
         <!-- Host-type picker (shown when Azure VM detected but type unknown) -->
@@ -625,22 +641,6 @@
                 </ul>
             </div>
             <button class="satellite-banner-dismiss" onclick="document.getElementById('satellite-banner').classList.add('hidden')" title="Dismiss">✕</button>
-        </div>
-
-        <!-- Download Banner -->
-        <div id="download-banner" class="download-banner hidden">
-            <div class="download-content">
-                <div class="download-icon">⬇️</div>
-                <div class="download-text">
-                    <h3>Complete your diagnostics with the Local Scanner</h3>
-                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
-                    VPN detection). Download and run the scanner — it will automatically open this page with results.</p>
-                </div>
-                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
-                   class="btn btn-download">
-                    <span class="btn-icon">⬇️</span> Download Scanner (.exe)
-                </a>
-            </div>
         </div>
 
 
@@ -811,11 +811,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=206"></script>
-    <script src="js/browser-tests.js?v=206"></script>
-    <script src="js/ui.js?v=206"></script>
-    <script src="js/map.js?v=206"></script>
-    <script src="js/ai-analysis.js?v=206"></script>
-    <script src="js/app.js?v=206"></script>
+    <script src="js/config.js?v=207"></script>
+    <script src="js/browser-tests.js?v=207"></script>
+    <script src="js/ui.js?v=207"></script>
+    <script src="js/map.js?v=207"></script>
+    <script src="js/ai-analysis.js?v=207"></script>
+    <script src="js/app.js?v=207"></script>
 </body>
 </html>
