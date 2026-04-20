@@ -796,12 +796,22 @@ async function checkForAutoImport() {
 }
 
 // ── Decode compressed hash (deflate-raw → JSON) ──
+// Defends against zip-bomb share links: a crafted ~30KB base64 payload can
+// expand to many GB under deflate, which would OOM the tab long before the
+// 10s wall-clock timeout fires. We cap both the compressed input size and
+// the running decompressed output size, aborting the stream the instant
+// either breaches the cap.
+const MAX_COMPRESSED_HASH_BYTES   = 2 * 1024 * 1024; // 2 MB compressed input
+const MAX_DECOMPRESSED_HASH_BYTES = 5 * 1024 * 1024; // 5 MB decompressed output
 async function decodeCompressedHash(raw) {
     let base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
     const pad = (4 - (base64.length % 4)) % 4;
     if (pad > 0) base64 += '='.repeat(pad);
 
     const binaryStr = atob(base64);
+    if (binaryStr.length > MAX_COMPRESSED_HASH_BYTES) {
+        throw new Error(`Share link too large: ${binaryStr.length} bytes exceeds ${MAX_COMPRESSED_HASH_BYTES} limit`);
+    }
     const bytes = new Uint8Array(binaryStr.length);
     for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
 
@@ -814,12 +824,19 @@ async function decodeCompressedHash(raw) {
 
         const reader = ds.readable.getReader();
         const chunks = [];
+        let totalLength = 0;
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            totalLength += value.length;
+            if (totalLength > MAX_DECOMPRESSED_HASH_BYTES) {
+                // Zip-bomb defence: cancel the stream immediately and throw
+                // so we don't allocate any further chunks.
+                try { await reader.cancel(); } catch { /* best effort */ }
+                throw new Error(`Share link decompression exceeded ${MAX_DECOMPRESSED_HASH_BYTES} bytes (possible zip bomb)`);
+            }
             chunks.push(value);
         }
-        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
         const decompressed = new Uint8Array(totalLength);
         let offset = 0;
         for (const chunk of chunks) {
