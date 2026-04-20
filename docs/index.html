@@ -23,7 +23,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=205">
+    <link rel="stylesheet" href="css/styles.css?v=206">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
 </head>
 <body>
@@ -137,100 +137,6 @@
             <div class="summary-item pending">
                 <span class="summary-count" id="summary-pending">0</span>
                 <span class="summary-label">Needs Local Scan</span>
-            </div>
-        </div>
-
-        <!-- Key Findings (shown after tests run) -->
-
-        <!-- Host-type picker (shown when Azure VM detected but type unknown) -->
-        <div id="host-type-picker" class="host-type-picker hidden">
-            <span class="htp-icon">☁️</span>
-            <span class="htp-text">Azure VM detected — what type of host is this?</span>
-            <button class="htp-btn htp-btn-cpc" onclick="pickHostType('cloudpc')" aria-label="Select Cloud PC (Windows 365) as host type">Cloud PC <span class="htp-hint">(Windows 365)</span></button>
-            <button class="htp-btn htp-btn-avd" onclick="pickHostType('avd')" aria-label="Select Azure Virtual Desktop session host as host type">AVD Session Host</button>
-        </div>
-
-        <div id="key-findings" class="key-findings hidden">
-            <div class="kf-header">
-                <span class="kf-icon">🎯</span>
-                <h2>Key Findings</h2>
-                <span class="kf-verdict" id="kf-verdict"></span>
-            </div>
-            <div class="kf-grid" id="kf-grid"></div>
-        </div>
-
-        <!-- Remediation Checklist -->
-        <div id="remediation-panel" class="remediation-panel hidden">
-            <div class="rem-header">
-                <span class="rem-icon">🔧</span>
-                <h2>What to Fix</h2>
-                <span class="rem-count" id="rem-count"></span>
-            </div>
-            <ol class="rem-list" id="rem-list"></ol>
-        </div>
-
-        <!-- History Bar -->
-        <div id="history-bar" class="history-bar hidden">
-            <div class="history-header">
-                <span class="history-icon">📊</span>
-                <span class="history-title">Previous Results</span>
-                <select id="history-select" class="history-select" onchange="loadHistoryEntry(this.value)">
-                    <option value="">Select a previous scan...</option>
-                </select>
-                <button class="btn btn-secondary btn-sm" onclick="clearHistory()" title="Clear saved history">Clear</button>
-            </div>
-            <div id="history-diff" class="history-diff hidden"></div>
-        </div>
-
-        <!-- Progress Bar -->
-        <div id="progress-container" class="progress-container hidden" role="status" aria-live="polite" aria-atomic="false" aria-label="Test progress">
-            <div class="progress-bar" aria-hidden="true">
-                <div id="progress-fill" class="progress-fill"></div>
-            </div>
-            <span id="progress-text" class="progress-text">0 / 0</span>
-        </div>
-
-        <!-- Info Banner -->
-        <div id="info-banner" class="info-banner">
-            <div class="info-icon">
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="currentColor" stroke-width="1.5"/><path d="M9 8v5M9 5.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            </div>
-            <div class="info-text">
-                <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser
-                (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy,
-                registry), download and run the <strong>Local Scanner</strong> — it will automatically open this page with results.
-            </div>
-        </div>
-
-        <!-- Aircraft / Satellite WiFi Banner -->
-        <div id="satellite-banner" class="satellite-banner hidden">
-            <div class="satellite-banner-icon">✈</div>
-            <div class="satellite-banner-body">
-                <div class="satellite-banner-title">Aircraft / Satellite WiFi detected</div>
-                <div class="satellite-banner-detail" id="satellite-banner-detail">Some results will differ from normal broadband — this is expected.</div>
-                <ul class="satellite-banner-list">
-                    <li><strong>High latency &amp; jitter</strong> — inherent to geostationary satellite links (~550–700 ms base RTT)</li>
-                    <li><strong>Symmetric / Carrier-Grade NAT</strong> — STUN hole-punching unavailable; TURN relay is used instead (works fine)</li>
-                    <li><strong>Gateway &amp; TURN relay distance</strong> — traffic exits through the provider's ground station, not your GPS location</li>
-                    <li><strong>Connectivity checks</strong> — some HTTPS probes may be blocked by CORS on this network</li>
-                </ul>
-            </div>
-            <button class="satellite-banner-dismiss" onclick="document.getElementById('satellite-banner').classList.add('hidden')" title="Dismiss">✕</button>
-        </div>
-
-        <!-- Download Banner -->
-        <div id="download-banner" class="download-banner hidden">
-            <div class="download-content">
-                <div class="download-icon">⬇️</div>
-                <div class="download-text">
-                    <h3>Complete your diagnostics with the Local Scanner</h3>
-                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
-                    VPN detection). Download and run the scanner — it will automatically open this page with results.</p>
-                </div>
-                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
-                   class="btn btn-download">
-                    <span class="btn-icon">⬇️</span> Download Scanner (.exe)
-                </a>
             </div>
         </div>
 
@@ -643,6 +549,101 @@
             </div>
         </div>
 
+        <!-- Key Findings (shown after tests run) -->
+
+        <!-- Host-type picker (shown when Azure VM detected but type unknown) -->
+        <div id="host-type-picker" class="host-type-picker hidden">
+            <span class="htp-icon">☁️</span>
+            <span class="htp-text">Azure VM detected — what type of host is this?</span>
+            <button class="htp-btn htp-btn-cpc" onclick="pickHostType('cloudpc')" aria-label="Select Cloud PC (Windows 365) as host type">Cloud PC <span class="htp-hint">(Windows 365)</span></button>
+            <button class="htp-btn htp-btn-avd" onclick="pickHostType('avd')" aria-label="Select Azure Virtual Desktop session host as host type">AVD Session Host</button>
+        </div>
+
+        <div id="key-findings" class="key-findings hidden">
+            <div class="kf-header">
+                <span class="kf-icon">🎯</span>
+                <h2>Key Findings</h2>
+                <span class="kf-verdict" id="kf-verdict"></span>
+            </div>
+            <div class="kf-grid" id="kf-grid"></div>
+        </div>
+
+        <!-- Remediation Checklist -->
+        <div id="remediation-panel" class="remediation-panel hidden">
+            <div class="rem-header">
+                <span class="rem-icon">🔧</span>
+                <h2>What to Fix</h2>
+                <span class="rem-count" id="rem-count"></span>
+            </div>
+            <ol class="rem-list" id="rem-list"></ol>
+        </div>
+
+        <!-- History Bar -->
+        <div id="history-bar" class="history-bar hidden">
+            <div class="history-header">
+                <span class="history-icon">📊</span>
+                <span class="history-title">Previous Results</span>
+                <select id="history-select" class="history-select" onchange="loadHistoryEntry(this.value)">
+                    <option value="">Select a previous scan...</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="clearHistory()" title="Clear saved history">Clear</button>
+            </div>
+            <div id="history-diff" class="history-diff hidden"></div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div id="progress-container" class="progress-container hidden" role="status" aria-live="polite" aria-atomic="false" aria-label="Test progress">
+            <div class="progress-bar" aria-hidden="true">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <span id="progress-text" class="progress-text">0 / 0</span>
+        </div>
+
+        <!-- Info Banner -->
+        <div id="info-banner" class="info-banner">
+            <div class="info-icon">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="currentColor" stroke-width="1.5"/><path d="M9 8v5M9 5.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
+            <div class="info-text">
+                <strong>How it works:</strong> Click <em>Run Browser Tests</em> to execute tests that can run in your browser
+                (endpoint reachability, latency, location, WebRTC). For deeper diagnostics (raw TCP/UDP, WiFi, system proxy,
+                registry), download and run the <strong>Local Scanner</strong> — it will automatically open this page with results.
+            </div>
+        </div>
+
+        <!-- Aircraft / Satellite WiFi Banner -->
+        <div id="satellite-banner" class="satellite-banner hidden">
+            <div class="satellite-banner-icon">✈</div>
+            <div class="satellite-banner-body">
+                <div class="satellite-banner-title">Aircraft / Satellite WiFi detected</div>
+                <div class="satellite-banner-detail" id="satellite-banner-detail">Some results will differ from normal broadband — this is expected.</div>
+                <ul class="satellite-banner-list">
+                    <li><strong>High latency &amp; jitter</strong> — inherent to geostationary satellite links (~550–700 ms base RTT)</li>
+                    <li><strong>Symmetric / Carrier-Grade NAT</strong> — STUN hole-punching unavailable; TURN relay is used instead (works fine)</li>
+                    <li><strong>Gateway &amp; TURN relay distance</strong> — traffic exits through the provider's ground station, not your GPS location</li>
+                    <li><strong>Connectivity checks</strong> — some HTTPS probes may be blocked by CORS on this network</li>
+                </ul>
+            </div>
+            <button class="satellite-banner-dismiss" onclick="document.getElementById('satellite-banner').classList.add('hidden')" title="Dismiss">✕</button>
+        </div>
+
+        <!-- Download Banner -->
+        <div id="download-banner" class="download-banner hidden">
+            <div class="download-content">
+                <div class="download-icon">⬇️</div>
+                <div class="download-text">
+                    <h3>Complete your diagnostics with the Local Scanner</h3>
+                    <p>Some tests require direct OS access (raw TCP/UDP ports, WiFi signal, system proxy, DNS CNAME chains,
+                    VPN detection). Download and run the scanner — it will automatically open this page with results.</p>
+                </div>
+                <a id="download-link" href="https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest/download/W365LocalScanner.exe"
+                   class="btn btn-download">
+                    <span class="btn-icon">⬇️</span> Download Scanner (.exe)
+                </a>
+            </div>
+        </div>
+
+
         <!-- Filter Bar -->
         <div id="filter-bar" class="filter-bar hidden" role="group" aria-label="Filter test results by status">
             <span class="filter-label">Show:</span>
@@ -810,11 +811,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=205"></script>
-    <script src="js/browser-tests.js?v=205"></script>
-    <script src="js/ui.js?v=205"></script>
-    <script src="js/map.js?v=205"></script>
-    <script src="js/ai-analysis.js?v=205"></script>
-    <script src="js/app.js?v=205"></script>
+    <script src="js/config.js?v=206"></script>
+    <script src="js/browser-tests.js?v=206"></script>
+    <script src="js/ui.js?v=206"></script>
+    <script src="js/map.js?v=206"></script>
+    <script src="js/ai-analysis.js?v=206"></script>
+    <script src="js/app.js?v=206"></script>
 </body>
 </html>
