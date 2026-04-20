@@ -43,15 +43,29 @@ jobs:
             exit 0
           fi
 
+          # If HEAD is the tagged commit (or an ancestor of it), the release
+          # already covers what's on main — nothing to bump. This catches the
+          # legitimate "bump csproj + tag + push together" workflow, which
+          # otherwise looks identical to the bad case (string match) but is
+          # actually the desired state.
+          tag_sha=$(git rev-list -n 1 "$latest_tag")
+          head_sha=$(git rev-parse HEAD)
+          if [ "$tag_sha" = "$head_sha" ] || git merge-base --is-ancestor "$head_sha" "$tag_sha"; then
+            echo "✓ HEAD ($head_sha) is at or behind the latest tag $latest_tag ($tag_sha) — release is current."
+            exit 0
+          fi
+
           tag_ver="${latest_tag#v}"
           csproj_ver=$(grep -oPm1 '(?<=<Version>)[^<]+' src/W365LocalScanner/W365LocalScanner.csproj)
 
           echo "Latest tag:  ${latest_tag} (version ${tag_ver})"
           echo "csproj Version: ${csproj_ver}"
+          echo "HEAD: ${head_sha}"
+          echo "Tag commit: ${tag_sha}"
 
           if [ "${tag_ver}" = "${csproj_ver}" ]; then
             echo ""
-            echo "::error::Scanner source changed but W365LocalScanner.csproj still declares v${csproj_ver} (same as the latest released tag ${latest_tag})."
+            echo "::error::Scanner source changed on main since tag ${latest_tag}, but W365LocalScanner.csproj still declares v${csproj_ver}."
             echo "::error::GitHub Releases will NOT auto-publish a new binary, so downloads via the 'latest' link will keep serving the old exe."
             echo ""
             echo "To ship these changes:"
@@ -65,5 +79,7 @@ jobs:
             exit 1
           fi
 
-          # csproj_ver != tag_ver is fine — it means the bump is already in the diff.
-          echo "✓ csproj Version (${csproj_ver}) differs from latest tag (${tag_ver}) — release pending."
+          # csproj_ver != tag_ver and HEAD is ahead of tag → bump is staged but
+          # the release tag hasn't been pushed yet. Allow it; the developer is
+          # mid-release.
+          echo "✓ csproj Version (${csproj_ver}) differs from latest tag (${tag_ver}) — release pending; remember to push tag v${csproj_ver}."
