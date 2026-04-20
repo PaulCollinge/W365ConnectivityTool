@@ -54,7 +54,7 @@ const EndpointConfig = {
         // Wildcard exemplars (specific hosts representing *.wildcard patterns)
         { url: 'microsoft.servicebus.windows.net', purpose: 'Troubleshooting data (*.servicebus.windows.net)', port: 443 },
         { url: 'statics.teams.cdn.office.net', purpose: 'Automatic updates (*.cdn.office.net)', port: 443 },
-        { url: 'watson.events.data.microsoft.com', purpose: 'Client telemetry (*.events.data.microsoft.com)', port: 443, optional: true }
+        { url: 'watson.events.data.microsoft.com', purpose: 'Client telemetry (*.events.data.microsoft.com)', port: 443 }
         // Port 80 certificate endpoints — cannot be tested from browser (mixed-content blocked).
         // Tested by the local scanner on TCP port 80 as required by official docs:
         //   *.microsoftaik.azure.net, www.microsoft.com,
