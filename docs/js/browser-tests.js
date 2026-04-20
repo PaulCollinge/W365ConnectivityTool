@@ -602,25 +602,28 @@ function makeResult(test, status, value, detail, duration, remediation, remediat
 // ═════════════════════════════════════════════════════
 
 // ── Endpoint Reachability ──
-// Tests connectivity using a two-phase approach:
-//   Phase 1: no-cors GET — opaque response = reachable.
-//   Phase 2: If phase 1 throws TypeError (not timeout), measure elapsed time.
-//            A FAST TypeError below the TLS-RTT floor is indistinguishable
-//            from DNS NXDOMAIN / local ECONNREFUSED / SWG block page / proxy
-//            reset, so we must NOT classify it as reachable. Only a TypeError
-//            that completed a real TLS handshake (>= ~80ms, but clearly < the
-//            AbortSignal timeout) suggests "server responded but browser
-//            blocked reading the response for CORS reasons", which is a
-//            plausible reachable-but-opaque case.
+// Tests connectivity using a no-cors GET fetch. The browser cannot let JS
+// read the response body for cross-origin requests without CORS headers, so
+// the result is always opaque. What we CAN observe:
+//   * fetch resolves       → a response arrived → endpoint reachable (green).
+//   * fetch rejects with TimeoutError/AbortError → no response in 10s → fail.
+//   * fetch rejects with TypeError → could be anything: DNS NXDOMAIN, local
+//     reset, CORS preflight, or (most commonly in 2024+ Chromium) ORB
+//     (Opaque Response Blocking) rejecting text/html opaque responses. We
+//     genuinely cannot distinguish these from inside the browser sandbox.
+//
+// Previous versions tried to use elapsed time as a heuristic (< 80ms = DNS
+// failure, > 80ms = CORS/ORB) but this is wrong: when the browser already
+// has a warm HTTP/2 or HTTP/3 socket to the origin (common for Microsoft
+// endpoints when the user is signed into M365), an ORB rejection can arrive
+// in 10-20ms, well under the floor. That falsely flagged reachable endpoints
+// (login.microsoftonline.com, aka.ms, windows.cloud.microsoft, etc.) as
+// Unreachable. The honest answer for a TypeError is "Indeterminate" — we
+// label it clearly and let the overall verdict reflect the uncertainty.
 async function testEndpointReachability(test) {
     const t0 = performance.now();
     const results = [];
     let anyFailed = false;
-    // Any fetch() that rejects faster than this almost certainly did NOT
-    // complete a TCP+TLS handshake to a live remote server. SYN + TLS needs
-    // at least one RTT plus crypto; sub-80ms rejections are network-stack
-    // errors (DNS lookup failure, local reset, captured by on-host proxy).
-    const TLS_HANDSHAKE_FLOOR_MS = 80;
 
     const checks = EndpointConfig.requiredEndpoints.map(async (ep) => {
         const url = `https://${ep.url}/`;
@@ -639,22 +642,10 @@ async function testEndpointReachability(test) {
             if (e.name === 'AbortError' || e.name === 'TimeoutError') {
                 results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
                 anyFailed = true;
-            } else if (elapsed < TLS_HANDSHAKE_FLOOR_MS) {
-                // Below TLS-handshake floor: almost certainly DNS/local stack
-                // error, NOT "server reached but CORS-blocked". Do not green-
-                // wash this.
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed, note: 'failed below TLS RTT floor' });
-                anyFailed = true;
-            } else if (elapsed < 3000) {
-                // Plausibly a CORS-opaque response after a real handshake.
-                // Mark as Indeterminate rather than Reachable so an actual
-                // broken endpoint that merely happened to reset mid-TLS
-                // doesn't silently show green.
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Indeterminate', time: elapsed, note: 'CORS blocked definitive check' });
             } else {
-                // Slow TypeError — likely a genuine network issue
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed });
-                anyFailed = true;
+                // TypeError of any speed: could be reachable-but-ORB/CORS, or
+                // could be DNS/proxy/reset. We cannot tell. Report honestly.
+                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Indeterminate', time: elapsed, note: 'CORS/ORB blocked definitive check' });
             }
         }
     });
@@ -685,8 +676,8 @@ async function testEndpointReachability(test) {
 
     const totalOk = reachable + indeterminate;
     const parts = [`${reachable}/${results.length} confirmed reachable`];
-    if (indeterminate) parts.push(`${indeterminate} indeterminate (CORS)`);
-    if (unreachable) parts.push(`${unreachable} unreachable`);
+    if (indeterminate) parts.push(`${indeterminate} indeterminate (CORS/ORB)`);
+    if (unreachable) parts.push(`${unreachable} timed out`);
     const value = parts.join(', ') + ' (browser check)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
