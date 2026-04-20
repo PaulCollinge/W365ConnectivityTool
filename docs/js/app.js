@@ -127,11 +127,12 @@ function mergeBrowserBlockedEndpointResult() {
         bEp01.detailedInfo = merged;
 
         // ── Headline: structural split on the shared separator ──
-        // Separate the trailing " (browser check via /favicon.ico)" suffix
-        // (parenthesised remark the browser test appends after the joined
-        // segments), split the remainder on the shared headlineSeparator,
-        // drop any segment referencing headlineMarker, append the new
-        // verified/unreachable segment, and rejoin. No regex gymnastics.
+        // Drop the "not tested" watson segment on success — the detail block
+        // already shows the scanner verification. On failure, swap in a
+        // concise "unreachable" segment and degrade B-EP-01 status so the
+        // card surfaces the issue. Split on the shared separator, preserve
+        // any trailing parenthesised remark (e.g. "(browser check via ...)")
+        // wherever it sits, and rejoin — no regex gymnastics.
         const rv = bEp01.resultValue || '';
         const suffixMatch = rv.match(/\s\([^)]*\)\s*$/);
         const suffix = suffixMatch ? suffixMatch[0] : '';
@@ -139,9 +140,12 @@ function mergeBrowserBlockedEndpointResult() {
         const segments = body.split(sentinels.headlineSeparator)
             .map(s => s.trim())
             .filter(s => s && !s.includes(sentinels.headlineMarker));
-        segments.push(sentinels.headlineMarker + (reachable
-            ? ' verified via scanner'
-            : ' unreachable (scanner)'));
+        if (!reachable) {
+            // Keep visibility in the headline only when it's a real problem.
+            segments.push(sentinels.headlineMarker + ' unreachable (scanner)');
+            // Degrade B-EP-01 so the card colour / counts reflect the issue.
+            if (bEp01.status === 'Passed') bEp01.status = 'Warning';
+        }
         bEp01.resultValue = segments.join(sentinels.headlineSeparator) + suffix;
 
         // Push the update to the UI card

@@ -1,0 +1,69 @@
+name: Scanner Version Guard
+
+# Fails if `src/W365LocalScanner/**` has changed since the latest `v*` tag but
+# `W365LocalScanner.csproj` still declares the same `<Version>` as that tag.
+#
+# Why: the `Build and Release Local Scanner` workflow only triggers on tag
+# pushes, so code changes landing on `main` without a version bump + tag do
+# NOT produce a new GitHub Release. Users downloading from the "latest" link
+# then run stale binaries and newly-added client-side tests never appear.
+# Shipping a release requires three steps; this guard flags the omission the
+# moment the code lands on main.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/W365LocalScanner/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/W365LocalScanner/**'
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check that csproj Version is ahead of latest v* tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_tag=$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)
+          if [ -z "$latest_tag" ]; then
+            echo "::notice::No v* tag found yet — guard skipped."
+            exit 0
+          fi
+
+          tag_ver="${latest_tag#v}"
+          csproj_ver=$(grep -oPm1 '(?<=<Version>)[^<]+' src/W365LocalScanner/W365LocalScanner.csproj)
+
+          echo "Latest tag:  ${latest_tag} (version ${tag_ver})"
+          echo "csproj Version: ${csproj_ver}"
+
+          if [ "${tag_ver}" = "${csproj_ver}" ]; then
+            echo ""
+            echo "::error::Scanner source changed but W365LocalScanner.csproj still declares v${csproj_ver} (same as the latest released tag ${latest_tag})."
+            echo "::error::GitHub Releases will NOT auto-publish a new binary, so downloads via the 'latest' link will keep serving the old exe."
+            echo ""
+            echo "To ship these changes:"
+            echo "  1. Bump <Version>, <FileVersion>, <AssemblyVersion> in src/W365LocalScanner/W365LocalScanner.csproj"
+            echo "  2. git commit -am 'release(scanner): v<new> — <summary>'"
+            echo "  3. git tag -a v<new> -m 'v<new>'"
+            echo "  4. git push && git push origin v<new>"
+            echo ""
+            echo "The tag push triggers .github/workflows/build-scanner.yml which builds,"
+            echo "signs, attests, and publishes the release asset."
+            exit 1
+          fi
+
+          # csproj_ver != tag_ver is fine — it means the bump is already in the diff.
+          echo "✓ csproj Version (${csproj_ver}) differs from latest tag (${tag_ver}) — release pending."
