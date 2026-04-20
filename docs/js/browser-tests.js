@@ -664,7 +664,14 @@ async function testEndpointReachability(test) {
         const note = r.note ? ` [${r.note}]` : '';
         return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
     }).join('\n')
-      + '\n\n\u2139 *.events.data.microsoft.com (Client telemetry) \u2014 cannot be tested from browser: blocked by built-in tracking prevention in Edge/Chrome/Firefox. Verify with the Local Scanner or external TCP probe if required.';
+      + '\n'
+      + '\n\u2550\u2550 Endpoint not tested from browser \u2550\u2550'
+      + '\n\u2139 *.events.data.microsoft.com (Client telemetry)'
+      + '\n    This host is on the built-in tracker-blocking lists shipped by Edge,'
+      + '\n    Chrome and Firefox, so fetch() is cancelled by the browser before it'
+      + '\n    reaches the network. The endpoint itself is reachable \u2014 the block'
+      + '\n    is enforced in the browser only.'
+      + '\n    \u2192 To verify this endpoint, run the W365LocalScanner.exe (test C-EP-02).';
 
     let status;
     if (unreachable === 0) status = 'Passed';
@@ -673,7 +680,8 @@ async function testEndpointReachability(test) {
 
     const parts = [`${reachable}/${results.length} reachable`];
     if (unreachable) parts.push(`${unreachable} unreachable`);
-    const value = parts.join(', ') + ' (browser check via /favicon.ico)';
+    parts.push('*.events.data.microsoft.com not tested \u2014 run Local Scanner to verify');
+    const value = parts.join(' \u2022 ') + ' (browser check via /favicon.ico)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
 }
