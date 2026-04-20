@@ -1210,6 +1210,128 @@ function extractVpnNames(tests) {
 }
 
 // ── Export results as a text report ──
+// ═══════════════════════════════════════════════════════════════════
+//  Key-Findings Summary (used by text, JSON and CSV exports)
+// ═══════════════════════════════════════════════════════════════════
+// Single source of truth for the "what's wrong at a glance" block that
+// appears at the top of every export format. Calls runAnalysisEngine()
+// from ai-analysis.js (same engine as the in-app Analysis Panel) and
+// shapes the output three ways:
+//   .textBlock    — bulleted block for the .txt report header
+//   .jsonObject   — structured object for the .json export
+//   .csvComments  — '#'-prefixed lines for the CSV header (Excel and
+//                   pandas read_csv(comment='#') both skip them)
+// Caps: all criticals always included; up to MAX_WARN warnings; up to
+// MAX_INFO infos. Overflow is summarised as "+N more — see full results".
+function buildKeyFindingsSummary(results) {
+    const MAX_WARN = 5;
+    const MAX_INFO = 3;
+    const empty = {
+        textBlock: '',
+        jsonObject: { qualityScore: null, qualityLabel: null, criticalCount: 0, warningCount: 0, infoCount: 0, passedCount: 0, findings: [] },
+        csvComments: []
+    };
+
+    if (!results || results.length === 0) return empty;
+    if (typeof runAnalysisEngine !== 'function') return empty;
+
+    let analysis;
+    try { analysis = runAnalysisEngine(results); }
+    catch (e) { console.warn('Analysis engine failed in export summary:', e); return empty; }
+
+    const findings = Array.isArray(analysis?.findings) ? analysis.findings : [];
+    const qs = analysis?.qualityScore;
+    const qualityScore = (qs && qs.hasData && typeof qs.score === 'number') ? qs.score : null;
+    const qualityLabel = qualityScore == null ? null
+        : qualityScore >= 80 ? 'Good'
+        : qualityScore >= 50 ? 'Fair' : 'Poor';
+
+    const criticals = findings.filter(f => f.severity === 'critical');
+    const warnings  = findings.filter(f => f.severity === 'warning');
+    const infos     = findings.filter(f => f.severity === 'info');
+    const passed    = results.filter(r => r.status === 'Passed').length;
+
+    // ── Text block ──
+    const divider = '─'.repeat(72);
+    const lines = [];
+    lines.push(divider);
+    const header = qualityScore != null
+        ? `  KEY FINDINGS                          Quality Score: ${qualityScore} / 100 (${qualityLabel})`
+        : '  KEY FINDINGS';
+    lines.push(header);
+    lines.push(divider);
+    const countParts = [];
+    if (criticals.length) countParts.push(`${criticals.length} critical`);
+    if (warnings.length)  countParts.push(`${warnings.length} warning${warnings.length === 1 ? '' : 's'}`);
+    if (infos.length)     countParts.push(`${infos.length} info`);
+    countParts.push(`${passed} passed`);
+    lines.push(`  ${countParts.join(' · ')}`);
+    lines.push('');
+
+    if (findings.length === 0) {
+        lines.push('  ✓ All tests passed — no issues detected.');
+    } else {
+        // Critical: show title + indented detail line for context
+        for (const f of criticals) {
+            lines.push(`  ● CRITICAL  ${f.title}`);
+            if (f.detail) {
+                // Wrap detail to ~60 chars indented under the title
+                const words = String(f.detail).split(/\s+/);
+                let buf = '              ';
+                for (const w of words) {
+                    if ((buf + ' ' + w).length > 74) { lines.push(buf); buf = '              '; }
+                    buf += (buf.endsWith('  ') ? '' : ' ') + w;
+                }
+                if (buf.trim()) lines.push(buf);
+            }
+            lines.push('');
+        }
+        // Warnings: single-line each, capped
+        const shownWarnings = warnings.slice(0, MAX_WARN);
+        for (const f of shownWarnings) lines.push(`  ⚠ WARNING   ${f.title}`);
+        if (warnings.length > MAX_WARN) {
+            lines.push(`              +${warnings.length - MAX_WARN} more warning${warnings.length - MAX_WARN === 1 ? '' : 's'} — see full results below`);
+        }
+        if (shownWarnings.length && infos.length) lines.push('');
+        // Infos: single-line each, capped
+        const shownInfos = infos.slice(0, MAX_INFO);
+        for (const f of shownInfos) lines.push(`  ℹ INFO      ${f.title}`);
+        if (infos.length > MAX_INFO) {
+            lines.push(`              +${infos.length - MAX_INFO} more info item${infos.length - MAX_INFO === 1 ? '' : 's'} — see full results below`);
+        }
+        lines.push('');
+        lines.push('  See full results below for remediation detail.');
+    }
+
+    // ── CSV comment lines ──
+    const csvComments = [];
+    const qsSuffix = qualityScore != null ? ` — Quality Score: ${qualityScore}/100 (${qualityLabel})` : '';
+    csvComments.push(`# W365 Connectivity Diagnostics${qsSuffix}`);
+    csvComments.push(`# Summary: ${countParts.join(', ')}`);
+    for (const f of criticals) csvComments.push(`# CRITICAL: ${f.title}`);
+    const wShown = warnings.slice(0, MAX_WARN);
+    for (const f of wShown) csvComments.push(`# WARNING:  ${f.title}`);
+    if (warnings.length > MAX_WARN) csvComments.push(`# WARNING:  +${warnings.length - MAX_WARN} more — see rows below`);
+
+    // ── JSON object ──
+    const jsonObject = {
+        qualityScore,
+        qualityLabel,
+        criticalCount: criticals.length,
+        warningCount:  warnings.length,
+        infoCount:     infos.length,
+        passedCount:   passed,
+        findings: findings.map(f => ({
+            severity:    f.severity,
+            title:       f.title,
+            detail:      f.detail || '',
+            remediation: f.remediation || ''
+        }))
+    };
+
+    return { textBlock: lines.join('\n'), jsonObject, csvComments };
+}
+
 async function generateExportText() {
     if (allResults.length === 0) return '';
 
@@ -1308,6 +1430,13 @@ async function generateExportText() {
     lines.push(`  Summary: ${allResults.length} tests — ${passed} passed, ${warnings} warnings, ${failed} failed` +
         (skipped > 0 ? `, ${skipped} skipped` : ''));
     lines.push('');
+
+    // ── Key Findings block (top-of-report highlights) ──
+    const keySummary = buildKeyFindingsSummary(allResults);
+    if (keySummary.textBlock) {
+        lines.push(keySummary.textBlock);
+        lines.push('');
+    }
 
     // ── Connectivity Overview (quick-glance summary) ──
     lines.push(divider);
@@ -1775,6 +1904,7 @@ async function sendResultsToIT() {
         machineName,
         userAgent: navigator.userAgent,
         environment: collectEnvironmentSnapshot(),
+        analysisSummary: buildKeyFindingsSummary(allResults).jsonObject,
         scannerTimestamp: _importedScanTimestamp || null,
         results: exportResults.map(r => ({
             id: r.id, name: r.name, category: r.category, source: r.source,
@@ -1849,8 +1979,15 @@ function exportCsvReport() {
         csv(r.remediationText)
     ].join(','));
 
-    // Prepend UTF-8 BOM so Excel opens with correct encoding
-    const content = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
+    // Prepend UTF-8 BOM so Excel opens with correct encoding. Pre-pend
+    // the key-findings block as '#' comment lines: pandas read_csv skips
+    // them via comment='#', Excel shows them as a single-column banner
+    // at the top which is readable and doesn't break the data rows.
+    const keySummary = buildKeyFindingsSummary(allResults);
+    const commentBlock = keySummary.csvComments.length
+        ? keySummary.csvComments.join('\r\n') + '\r\n'
+        : '';
+    const content = '\uFEFF' + commentBlock + [headers.join(','), ...rows].join('\r\n');
     const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -1868,6 +2005,8 @@ function exportJsonReport() {
     const output = {
         timestamp: new Date().toISOString(),
         userAgent: navigator.userAgent,
+        environment: (typeof collectEnvironmentSnapshot === 'function') ? collectEnvironmentSnapshot() : null,
+        analysisSummary: buildKeyFindingsSummary(allResults).jsonObject,
         scannerTimestamp: _importedScanTimestamp || null,
         results: exportResults.map(r => ({
             id: r.id,
