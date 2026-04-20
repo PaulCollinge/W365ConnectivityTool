@@ -72,6 +72,62 @@ function dedupeResultsById(results) {
     return Array.from(byId.values());
 }
 
+// ── B-EP-01 / L-EP-02 merge ──
+// B-EP-01 cannot probe *.events.data.microsoft.com because browsers block OneDS
+// telemetry via tracker-prevention, so its detail text points users at the
+// Local Scanner. When L-EP-02 is imported (the scanner's raw-TCP probe for
+// the same wildcard), rewrite B-EP-01 to show the actual scanner result
+// instead of the "run the Local Scanner" instructions.
+function mergeBrowserBlockedEndpointResult() {
+    try {
+        const bEp01 = allResults.find(r => String(r.id) === 'B-EP-01');
+        const lEp02 = allResults.find(r => String(r.id) === 'L-EP-02');
+        if (!bEp01 || !lEp02) return;
+
+        const marker = '\u2550\u2550 Endpoint not tested from browser \u2550\u2550';
+        const detail = bEp01.detailedInfo || '';
+        const idx = detail.indexOf(marker);
+        const base = idx >= 0 ? detail.substring(0, idx).replace(/\s+$/, '') : detail;
+
+        const reachable = (lEp02.status === 'Passed');
+        const icon = reachable ? '\u2714' : '\u2718';
+        const headerLabel = reachable
+            ? 'Endpoint verified via Local Scanner (TCP probe)'
+            : 'Endpoint unreachable from Local Scanner (TCP probe)';
+
+        // Prefer showing the scanner's own one-liner if it's short; otherwise
+        // fall back to a summary derived from resultValue.
+        const scannerSummary = (lEp02.resultValue || '').trim();
+        const scannerDetail  = (lEp02.detailedInfo || '').trim();
+
+        const merged =
+            base
+            + '\n'
+            + '\n\u2550\u2550 ' + headerLabel + ' \u2550\u2550'
+            + '\n' + icon + ' *.events.data.microsoft.com (Client telemetry)'
+            + (scannerSummary ? ('\n    ' + scannerSummary) : '')
+            + (scannerDetail  ? ('\n    ' + scannerDetail.split('\n').filter(l => l.trim().startsWith('\u2714') || l.trim().startsWith('\u2718')).join('\n    ')) : '');
+
+        bEp01.detailedInfo = merged;
+
+        // Also update headline: drop the "run Local Scanner" breadcrumb.
+        const rv = bEp01.resultValue || '';
+        const trimmedRv = rv
+            .replace(/\s*[\u2022,]\s*\*\.events\.data\.microsoft\.com[^\(]*?(?= \(|$)/i, '')
+            .trim();
+        bEp01.resultValue = trimmedRv + (reachable
+            ? ' \u2022 *.events.data.microsoft.com verified via scanner'
+            : ' \u2022 *.events.data.microsoft.com unreachable (scanner)');
+
+        // Push the update to the UI card
+        if (typeof updateTestUI === 'function') {
+            updateTestUI('B-EP-01', bEp01);
+        }
+    } catch (err) {
+        console.warn('mergeBrowserBlockedEndpointResult failed:', err);
+    }
+}
+
 // ── Environment snapshot for exported reports ──
 // Captures client context that support engineers need to interpret shared
 // results: timezone (explains timestamp skew), locale (explains UI-language
@@ -1086,6 +1142,11 @@ function processImportedData(data) {
 
     // Build the set of imported IDs (used in stale-card loop below)
     const importedIds = new Set(localResults.map(r => String(r.id)));
+
+    // Merge L-EP-02 (scanner probe for browser-blocked endpoints) into the
+    // B-EP-01 card so users don't see the "run Local Scanner to verify" note
+    // after they've already done exactly that.
+    mergeBrowserBlockedEndpointResult();
 
     // Update summary and badges
     updateSummary(allResults);
