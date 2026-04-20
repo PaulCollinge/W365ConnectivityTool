@@ -2579,3 +2579,21 @@ footer {
     color: var(--text-secondary);
     font-size: var(--text-xs);
 }
+
+
+/* ════════════════════════════════════════
+   REDUCED-MOTION SUPPORT (WCAG 2.3.3)
+   Users who set prefers-reduced-motion: reduce at the OS/browser level get
+   instant state transitions instead of slide-ins, shimmers, and hover
+   scales. Essential feedback (focus rings, colour changes) still renders;
+   only non-essential motion is collapsed. Duration 0.01ms rather than 0
+   preserves transitionend events that some components rely on.
+   ════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
