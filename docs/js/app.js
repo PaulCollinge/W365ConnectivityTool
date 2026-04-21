@@ -1308,6 +1308,36 @@ function extractVpnNames(tests) {
     return [...names];
 }
 
+// Extract the actual interceptor names from test results (for Warning state).
+// Looks for: new format "Intercepting RDP traffic (System proxy, ...)" in resultValue,
+// or falls back to ⚠ lines in detailedInfo (works with old scanner output).
+function extractInterceptorNames(tests) {
+    for (const t of tests) {
+        if (!t) continue;
+        // New scanner format: "Intercepting RDP traffic (System proxy, VPN name)"
+        const m = (t.resultValue || '').match(/Intercepting[^(]*\(([^)]+)\)/i);
+        if (m) return m[1].trim();
+    }
+    // Fallback for old scanner: parse ⚠ lines from detailedInfo
+    const interceptors = [];
+    for (const t of tests) {
+        if (!t || !t.detailedInfo) continue;
+        for (const line of t.detailedInfo.split('\n')) {
+            if (!/⚠|\\u26A0/.test(line)) continue;
+            if (/system proxy/i.test(line)) { interceptors.push('System proxy'); continue; }
+            if (/WinHTTP/i.test(line)) { interceptors.push('WinHTTP proxy'); continue; }
+            if (/routes.*VPN|VPN.*interface/i.test(line)) {
+                const vm = line.match(/gateway.*routes via VPN interface\s+(\S+)/i);
+                interceptors.push(vm ? `VPN (${vm[1]})` : 'VPN tunnel');
+                continue;
+            }
+            if (/HTTP_PROXY|HTTPS_PROXY|ALL_PROXY/i.test(line)) { interceptors.push('Proxy env var'); continue; }
+            if (/routes through VPN/i.test(line)) { interceptors.push('VPN tunnel'); continue; }
+        }
+    }
+    return [...new Set(interceptors)].join(', ') || '';
+}
+
 // ── Export results as a text report ──
 // ═══════════════════════════════════════════════════════════════════
 //  Key-Findings Summary (used by text, JSON and CSV exports)
@@ -3053,12 +3083,9 @@ async function updateKeyFindings(results) {
                 add('kf-pass', 'VPN / Proxy', 'None detected — direct routing');
             }
         } else {
-            // Extract the interceptor name from resultValue: "Intercepting RDP traffic (System proxy, ...)"
-            const interceptorMatch = (vpnTcp.resultValue || '').match(/Intercepting[^(]*\(([^)]+)\)/i)
-                                  || (vpnUdp && vpnUdp.resultValue || '').match(/Intercepting[^(]*\(([^)]+)\)/i);
-            const interceptorStr = interceptorMatch ? interceptorMatch[1].trim() : '';
-            const vpnDetail = interceptorStr ? `Interceptor: ${esc(interceptorStr)}` :
-                              vpnNameStr ? `Detected: ${vpnNameStr}` : '';
+            // Extract the actual interceptor (works with both old and new scanner output)
+            const interceptorStr = extractInterceptorNames([vpnTcp, vpnUdp]);
+            const vpnDetail = interceptorStr ? `Interceptor: ${esc(interceptorStr)}` : '';
             // If both tests timed out (not a proxy/VPN issue — just slow checks)
             if (tcpTimedOut && udpTimedOut) {
                 add('kf-pass', 'VPN / Proxy', '⚠ Tests timed out — could not determine',

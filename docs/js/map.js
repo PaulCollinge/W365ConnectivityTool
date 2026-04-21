@@ -20,6 +20,7 @@ function updateConnectivityMap(results) {
     updateMapDnsCard(lookup);
     updateMapSecurityBar(lookup);
     updateMapLatencyLabels(lookup);
+    updateMapTlsOverlay(lookup);  // always — TLS interception is client-side
 
     // Cloud PC right-side cards — show when CPC mode active OR imported scanner data
     const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
@@ -31,6 +32,7 @@ function updateConnectivityMap(results) {
         updateMapAzureCard(lookup);
         updateMapNatCard(lookup);
         updateMapVpnOverlay(lookup);
+        updateMapTlsOverlay(lookup);
         // Reveal infrastructure cards once any CPC result has data
         const hasAnyResult = results.some(r =>
             r.status && r.status !== 'NotRun' && r.status !== 'Pending'
@@ -46,6 +48,7 @@ function updateConnectivityMap(results) {
         updateMapCloudPcCard(lookup);
         updateMapAzureCard(lookup);
         updateMapVpnOverlay(lookup);
+        updateMapTlsOverlay(lookup);
     }
 }
 
@@ -1771,5 +1774,30 @@ function updateMapVpnOverlay(lookup) {
 
         // Remove tunnel labels
         document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
+    }
+}
+
+// ── TLS Inspection Overlay ──
+function updateMapTlsOverlay(lookup) {
+    const tls = lookup['L-TCP-06'] || lookup['C-TCP-06'];
+    const arrow2 = document.querySelector('.map-g-arrow2'); // ISP → AFD path
+    const ispCard = document.getElementById('map-isp');
+
+    // Clean up any previous TLS badges
+    document.querySelectorAll('.tls-intercept-label').forEach(el => el.remove());
+
+    if (tls && tls.status !== 'Passed' && tls.status !== 'NotRun' && tls.status !== 'Pending' && tls.status !== 'Skipped') {
+        // Add TLS intercept warning on the connection path
+        if (arrow2 && !arrow2.querySelector('.tls-intercept-label')) {
+            const lbl = document.createElement('span');
+            lbl.className = 'tls-intercept-label';
+            lbl.textContent = '🔓 TLS Intercepted';
+            arrow2.appendChild(lbl);
+        }
+
+        // Highlight the ISP card border to show this is where interception occurs
+        if (ispCard) ispCard.classList.add('tls-intercepted');
+    } else {
+        if (ispCard) ispCard.classList.remove('tls-intercepted');
     }
 }

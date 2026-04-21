@@ -1569,6 +1569,28 @@ main {
     50% { opacity: 1; }
 }
 
+/* TLS interception overlay on connection path */
+.tls-intercept-label {
+    display: block;
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: #f85149;
+    white-space: nowrap;
+    margin-top: 4px;
+    text-align: center;
+    letter-spacing: 0.5px;
+    animation: tlsPulse 2s ease-in-out infinite;
+}
+@keyframes tlsPulse {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 1; }
+}
+/* Highlight ISP card when TLS interception detected */
+.device-card.tls-intercepted {
+    border-color: #f85149 !important;
+    box-shadow: 0 0 8px rgba(248, 81, 73, 0.3);
+}
+
 /* Hide security bar when in CPC-only mode (it shows client-side scanner data) */
 .connectivity-map.cpc-only-active .map-security-bar {
     display: none;
