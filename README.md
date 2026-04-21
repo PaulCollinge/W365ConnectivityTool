@@ -1,4 +1,4 @@
-# Windows 365 / AVD Connectivity Diagnostics
+# Windows 365 / Azure Virtual Desktop Connectivity Diagnostics
 
 A lightweight diagnostic tool that tests network connectivity for **Windows 365 Cloud PC** and **Azure Virtual Desktop (AVD)** environments from the client's perspective.
 
