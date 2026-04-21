@@ -3687,6 +3687,28 @@ class Program
         return result;
     }
 
+    /// <summary>
+    /// Known root CA thumbprints used by Microsoft Azure TLS certificates.
+    /// If the chain terminates at a root NOT in this set, TLS inspection is occurring.
+    /// </summary>
+    static readonly HashSet<string> KnownMicrosoftRootCaThumbprints = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // DigiCert Global Root G2
+        "DF3C24F9BFD666761B268073FE06D1CC8D4F82A4",
+        // DigiCert Global Root CA
+        "A8985D3A65E5E5C4B2D7D66D40C6DD2FB19C5436",
+        // Baltimore CyberTrust Root
+        "D4DE20D05E66FC53FE1A50882C78DB2852CAE474",
+        // Microsoft RSA Root Certificate Authority 2017
+        "73A5E64A3BFF8316FF0EDCCC618A906E4EAE4D74",
+        // Microsoft ECC Root Certificate Authority 2017
+        "999A64C37FF47D9FAB95F14769891460EEC4C3C5",
+        // DigiCert Global Root G3
+        "7E04DE896A3E666D00E687D33FFAD93BE83D349E",
+        // Microsoft Azure RSA TLS Issuing CA 03 (intermediate, but commonly the deepest visible)
+        // kept as fallback — if the root matches we skip intermediate checks
+    };
+
     static async Task<TestResult> RunTlsInspection()
     {
         var result = new TestResult { Id = "L-TCP-06", Name = "TLS Inspection Detection", Category = "tcp" };
@@ -3694,6 +3716,7 @@ class Program
         {
             var sb = new StringBuilder();
             bool intercepted = false;
+            string? interceptReason = null;
 
             // Discover the actual RDP gateway — this is the critical connection that must NOT be TLS-inspected
             var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
@@ -3717,31 +3740,18 @@ class Program
             using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await tcp.ConnectAsync(host, port, connectCts.Token);
 
+            X509Certificate2? leafCert = null;
             using var ssl = new SslStream(tcp.GetStream(), false, (sender, cert, chain, errors) =>
             {
                 if (cert is X509Certificate2 x509)
                 {
+                    leafCert = new X509Certificate2(x509); // clone to use after callback
+
                     sb.AppendLine($"Subject: {x509.Subject}");
                     sb.AppendLine($"Issuer: {x509.Issuer}");
                     sb.AppendLine($"Thumbprint: {x509.Thumbprint}");
                     sb.AppendLine($"Valid: {x509.NotBefore:d} - {x509.NotAfter:d}");
                     sb.AppendLine($"Policy Errors: {errors}");
-
-                    // Check if issuer is expected
-                    var issuer = x509.Issuer;
-                    var expectedIssuers = new[] { "Microsoft", "DigiCert", "Microsoft Azure RSA TLS", "Microsoft Azure TLS" };
-                    bool isExpected = expectedIssuers.Any(e => issuer.Contains(e, StringComparison.OrdinalIgnoreCase));
-
-                    // Check for Private Link certs
-                    bool isPrivateLink = x509.Subject.Contains("privatelink", StringComparison.OrdinalIgnoreCase);
-
-                    if (!isExpected && !isPrivateLink)
-                    {
-                        intercepted = true;
-                        sb.AppendLine("\n⚠ Certificate issuer is NOT a known Microsoft/DigiCert CA.");
-                        sb.AppendLine("This suggests TLS inspection by a proxy, firewall, or SWG.");
-                        sb.AppendLine("W365 RDP gateway connections MUST NOT be TLS-inspected.");
-                    }
                 }
                 return true; // Accept anyway for inspection
             });
@@ -3750,9 +3760,52 @@ class Program
             await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, tlsCts.Token);
             sb.Insert(0, $"Host: {host}:{port}\n\n");
 
+            // Build and validate the certificate chain
+            if (leafCert != null)
+            {
+                using var chain = new X509Chain();
+                chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                chain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllFlags; // We're inspecting, not enforcing
+                chain.Build(leafCert);
+
+                // Show the full chain for diagnostics
+                sb.AppendLine($"\nCertificate chain ({chain.ChainElements.Count} elements):");
+                for (int i = 0; i < chain.ChainElements.Count; i++)
+                {
+                    var el = chain.ChainElements[i].Certificate;
+                    var selfSigned = el.Subject == el.Issuer;
+                    sb.AppendLine($"  [{i}] {el.Subject}{(selfSigned ? " [ROOT]" : "")}");
+                    sb.AppendLine($"       Thumbprint: {el.Thumbprint}");
+                }
+
+                // Check 1: Does the chain root match a known Microsoft/DigiCert root CA?
+                var rootCert = chain.ChainElements[^1].Certificate;
+                bool rootTrusted = KnownMicrosoftRootCaThumbprints.Contains(rootCert.Thumbprint);
+
+                // Check 2: Private Link certs are legitimate non-standard chains
+                bool isPrivateLink = leafCert.Subject.Contains("privatelink", StringComparison.OrdinalIgnoreCase);
+
+                if (!rootTrusted && !isPrivateLink)
+                {
+                    intercepted = true;
+                    interceptReason = rootCert.Subject == rootCert.Issuer
+                        ? $"Root CA '{rootCert.Subject}' (thumbprint {rootCert.Thumbprint}) is not a known Microsoft/DigiCert CA"
+                        : $"Chain does not terminate at a trusted root — leaf issuer: {leafCert.Issuer}";
+                    sb.AppendLine($"\n⚠ {interceptReason}");
+                    sb.AppendLine("This indicates TLS inspection by a proxy, firewall, SWG, or network emulator.");
+                    sb.AppendLine("W365 RDP gateway connections MUST NOT be TLS-inspected.");
+                }
+                else if (isPrivateLink)
+                {
+                    sb.AppendLine("\nℹ Private Link certificate detected — this is a legitimate non-standard chain.");
+                }
+
+                leafCert.Dispose();
+            }
+
             result.ResultValue = intercepted
-                ? $"TLS inspection detected on {host} — non-Microsoft certificate issuer"
-                : $"No TLS inspection detected on {host}";
+                ? $"TLS inspection detected — {interceptReason}"
+                : $"None — certificates direct from Microsoft";
             result.Status = intercepted ? "Warning" : "Passed";
             result.DetailedInfo = sb.ToString().Trim();
             if (intercepted)
@@ -4234,7 +4287,33 @@ class Program
             }
             else
             {
-                result.ResultValue = $"{issues.Count} item(s) intercepting RDP traffic";
+                // Build a human-readable interceptor summary from the actual issues
+                var interceptorNames = new List<string>();
+                foreach (var issue in issues)
+                {
+                    if (issue.StartsWith("System proxy:", StringComparison.OrdinalIgnoreCase))
+                        interceptorNames.Add("System proxy");
+                    else if (issue.Contains("WinHTTP", StringComparison.OrdinalIgnoreCase))
+                        interceptorNames.Add("WinHTTP proxy");
+                    else if (issue.Contains("routes through VPN", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Find which VPN adapter is doing the routing
+                        var vpnName = detected.FirstOrDefault(d => d.StartsWith("VPN:"));
+                        interceptorNames.Add(vpnName != null
+                            ? vpnName.Substring(4).Trim().Split('(')[0].Trim()
+                            : "VPN tunnel");
+                    }
+                    else if (issue.Contains("HTTP_PROXY", StringComparison.OrdinalIgnoreCase) ||
+                             issue.Contains("HTTPS_PROXY", StringComparison.OrdinalIgnoreCase) ||
+                             issue.Contains("ALL_PROXY", StringComparison.OrdinalIgnoreCase))
+                        interceptorNames.Add("Proxy env vars");
+                }
+                var uniqueInterceptors = interceptorNames.Distinct().ToList();
+                var interceptorLabel = uniqueInterceptors.Count > 0
+                    ? string.Join(", ", uniqueInterceptors)
+                    : $"{issues.Count} item(s)";
+
+                result.ResultValue = $"Intercepting RDP traffic ({interceptorLabel})";
                 result.Status = "Warning";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#proxy-configuration";
                 if (detected.Count > 0)

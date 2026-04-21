@@ -3053,7 +3053,12 @@ async function updateKeyFindings(results) {
                 add('kf-pass', 'VPN / Proxy', 'None detected — direct routing');
             }
         } else {
-            const vpnDetail = vpnNameStr ? `Detected: ${vpnNameStr}` : '';
+            // Extract the interceptor name from resultValue: "Intercepting RDP traffic (System proxy, ...)"
+            const interceptorMatch = (vpnTcp.resultValue || '').match(/Intercepting[^(]*\(([^)]+)\)/i)
+                                  || (vpnUdp && vpnUdp.resultValue || '').match(/Intercepting[^(]*\(([^)]+)\)/i);
+            const interceptorStr = interceptorMatch ? interceptorMatch[1].trim() : '';
+            const vpnDetail = interceptorStr ? `Interceptor: ${esc(interceptorStr)}` :
+                              vpnNameStr ? `Detected: ${vpnNameStr}` : '';
             // If both tests timed out (not a proxy/VPN issue — just slow checks)
             if (tcpTimedOut && udpTimedOut) {
                 add('kf-pass', 'VPN / Proxy', '⚠ Tests timed out — could not determine',
