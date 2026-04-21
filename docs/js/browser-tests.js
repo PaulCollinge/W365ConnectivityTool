@@ -135,6 +135,11 @@ const ALL_TESTS = [
         description: 'Discovers path MTU to key W365/AVD endpoints using DF-bit probes (requires Local Scanner)',
         category: 'local', source: 'local'
     },
+    {
+        id: 'L-LE-16', name: 'NIC Driver Analysis',
+        description: 'Analyzes network adapter drivers for age and known issues impacting connectivity (requires Local Scanner)',
+        category: 'local', source: 'local'
+    },
 
     // ── TCP Based RDP Connectivity ──
     {

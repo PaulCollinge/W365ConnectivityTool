@@ -1079,6 +1079,7 @@ class Program
             new("L-LE-13", "RDP Client Version", "Checks installed Windows App / Remote Desktop client version", "local", RunRdpClientVersion),
             new("L-LE-14", "DNS Server Identification", "Identifies configured and active DNS resolvers and classifies provider", "local", RunDnsServerIdentification),
             new("L-LE-15", "Path MTU Discovery", "Discovers maximum transmission unit to key W365/AVD endpoints", "local", RunPathMtuDiscovery),
+            new("L-LE-16", "NIC Driver Analysis", "Analyzes network adapter drivers for age and known issues impacting connectivity", "local", RunNicDriverAnalysis),
 
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
@@ -3005,6 +3006,217 @@ class Program
         {
             return false;
         }
+    }
+
+    // ═══════════════════════════════════════════
+    //  NIC DRIVER ANALYSIS
+    // ═══════════════════════════════════════════
+
+    /// <summary>Driver info read from the network adapter class registry key.</summary>
+    record NicDriverInfo(string Description, string Provider, string Version, DateTime? Date);
+
+    /// <summary>Network adapter class GUID — stable across all Windows versions.</summary>
+    const string NetAdapterClassGuid = @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}";
+
+    /// <summary>
+    /// Reads NIC driver details from the registry class key.
+    /// Returns description, provider, version, and date for every installed network adapter driver.
+    /// </summary>
+    static List<NicDriverInfo> ReadNicDriversFromRegistry()
+    {
+        var drivers = new List<NicDriverInfo>();
+        try
+        {
+            using var classKey = Registry.LocalMachine.OpenSubKey(NetAdapterClassGuid);
+            if (classKey == null) return drivers;
+
+            foreach (var subKeyName in classKey.GetSubKeyNames())
+            {
+                // Subkeys are numbered "0000", "0001", etc. — skip "Properties"
+                if (!int.TryParse(subKeyName, out _)) continue;
+
+                try
+                {
+                    using var sub = classKey.OpenSubKey(subKeyName);
+                    if (sub == null) continue;
+
+                    var desc = sub.GetValue("DriverDesc") as string;
+                    if (string.IsNullOrEmpty(desc)) continue;
+
+                    var provider = sub.GetValue("ProviderName") as string ?? "unknown";
+                    var version = sub.GetValue("DriverVersion") as string ?? "unknown";
+                    var dateStr = sub.GetValue("DriverDate") as string;
+
+                    DateTime? driverDate = null;
+                    if (!string.IsNullOrEmpty(dateStr))
+                    {
+                        // Registry stores DriverDate as "M-D-YYYY" (US format)
+                        if (DateTime.TryParseExact(dateStr,
+                            new[] { "M-d-yyyy", "MM-dd-yyyy", "M/d/yyyy", "yyyy-MM-dd" },
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out var parsed))
+                        {
+                            driverDate = parsed;
+                        }
+                    }
+                    drivers.Add(new NicDriverInfo(desc, provider, version, driverDate));
+                }
+                catch { /* Skip inaccessible subkey */ }
+            }
+        }
+        catch { /* Registry access failed entirely */ }
+        return drivers;
+    }
+
+    /// <summary>
+    /// Known problematic NIC driver patterns. Each entry: (description substring, max safe version, issue description).
+    /// Version comparison is done with <see cref="CompareDriverVersions"/>.
+    /// </summary>
+    static readonly (string descPattern, string? maxBadVersion, string issue)[] KnownDriverIssues =
+    [
+        // Realtek RTL8168/8111 — TCP checksum offload bugs cause packet corruption & retransmits
+        ("RTL8168", "10.044",
+            "Realtek RTL8168/8111 drivers before v10.045 have TCP checksum offload bugs that cause packet corruption. Update driver or disable 'TCP Checksum Offload' in adapter advanced settings"),
+
+        ("RTL8111", "10.044",
+            "Realtek RTL8111/8168 drivers before v10.045 have TCP checksum offload bugs that cause packet corruption. Update driver or disable 'TCP Checksum Offload' in adapter advanced settings"),
+
+        // Intel I225-V — link drops under sustained load (fixed in later driver versions)
+        ("I225-V", "1.0.2.17",
+            "Intel I225-V early drivers have known link-drop issues under sustained load. Update to the latest Intel LAN driver"),
+
+        // Intel I226-V — similar early-driver instability
+        ("I226-V", "1.0.2.17",
+            "Intel I226-V early drivers have known instability. Update to the latest Intel LAN driver"),
+
+        // Killer Networking — Advanced Stream Detect can deprioritize RDP traffic
+        ("Killer", null,
+            "Intel Killer networking adapters use Advanced Stream Detect which can deprioritize RDP/UDP traffic. If experiencing poor session quality, disable 'Advanced Stream Detect' in Killer Control Center"),
+
+        // Cisco AnyConnect — MTU issues with UDP can break RDP Shortpath
+        ("Cisco AnyConnect", null,
+            "Cisco AnyConnect virtual adapter can fragment UDP packets and interfere with RDP Shortpath. If UDP connectivity fails, check AnyConnect MTU settings"),
+    ];
+
+    /// <summary>
+    /// Compares two dotted version strings numerically (e.g. "10.044" vs "10.045").
+    /// Returns negative if a &lt; b, 0 if equal, positive if a &gt; b.
+    /// </summary>
+    static int CompareDriverVersions(string a, string b)
+    {
+        var pa = a.Split('.').Select(s => int.TryParse(s, out var v) ? v : 0).ToArray();
+        var pb = b.Split('.').Select(s => int.TryParse(s, out var v) ? v : 0).ToArray();
+        int len = Math.Max(pa.Length, pb.Length);
+        for (int i = 0; i < len; i++)
+        {
+            int va = i < pa.Length ? pa[i] : 0;
+            int vb = i < pb.Length ? pb[i] : 0;
+            if (va != vb) return va.CompareTo(vb);
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Checks a driver against the known-issue database.
+    /// Returns a warning string if matched, null otherwise.
+    /// </summary>
+    static string? CheckKnownDriverIssue(NicDriverInfo driver)
+    {
+        foreach (var (descPattern, maxBadVersion, issue) in KnownDriverIssues)
+        {
+            if (driver.Description.Contains(descPattern, StringComparison.OrdinalIgnoreCase))
+            {
+                // If a max-bad-version is specified, only warn if driver version is at or below it
+                if (maxBadVersion != null && driver.Version != "unknown")
+                {
+                    if (CompareDriverVersions(driver.Version, maxBadVersion) > 0)
+                        continue; // Driver is newer than the problematic range
+                }
+                return issue;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// L-LE-16: Analyzes NIC drivers for age and known issues that can impact RDP connectivity.
+    /// </summary>
+    static async Task<TestResult> RunNicDriverAnalysis()
+    {
+        await Task.CompletedTask; // Sync work only (registry reads)
+        var result = new TestResult { Id = "L-LE-16", Name = "NIC Driver Analysis", Category = "local" };
+        try
+        {
+            var sb = new StringBuilder();
+            var activeAdapters = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up
+                         && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                .ToList();
+
+            var driverInfos = ReadNicDriversFromRegistry();
+
+            int analyzed = 0;
+            int warnings = 0;
+
+            foreach (var adapter in activeAdapters)
+            {
+                // Match active adapter to registry driver info by description.
+                // Windows appends " #2", " #3" etc. to Description when multiple instances
+                // of the same adapter exist, but the registry stores the base name only.
+                var adapterDesc = System.Text.RegularExpressions.Regex.Replace(
+                    adapter.Description, @"\s+#\d+$", "");
+                var driverInfo = driverInfos.FirstOrDefault(d =>
+                    string.Equals(d.Description, adapterDesc, StringComparison.OrdinalIgnoreCase));
+
+                if (driverInfo == null) continue;
+                analyzed++;
+
+                sb.AppendLine($"═══ {adapter.Name} ═══");
+                sb.AppendLine($"  Driver: {driverInfo.Description}");
+                sb.AppendLine($"  Provider: {driverInfo.Provider}");
+                sb.AppendLine($"  Version: {driverInfo.Version}");
+                sb.AppendLine($"  Date: {driverInfo.Date?.ToString("yyyy-MM-dd") ?? "unknown"}");
+
+                // Check driver age
+                if (driverInfo.Date.HasValue)
+                {
+                    var ageDays = (DateTime.Now - driverInfo.Date.Value).TotalDays;
+                    if (ageDays > 730) // > 2 years
+                    {
+                        var years = ageDays / 365.25;
+                        sb.AppendLine($"  ⚠ Driver is {years:F1} years old — consider updating from the manufacturer's website");
+                        warnings++;
+                    }
+                }
+
+                // Check known problematic drivers
+                var issue = CheckKnownDriverIssue(driverInfo);
+                if (issue != null)
+                {
+                    sb.AppendLine($"  ⚠ Known issue: {issue}");
+                    warnings++;
+                }
+
+                sb.AppendLine();
+            }
+
+            if (analyzed == 0)
+            {
+                result.Status = "Info";
+                result.ResultValue = "No active adapters matched to registry driver records";
+                result.DetailedInfo = "Could not read driver details from registry. This is non-critical.";
+            }
+            else
+            {
+                result.ResultValue = warnings == 0
+                    ? $"{analyzed} driver(s) analyzed — no known issues"
+                    : $"{analyzed} driver(s) analyzed — {warnings} warning(s)";
+                result.DetailedInfo = sb.ToString().Trim();
+                result.Status = warnings == 0 ? "Passed" : "Warning";
+            }
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
     }
 
     // ═══════════════════════════════════════════
