@@ -3343,16 +3343,23 @@ class Program
                         ? $"    → IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) ✓"
                         : $"    → IP NOT in expected W365 ranges");
 
-                    // Service Tags region lookup for gateway IP
+                    // Region identification: prefer FQDN, supplement with Service Tags
+                    var gwRegionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
+                    var gwRegionName = gwRegionCode != null ? GetAzureRegionName(gwRegionCode) : null;
                     var gwFirstIp = gwIps.FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
                     if (gwFirstIp != null)
                     {
-                        var gwRegion = LookupGatewayRegion(gwFirstIp);
-                        if (gwRegion != null)
-                        {
-                            var gwFriendly = GetAzureRegionFriendlyName(gwRegion) ?? gwRegion;
-                            sb.AppendLine($"    → Gateway region (Service Tags): {gwFriendly}");
-                        }
+                        var stRegion = LookupGatewayRegion(gwFirstIp);
+                        var stFriendly = stRegion != null ? (GetAzureRegionFriendlyName(stRegion) ?? stRegion) : null;
+                        var displayRegion = gwRegionName ?? stFriendly;
+                        if (displayRegion != null)
+                            sb.AppendLine($"    → Gateway region (Service Tags): {displayRegion}");
+                        if (gwRegionName != null && stFriendly != null && !string.Equals(gwRegionName, stFriendly, StringComparison.OrdinalIgnoreCase))
+                            sb.AppendLine($"    → Note: FQDN says {gwRegionName}, Service Tags subnet says {stFriendly}");
+                    }
+                    else if (gwRegionName != null)
+                    {
+                        sb.AppendLine($"    → Gateway region: {gwRegionName}");
                     }
 
                     using var tcp = new TcpClient();
@@ -7580,7 +7587,10 @@ class Program
                 var regionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
                 var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
                 if (regionName != null)
+                {
                     sb.AppendLine($"    Azure Region: {regionName} ({regionCode})");
+                    gatewayDisplayRegion = regionName;
+                }
                 else if (regionCode != null)
                     sb.AppendLine($"    Azure Region Code: {regionCode}");
 
@@ -7594,7 +7604,7 @@ class Program
                     if (inRange)
                         sb.AppendLine($"    → IP in W365 range ✓");
 
-                    // Service Tags region lookup (authoritative) — preferred over GeoIP
+                    // Service Tags region lookup — supplementary to FQDN region
                     var gwIpv4 = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                     string serviceTagsRegion = null;
                     if (gwIpv4 != null)
@@ -7604,8 +7614,18 @@ class Program
                         {
                             var stFriendly = GetAzureRegionFriendlyName(stRegion) ?? stRegion;
                             serviceTagsRegion = stFriendly;
-                            gatewayDisplayRegion = stFriendly;
-                            sb.AppendLine($"    Location: {stFriendly}");
+                            // Use FQDN region as primary; fall back to Service Tags if FQDN didn't parse
+                            if (gatewayDisplayRegion == null)
+                                gatewayDisplayRegion = stFriendly;
+                            sb.AppendLine($"    Location: {gatewayDisplayRegion}");
+                            if (regionName != null && !string.Equals(regionName, stFriendly, StringComparison.OrdinalIgnoreCase))
+                                sb.AppendLine($"    Note: Service Tags subnet maps this IP to {stFriendly} (FQDN region used for display)");
+                        }
+                        else
+                        {
+                            // Service Tags didn't match — just show FQDN region as Location
+                            if (gatewayDisplayRegion != null)
+                                sb.AppendLine($"    Location: {gatewayDisplayRegion}");
                         }
                     }
 
