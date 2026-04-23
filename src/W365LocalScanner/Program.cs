@@ -163,10 +163,12 @@ class Program
                     // Read image offer & SKU for definitive Cloud PC vs AVD detection
                     var offer = compute.TryGetProperty("offer", out var ofVal) ? ofVal.GetString() ?? "" : "";
                     var sku = compute.TryGetProperty("sku", out var skVal) ? skVal.GetString() ?? "" : "";
+                    var publisher = compute.TryGetProperty("publisher", out var pb) ? pb.GetString() ?? "" : "";
 
                     // 1. IMDS offer/sku containing "cpc" is definitive Cloud PC signal
                     // 2. VM size "_cpc" or name/RG/tags patterns are strong Cloud PC signals
                     // 3. Registry HKLM\SOFTWARE\Microsoft\Windows 365 is definitive
+                    // 4. Publisher "MicrosoftWindowsDesktop" with offer containing "windows-ent-cpc" is definitive
                     var isLikelyCloudPc = offer.Contains("cpc", StringComparison.OrdinalIgnoreCase)
                         || sku.Contains("cpc", StringComparison.OrdinalIgnoreCase)
                         || vmSize.Contains("_cpc", StringComparison.OrdinalIgnoreCase)
@@ -175,7 +177,8 @@ class Program
                         || resourceGroup.Contains("cloudpc", StringComparison.OrdinalIgnoreCase)
                         || resourceGroup.Contains("w365", StringComparison.OrdinalIgnoreCase)
                         || tags.Contains("CloudPC", StringComparison.OrdinalIgnoreCase)
-                        || tags.Contains("Windows365", StringComparison.OrdinalIgnoreCase);
+                        || tags.Contains("Windows365", StringComparison.OrdinalIgnoreCase)
+                        || provider.Contains("DesktopVirtualization", StringComparison.OrdinalIgnoreCase);
 
                     // Check W365 registry key as additional definitive signal
                     bool hasW365Registry = false;
@@ -203,8 +206,11 @@ class Program
                     }
                     else
                     {
-                        // Azure VM but can't determine type — ask user
+                        // Azure VM but can't determine type — show what we found and ask user
                         Console.WriteLine($"  Azure VM detected: {_azureVmName ?? "unknown"} ({vmSize}) in {_azureVmRegion ?? "unknown"}");
+                        Console.WriteLine($"    offer={offer} sku={sku} publisher={publisher}");
+                        Console.WriteLine($"    rg={resourceGroup} tags={tags}");
+                        Console.WriteLine($"    registry W365={hasW365Registry}");
                         Console.Write("  Is this a Cloud PC (C) or AVD Session Host (A)? [C/a/skip]: ");
                         var key = Console.ReadLine()?.Trim();
                         if (key != null && key.StartsWith("a", StringComparison.OrdinalIgnoreCase))
@@ -223,6 +229,20 @@ class Program
                         }
                     }
                 }
+                else
+                {
+                    Console.WriteLine($"  IMDS returned {(int)imdsResp.StatusCode} — running in client mode");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                Console.WriteLine("  IMDS probe timed out (169.254.169.254 unreachable) — running in client mode");
+                Console.WriteLine("  Tip: If this is a Cloud PC, use --cloudpc flag");
+            }
+            catch (HttpRequestException ex)
+            {
+                Console.WriteLine($"  IMDS probe failed ({ex.InnerException?.Message ?? ex.Message}) — running in client mode");
+                Console.WriteLine("  Tip: If this is a Cloud PC, use --cloudpc flag");
             }
             catch { /* Not in Azure — client mode */ }
         }
