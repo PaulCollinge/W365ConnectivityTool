@@ -7695,20 +7695,15 @@ class Program
                         {
                             var stFriendly = GetAzureRegionFriendlyName(stRegion) ?? stRegion;
                             serviceTagsRegion = stFriendly;
-                            // Use FQDN region as primary; fall back to Service Tags if FQDN didn't parse
                             if (gatewayDisplayRegion == null)
                                 gatewayDisplayRegion = stFriendly;
-                            sb.AppendLine($"    Location: {gatewayDisplayRegion}");
                             if (regionName != null && !string.Equals(regionName, stFriendly, StringComparison.OrdinalIgnoreCase))
                                 sb.AppendLine($"    Note: Service Tags subnet maps this IP to {stFriendly} (FQDN region used for display)");
                         }
-                        else
-                        {
-                            // Service Tags didn't match — just show FQDN region as Location
-                            if (gatewayDisplayRegion != null)
-                                sb.AppendLine($"    Location: {gatewayDisplayRegion}");
-                        }
                     }
+                    // Always write the Location: line (web UI reads this for the badge)
+                    if (gatewayDisplayRegion != null)
+                        sb.AppendLine($"    Location: {gatewayDisplayRegion}");
 
                     // Reverse DNS
                     try
