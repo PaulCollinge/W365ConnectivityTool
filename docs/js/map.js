@@ -788,7 +788,8 @@ function updateMapTurnCard(lookup) {
     // Location badge from L-UDP-04 (scanner)
     let turnLocationStr = '';
     if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
-        const locMatch = (turnLoc.resultValue || '').match(/TURN relay:\s*(.+?)\s*\(/);
+        // Match both "TURN relay: Region (ip)" and "TURN relay (DNS): Region (code) (ip)"
+        const locMatch = (turnLoc.resultValue || '').match(/TURN relay(?:\s*\([^)]*\))?:\s*(.+?)\s*\(/);
         const city = locMatch ? locMatch[1] : '';
         if (city) {
             setFlaggedBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge', city);
