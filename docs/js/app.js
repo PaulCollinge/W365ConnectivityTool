@@ -1079,6 +1079,13 @@ function processImportedData(data) {
             }
         }
         updateHostTypeLabels();
+        // Enable CPC mode in the UI (shows Cloud PC / Azure Network cards on map)
+        if (!cloudPcMode) {
+            const toggle = document.getElementById('cpc-mode-toggle');
+            if (toggle) toggle.checked = true;
+            toggleCloudPcMode(true);
+            ilog('CPC mode enabled via imported scanner data (scanMode=cloudpc)');
+        }
         // Sync host-type dropdown and hide picker banner
         const htSel = document.getElementById('host-type-select');
         if (htSel) htSel.value = hostType;
