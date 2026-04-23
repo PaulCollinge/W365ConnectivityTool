@@ -1527,14 +1527,40 @@ function updateMapCloudPcCard(lookup) {
     const accent = document.getElementById('map-cpc-accent');
 
     if (loc && loc.status === 'Passed' && loc.resultValue) {
-        // Prefer Azure region inferred from coordinates over raw geo-IP city
-        const coords = extractCoords(loc.detailedInfo);
-        const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
-        if (azRegion) {
-            if (locEl) locEl.textContent = azRegion.name;
-        } else {
-            if (locEl) locEl.textContent = loc.resultValue;
+        // Prefer IMDS region (authoritative) over GeoIP coordinates
+        // GeoIP can be wrong when a VPN (e.g. Unifi Teleport) tunnels traffic
+        // through a remote network, making the egress IP appear elsewhere
+        let regionLabel = null;
+
+        // 1. Try IMDS Azure Region from C-NET-01 (definitive)
+        if (imds && imds.detailedInfo) {
+            const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
+            if (regionMatch) {
+                const regionCode = regionMatch[1];
+                const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
+                regionLabel = azRegion ? azRegion.name : regionCode;
+            }
         }
+
+        // 2. Try Azure Region from C-LE-01 scanner result (also uses IMDS)
+        if (!regionLabel && loc.detailedInfo) {
+            const regionMatch = loc.detailedInfo.match(/Azure Region:\s*(\S+)/);
+            if (regionMatch) {
+                const regionCode = regionMatch[1];
+                const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
+                regionLabel = azRegion ? azRegion.name : regionCode;
+            }
+        }
+
+        // 3. Fall back to GeoIP coordinate inference (browser-only, no scanner)
+        if (!regionLabel) {
+            const coords = extractCoords(loc.detailedInfo);
+            const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
+            if (azRegion) regionLabel = azRegion.name;
+        }
+
+        // 4. Last resort: raw resultValue
+        if (locEl) locEl.textContent = regionLabel || loc.resultValue;
         // Extract IP from detailed info
         if (ipEl && loc.detailedInfo) {
             const ipMatch = loc.detailedInfo.match(/Public IP:\s*([\d.]+)/);
@@ -1596,7 +1622,11 @@ function updateMapAzureCard(lookup) {
     // Show Azure region from IMDS, or infer from geo-IP coordinates, or fall back to location value
     if (imds && imds.status === 'Passed' && imds.detailedInfo) {
         const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
-        if (regionMatch && detail) detail.textContent = regionMatch[1];
+        if (regionMatch && detail) {
+            const regionCode = regionMatch[1];
+            const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
+            detail.textContent = azRegion ? azRegion.name : regionCode;
+        }
     } else if (loc && loc.detailedInfo) {
         // Infer Azure region from geo-IP coordinates
         const coords = extractCoords(loc.detailedInfo);
