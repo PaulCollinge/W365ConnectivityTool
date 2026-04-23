@@ -695,6 +695,76 @@ function updateMapAfdCard(lookup) {
     setAccentStatus('map-afd-accent', status);
 }
 
+// ── VPN context helper ──
+// Returns whether a VPN/SWG is in the RDP path and, if so, the CPC's true
+// Azure region (from IMDS) so other cards can reason about region mismatches.
+function getVpnContext(lookup) {
+    const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
+    const routeAnalysis = lookup['B-TCP-04'];
+    let vpnActive = false;
+    if (tcpVpn && tcpVpn.status === 'Warning') vpnActive = true;
+    if (!vpnActive && routeAnalysis && routeAnalysis.status === 'Warning') {
+        const info = routeAnalysis.detailedInfo || '';
+        if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
+            vpnActive = true;
+        }
+    }
+
+    // CPC Azure region from IMDS (authoritative) — fall back to C-LE-01 info
+    let cpcRegionCode = '';
+    const readRegion = (info) => {
+        const m = info && info.match(/Azure Region:\s*(\S+)/);
+        return m ? m[1] : '';
+    };
+    cpcRegionCode = readRegion(lookup['C-NET-01'] && lookup['C-NET-01'].detailedInfo)
+        || readRegion(lookup['C-LE-01'] && lookup['C-LE-01'].detailedInfo);
+
+    let cpcRegionName = '';
+    if (cpcRegionCode && typeof AZURE_REGIONS !== 'undefined') {
+        const az = AZURE_REGIONS.find(r => r.code === cpcRegionCode);
+        cpcRegionName = az ? az.name : cpcRegionCode;
+    }
+    return { vpnActive, cpcRegionCode, cpcRegionName };
+}
+
+// Rough check: does a location string (e.g. "UK South", "East US 2", "London, GB")
+// sit in the same broad geography as the given Azure region code?
+function isLocationInSameGeoAsRegion(locStr, regionCode) {
+    if (!locStr || !regionCode) return null;
+    const L = locStr.toLowerCase();
+    const R = regionCode.toLowerCase();
+    // Geo buckets — coarse but sufficient to flag wrong-continent routing
+    const buckets = [
+        { rx: /^(eastus|westus|centralus|northcentralus|southcentralus|westcentralus|eastus2|westus2|westus3)$/, loc: /(\bus\b|united states|usa|virginia|iowa|texas|washington|arizona|california|illinois|wyoming|new york|chicago|dallas|atlanta|seattle|phoenix)/ },
+        { rx: /^(canadacentral|canadaeast)$/, loc: /canada|toronto|quebec|montreal/ },
+        { rx: /^(uksouth|ukwest)$/, loc: /\buk\b|united kingdom|england|scotland|wales|london|cardiff|manchester/ },
+        { rx: /^(northeurope|westeurope)$/, loc: /ireland|netherlands|dublin|amsterdam|europe/ },
+        { rx: /^(francecentral|francesouth)$/, loc: /france|paris|marseille/ },
+        { rx: /^(germanywestcentral|germanynorth)$/, loc: /germany|frankfurt|berlin/ },
+        { rx: /^(switzerlandnorth|switzerlandwest)$/, loc: /switzerland|zurich|geneva/ },
+        { rx: /^(norwayeast|norwaywest)$/, loc: /norway|oslo/ },
+        { rx: /^(swedencentral)$/, loc: /sweden|stockholm/ },
+        { rx: /^(italynorth)$/, loc: /italy|milan/ },
+        { rx: /^(polandcentral)$/, loc: /poland|warsaw/ },
+        { rx: /^(uaenorth|uaecentral)$/, loc: /uae|dubai|abu dhabi/ },
+        { rx: /^(israelcentral)$/, loc: /israel|tel aviv/ },
+        { rx: /^(qatarcentral)$/, loc: /qatar|doha/ },
+        { rx: /^(southafrica(north|west))$/, loc: /south africa|johannesburg|cape town/ },
+        { rx: /^(australia(east|southeast|central|central2))$/, loc: /australia|sydney|melbourne|canberra/ },
+        { rx: /^(japan(east|west))$/, loc: /japan|tokyo|osaka/ },
+        { rx: /^(korea(central|south))$/, loc: /korea|seoul|busan/ },
+        { rx: /^(southeastasia|eastasia)$/, loc: /singapore|hong kong/ },
+        { rx: /^(centralindia|southindia|westindia|jioindia(west|central))$/, loc: /india|mumbai|chennai|pune|hyderabad/ },
+        { rx: /^(brazil(south|southeast))$/, loc: /brazil|sao paulo/ },
+    ];
+    for (const b of buckets) {
+        if (b.rx.test(R)) {
+            return b.loc.test(L);
+        }
+    }
+    return null; // unknown region bucket — don't flag
+}
+
 // ── RD Gateway Card ──
 function updateMapRdGwCard(lookup) {
     const tcpPorts = lookup['L-TCP-04'];
@@ -760,6 +830,24 @@ function updateMapRdGwCard(lookup) {
         }
     }
 
+    // VPN-aware region-mismatch check: when a VPN/SWG is tunneling RDP to a
+    // gateway in a different geography than the Cloud PC, the "reachable" green
+    // state is misleading — the user is hitting the wrong regional RDP infra
+    // because the tunnel egress determined the gateway region, not the CPC.
+    const vpnCtx = getVpnContext(lookup);
+    if (vpnCtx.vpnActive && vpnCtx.cpcRegionCode && rdgwLocationStr) {
+        const sameGeo = isLocationInSameGeoAsRegion(rdgwLocationStr, vpnCtx.cpcRegionCode);
+        if (sameGeo === false) {
+            status = worstStatus(status, 'Warning');
+            setBadge(
+                'map-rdgw-prox-badge',
+                `⚠ Wrong region (CPC in ${vpnCtx.cpcRegionName})`,
+                'proximity-far'
+            );
+            detail1 = '⚠ Gateway reachable but in wrong region (VPN-steered)';
+        }
+    }
+
     setText('map-rdgw-detail', detail1);
     setAccentStatus('map-rdgw-accent', status);
 }
@@ -799,6 +887,22 @@ function updateMapTurnCard(lookup) {
     } else if (stunTest && stunTest.status === 'Passed') {
         // No scanner data — do a browser-based relay geolocation via DoH + GeoIP
         geolocateTurnRelay();
+    }
+
+    // VPN-aware caveat: the TURN region label above comes from DNS resolution of
+    // the TURN hostname (Traffic Manager geo-DNS), which reflects the resolver's
+    // egress IP — not the actual UDP session path. When a VPN/SWG is active AND
+    // STUN couldn't obtain a server-reflexive address (host candidates only),
+    // the advertised region is untrustworthy — the real relay the RDP session
+    // would pick is unknown.
+    const vpnCtxTurn = getVpnContext(lookup);
+    const stunHostOnly = stunTest && /host candidate/i.test(stunTest.resultValue || '');
+    if (vpnCtxTurn.vpnActive && stunHostOnly) {
+        // Strip the misleading region badge and downgrade status
+        setBadge('map-turn-loc-badge', '⚠ DNS-only region — session path unknown', 'status-warn');
+        status = worstStatus(status, 'Warning');
+        detail1 = '⚠ STUN blocked by VPN — relay region uncertain';
+        turnLocationStr = ''; // prevent proximity badge below from using a bogus location
     }
 
     // Proximity badge — DNS-resolved TURN location vs user (informational only,
