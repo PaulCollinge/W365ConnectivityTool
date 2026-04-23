@@ -236,15 +236,111 @@ class Program
             }
             catch (TaskCanceledException)
             {
-                Console.WriteLine("  IMDS probe timed out (169.254.169.254 unreachable) — running in client mode");
-                Console.WriteLine("  Tip: If this is a Cloud PC, use --cloudpc flag");
+                Console.WriteLine("  IMDS probe timed out (169.254.169.254 unreachable)");
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"  IMDS probe failed ({ex.InnerException?.Message ?? ex.Message}) — running in client mode");
-                Console.WriteLine("  Tip: If this is a Cloud PC, use --cloudpc flag");
+                Console.WriteLine($"  IMDS probe failed ({ex.InnerException?.Message ?? ex.Message})");
             }
             catch { /* Not in Azure — client mode */ }
+
+            // ── Fallback detection when IMDS is unavailable (VPN/firewall blocking link-local) ──
+            if (!_isCloudPcMode)
+            {
+                bool detectedViaFallback = false;
+                string fallbackSignal = "";
+
+                // 1. Registry: Windows 365 key (definitive Cloud PC signal)
+                try
+                {
+                    using var w365Key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows 365");
+                    if (w365Key != null)
+                    {
+                        detectedViaFallback = true;
+                        _hostType = "cloudpc";
+                        fallbackSignal = "registry HKLM\\SOFTWARE\\Microsoft\\Windows 365";
+                    }
+                }
+                catch { /* Registry access restricted */ }
+
+                // 2. Registry: RDInfraAgent key (AVD/W365 infrastructure agent)
+                if (!detectedViaFallback)
+                {
+                    try
+                    {
+                        using var rdKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\RDInfraAgent");
+                        if (rdKey != null)
+                        {
+                            // RDInfraAgent is present on both Cloud PC and AVD session hosts
+                            detectedViaFallback = true;
+                            _hostType = "cloudpc"; // Default to CPC, refine below
+                            fallbackSignal = "registry HKLM\\SOFTWARE\\Microsoft\\RDInfraAgent";
+
+                            // Check if it's specifically an AVD host
+                            var isTemp = rdKey.GetValue("IsRegisteredAsSessionHost");
+                            if (isTemp != null && isTemp.ToString() == "1")
+                            {
+                                _hostType = "avd";
+                            }
+                        }
+                    }
+                    catch { /* Registry access restricted */ }
+                }
+
+                // 3. Service: RDAgentBootLoader (present on Cloud PCs and AVD session hosts)
+                if (!detectedViaFallback)
+                {
+                    try
+                    {
+                        using var sc = new System.ServiceProcess.ServiceController("RDAgentBootLoader");
+                        _ = sc.Status; // Throws if service doesn't exist
+                        detectedViaFallback = true;
+                        _hostType = "cloudpc";
+                        fallbackSignal = "service RDAgentBootLoader";
+                    }
+                    catch { /* Service not found */ }
+                }
+
+                // 4. Service: WindowsAzureGuestAgent (present on Azure VMs)
+                if (!detectedViaFallback)
+                {
+                    try
+                    {
+                        using var sc = new System.ServiceProcess.ServiceController("WindowsAzureGuestAgent");
+                        _ = sc.Status; // Throws if service doesn't exist
+                        // Azure VM confirmed, but not sure if CPC — ask user
+                        Console.WriteLine("  Azure VM detected via Guest Agent (IMDS unreachable — VPN may be blocking link-local)");
+                        Console.Write("  Is this a Cloud PC (C) or AVD Session Host (A)? [C/a/skip]: ");
+                        var key = Console.ReadLine()?.Trim();
+                        if (key != null && key.StartsWith("a", StringComparison.OrdinalIgnoreCase))
+                        {
+                            detectedViaFallback = true;
+                            _hostType = "avd";
+                        }
+                        else if (key == null || !key.StartsWith("s", StringComparison.OrdinalIgnoreCase))
+                        {
+                            detectedViaFallback = true;
+                            _hostType = "cloudpc";
+                        }
+                    }
+                    catch { /* Service not found */ }
+                }
+
+                if (detectedViaFallback)
+                {
+                    _isCloudPcMode = true;
+                    Console.WriteLine($"  Detected as {(_hostType == "avd" ? "AVD Session Host" : "Cloud PC")} via {fallbackSignal}");
+                    if (_azureVmRegion == null)
+                    {
+                        Console.WriteLine("  Note: Azure region unknown (IMDS unavailable). Location tests may be limited.");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("  Running in client mode");
+                    Console.WriteLine("  Tip: If this is a Cloud PC, use --cloudpc flag");
+                }
+            }
         }
 
         if (_isCloudPcMode)
@@ -7993,7 +8089,16 @@ class Program
 
             sb.AppendLine($"Public IP: {ip}");
             sb.AppendLine($"Location: {city}, {region}, {country}");
-            sb.AppendLine($"Source: GeoIP");
+            if (_azureVmRegion != null)
+            {
+                sb.AppendLine($"Source: IMDS (Azure Region: {_azureVmRegion})");
+            }
+            else
+            {
+                sb.AppendLine($"Source: GeoIP (IMDS unavailable)");
+                if (_isCloudPcMode)
+                    sb.AppendLine($"⚠ GeoIP may show VPN exit point, not the actual Azure region");
+            }
 
             var locText = _azureVmRegion != null
                 ? $"{_azureVmRegion} ({city}, {country})"
@@ -8214,8 +8319,38 @@ class Program
         catch (HttpRequestException)
         {
             result.Status = "Warning";
-            result.ResultValue = "IMDS not available — may not be an Azure VM";
-            result.DetailedInfo = "Azure Instance Metadata Service (IMDS) at 169.254.169.254 was not reachable.\nThis endpoint is only available inside Azure VMs.";
+            if (_isCloudPcMode)
+            {
+                result.ResultValue = "IMDS blocked — VPN may be intercepting link-local traffic";
+                result.DetailedInfo = "Azure Instance Metadata Service (IMDS) at 169.254.169.254 was not reachable.\n" +
+                    "This Cloud PC was detected via registry/service, but IMDS is blocked.\n\n" +
+                    "This typically happens when a VPN routes link-local addresses (169.254.x.x)\n" +
+                    "through the tunnel instead of keeping them local.\n\n" +
+                    "Azure Region and VM details are unavailable.\n" +
+                    "To get full metadata, temporarily disconnect the VPN and re-run.";
+            }
+            else
+            {
+                result.ResultValue = "IMDS not available — may not be an Azure VM";
+                result.DetailedInfo = "Azure Instance Metadata Service (IMDS) at 169.254.169.254 was not reachable.\nThis endpoint is only available inside Azure VMs.";
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            result.Status = "Warning";
+            if (_isCloudPcMode)
+            {
+                result.ResultValue = "IMDS timed out — VPN may be intercepting link-local traffic";
+                result.DetailedInfo = "Azure IMDS at 169.254.169.254 timed out after 5 seconds.\n" +
+                    "This Cloud PC was detected via registry/service, but IMDS is unreachable.\n\n" +
+                    "VPN software (e.g. Unifi Teleport) can route link-local addresses through the tunnel.\n" +
+                    "To get full metadata, temporarily disconnect the VPN and re-run.";
+            }
+            else
+            {
+                result.ResultValue = "IMDS timed out";
+                result.DetailedInfo = "Azure IMDS at 169.254.169.254 did not respond within 5 seconds.";
+            }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;

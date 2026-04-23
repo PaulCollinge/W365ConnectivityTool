@@ -1531,6 +1531,7 @@ function updateMapCloudPcCard(lookup) {
         // GeoIP can be wrong when a VPN (e.g. Unifi Teleport) tunnels traffic
         // through a remote network, making the egress IP appear elsewhere
         let regionLabel = null;
+        const vpnCaveat = loc.detailedInfo && /VPN exit point/i.test(loc.detailedInfo);
 
         // 1. Try IMDS Azure Region from C-NET-01 (definitive)
         if (imds && imds.detailedInfo) {
@@ -1553,21 +1554,27 @@ function updateMapCloudPcCard(lookup) {
         }
 
         // 3. Fall back to GeoIP coordinate inference (browser-only, no scanner)
-        if (!regionLabel) {
+        if (!regionLabel && !vpnCaveat) {
             const coords = extractCoords(loc.detailedInfo);
             const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
             if (azRegion) regionLabel = azRegion.name;
         }
 
-        // 4. Last resort: raw resultValue
+        // 4. Last resort: raw resultValue (but flag VPN caveat if present)
+        if (!regionLabel && vpnCaveat) {
+            regionLabel = 'Region unknown — VPN active';
+        }
         if (locEl) locEl.textContent = regionLabel || loc.resultValue;
         // Extract IP from detailed info
         if (ipEl && loc.detailedInfo) {
             const ipMatch = loc.detailedInfo.match(/Public IP:\s*([\d.]+)/);
             if (ipMatch) ipEl.textContent = ipMatch[1];
         }
-        if (dot) dot.setAttribute('fill', '#3fb950');
-        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+        const isVpnUnknown = vpnCaveat && !regionLabel;
+        if (dot) dot.setAttribute('fill', isVpnUnknown ? '#d29922' : '#3fb950');
+        if (accent) accent.style.background = isVpnUnknown
+            ? 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)'
+            : 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
     } else if (loc && loc.status === 'Error') {
         if (locEl) locEl.textContent = 'Error detecting location';
         if (dot) dot.setAttribute('fill', '#f85149');
@@ -1627,6 +1634,14 @@ function updateMapAzureCard(lookup) {
             const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
             detail.textContent = azRegion ? azRegion.name : regionCode;
         }
+    } else if (imds && imds.status === 'Warning') {
+        // IMDS unreachable — likely VPN blocking link-local
+        if (detail) {
+            const vpnHint = /VPN|timed out|blocked/i.test(imds.resultValue || '');
+            detail.textContent = vpnHint ? 'Region unknown — VPN blocking IMDS' : 'Region unknown';
+        }
+        if (dot) dot.setAttribute('fill', '#d29922');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
     } else if (loc && loc.detailedInfo) {
         // Infer Azure region from geo-IP coordinates
         const coords = extractCoords(loc.detailedInfo);
