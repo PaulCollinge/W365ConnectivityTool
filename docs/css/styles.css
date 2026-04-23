@@ -2053,6 +2053,36 @@ main {
 .legend-badge.warn { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
 .legend-badge.fail { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
+/* ── VPN/SWG egress summary banner (above legend) ── */
+.map-vpn-summary {
+    padding: 12px 24px;
+    background: var(--yellow-bg);
+    border-top: 1px solid var(--yellow-border);
+    border-bottom: 1px solid var(--yellow-border);
+    color: var(--text-default);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.map-vpn-summary.hidden { display: none; }
+.map-vpn-summary .vpn-sum-icon { font-size: 16px; flex-shrink: 0; }
+.map-vpn-summary .vpn-sum-title { font-weight: 600; color: var(--yellow); margin-right: 4px; }
+.map-vpn-summary .vpn-sum-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--yellow-border);
+    border-radius: 100px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-default);
+}
+.map-vpn-summary .vpn-sum-sep { color: var(--text-muted); opacity: 0.6; }
+
 /* Map responsive */
 @media (max-width: 900px) {
     .map-diagram { display: flex; flex-direction: column; gap: 8px; }

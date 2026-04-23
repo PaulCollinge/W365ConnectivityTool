@@ -1824,6 +1824,51 @@ function updateMapVpnOverlay(lookup) {
         // Remove tunnel labels
         document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
     }
+
+    // ── Summary banner under the map ──
+    updateMapVpnSummary(vpnDetected, vpnLabel, lookup);
+}
+
+// Build a human-readable banner summarising VPN/SWG egress path.
+function updateMapVpnSummary(vpnDetected, vpnLabel, lookup) {
+    const el = document.getElementById('map-vpn-summary');
+    if (!el) return;
+    if (!vpnDetected) {
+        el.classList.add('hidden');
+        el.innerHTML = '';
+        return;
+    }
+
+    // Egress location & ISP come from browser-side GeoIP (B-LE-*),
+    // which reflects the *actual* internet exit point when a VPN/SWG is active.
+    const egressLoc = lookup['B-LE-01'];
+    const egressIsp = lookup['B-LE-02'];
+    const locText = egressLoc && egressLoc.resultValue ? String(egressLoc.resultValue).trim() : '';
+    const ispText = egressIsp && egressIsp.resultValue ? String(egressIsp.resultValue).trim() : '';
+
+    const chips = [];
+    chips.push(`<span class="vpn-sum-chip">🛡️ ${escapeHtml(vpnLabel || 'VPN/SWG')}</span>`);
+    if (locText) chips.push(`<span class="vpn-sum-chip">🌍 Egress: ${escapeHtml(locText)}</span>`);
+    if (ispText) chips.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);
+
+    el.className = 'map-vpn-summary';
+    el.innerHTML =
+        `<span class="vpn-sum-icon">⚠️</span>` +
+        `<span class="vpn-sum-title">RDP traffic is tunneling via ${escapeHtml(vpnLabel || 'VPN/SWG')}</span>` +
+        `<span class="vpn-sum-sep">—</span>` +
+        chips.join(' ');
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
 }
 
 // ── TLS Inspection Overlay ──
