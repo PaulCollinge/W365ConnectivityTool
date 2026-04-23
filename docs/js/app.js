@@ -667,9 +667,18 @@ async function runAllBrowserTests() {
             } else {
                 result.source = 'browser';
             }
-            allResults = allResults.filter(r => String(r.id) !== String(targetId));
-            allResults.push(result);
-            updateTestUI(targetId, result);
+            // Don't overwrite scanner-imported results with browser GeoIP —
+            // scanner data is authoritative (has IMDS region, actual Azure IP, etc.)
+            const existing = allResults.find(r => String(r.id) === String(targetId));
+            if (existing && existing._fromImport) {
+                // Scanner already provided this data — skip browser override
+                // but still update the UI card with scanner data
+                updateTestUI(targetId, existing);
+            } else {
+                allResults = allResults.filter(r => String(r.id) !== String(targetId));
+                allResults.push(result);
+                updateTestUI(targetId, result);
+            }
         } catch (err) {
             const errorResult = {
                 id: targetId,

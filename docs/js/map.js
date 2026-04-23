@@ -1517,8 +1517,10 @@ function extractCoords(detailedInfo) {
 // ═══════════════════════════════════════════════════════════
 
 function updateMapCloudPcCard(lookup) {
-    const loc = lookup['C-LE-01'] || lookup['B-LE-01'];
-    const net = lookup['C-LE-02'] || lookup['B-LE-02'];
+    // Only use scanner C-* results for CPC card — B-* browser GeoIP shows VPN/egress
+    // location, not the actual Cloud PC Azure region
+    const loc = lookup['C-LE-01'];
+    const net = lookup['C-LE-02'];
     const imds = lookup['C-NET-01'];
     const title = document.getElementById('map-cpc-title');
     const locEl = document.getElementById('map-cpc-location');
@@ -1617,8 +1619,9 @@ function updateMapNatCard(lookup) {
 }
 
 function updateMapAzureCard(lookup) {
-    const loc = lookup['C-LE-01'] || lookup['B-LE-01'];
-    const net = lookup['C-LE-02'] || lookup['B-LE-02'];
+    // Only use scanner C-* results — B-* browser GeoIP reflects VPN/egress, not Azure backbone
+    const loc = lookup['C-LE-01'];
+    const net = lookup['C-LE-02'];
     const egress = lookup['C-NET-02'];
     const imds = lookup['C-NET-01'];
     const detail = document.getElementById('map-azure-detail');
