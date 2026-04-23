@@ -31,6 +31,10 @@ class Program
     // "cloudpc", "avd", or null (unknown / client mode)
     static string? _hostType = null;
 
+    // ── Cached AFD-discovered RDP gateway (set once, reused by all tests) ──
+    static string? _cachedGatewayHost = null;
+    static string? _cachedGatewayDetail = null;
+
     static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -3282,6 +3286,9 @@ class Program
                         if (domainMatch.Success)
                         {
                             discoveredGateway = domainMatch.Groups[1].Value;
+                            // Cache for all subsequent tests
+                            _cachedGatewayHost = discoveredGateway;
+                            _cachedGatewayDetail = "AFD Set-Cookie header (cached from L-TCP-04)";
                             break;
                         }
                     }
@@ -5256,6 +5263,10 @@ class Program
     /// </summary>
     static async Task<(string? host, string? detail)> DiscoverRdpGatewayFromAfd()
     {
+        // Return cached gateway if already discovered (e.g. by L-TCP-04)
+        if (_cachedGatewayHost != null)
+            return (_cachedGatewayHost, _cachedGatewayDetail);
+
         var gwPattern = new System.Text.RegularExpressions.Regex(
             @"(rdgateway[\w-]+\.wvd\.microsoft\.com)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -5280,7 +5291,7 @@ class Program
                     var m = System.Text.RegularExpressions.Regex.Match(
                         cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (m.Success) return (m.Groups[1].Value, "AFD Set-Cookie header");
+                    if (m.Success) { _cachedGatewayHost = m.Groups[1].Value; _cachedGatewayDetail = "AFD Set-Cookie header"; return (_cachedGatewayHost, _cachedGatewayDetail); }
                 }
             }
 
@@ -5290,7 +5301,7 @@ class Program
                 foreach (var val in header.Value)
                 {
                     var hm = gwPattern.Match(val);
-                    if (hm.Success) return (hm.Groups[1].Value, $"AFD response header ({header.Key})");
+                    if (hm.Success) { _cachedGatewayHost = hm.Groups[1].Value; _cachedGatewayDetail = $"AFD response header ({header.Key})"; return (_cachedGatewayHost, _cachedGatewayDetail); }
                 }
             }
 
@@ -5301,7 +5312,7 @@ class Program
                 if (!string.IsNullOrEmpty(body))
                 {
                     var bm = gwPattern.Match(body);
-                    if (bm.Success) return (bm.Groups[1].Value, "AFD response body");
+                    if (bm.Success) { _cachedGatewayHost = bm.Groups[1].Value; _cachedGatewayDetail = "AFD response body"; return (_cachedGatewayHost, _cachedGatewayDetail); }
                 }
             }
             catch { }
@@ -5311,7 +5322,7 @@ class Program
             {
                 var loc = resp.Headers.Location.ToString();
                 var lm = gwPattern.Match(loc);
-                if (lm.Success) return (lm.Groups[1].Value, "AFD redirect Location");
+                if (lm.Success) { _cachedGatewayHost = lm.Groups[1].Value; _cachedGatewayDetail = "AFD redirect Location"; return (_cachedGatewayHost, _cachedGatewayDetail); }
             }
 
             return (null, $"AFD responded HTTP {(int)resp.StatusCode} but no gateway hostname found in headers or body");
@@ -7524,18 +7535,25 @@ class Program
                         sb.AppendLine($"    Service Region: {region}");
                 }
 
-                // Extract discovered gateway from Set-Cookie
-                if (afdResp.Headers.TryGetValues("Set-Cookie", out var cookies))
+                // Use cached gateway from L-TCP-04 (avoids non-deterministic AFD re-discovery)
+                discoveredGateway = _cachedGatewayHost;
+                if (discoveredGateway == null)
                 {
-                    foreach (var cookie in cookies)
+                    // Fallback: extract from this call's Set-Cookie if cache wasn't populated
+                    if (afdResp.Headers.TryGetValues("Set-Cookie", out var cookies))
                     {
-                        var domainMatch = System.Text.RegularExpressions.Regex.Match(
-                            cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        if (domainMatch.Success)
+                        foreach (var cookie in cookies)
                         {
-                            discoveredGateway = domainMatch.Groups[1].Value;
-                            break;
+                            var domainMatch = System.Text.RegularExpressions.Regex.Match(
+                                cookie, @"Domain=(rdgateway[^;]+\.wvd\.microsoft\.com)",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                            if (domainMatch.Success)
+                            {
+                                discoveredGateway = domainMatch.Groups[1].Value;
+                                _cachedGatewayHost = discoveredGateway;
+                                _cachedGatewayDetail = "AFD Set-Cookie header (from L-TCP-09)";
+                                break;
+                            }
                         }
                     }
                 }
@@ -7543,7 +7561,10 @@ class Program
             catch (Exception ex)
             {
                 sb.AppendLine($"    ✗ AFD unreachable: {ex.InnerException?.Message ?? ex.Message}");
-                issues.Add("AFD endpoint unreachable");
+                // Still try cached gateway even if this AFD call failed
+                discoveredGateway = _cachedGatewayHost;
+                if (discoveredGateway == null)
+                    issues.Add("AFD endpoint unreachable");
             }
 
             sb.AppendLine();
