@@ -727,13 +727,117 @@ function getVpnContext(lookup) {
     return { vpnActive, cpcRegionCode, cpcRegionName };
 }
 
-// Rough check: does a location string (e.g. "UK South", "East US 2", "London, GB")
-// sit in the same broad geography as the given Azure region code?
+// ── Authoritative region extraction ──
+// The L-TCP-09 / C-TCP-09 "Gateway Used" test writes the discovered regional
+// RDP gateway FQDN (e.g. rdgateway-c221-UKW-r1.wvd.microsoft.com) along with
+// its decoded region, e.g. "Azure Region: UK West (UKW)". This is the single
+// source of truth — derive everything from it rather than parsing free-text
+// location strings. Returns { code: 'ukwest', name: 'UK West', fqdn: '...' }.
+function getRdGatewayRegion(lookup) {
+    const gw = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+    if (!gw || !gw.detailedInfo) return null;
+    const info = gw.detailedInfo;
+
+    // Prefer the explicit "Azure Region: <Name> (<CODE>)" line emitted by the
+    // scanner against the unicast regional gateway (not the AFD anycast one).
+    const regionLine = info.match(/Azure Region:\s*([^(\n]+)\(([A-Z0-9]+)\)/);
+    if (regionLine) {
+        const name = regionLine[1].trim();
+        const shortCode = regionLine[2].trim().toUpperCase();
+        // Map the 3–4 letter FQDN code (UKW, EUS2, WEU) → full Azure slug
+        const azCode = gatewayShortCodeToAzureSlug(shortCode);
+        return { code: azCode || shortCode.toLowerCase(), name, shortCode, fqdn: extractGwFqdn(info) };
+    }
+
+    // Fallback: parse FQDN directly if the Azure Region line isn't present
+    const fqdn = extractGwFqdn(info);
+    if (fqdn) {
+        const m = fqdn.match(/rdgateway-[^-]+-([A-Za-z0-9]+)-r\d+/i);
+        if (m) {
+            const shortCode = m[1].toUpperCase();
+            const azCode = gatewayShortCodeToAzureSlug(shortCode);
+            return { code: azCode || shortCode.toLowerCase(), name: shortCode, shortCode, fqdn };
+        }
+    }
+    return null;
+}
+
+function extractGwFqdn(info) {
+    const m = info.match(/rdgateway-[^\s]+\.wvd\.microsoft\.com/i);
+    return m ? m[0] : null;
+}
+
+// RDP gateway FQDN short codes (UKW, EUS2, WEU) → full Azure region slugs
+// (ukwest, eastus2, westeurope). Kept as a small table so exact-code
+// comparison with IMDS region works without string-matching heuristics.
+function gatewayShortCodeToAzureSlug(code) {
+    const map = {
+        UKS: 'uksouth', UKW: 'ukwest',
+        NEU: 'northeurope', WEU: 'westeurope',
+        FRC: 'francecentral', FRS: 'francesouth',
+        GWC: 'germanywestcentral', GN: 'germanynorth',
+        NOE: 'norwayeast', NOW: 'norwaywest',
+        SEW: 'swedencentral', SES: 'swedensouth',
+        CHN: 'switzerlandnorth', CHW: 'switzerlandwest',
+        ITA: 'italynorth',
+        SPE: 'spaincentral', ESC: 'spaincentral',
+        POC: 'polandcentral',
+        EUS: 'eastus', EUS2: 'eastus2',
+        CUS: 'centralus', NCUS: 'northcentralus', SCUS: 'southcentralus', WCUS: 'westcentralus',
+        WUS: 'westus', WUS2: 'westus2', WUS3: 'westus3',
+        CC: 'canadacentral', CE: 'canadaeast',
+        SEA: 'southeastasia', EA: 'eastasia',
+        JE: 'japaneast', JW: 'japanwest',
+        KRC: 'koreacentral', KRS: 'koreasouth',
+        CIN: 'centralindia', SIN: 'southindia', WIN: 'westindia',
+        AUE: 'australiaeast', AUSE: 'australiasoutheast', AUC: 'australiacentral',
+        SAE: 'southafricanorth', SAW: 'southafricawest',
+        UAE: 'uaenorth', UAW: 'uaecentral',
+        ILC: 'israelcentral', QAC: 'qatarcentral',
+        BRS: 'brazilsouth', BRSE: 'brazilsoutheast',
+    };
+    return map[code] || null;
+}
+
+// Which broad Azure geography does a region slug belong to?
+// Used only as a last-resort bucket when exact codes don't match — the
+// primary check is exact-slug equality, which catches intra-geo mistakes
+// (e.g. CPC in UK South but gateway in UK West is fine; CPC in East US 2
+// but gateway in UK West is not).
+function azureRegionGeo(slug) {
+    if (!slug) return null;
+    const s = slug.toLowerCase();
+    if (/^(eastus|westus|centralus|northcentralus|southcentralus|westcentralus|eastus2|westus2|westus3)$/.test(s)) return 'north-america';
+    if (/^(canada(central|east))$/.test(s)) return 'north-america';
+    if (/^(uk(south|west)|northeurope|westeurope|france(central|south)|germany(westcentral|north)|switzerland(north|west)|norway(east|west)|sweden(central|south)|italynorth|spaincentral|polandcentral)$/.test(s)) return 'europe';
+    if (/^(uae(north|central)|israelcentral|qatarcentral)$/.test(s)) return 'middle-east';
+    if (/^southafrica(north|west)$/.test(s)) return 'africa';
+    if (/^(japan(east|west)|korea(central|south)|southeastasia|eastasia|australia(east|southeast|central|central2)|central(india|)|(south|west)india|jioindia(west|central))$/.test(s)) return 'apac';
+    if (/^brazil(south|southeast)$/.test(s)) return 'south-america';
+    return null;
+}
+
+// Compare two Azure region slugs and return {level, reason}:
+//   'same'     — identical slug (no issue)
+//   'intra'    — different slug, same broad geography (acceptable for W365
+//                since AFD geo-routing may pick a neighbouring region)
+//   'cross'    — different geography (always wrong for CPC↔gateway pairing)
+//   'unknown'  — can't classify
+function compareAzureRegions(slugA, slugB) {
+    if (!slugA || !slugB) return { level: 'unknown' };
+    if (slugA === slugB) return { level: 'same' };
+    const geoA = azureRegionGeo(slugA);
+    const geoB = azureRegionGeo(slugB);
+    if (!geoA || !geoB) return { level: 'unknown' };
+    return { level: geoA === geoB ? 'intra' : 'cross' };
+}
+
+// (Legacy coarse-bucket check — kept for callers still using free-text
+// location strings. New callers should use compareAzureRegions above.)
 function isLocationInSameGeoAsRegion(locStr, regionCode) {
     if (!locStr || !regionCode) return null;
     const L = locStr.toLowerCase();
     const R = regionCode.toLowerCase();
-    // Geo buckets — coarse but sufficient to flag wrong-continent routing
     const buckets = [
         { rx: /^(eastus|westus|centralus|northcentralus|southcentralus|westcentralus|eastus2|westus2|westus3)$/, loc: /(\bus\b|united states|usa|virginia|iowa|texas|washington|arizona|california|illinois|wyoming|new york|chicago|dallas|atlanta|seattle|phoenix)/ },
         { rx: /^(canadacentral|canadaeast)$/, loc: /canada|toronto|quebec|montreal/ },
@@ -758,11 +862,9 @@ function isLocationInSameGeoAsRegion(locStr, regionCode) {
         { rx: /^(brazil(south|southeast))$/, loc: /brazil|sao paulo/ },
     ];
     for (const b of buckets) {
-        if (b.rx.test(R)) {
-            return b.loc.test(L);
-        }
+        if (b.rx.test(R)) return b.loc.test(L);
     }
-    return null; // unknown region bucket — don't flag
+    return null;
 }
 
 // ── RD Gateway Card ──
@@ -830,21 +932,38 @@ function updateMapRdGwCard(lookup) {
         }
     }
 
-    // VPN-aware region-mismatch check: when a VPN/SWG is tunneling RDP to a
-    // gateway in a different geography than the Cloud PC, the "reachable" green
-    // state is misleading — the user is hitting the wrong regional RDP infra
-    // because the tunnel egress determined the gateway region, not the CPC.
+    // ── Region-steering diagnostic ──
+    // Compare CPC Azure region (from IMDS — authoritative) with the actual
+    // RD gateway's Azure region (from its FQDN — also authoritative) using
+    // exact slug equality. This detects VPN-induced or proxy-induced
+    // cross-region steering without relying on free-text location strings.
     const vpnCtx = getVpnContext(lookup);
-    if (vpnCtx.vpnActive && vpnCtx.cpcRegionCode && rdgwLocationStr) {
-        const sameGeo = isLocationInSameGeoAsRegion(rdgwLocationStr, vpnCtx.cpcRegionCode);
-        if (sameGeo === false) {
+    const gwRegion = getRdGatewayRegion(lookup);
+    if (vpnCtx.cpcRegionCode && gwRegion && gwRegion.code) {
+        const cmp = compareAzureRegions(vpnCtx.cpcRegionCode.toLowerCase(), gwRegion.code);
+        if (cmp.level === 'cross') {
+            // Hard fail — wrong continent
             status = worstStatus(status, 'Warning');
+            const cause = vpnCtx.vpnActive
+                ? 'VPN-steered'
+                : 'geo-DNS / proxy mis-steering';
             setBadge(
                 'map-rdgw-prox-badge',
                 `⚠ Wrong region (CPC in ${vpnCtx.cpcRegionName})`,
                 'proximity-far'
             );
-            detail1 = '⚠ Gateway reachable but in wrong region (VPN-steered)';
+            detail1 = `⚠ Gateway in ${gwRegion.name} but CPC is in ${vpnCtx.cpcRegionName} (${cause})`;
+        } else if (cmp.level === 'intra' && vpnCtx.vpnActive) {
+            // Same geography but different region — not ideal but not catastrophic.
+            // Only flag when VPN is active, since AFD may legitimately pick a
+            // neighbouring region for load-balancing or proximity reasons.
+            status = worstStatus(status, 'Warning');
+            setBadge(
+                'map-rdgw-prox-badge',
+                `⚠ Neighbouring region (CPC in ${vpnCtx.cpcRegionName})`,
+                'proximity-far'
+            );
+            detail1 = `⚠ Gateway in ${gwRegion.name}, CPC in ${vpnCtx.cpcRegionName} — VPN likely steered to closest AFD PoP`;
         }
     }
 
@@ -1984,10 +2103,22 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup) {
 
     // RD Gateway region — tells us which regional RDP infra the tunnel is steering to
     let gwRegion = '';
-    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
-    if (gwUsed && gwUsed.detailedInfo) {
-        const m = gwUsed.detailedInfo.match(/Location:\s*([^\n]+?)(?:\s{2,}|$)/);
-        if (m && !/GeoIP/i.test(m[0])) gwRegion = m[1].trim();
+    const gwInfo = getRdGatewayRegion(lookup);
+    if (gwInfo && gwInfo.name) {
+        gwRegion = gwInfo.name;
+    } else {
+        const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+        if (gwUsed && gwUsed.detailedInfo) {
+            const m = gwUsed.detailedInfo.match(/Location:\s*([^\n]+?)(?:\s{2,}|$)/);
+            if (m && !/GeoIP/i.test(m[0])) gwRegion = m[1].trim();
+        }
+    }
+
+    // Compare CPC region vs gateway region — exact slug equality
+    let regionMismatch = null; // 'cross' | 'intra' | 'same' | null
+    if (gwInfo && gwInfo.code && lookup['C-NET-01']) {
+        const cpcM = (lookup['C-NET-01'].detailedInfo || '').match(/Azure Region:\s*(\S+)/);
+        if (cpcM) regionMismatch = compareAzureRegions(cpcM[1].toLowerCase(), gwInfo.code).level;
     }
 
     // ── Build the narrative line ──
@@ -2010,7 +2141,10 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup) {
     // Consequence chip — which regional RDP infra the user is hitting as a result
     if (gwRegion) {
         parts.push(`<span class="vpn-sum-sep">→</span>`);
-        parts.push(`<span class="vpn-sum-chip">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
+        const chipTone = regionMismatch === 'cross'
+            ? 'vpn-sum-chip vpn-sum-chip-bad'
+            : (regionMismatch === 'intra' ? 'vpn-sum-chip vpn-sum-chip-warn' : 'vpn-sum-chip');
+        parts.push(`<span class="${chipTone}">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
     }
     if (ispText) {
         parts.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);

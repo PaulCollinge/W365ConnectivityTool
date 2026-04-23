@@ -2082,6 +2082,16 @@ main {
     color: var(--text-default);
 }
 .map-vpn-summary .vpn-sum-sep { color: var(--text-muted); opacity: 0.6; }
+.map-vpn-summary .vpn-sum-chip-warn {
+    border-color: var(--yellow-border);
+    background: var(--yellow-bg);
+    color: var(--yellow);
+}
+.map-vpn-summary .vpn-sum-chip-bad {
+    border-color: var(--red-border);
+    background: var(--red-bg);
+    color: var(--red);
+}
 
 /* Map responsive */
 @media (max-width: 900px) {
