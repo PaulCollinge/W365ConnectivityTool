@@ -578,6 +578,9 @@ class Program
             MachineName = Environment.MachineName,
             OsVersion = Environment.OSVersion.ToString(),
             DotNetVersion = RuntimeInformation.FrameworkDescription,
+            ScanMode = _isCloudPcMode ? "cloudpc" : "client",
+            HostType = _isCloudPcMode ? (_hostType ?? "cloudpc") : null,
+            AzureRegion = _isCloudPcMode ? _azureVmRegion : null,
             Results = results
         };
 
@@ -600,7 +603,8 @@ class Program
                 .TrimEnd('=');
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}";
+            var modeParam = _isCloudPcMode ? $"&mode={(_hostType ?? "cloudpc")}" : "";
+            var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}{modeParam}";
             var hashUrl = $"{baseUrl}#zresults={compressedBase64}";
 
             Console.WriteLine($"  Compressed: {json.Length} \u2192 {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");

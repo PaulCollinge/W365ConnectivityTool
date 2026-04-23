@@ -325,8 +325,20 @@ document.addEventListener('DOMContentLoaded', () => {
     checkForAutoImport();
     setupDragDrop();
 
-    // Auto-detect Cloud PC environment (IMDS probe)
-    detectCloudPcEnvironment().then(result => {
+    // Check for ?mode=cloudpc URL parameter (set by scanner exe)
+    const urlMode = new URLSearchParams(window.location.search).get('mode');
+    if (urlMode === 'cloudpc' || urlMode === 'avd') {
+        hostType = urlMode;
+        const toggle = document.getElementById('cpc-mode-toggle');
+        if (toggle) toggle.checked = true;
+        toggleCloudPcMode(true);
+        const sel = document.getElementById('host-type-select');
+        if (sel) sel.value = hostType;
+        ilog(`CPC mode enabled via URL param: mode=${urlMode}`);
+    }
+
+    // Auto-detect Cloud PC environment (IMDS probe) — skip if already set via URL param
+    if (!cloudPcMode) detectCloudPcEnvironment().then(result => {
         if (result.detected) {
             if (result.hostType) {
                 hostType = result.hostType;
