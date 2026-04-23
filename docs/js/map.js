@@ -994,6 +994,7 @@ function updateMapTurnCard(lookup) {
 
     // Location badge from L-UDP-04 (scanner)
     let turnLocationStr = '';
+    let turnRegionSlug = '';
     if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
         // Match both "TURN relay: Region (ip)" and "TURN relay (DNS): Region (code) (ip)"
         const locMatch = (turnLoc.resultValue || '').match(/TURN relay(?:\s*\([^)]*\))?:\s*(.+?)\s*\(/);
@@ -1002,26 +1003,50 @@ function updateMapTurnCard(lookup) {
             setFlaggedBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge', city);
             turnLocationStr = city;
         }
+        // Pull authoritative Azure region slug from detailedInfo, e.g.
+        // "Azure Region: East US 2 (eastus2)".
+        if (turnLoc.detailedInfo) {
+            const m = turnLoc.detailedInfo.match(/Azure Region:\s*[^(\n]*\(([a-z0-9-]+)\)/i);
+            if (m) turnRegionSlug = m[1].toLowerCase();
+        }
         status = worstStatus(status, turnLoc.status);
     } else if (stunTest && stunTest.status === 'Passed') {
         // No scanner data — do a browser-based relay geolocation via DoH + GeoIP
         geolocateTurnRelay();
     }
 
-    // VPN-aware caveat: the TURN region label above comes from DNS resolution of
-    // the TURN hostname (Traffic Manager geo-DNS), which reflects the resolver's
-    // egress IP — not the actual UDP session path. When a VPN/SWG is active AND
-    // STUN couldn't obtain a server-reflexive address (host candidates only),
-    // the advertised region is untrustworthy — the real relay the RDP session
-    // would pick is unknown.
+    // Compare TURN region against the CPC's Azure region (from IMDS).
+    //
+    // IMPORTANT: unlike the RD Gateway, TURN is server-side — the VM's region
+    // determines which TURN relay the session uses, not the client's egress.
+    // Azure's platform DNS (168.63.129.16) is intercepted at the hypervisor,
+    // so even a full-tunnel VPN on the Cloud PC does NOT tunnel TURN name
+    // resolution through the VPN. Traffic Manager correctly returns the CPC's
+    // own region — which is exactly what the session will use.
+    //
+    // So the "correct" state here is TURN region == CPC region (green), and
+    // a mismatch is the warning condition, not the other way round.
     const vpnCtxTurn = getVpnContext(lookup);
+    const cpcSlug = (vpnCtxTurn.cpcRegionCode || '').toLowerCase();
     const stunHostOnly = stunTest && /host candidate/i.test(stunTest.resultValue || '');
-    if (vpnCtxTurn.vpnActive && stunHostOnly) {
-        // Strip the misleading region badge and downgrade status
+    if (turnRegionSlug && cpcSlug) {
+        const cmp = compareAzureRegions(turnRegionSlug, cpcSlug);
+        if (cmp.level === 'same') {
+            setBadge('map-turn-prox-badge', `✓ Co-located with CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-near');
+        } else if (cmp.level === 'intra') {
+            setBadge('map-turn-prox-badge', `≈ Neighbouring region to CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-moderate');
+            status = worstStatus(status, 'Warning');
+        } else if (cmp.level === 'cross') {
+            setBadge('map-turn-prox-badge', `⚠ Wrong region — CPC in ${vpnCtxTurn.cpcRegionName}`, 'proximity-far');
+            status = worstStatus(status, 'Warning');
+            detail1 = `⚠ TURN in ${turnLocationStr}, CPC in ${vpnCtxTurn.cpcRegionName}`;
+        }
+    } else if (vpnCtxTurn.vpnActive && stunHostOnly) {
+        // VPN blocked STUN outright — we can't verify the session path at all
         setBadge('map-turn-loc-badge', '⚠ DNS-only region — session path unknown', 'status-warn');
         status = worstStatus(status, 'Warning');
         detail1 = '⚠ STUN blocked by VPN — relay region uncertain';
-        turnLocationStr = ''; // prevent proximity badge below from using a bogus location
+        turnLocationStr = '';
     }
 
     // Proximity badge — DNS-resolved TURN location vs user (informational only,
