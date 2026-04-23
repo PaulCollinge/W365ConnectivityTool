@@ -1442,6 +1442,50 @@ main {
     display: flex;
 }
 
+/* ── First-paint CPC hint ──
+   Inline <head> bootstrap sets `early-cpc-mode` on <html> when URL params,
+   scanner-import hash, or sticky localStorage indicate this tab is for a
+   Cloud PC / AVD session. We apply the same layout flip as `.cpc-mode` so
+   the very first paint is correct — no flash of client-mode cards between
+   DOMContentLoaded and processImportedData. The JS toggleCloudPcMode() still
+   owns the authoritative state once it runs; this is purely cosmetic. */
+html.early-cpc-mode .map-diagram {
+    grid-template-columns: 1.2fr 50px 1fr 40px 1fr 60px 1fr;
+    grid-template-rows: auto 8px auto 36px auto;
+}
+html.early-cpc-mode .map-diagram .map-g-client,
+html.early-cpc-mode .map-diagram .map-g-arrow1,
+html.early-cpc-mode .map-diagram .map-g-localgw,
+html.early-cpc-mode .map-diagram .map-g-arrow2,
+html.early-cpc-mode .map-diagram .map-g-isp,
+html.early-cpc-mode .map-diagram .map-g-afd { display: none !important; }
+html.early-cpc-mode .map-diagram .map-g-fanout  { display: none !important; }
+html.early-cpc-mode .map-diagram .map-g-rdgw,
+html.early-cpc-mode .map-diagram .map-g-turn,
+html.early-cpc-mode .map-diagram .map-g-dnsline,
+html.early-cpc-mode .map-diagram .map-g-dns { display: none; }
+
+/* While scanner import is decoding, show a lightweight placeholder instead
+   of cards full of "Awaiting results..." text that implies something went
+   wrong. Cleared by processImportedData() on completion. */
+html.awaiting-scanner-import #connectivity-map .map-diagram > *:not(.map-import-pending) {
+    visibility: hidden;
+}
+html.awaiting-scanner-import #connectivity-map::after {
+    content: "⏳ Importing scanner results…";
+    display: block;
+    text-align: center;
+    padding: 60px 0;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-family: var(--mono);
+}
+html.awaiting-scanner-import #connectivity-map .map-diagram { min-height: 0; }
+
+/* Also surface the "Cloud PC detected" badge in the map header immediately so
+   the UI doesn't flicker between "no CPC" and "CPC detected" states. */
+html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
+
 /* CPC-only mode: hide left side + AFD, keep RDGw/TURN + right-side with NAT */
 .map-diagram.cpc-mode {
     grid-template-columns: 1.2fr 50px 1fr 40px 1fr 60px 1fr;

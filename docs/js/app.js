@@ -335,6 +335,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const sel = document.getElementById('host-type-select');
         if (sel) sel.value = hostType;
         ilog(`CPC mode enabled via URL param: mode=${urlMode}`);
+        try { localStorage.setItem('w365-last-mode', urlMode); } catch (e) {}
+    }
+
+    // Consume the early-CPC bootstrap hint: if the inline <head> script set
+    // `early-cpc-mode` but we haven't yet enabled CPC mode in the runtime
+    // (e.g. because it was driven by a sticky localStorage entry rather than
+    // a URL param), promote to real CPC mode so the cards don't briefly
+    // render wrong data below. The sticky value is the last authoritative
+    // mode we saw from this machine — if they're loading the page fresh it
+    // almost certainly still applies.
+    if (document.documentElement.classList.contains('early-cpc-mode') && !cloudPcMode) {
+        const earlyHost = document.documentElement.getAttribute('data-early-host');
+        if (earlyHost === 'cloudpc' || earlyHost === 'avd') {
+            hostType = earlyHost;
+            const toggle = document.getElementById('cpc-mode-toggle');
+            if (toggle) toggle.checked = true;
+            toggleCloudPcMode(true);
+            const sel = document.getElementById('host-type-select');
+            if (sel) sel.value = hostType;
+            ilog(`CPC mode enabled via early-bootstrap hint: ${earlyHost}`);
+        }
     }
 
     // Auto-detect Cloud PC environment (IMDS probe) — skip if already set via URL param
@@ -356,7 +377,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (picker) picker.classList.remove('hidden');
                 ilog('Host type unknown — showing picker banner');
             }
+            try { localStorage.setItem('w365-last-mode', result.hostType || 'cloudpc'); } catch (e) {}
             ilog('CPC Mode auto-enabled');
+        } else {
+            // IMDS unreachable AND no URL hint AND we optimistically promoted
+            // to CPC based on a sticky preference — that promotion stands;
+            // no action needed. If we did NOT promote, reset any early hint
+            // on <html> so styling reverts to client mode.
+            if (!cloudPcMode) {
+                document.documentElement.classList.remove('early-cpc-mode');
+            }
         }
     });
 
@@ -365,6 +395,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Handle hash changes (e.g. browser reuses existing tab) ──
 window.addEventListener('hashchange', () => {
+    // If the new hash carries scanner results, re-apply the bootstrap shroud
+    // so the user sees a clean "importing" state rather than stale prior
+    // test data flashing through during decode.
+    const hash = window.location.hash || '';
+    if (hash.indexOf('#zresults=') === 0 || hash.indexOf('#results=') === 0) {
+        document.documentElement.classList.add('awaiting-scanner-import');
+    }
     checkForAutoImport();
 });
 
@@ -610,6 +647,10 @@ function toggleCloudPcMode(enabled) {
             // Remove CPC reveal markers
             mapDiagram.querySelectorAll('.cpc-revealed').forEach(el => el.classList.remove('cpc-revealed'));
         }
+        // Also drop the bootstrap early-CPC hint so the next page load
+        // starts in client mode (user explicitly chose to leave CPC mode).
+        document.documentElement.classList.remove('early-cpc-mode');
+        try { localStorage.removeItem('w365-last-mode'); } catch (e) {}
         // Restore Cloud PC card title
         const cpcTitle = document.getElementById('map-cpc-title');
         if (cpcTitle) cpcTitle.textContent = hostLabelShort();
@@ -882,6 +923,9 @@ async function checkForAutoImport() {
     } catch (e) {
         ilog('AUTO-IMPORT FAILED: ' + (e.message || e));
         console.error('Auto-import from URL failed:', e);
+        // Clear the bootstrap "importing" shroud so the user isn't left
+        // staring at "Importing scanner results…" forever.
+        document.documentElement.classList.remove('awaiting-scanner-import');
         // Show a helpful message to the user instead of failing silently
         if (info) {
             info.classList.remove('hidden');
@@ -1107,12 +1151,19 @@ function processImportedData(data) {
             toggleCloudPcMode(true);
             ilog('CPC mode enabled via imported scanner data (scanMode=cloudpc)');
         }
+        // Remember this machine is a CPC/AVD so subsequent manual loads skip
+        // the client-mode flash even before the scanner runs again.
+        try { localStorage.setItem('w365-last-mode', hostType); } catch (e) {}
         // Sync host-type dropdown and hide picker banner
         const htSel = document.getElementById('host-type-select');
         if (htSel) htSel.value = hostType;
         const picker = document.getElementById('host-type-picker');
         if (picker) picker.classList.add('hidden');
     }
+
+    // Import complete — remove the "importing" shroud applied by the inline
+    // bootstrap so the map becomes visible again.
+    document.documentElement.classList.remove('awaiting-scanner-import');
 
     // Remember when the scanner data was captured
     if (data.timestamp) {

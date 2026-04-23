@@ -23,9 +23,46 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=226">
+    <link rel="stylesheet" href="css/styles.css?v=227">
     <link rel="icon" href="images/w365-logo.png" type="image/png">
-</head>
+    <!--
+      Bootstrap: read URL ASAP (before <body> renders) to decide whether this
+      is a Cloud PC / AVD session. Prevents the "flash of client-mode map"
+      that previously appeared between DOMContentLoaded and processImportedData
+      finishing — which made the first-run scanner-opened tab look wrong.
+      Three signals (any one is sufficient):
+        1. ?mode=cloudpc|avd query param (set by the scanner exe)
+        2. #zresults= / #results= hash (any scanner import — imported data
+           always overrides any client-mode assumption)
+        3. Stored preference from a previous session (localStorage)
+      Inline so there is no network round-trip or deferred parse.
+    -->
+    <script>
+    (function () {
+        try {
+            var params = new URLSearchParams(window.location.search);
+            var hash = window.location.hash || '';
+            var mode = (params.get('mode') || '').toLowerCase();
+            var hasImport = hash.indexOf('#zresults=') === 0
+                || hash.indexOf('#results=') === 0
+                || params.has('zresults');
+            var stickyMode = '';
+            try { stickyMode = (localStorage.getItem('w365-last-mode') || '').toLowerCase(); } catch (e) {}
+
+            var cpcEarly = mode === 'cloudpc' || mode === 'avd'
+                        || hasImport
+                        || stickyMode === 'cloudpc' || stickyMode === 'avd';
+
+            if (cpcEarly) {
+                // Set on <html> so CSS can respond before <body> paints
+                document.documentElement.classList.add('early-cpc-mode');
+                if (mode) document.documentElement.setAttribute('data-early-host', mode);
+                else if (stickyMode) document.documentElement.setAttribute('data-early-host', stickyMode);
+            }
+            if (hasImport) document.documentElement.classList.add('awaiting-scanner-import');
+        } catch (e) { /* bootstrap must never throw */ }
+    })();
+    </script></head>
 <body>
     <!-- Skip link for keyboard / screen-reader users -->
     <a class="skip-link" href="#test-results">Skip to results</a>
