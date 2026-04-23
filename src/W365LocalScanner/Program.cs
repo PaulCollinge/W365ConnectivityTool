@@ -35,6 +35,75 @@ class Program
     static string? _cachedGatewayHost = null;
     static string? _cachedGatewayDetail = null;
 
+    // ── Dynamic Service Tags WVD subnet → region lookup ──
+    static List<(uint network, uint mask, string region)>? _wvdSubnets = null;
+
+    /// <summary>
+    /// Downloads the latest Azure Service Tags JSON and builds a prefix → region
+    /// lookup table for WindowsVirtualDesktop.* entries (IPv4 only).
+    /// </summary>
+    static async Task InitServiceTagsLookupAsync()
+    {
+        const string url = "https://download.microsoft.com/download/7/1/d/71d86715-5596-4529-9b13-da13a5de5b63/ServiceTags_Public_20260420.json";
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var json = await http.GetStringAsync(url);
+            var doc = JsonDocument.Parse(json);
+            var entries = new List<(uint network, uint mask, string region)>();
+
+            foreach (var value in doc.RootElement.GetProperty("values").EnumerateArray())
+            {
+                var name = value.GetProperty("name").GetString() ?? "";
+                if (!name.StartsWith("WindowsVirtualDesktop.", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var props = value.GetProperty("properties");
+                var region = props.GetProperty("region").GetString() ?? "";
+                if (string.IsNullOrEmpty(region)) continue;
+
+                foreach (var prefix in props.GetProperty("addressPrefixes").EnumerateArray())
+                {
+                    var cidr = prefix.GetString();
+                    if (cidr == null || cidr.Contains(':')) continue; // skip IPv6
+                    var parts = cidr.Split('/');
+                    if (parts.Length != 2) continue;
+                    if (!IPAddress.TryParse(parts[0], out var addr)) continue;
+                    if (!int.TryParse(parts[1], out var prefixLen)) continue;
+                    var bytes = addr.GetAddressBytes();
+                    uint net = (uint)bytes[0] << 24 | (uint)bytes[1] << 16 | (uint)bytes[2] << 8 | bytes[3];
+                    uint m = prefixLen == 0 ? 0 : ~((1u << (32 - prefixLen)) - 1);
+                    entries.Add((net & m, m, region));
+                }
+            }
+
+            // Sort by mask descending (longest prefix first) for correct matching
+            entries.Sort((a, b) => b.mask.CompareTo(a.mask));
+            _wvdSubnets = entries;
+        }
+        catch
+        {
+            // Silently fall through — hardcoded tables will be used as fallback
+        }
+    }
+
+    /// <summary>
+    /// Looks up any IP against the dynamically-loaded Service Tags WVD subnet table.
+    /// Returns the Azure region identifier (e.g. "uksouth") or null.
+    /// </summary>
+    static string? LookupWvdRegionFromServiceTags(IPAddress ip)
+    {
+        if (_wvdSubnets == null || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+            return null;
+        var bytes = ip.GetAddressBytes();
+        uint addr = (uint)bytes[0] << 24 | (uint)bytes[1] << 16 | (uint)bytes[2] << 8 | bytes[3];
+        foreach (var (network, mask, region) in _wvdSubnets)
+        {
+            if ((addr & mask) == network)
+                return region;
+        }
+        return null;
+    }
+
     static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -214,6 +283,10 @@ class Program
         }
 
         var results = new List<TestResult>();
+
+        // Load Service Tags for dynamic IP → region lookups (non-blocking, silent fallback)
+        await InitServiceTagsLookupAsync();
+
         var allTests = _isCloudPcMode ? GetCloudPcTests() : GetAllTests();
         var tests = includeCloud ? allTests : allTests.Where(t => t.Category != "cloud").ToList();
 
@@ -4460,11 +4533,15 @@ class Program
     /// <summary>
     /// Looks up a TURN relay IP against the Azure Service Tags WVDRelays subnet table.
     /// Returns the Azure region name (e.g. "uksouth") or null if not matched.
-    /// Source: ServiceTags_Public JSON → AzureCloud.{region} entries for 51.5.0.0/16
+    /// Uses dynamic Service Tags if available, falls back to hardcoded table.
     /// </summary>
     static string? LookupTurnRelayRegion(IPAddress ip)
     {
-        // Subnet → Azure region mapping from Microsoft Service Tags (WVDRelays / 51.5.0.0/16)
+        // Try dynamic Service Tags first
+        var dynamic = LookupWvdRegionFromServiceTags(ip);
+        if (dynamic != null) return dynamic;
+
+        // Fallback: hardcoded subnet → Azure region mapping from Microsoft Service Tags (WVDRelays / 51.5.0.0/16)
         // Derived from: https://www.microsoft.com/en-us/download/details.aspx?id=56519
         var subnets = new (byte secondOctet, byte thirdOctet, int prefixLen, string region)[]
         {
@@ -4563,11 +4640,15 @@ class Program
     /// <summary>
     /// Looks up an RDP Gateway IP against the Azure Service Tags WindowsVirtualDesktop subnet table.
     /// Returns the Azure region name (e.g. "uksouth") or null if not matched.
-    /// Source: ServiceTags_Public JSON → AzureCloud.{region} entries for 40.64.144.0/20
+    /// Uses dynamic Service Tags if available, falls back to hardcoded table.
     /// </summary>
     static string? LookupGatewayRegion(IPAddress ip)
     {
-        // Subnet → Azure region mapping from Microsoft Service Tags (WindowsVirtualDesktop / 40.64.144.0/20)
+        // Try dynamic Service Tags first
+        var dynamic = LookupWvdRegionFromServiceTags(ip);
+        if (dynamic != null) return dynamic;
+
+        // Fallback: hardcoded subnet → Azure region mapping from Microsoft Service Tags (WindowsVirtualDesktop / 40.64.144.0/20)
         // Derived from: https://www.microsoft.com/en-us/download/details.aspx?id=56519
         // Each entry: (offset from 40.64.144.0, prefix length, region)
         var subnets = new (int offset, int prefixLen, string region)[]
@@ -5368,7 +5449,7 @@ class Program
             ["NOE"] = "Norway East", ["NOW"] = "Norway West",
             ["SEW"] = "Sweden Central", ["SES"] = "Sweden South",
             ["CHN"] = "Switzerland North", ["CHW"] = "Switzerland West",
-            ["ITA"] = "Italy North", ["SPE"] = "Spain Central",
+            ["ITA"] = "Italy North", ["SPE"] = "Spain Central", ["ESC"] = "Spain Central",
             ["POC"] = "Poland Central",
             // North America
             ["EUS"] = "East US", ["EUS2"] = "East US 2",
