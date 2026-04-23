@@ -1703,28 +1703,45 @@ function updateMapVpnOverlay(lookup) {
 
     if (tcpVpn && tcpVpn.status === 'Warning') {
         vpnDetected = true;
-        // Parse VPN adapter name from detailedInfo
-        const vpnLine = (tcpVpn.detailedInfo || '').split('\n')
-            .find(l => l.includes('VPN adapter detected') || l.includes('routes through VPN'));
-        const proxyLine = (tcpVpn.detailedInfo || '').split('\n')
-            .find(l => l.includes('proxy detected') || l.includes('Proxy Server'));
-        const swgLine = (tcpVpn.detailedInfo || '').split('\n')
-            .find(l => /Zscaler|Netskope|GlobalProtect|CiscoAnyConnect|NordVPN|OpenVPN|SWG/i.test(l));
+        const lines = (tcpVpn.detailedInfo || '').split('\n');
 
-        if (swgLine) {
-            const swgMatch = swgLine.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN)/i);
+        // 1. Specific VPN adapter (e.g. "Teleport", "Unifi Teleport VPN") — prefer this
+        //    so we show the actual product name rather than generic "VPN/SWG".
+        const vpnLine = lines.find(l => /VPN adapter detected:/i.test(l));
+        // 2. Specific SWG product lines — only match actual vendor names, NOT the
+        //    generic summary "W365 traffic may be routing through VPN/SWG".
+        const swgLine = lines.find(l => /(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP)/i.test(l));
+        // 3. System proxy
+        const proxyLine = lines.find(l => /proxy detected|Proxy Server/i.test(l));
+
+        if (vpnLine) {
+            // Parse: "ℹ VPN adapter detected: Teleport (Unifi Teleport VPN)"
+            const m = vpnLine.match(/VPN adapter detected:\s*(.+?)(?:\s*\(([^)]+)\))?\s*$/i);
+            if (m) {
+                // Prefer the longer/descriptive name in parens when it has more signal
+                const short = (m[1] || '').trim();
+                const descr = (m[2] || '').trim();
+                // Pick whichever looks like a product name (longer, contains letters)
+                if (descr && /[A-Za-z]{3,}/.test(descr) && descr.length > short.length) {
+                    vpnLabel = descr;
+                } else {
+                    vpnLabel = short || descr || 'VPN';
+                }
+            } else {
+                vpnLabel = 'VPN';
+            }
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        } else if (swgLine) {
+            const swgMatch = swgLine.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP)/i);
             vpnLabel = swgMatch ? swgMatch[1] : 'SWG';
             vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
-        } else if (vpnLine) {
-            const nameMatch = vpnLine.match(/VPN adapter detected:\s*(.+?)(?:\s*\(|$)/);
-            vpnLabel = nameMatch ? nameMatch[1].trim() : 'VPN';
-            vpnDetail = `⚠ Traffic routed via VPN tunnel`;
         } else if (proxyLine) {
             const proxyMatch = proxyLine.match(/proxy.*?:\s*(.+)/i);
             vpnLabel = proxyMatch ? proxyMatch[1].trim() : 'Proxy';
-            vpnDetail = `⚠ Traffic routed via proxy`;
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
         } else {
-            vpnLabel = tcpVpn.resultValue || 'VPN/Proxy';
+            // Generic: we know traffic is intercepted but can't name the product
+            vpnLabel = 'VPN/SWG';
             vpnDetail = '⚠ RDP traffic not going direct';
         }
     }
@@ -1735,7 +1752,7 @@ function updateMapVpnOverlay(lookup) {
         if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
             vpnDetected = true;
             const match = info.match(/Routed via:\s*(.+)/i);
-            vpnLabel = match ? match[1].trim() : 'Security Proxy';
+            vpnLabel = match ? match[1].trim() : 'VPN/SWG';
             vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
         }
     }
@@ -1839,24 +1856,64 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup) {
         return;
     }
 
-    // Egress location & ISP come from browser-side GeoIP (B-LE-*),
-    // which reflects the *actual* internet exit point when a VPN/SWG is active.
+    // ── Narrative data points ──
+    // Cloud PC Azure region (from IMDS via scanner — authoritative)
+    let cpcRegion = '';
+    const imds = lookup['C-NET-01'];
+    const cpcLoc = lookup['C-LE-01'];
+    const regionFrom = (info) => {
+        const m = info && info.match(/Azure Region:\s*(\S+)/);
+        if (!m) return '';
+        const code = m[1];
+        const az = (typeof AZURE_REGIONS !== 'undefined')
+            ? AZURE_REGIONS.find(r => r.code === code) : null;
+        return az ? az.name : code;
+    };
+    cpcRegion = regionFrom(imds && imds.detailedInfo) || regionFrom(cpcLoc && cpcLoc.detailedInfo);
+
+    // Egress location & ISP from browser GeoIP — reflects the *actual* public exit
+    // when a VPN/SWG is active
     const egressLoc = lookup['B-LE-01'];
     const egressIsp = lookup['B-LE-02'];
-    const locText = egressLoc && egressLoc.resultValue ? String(egressLoc.resultValue).trim() : '';
+    const egressText = egressLoc && egressLoc.resultValue ? String(egressLoc.resultValue).trim() : '';
     const ispText = egressIsp && egressIsp.resultValue ? String(egressIsp.resultValue).trim() : '';
 
-    const chips = [];
-    chips.push(`<span class="vpn-sum-chip">🛡️ ${escapeHtml(vpnLabel || 'VPN/SWG')}</span>`);
-    if (locText) chips.push(`<span class="vpn-sum-chip">🌍 Egress: ${escapeHtml(locText)}</span>`);
-    if (ispText) chips.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);
+    // RD Gateway region — tells us which regional RDP infra the tunnel is steering to
+    let gwRegion = '';
+    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+    if (gwUsed && gwUsed.detailedInfo) {
+        const m = gwUsed.detailedInfo.match(/Location:\s*([^\n]+?)(?:\s{2,}|$)/);
+        if (m && !/GeoIP/i.test(m[0])) gwRegion = m[1].trim();
+    }
+
+    // ── Build the narrative line ──
+    const productLabel = vpnLabel && vpnLabel !== 'VPN/SWG' ? vpnLabel : 'VPN/SWG';
+    const parts = [];
+    parts.push(`<span class="vpn-sum-icon">⚠️</span>`);
+
+    let headline;
+    if (cpcRegion && egressText) {
+        headline = `Cloud PC is in <strong>${escapeHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong> and egresses the internet in <strong>${escapeHtml(egressText)}</strong>`;
+    } else if (cpcRegion) {
+        headline = `Cloud PC is in <strong>${escapeHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong>`;
+    } else if (egressText) {
+        headline = `RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong> and egresses the internet in <strong>${escapeHtml(egressText)}</strong>`;
+    } else {
+        headline = `RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong>`;
+    }
+    parts.push(`<span class="vpn-sum-title">${headline}</span>`);
+
+    // Consequence chip — which regional RDP infra the user is hitting as a result
+    if (gwRegion) {
+        parts.push(`<span class="vpn-sum-sep">→</span>`);
+        parts.push(`<span class="vpn-sum-chip">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
+    }
+    if (ispText) {
+        parts.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);
+    }
 
     el.className = 'map-vpn-summary';
-    el.innerHTML =
-        `<span class="vpn-sum-icon">⚠️</span>` +
-        `<span class="vpn-sum-title">RDP traffic is tunneling via ${escapeHtml(vpnLabel || 'VPN/SWG')}</span>` +
-        `<span class="vpn-sum-sep">—</span>` +
-        chips.join(' ');
+    el.innerHTML = parts.join(' ');
 }
 
 function escapeHtml(s) {
