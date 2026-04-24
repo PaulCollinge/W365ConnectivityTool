@@ -4313,6 +4313,132 @@ class Program
         return result;
     }
 
+    /// <summary>
+    /// Inspects RDP-client-specific proxy settings — distinct from the
+    /// system/WinINET proxy because MSRDC / Windows App / mstsc each honour
+    /// their own overrides. Returns human-readable lines for the test
+    /// detailedInfo; lines prefixed "⚠" represent active overrides.
+    /// </summary>
+    static List<string> InspectRdpClientProxyConfig()
+    {
+        var lines = new List<string>();
+
+        // 1. Remote Desktop Connection (mstsc) — HKCU Terminal Server Client
+        //    RDGClientTransport=1 forces HTTP/TS Gateway; ProxySettings blob
+        //    contains any per-connection proxy overrides for RDS sessions.
+        try
+        {
+            using var tsc = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Terminal Server Client");
+            if (tsc != null)
+            {
+                var transport = tsc.GetValue("RDGClientTransport");
+                if (transport is int t)
+                {
+                    var desc = t switch
+                    {
+                        0 => "Auto (HTTP fallback if UDP fails)",
+                        1 => "HTTP only (via RD Gateway)",
+                        _ => $"unknown ({t})"
+                    };
+                    lines.Add($"mstsc RDGClientTransport: {desc}");
+                    if (t == 1) lines.Add("⚠ mstsc forced to HTTP-only — UDP shortpath disabled");
+                }
+            }
+        }
+        catch { /* best-effort */ }
+
+        // 2. Windows App / AVD store client — stores proxy under Packages
+        //    (Microsoft.Windows365 / Microsoft.RemoteDesktop). The packaged
+        //    app config is per-user; if any pack has ProxyUrl or UseProxy set
+        //    it overrides the system proxy for RDP sessions from that client.
+        try
+        {
+            var pkgRoots = new[]
+            {
+                @"Software\Microsoft\Windows\CurrentVersion\CloudPC",
+                @"Software\Microsoft\RdClientRadc",
+                @"Software\Microsoft\Terminal Server Client\RdpFileMru"
+            };
+            foreach (var root in pkgRoots)
+            {
+                using var k = Registry.CurrentUser.OpenSubKey(root);
+                if (k == null) continue;
+                foreach (var name in new[] { "ProxyUrl", "ProxyServer", "UseProxy", "HttpProxy" })
+                {
+                    var v = k.GetValue(name);
+                    if (v != null && !string.IsNullOrWhiteSpace(v.ToString()))
+                        lines.Add($"⚠ {root}\\{name}={v}");
+                }
+            }
+        }
+        catch { /* best-effort */ }
+
+        // 3. Global machine-wide RDP policy — HKLM\SOFTWARE\Policies\Microsoft\
+        //    Windows NT\Terminal Services holds admin-deployed proxy overrides.
+        try
+        {
+            using var pol = Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services");
+            if (pol != null)
+            {
+                foreach (var name in new[] { "fUseProxy", "ProxyName", "ProxyType" })
+                {
+                    var v = pol.GetValue(name);
+                    if (v != null) lines.Add($"⚠ Policy: {name}={v}");
+                }
+            }
+        }
+        catch { /* best-effort */ }
+
+        if (lines.Count == 0)
+            lines.Add("✓ No RDP-client-specific proxy overrides found");
+
+        return lines;
+    }
+
+    /// <summary>
+    /// Opens an actual TCP connection to the proxy and sends an HTTP CONNECT
+    /// request for host:port. Returns whether the proxy accepted the tunnel.
+    /// This is the only way to know a declared proxy can actually reach the
+    /// RDP gateway — firewalls and ACLs frequently block specific destinations.
+    /// </summary>
+    static async Task<(bool Ok, string Message)> ProbeProxyConnectAsync(
+        Uri proxy, string targetHost, int targetPort, TimeSpan timeout)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(proxy.Host, proxy.Port, cts.Token);
+            var stream = tcp.GetStream();
+            var req = $"CONNECT {targetHost}:{targetPort} HTTP/1.1\r\n" +
+                      $"Host: {targetHost}:{targetPort}\r\n" +
+                      $"User-Agent: W365LocalScanner\r\n\r\n";
+            var bytes = Encoding.ASCII.GetBytes(req);
+            await stream.WriteAsync(bytes, cts.Token);
+
+            // Read status line + headers (up to 4 KB)
+            var buf = new byte[4096];
+            int read = await stream.ReadAsync(buf, cts.Token);
+            if (read <= 0) return (false, "✗ Proxy closed connection without responding");
+            var resp = Encoding.ASCII.GetString(buf, 0, read);
+            var firstLine = resp.Split('\n')[0].Trim();
+
+            // HTTP/1.1 200 Connection Established = success (any 2xx technically)
+            if (System.Text.RegularExpressions.Regex.IsMatch(firstLine, @"^HTTP/1\.[01]\s+2\d\d"))
+                return (true, $"✓ Proxy CONNECT accepted → {targetHost}:{targetPort} ({firstLine})");
+            return (false, $"✗ Proxy rejected CONNECT: {firstLine}");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, $"✗ Proxy CONNECT to {targetHost}:{targetPort} timed out after {timeout.TotalSeconds:0}s");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"✗ Proxy CONNECT failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     static async Task<TestResult> RunProxyVpnDetection()
     {
         var result = new TestResult { Id = "L-TCP-07", Name = "Proxy / VPN / SWG Detection", Category = "tcp" };
@@ -4409,6 +4535,58 @@ class Program
                     issues.Add($"{v}={val}");
                     sb.AppendLine($"⚠ Environment: {v}={val}");
                 }
+            }
+
+            // ── RDP client-specific proxy config ──
+            // The MSRDC / Windows App / mstsc clients each have their own proxy
+            // knobs. What the system-wide proxy says is only a default — the
+            // client can override it and bypass will differ accordingly. Report
+            // the RDP-client view explicitly so operators can distinguish
+            // "system is configured for a proxy" from "the RDP client will
+            // actually use the proxy".
+            try
+            {
+                var rdpProxy = InspectRdpClientProxyConfig();
+                if (rdpProxy.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("RDP client proxy configuration:");
+                    foreach (var line in rdpProxy) sb.AppendLine($"  {line}");
+                    // Only promote to issues if the RDP client has a non-direct setting
+                    if (rdpProxy.Any(l => l.StartsWith("⚠", StringComparison.Ordinal)))
+                        issues.Add("RDP client proxy override");
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  Could not inspect RDP client proxy config: {ex.Message}");
+            }
+
+            // ── Live CONNECT probe through detected proxy ──
+            // If the system proxy is configured for the RDP gateway, prove it
+            // actually works by opening a real HTTP CONNECT tunnel through it.
+            // This catches the common "proxy is declared but blocks AVD FQDNs"
+            // failure that otherwise only surfaces mid-RDP-session as a hang.
+            try
+            {
+                var systemProxy = WebRequest.GetSystemWebProxy();
+                var proxyForRdp = systemProxy?.GetProxy(testUri);
+                if (proxyForRdp != null && proxyForRdp != testUri)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine($"Live proxy verification ({proxyForRdp.Host}:{proxyForRdp.Port}):");
+                    var verify = await ProbeProxyConnectAsync(proxyForRdp, probeHost, 443, TimeSpan.FromSeconds(8));
+                    sb.AppendLine($"  {verify.Message}");
+                    if (!verify.Ok)
+                    {
+                        issues.Add($"Proxy CONNECT to {probeHost}:443 failed");
+                        // Remediation URL already set below when issues.Count > 0
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  Live proxy verification skipped: {ex.Message}");
             }
 
             // VPN adapters — detect presence, then check if RDP traffic actually routes through them
