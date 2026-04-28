@@ -2661,8 +2661,13 @@ footer {
     background: rgba(88, 166, 255, 0.12);
 }
 .host-type-select option {
-    background: var(--bg);
+    background: var(--bg-elevated);
     color: var(--text-primary);
+}
+.host-type-select option:checked,
+.host-type-select option:hover {
+    background: var(--bg-hover);
+    color: var(--accent);
 }
 
 /* Host-type picker banner */
