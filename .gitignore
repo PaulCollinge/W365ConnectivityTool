@@ -40,3 +40,12 @@ _git_head.html
 scanner_diff.txt
 test_url.txt
 _release_notes*.md
+_scan_b64.txt
+_scan_noblom.json
+
+# Generated / downloaded data (fetched fresh at runtime)
+ServiceTags_Latest.json
+W365_LatestScan.json
+
+# Build artifacts that should ship via GitHub Releases, not git
+/W365LocalScanner.exe
