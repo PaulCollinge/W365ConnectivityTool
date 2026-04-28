@@ -2302,6 +2302,33 @@ footer {
     color: var(--text-muted);
     margin: 2px 0 0;
 }
+.privacy-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 16px 24px 0;
+    padding: 10px 14px;
+    background: rgba(46, 160, 67, 0.08);
+    border: 1px solid rgba(46, 160, 67, 0.25);
+    border-left: 3px solid #2ea043;
+    border-radius: 6px;
+    color: var(--text-muted, #8b949e);
+    font-size: 0.8rem;
+    line-height: 1.45;
+}
+.privacy-notice strong {
+    color: var(--text-primary, #e6edf3);
+    font-weight: 600;
+}
+.privacy-notice em {
+    font-style: italic;
+    color: var(--text-primary, #e6edf3);
+}
+.privacy-notice-icon {
+    color: #2ea043;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
 .live-info-bar {
     display: flex;
     align-items: center;

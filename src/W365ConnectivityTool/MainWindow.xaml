@@ -403,10 +403,15 @@
 
         <!-- Footer -->
         <Border Grid.Row="5" Background="White" BorderBrush="#E1DFDD" BorderThickness="0,1,0,0" Padding="24,8">
-            <TextBlock FontSize="11" Foreground="#8A8886" HorizontalAlignment="Center">
-                <Run Text="Windows 365 / AVD Network Path Analysis Tool  ·  Phase 1: Physical Device Testing  ·  "/>
-                <Run Text="{Binding TotalTests, StringFormat='{}{0} tests configured', Mode=OneWay}"/>
-            </TextBlock>
+            <StackPanel HorizontalAlignment="Center">
+                <TextBlock FontSize="11" Foreground="#107C10" HorizontalAlignment="Center" FontWeight="SemiBold">
+                    <Run Text="🔒 Privacy: All tests run locally on this device. No results are uploaded or sent to any server we control."/>
+                </TextBlock>
+                <TextBlock FontSize="11" Foreground="#8A8886" HorizontalAlignment="Center" Margin="0,2,0,0">
+                    <Run Text="Windows 365 / AVD Network Path Analysis Tool  ·  Phase 1: Physical Device Testing  ·  "/>
+                    <Run Text="{Binding TotalTests, StringFormat='{}{0} tests configured', Mode=OneWay}"/>
+                </TextBlock>
+            </StackPanel>
         </Border>
     </Grid>
 </Window>
