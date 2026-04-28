@@ -2305,29 +2305,29 @@ footer {
 .privacy-notice {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
-    margin: 16px 24px 0;
-    padding: 10px 14px;
-    background: rgba(46, 160, 67, 0.08);
-    border: 1px solid rgba(46, 160, 67, 0.25);
+    gap: 14px;
+    padding: 14px 20px;
+    margin-bottom: 12px;
+    background: rgba(46, 160, 67, 0.06);
+    border: 1px solid rgba(46, 160, 67, 0.30);
     border-left: 3px solid #2ea043;
-    border-radius: 6px;
-    color: var(--text-muted, #8b949e);
-    font-size: 0.8rem;
-    line-height: 1.45;
+    border-radius: var(--r-md);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    line-height: 1.65;
 }
 .privacy-notice strong {
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     font-weight: 600;
 }
 .privacy-notice em {
     font-style: italic;
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
 }
 .privacy-notice-icon {
     color: #2ea043;
     flex-shrink: 0;
-    margin-top: 1px;
+    margin-top: 2px;
 }
 .live-info-bar {
     display: flex;
