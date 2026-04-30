@@ -415,15 +415,37 @@ function runAnalysisEngine(results) {
                 'The session is using TCP instead of UDP Shortpath. TCP adds latency due to head-of-line blocking and retransmissions, resulting in a less responsive experience.',
                 'Ensure UDP 3478 outbound is open, NAT type allows it, and TURN relay is reachable. UDP Shortpath is enabled by default in Windows 365 \u2014 verify no GPO is disabling it.'));
         }
-        // Check for disconnects
+        // Check for disconnects — only flag NETWORK-level disconnects, not
+        // normal session-end events. ClientActiveX Reason= 3 means "remote
+        // disconnect by server" (normal session end / sign-out) and must not
+        // be treated as a fault. Real network drops surface as RdpCoreTS
+        // codes 16644 / 4616 or as repeated reconnects in a short window.
         if (transport.detailedInfo) {
-            const disconnects = transport.detailedInfo.split('\n')
-                .filter(l => l.toLowerCase().includes('disconnect') || l.toLowerCase().includes('reason'));
-            if (disconnects.length > 1) {
-                const reasons = disconnects.map(l => l.trim()).join('; ');
-                findings.push(finding(SEV.WARNING, 'Session disconnect events found',
-                    `RDP event logs show disconnect events: ${reasons.substring(0, 300)}`,
-                    'Frequent disconnects with reason code 16644 indicate transport timeout (network drop). Code 4616 indicates network-level disconnection. Check WiFi stability, VPN keepalive settings, and idle timeout policies.'));
+            const lines = transport.detailedInfo.split('\n');
+            const networkDropCodes = /\b(?:16644|4616|2308|2825|3334|264)\b/;
+            const reasonMatches = lines.map(l => {
+                const m = l.match(/Reason=\s*(\d+)/i);
+                return m ? parseInt(m[1], 10) : null;
+            }).filter(n => n !== null);
+            // Reason codes that indicate network-related disconnects on the
+            // ClientActiveX path (per RDP client SDK):
+            //   0 = unknown / network failure
+            //   1 = local disconnect (often timeout-driven)
+            // Reason codes that are NORMAL and must NOT trigger a finding:
+            //   2 = user-initiated remote disconnect
+            //   3 = server-initiated disconnect (sign-out, idle timeout policy)
+            const networkReasons = reasonMatches.filter(n => n === 0 || n === 1);
+            const hasNetworkDropCode = networkDropCodes.test(transport.detailedInfo);
+            const reconnectStarts = lines.filter(l => /Connection Started/i.test(l)).length;
+
+            if (hasNetworkDropCode || networkReasons.length > 0 || reconnectStarts >= 4) {
+                const evidence = [];
+                if (hasNetworkDropCode) evidence.push('RdpCoreTS network-drop code present');
+                if (networkReasons.length > 0) evidence.push(`ClientActiveX Reason=${networkReasons.join(',')} (network-related)`);
+                if (reconnectStarts >= 4) evidence.push(`${reconnectStarts} reconnect attempts in the captured log window`);
+                findings.push(finding(SEV.WARNING, 'Network-level session disconnects detected',
+                    `Evidence: ${evidence.join('; ')}. RDP event logs indicate the session has been dropped by the network, not by the user or server.`,
+                    'Check WiFi stability, VPN keepalive settings, and idle-timeout policies. RdpCoreTS code 16644 indicates transport timeout; 4616 indicates network-level disconnect.'));
             }
         }
     }
@@ -1026,8 +1048,21 @@ function showAnalysisPanel(findings, qualityScore) {
     let qualityHtml = '';
     if (qualityScore && qualityScore.hasData) {
         const s = qualityScore.score;
-        const color = s >= 80 ? '#22c55e' : s >= 50 ? '#eab308' : '#ef4444';
-        const label = s >= 80 ? 'Good' : s >= 50 ? 'Fair' : 'Poor';
+        // Label is gated by both score and the presence of analysis findings,
+        // so a perfect numeric score on the session metrics doesn't read
+        // "Good" while scanner-side warnings (driver age, MTU, etc.) sit
+        // unacknowledged in the same panel.
+        const hasCriticals = findings.some(f => f.severity === SEV.CRITICAL);
+        const hasWarnings = findings.some(f => f.severity === SEV.WARNING);
+        let label;
+        if (s >= 95 && !hasCriticals && !hasWarnings) label = 'Excellent';
+        else if (s >= 80 && !hasCriticals) label = 'Good';
+        else if (s >= 50 && !hasCriticals) label = 'Fair';
+        else label = 'Poor';
+        const color = label === 'Excellent' ? '#10b981'
+                    : label === 'Good'      ? '#22c55e'
+                    : label === 'Fair'      ? '#eab308'
+                    :                          '#ef4444';
         const radius = 54;
         const circumference = 2 * Math.PI * radius;
         const dashoffset = circumference - (s / 100) * circumference;
