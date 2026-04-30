@@ -2116,11 +2116,15 @@ class Program
                     }
                     sw.Stop();
 
-                    if (totalBytes < 50_000 || sw.Elapsed.TotalSeconds < 0.5)
+                    if (totalBytes < 50_000)
                     {
                         attemptLog.Add($"  \u26A0 {host}: only {totalBytes} bytes in {sw.Elapsed.TotalSeconds:F2}s \u2014 too little data, trying next");
                         continue;
                     }
+                    // Note: do NOT reject short-elapsed measurements. On fast links (>=400 Mbps)
+                    // a 25 MB payload can complete in well under 0.5s; a previous guard against
+                    // sub-0.5s measurements caused every URL to be rejected on fast connections.
+                    // 50 KB minimum is enough to compute a meaningful Mbps figure.
 
                     var sizeMB = totalBytes / (1024.0 * 1024.0);
                     var seconds = sw.Elapsed.TotalSeconds;
