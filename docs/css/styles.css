@@ -1975,38 +1975,41 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 
 /* CPC fan lines (hidden by default) */
 .fan-cpc { display: none; }
-.fan-cpc-entry { stroke: #58a6ff; stroke-dasharray: 8 5; animation: flowFan 0.8s linear infinite; }
-.fan-cpc-up    { stroke: #a371f7; stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
-.fan-cpc-down  { stroke: #f0883e; stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
-.fan-cpc-rdgw  { stroke: #a371f7; stroke-dasharray: 8 5; animation: flowFan 0.8s linear infinite; }
-.fan-cpc-turn  { stroke: #f0883e; stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
+.fan-cpc-entry { stroke: var(--accent); stroke-dasharray: 8 5; animation: flowFan 0.8s linear infinite; }
+.fan-cpc-up    { stroke: var(--accent); stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
+.fan-cpc-down  { stroke: var(--accent); stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
+.fan-cpc-rdgw  { stroke: var(--accent); stroke-dasharray: 8 5; animation: flowFan 0.8s linear infinite; }
+.fan-cpc-turn  { stroke: var(--accent); stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
 
-/* ── Animated SVG fanout lines (color per destination) ── */
+/* ── Animated SVG fanout lines (neutral accent; differentiated by dash pattern) ── */
 .fan-entry {
-    stroke: #58a6ff;
+    stroke: var(--accent);
     stroke-dasharray: 8 5;
     animation: flowFan 0.8s linear infinite;
 }
 .fan-trunk {
-    stroke: #f0883e;
+    stroke: var(--accent);
     stroke-dasharray: 6 4;
     animation: flowFan 0.7s linear infinite;
 }
 .fan-afd {
-    stroke: #3fb950;
+    stroke: var(--accent);
     stroke-dasharray: 8 5;
     animation: flowFan 0.8s linear infinite;
 }
 .fan-rdgw {
-    stroke: #a371f7;
+    stroke: var(--accent);
     stroke-dasharray: 8 5;
     animation: flowFan 0.8s linear infinite;
 }
 .fan-turn {
-    stroke: #f0883e;
-    stroke-dasharray: 6 4;
+    stroke: var(--accent);
+    stroke-dasharray: 3 4;
     animation: flowFan 0.7s linear infinite;
 }
+
+/* Status colour comes from the card accent bars (.map-card-accent.status-*).
+   Lines stay neutral so all-healthy state reads as calm rather than warning. */
 
 /* ── Flowing line keyframes ── */
 @keyframes flowRight {
@@ -2088,9 +2091,9 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .legend-lines { display: flex; flex-direction: column; gap: 4px; }
 .legend-item { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
 .legend-line { display: inline-block; width: 24px; height: 2px; flex-shrink: 0; border-radius: 1px; }
-.legend-line.line-afd  { background: #3fb950; }
-.legend-line.line-rdgw { background: #a371f7; }
-.legend-line.line-turn { background: repeating-linear-gradient(90deg, #f0883e 0, #f0883e 5px, transparent 5px, transparent 8px); }
+.legend-line.line-afd  { background: var(--accent); }
+.legend-line.line-rdgw { background: var(--accent); }
+.legend-line.line-turn { background: repeating-linear-gradient(90deg, var(--accent) 0, var(--accent) 3px, transparent 3px, transparent 7px); }
 .legend-badges { display: flex; gap: 6px; }
 .legend-badge { font-size: 10px; padding: 3px 10px; border-radius: 100px; font-weight: 600; }
 .legend-badge.ok   { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
