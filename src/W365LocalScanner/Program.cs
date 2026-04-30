@@ -2090,9 +2090,11 @@ class Program
 
             double bestMbps = 0;
             string bestDetail = "";
+            var attemptLog = new List<string>();
 
             foreach (var (testUrl, expectedSize) in testUrls)
             {
+                var host = new Uri(testUrl).Host;
                 try
                 {
                     // Streaming download - measure bytes received over time
@@ -2115,7 +2117,10 @@ class Program
                     sw.Stop();
 
                     if (totalBytes < 50_000 || sw.Elapsed.TotalSeconds < 0.5)
-                        continue; // Too little data for reliable measurement
+                    {
+                        attemptLog.Add($"  \u26A0 {host}: only {totalBytes} bytes in {sw.Elapsed.TotalSeconds:F2}s \u2014 too little data, trying next");
+                        continue;
+                    }
 
                     var sizeMB = totalBytes / (1024.0 * 1024.0);
                     var seconds = sw.Elapsed.TotalSeconds;
@@ -2124,26 +2129,49 @@ class Program
                     if (mbps > bestMbps)
                     {
                         bestMbps = mbps;
-                        bestDetail = $"Downloaded {sizeMB:F2} MB in {seconds:F1}s from {new Uri(testUrl).Host}";
+                        bestDetail = $"Downloaded {sizeMB:F2} MB in {seconds:F1}s from {host}";
                     }
+                    attemptLog.Add($"  \u2714 {host}: {mbps:F1} Mbps ({sizeMB:F2} MB / {seconds:F1}s)");
 
                     // If we got a good measurement, no need to try other URLs
                     if (totalBytes > 1_000_000)
                         break;
                 }
-                catch { /* try next URL */ }
+                catch (HttpRequestException hex)
+                {
+                    // Capture WHY each URL failed so the user can act on it
+                    var inner = hex.InnerException?.Message ?? hex.Message;
+                    attemptLog.Add($"  \u2718 {host}: {inner}");
+                }
+                catch (TaskCanceledException)
+                {
+                    attemptLog.Add($"  \u2718 {host}: timeout (30s)");
+                }
+                catch (Exception ex)
+                {
+                    attemptLog.Add($"  \u2718 {host}: {ex.GetType().Name}: {ex.Message}");
+                }
             }
+
+            var detailLog = "Bandwidth attempts (per test URL):\n" + string.Join("\n", attemptLog);
 
             if (bestMbps > 0)
             {
                 result.ResultValue = $"~{bestMbps:F1} Mbps (HTTPS download test)";
-                result.DetailedInfo = $"Measured via HTTPS streaming download.\n{bestDetail}";
+                result.DetailedInfo = $"Measured via HTTPS streaming download.\n{bestDetail}\n\n{detailLog}";
                 result.Status = bestMbps > 5 ? "Passed" : bestMbps > 1 ? "Warning" : "Failed";
             }
             else
             {
                 result.Status = "Error";
-                result.ResultValue = "Could not complete bandwidth test — all test URLs failed";
+                result.ResultValue = "Could not measure bandwidth \u2014 all test URLs failed";
+                result.DetailedInfo = detailLog
+                    + "\n\nThis test downloads from speed.cloudflare.com. If every attempt failed,"
+                    + "\nyour network is blocking that host (DNS filter, proxy denylist, captive"
+                    + "\nportal, or strict outbound firewall). The browser-side B-LE-03 test uses"
+                    + "\nin-page resources and is unaffected, so a green B-LE-03 + red L-LE-07"
+                    + "\nspecifically indicates Cloudflare reachability is restricted, not that"
+                    + "\nthe link is slow.";
             }
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#bandwidth-requirements";
@@ -3138,6 +3166,16 @@ class Program
             }
 
             // ── Adapter MTU check (local interface) ──
+            // An MTU below 1500 on a physical adapter is often legitimate:
+            //   1492 = PPPoE (UK FTTC/FTTP, many DSL/fibre ISPs)
+            //   1480 = GRE / IP-in-IP / 6in4
+            //   1452 = PPPoE over an additional tag
+            //   1428 = PPPoE + IPSec
+            //   1380-1400 = typical VPN tunnel
+            // We only report it as an issue when path-MTU probes to the
+            // probed Internet targets actually showed reduced PMTU below 1400
+            // (already captured as "critically low"/issues above). On a 1492
+            // PPPoE link with full path MTU, the adapter value is informational.
             sb.AppendLine("═══ Local Interface MTU ═══");
             var activeAdapters = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up
@@ -3150,12 +3188,37 @@ class Program
                 var ipv4Props = ipProps.GetIPv4Properties();
                 if (ipv4Props != null)
                 {
-                    sb.AppendLine($"  {a.Name}: Interface MTU = {ipv4Props.Mtu}");
-                    if (ipv4Props.Mtu < 1500)
+                    int mtu = ipv4Props.Mtu;
+                    sb.AppendLine($"  {a.Name}: Interface MTU = {mtu}");
+                    if (mtu < 1500)
                     {
-                        sb.AppendLine($"    ⚠ Non-standard interface MTU (typically caused by VPN or tunnel)");
-                        if (!issues.Any(i => i.Contains("Interface MTU")))
-                            issues.Add($"Interface MTU {ipv4Props.Mtu} on {a.Name}");
+                        string explanation = mtu switch
+                        {
+                            1492 => "PPPoE link (typical for UK FTTC/FTTP and many consumer/SMB broadband ISPs) \u2014 expected, not a problem",
+                            1480 => "GRE / IP-in-IP tunnel \u2014 typical for some corporate networks",
+                            1452 => "PPPoE with additional VLAN tag",
+                            1428 => "PPPoE + IPSec",
+                            < 1400 => "very low \u2014 likely VPN tunnel or aggressive QoS clamping; may impact RDP",
+                            _ => "non-standard \u2014 may be VPN, tunnel, or carrier-side clamping"
+                        };
+                        bool benign = mtu == 1492 || mtu == 1480 || mtu == 1452;
+                        // Only flag as an issue if the local MTU is genuinely low AND
+                        // the path-MTU probes did not already pass for the targets.
+                        bool pathMtuOk = !issues.Any(i => i.Contains("critically low") || i.Contains("DF-bit probes failed"));
+                        if (benign && pathMtuOk)
+                        {
+                            sb.AppendLine($"    \u2139 {explanation}");
+                        }
+                        else if (mtu >= 1400 && pathMtuOk)
+                        {
+                            sb.AppendLine($"    \u2139 {explanation}");
+                        }
+                        else
+                        {
+                            sb.AppendLine($"    \u26A0 {explanation}");
+                            if (!issues.Any(i => i.Contains("Interface MTU")))
+                                issues.Add($"Interface MTU {mtu} on {a.Name}");
+                        }
                     }
                 }
             }
