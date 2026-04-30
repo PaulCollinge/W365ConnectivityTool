@@ -765,37 +765,71 @@ function runAnalysisEngine(results) {
     }
 
     // Correlation 12: SASE-specific remediation when detected as ISP
+    // Combines three independent signals so the verdict reflects what the tool
+    // actually observed about RDP traffic, not just an ISP string match:
+    //   (a) B-LE-02 — browser ISP/ASN string (HTTPS egress only)
+    //   (b) L-TCP-07 — local route-table inspection of 40.64.144.0/20 and
+    //       51.5.0.0/16 plus the resolved RDP gateway IP. This is authoritative
+    //       for "does the SASE client's tunnel adapter capture RDP?"
+    //   (c) L-TCP-06 / L-UDP-06 / 25 — TLS chain on RDP endpoints. A clean
+    //       Microsoft chain proves SSL inspection is NOT decrypting RDP.
     if (browserIsp && browserIsp.status === 'Passed') {
         const ispVal = (browserIsp.resultValue || '').toLowerCase();
         const saseVendors = {
-            'zscaler': {
-                name: 'Zscaler',
-                tips: 'Zscaler resolved as your ISP, meaning all HTTP/HTTPS traffic exits via Zscaler\'s nearest PoP. '
-                    + 'Verify: (1) RDP traffic (40.64.144.0/20 TCP/443, 51.5.0.0/16 UDP/3478) is in the ZIA bypass/direct policy, '
-                    + '(2) SSL inspection is disabled for *.wvd.microsoft.com and *.avd.microsoft.com, '
-                    + '(3) DNS for *.avd.microsoft.com resolves at the local Zscaler PoP (not a remote corporate resolver).'
-            },
-            'netskope': {
-                name: 'Netskope',
-                tips: 'Netskope resolved as your ISP. Verify: (1) RDP traffic is in the Netskope real-time bypass policy, '
-                    + '(2) SSL Do Not Decrypt includes *.wvd.microsoft.com and *.avd.microsoft.com, '
-                    + '(3) DNS steering resolves AVD endpoints at the nearest Netskope PoP.'
-            },
-            'cloudflare': {
-                name: 'Cloudflare Gateway',
-                tips: 'Cloudflare Gateway detected. Ensure W365 RDP endpoints are in the Do Not Inspect and Do Not Gateway policies.'
-            }
+            'zscaler':    { name: 'Zscaler' },
+            'netskope':   { name: 'Netskope' },
+            'cloudflare': { name: 'Cloudflare Gateway' }
         };
         const detectedSase = Object.keys(saseVendors).find(v => ispVal.includes(v));
         if (detectedSase) {
             const sase = saseVendors[detectedSase];
-            // Only add if we haven't already flagged this vendor via TLS correlation
+            // Skip if a TLS-inspection finding for this vendor already fired (Correlation 10)
             const alreadyFlagged = findings.some(f => f.title.toLowerCase().includes(sase.name.toLowerCase()) && f.severity === 'critical');
             if (!alreadyFlagged) {
-                findings.push(finding(SEV.INFO,
-                    `${sase.name} detected as network proxy`,
-                    sase.tips,
-                    'See https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp for full RDP optimization guidance.'));
+                // Authoritative signal: route-table evidence from L-TCP-07
+                const proxyVpn = r('L-TCP-07');
+                const pvDetail = ((proxyVpn && (proxyVpn.detailedInfo || proxyVpn.resultValue)) || '');
+                const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|RDP gateway [^\n]+ routes via VPN interface/i.test(pvDetail);
+                const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|RDP gateway [^\n]+ routes direct via|VPN is active but RDP traffic correctly bypasses it/i.test(pvDetail);
+
+                // Corroborating signal: TLS chains on RDP endpoints
+                const rdpTlsTests = [r('L-TCP-06'), r('L-UDP-06'), r('25')].filter(Boolean);
+                const rdpTlsClean = rdpTlsTests.length > 0 && rdpTlsTests.every(t => t.status === 'Passed');
+
+                let title, severity, detail;
+                const recommend = 'See https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp for full RDP optimization guidance.';
+
+                if (tunnelCarriesRdp) {
+                    // Definitive: route table shows the SASE adapter capturing W365 ranges
+                    severity = SEV.CRITICAL;
+                    title = `${sase.name} tunnel is carrying Windows 365 RDP traffic`;
+                    detail = `The local routing table shows W365/AVD ranges (40.64.144.0/20 and/or 51.5.0.0/16) or the resolved RDP gateway IP routing through the ${sase.name} tunnel adapter. `
+                        + 'RDP traffic should bypass SASE tunnels — tunneling adds latency and can break UDP/3478 transport. '
+                        + 'See L-TCP-07 details for the exact routes observed.';
+                } else if (tunnelBypassesRdp && rdpTlsClean) {
+                    // Definitive: routes direct AND TLS chain on RDP endpoints is unmodified Microsoft
+                    severity = SEV.INFO;
+                    title = `${sase.name} detected, but RDP traffic bypasses it correctly`;
+                    detail = `${sase.name} is on your HTTPS egress path (resolved as ISP via B-LE-02), but the local routing table (L-TCP-07) shows W365/AVD ranges and the RDP gateway routing direct, and TLS chains on RDP endpoints are unmodified Microsoft certificates. `
+                        + 'This is the supported configuration: SASE for general internet, direct egress for RDP.';
+                } else if (tunnelBypassesRdp) {
+                    // Routes direct, but TLS evidence inconclusive
+                    severity = SEV.INFO;
+                    title = `${sase.name} detected; RDP appears to route direct`;
+                    detail = `${sase.name} is on your HTTPS egress path. The local routing table (L-TCP-07) shows W365/AVD ranges and the RDP gateway routing outside the ${sase.name} tunnel adapter, which indicates correct bypass for the route-table layer. `
+                        + 'TLS chain corroboration on RDP endpoints was inconclusive (some checks did not pass) — verify L-TCP-06 / L-UDP-06 separately to rule out inline SSL inspection.';
+                } else {
+                    // No L-TCP-07 evidence (test missing or didn't run) — fall back to verification prompt
+                    severity = SEV.INFO;
+                    title = `${sase.name} detected as network proxy`;
+                    detail = `${sase.name} resolved as your ISP (B-LE-02), meaning at least your HTTPS traffic to the IP-info service exited via a ${sase.name} PoP. `
+                        + 'The route-table check (L-TCP-07) did not produce a definitive verdict on RDP, so verify manually: '
+                        + '(1) RDP traffic (40.64.144.0/20 TCP/443, 51.5.0.0/16 UDP/3478) is in the bypass/direct policy, '
+                        + '(2) SSL inspection is disabled for *.wvd.microsoft.com and *.avd.microsoft.com, '
+                        + '(3) DNS for *.avd.microsoft.com resolves at the local PoP (not a remote corporate resolver).';
+                }
+
+                findings.push(finding(severity, title, detail, recommend));
             }
         }
     }
