@@ -182,19 +182,38 @@ function runAnalysisEngine(results) {
     }
 
     // ── 3. Bandwidth ──
+    // Prefer L-LE-07 (local scanner) but fall back to B-LE-03 (browser) when the
+    // local test errored or returned an unparseable value. Without this fallback,
+    // a blocked speed.cloudflare.com on the scanner side silently suppresses the
+    // bandwidth finding even though the browser test had a perfectly good number.
     const bwLocal = r('L-LE-07');
     const bwBrowser = r('B-LE-03');
-    const bw = bwLocal || bwBrowser;
+    let bw = null;
+    let bwSource = '';
+    if (bwLocal && bwLocal.status !== 'Error' && bwLocal.status !== 'Skipped') {
+        const m = parseMbps(bwLocal.resultValue);
+        if (!isNaN(m)) { bw = bwLocal; bwSource = 'local scanner'; }
+    }
+    if (!bw && bwBrowser) {
+        const m = parseMbps(bwBrowser.resultValue);
+        if (!isNaN(m)) { bw = bwBrowser; bwSource = 'browser test'; }
+    }
+    // Surface the local error itself if local errored AND we had to use browser (or had nothing).
+    if (bwLocal && bwLocal.status === 'Error') {
+        findings.push(finding(SEV.INFO, 'Local bandwidth test errored',
+            `The local scanner bandwidth probe (L-LE-07) failed: ${bwLocal.resultValue}. ${bw ? `Using the browser test (${bwSource}) instead.` : 'No bandwidth measurement available.'}`,
+            'Check the L-LE-07 detail for the underlying cause (proxy block, DNS failure, TLS inspection on speed.cloudflare.com, etc.). This does not necessarily indicate a Cloud PC problem.'));
+    }
     if (bw) {
         const mbps = parseMbps(bw.resultValue);
         if (!isNaN(mbps)) {
             if (mbps < 5) {
                 findings.push(finding(SEV.CRITICAL, 'Very low bandwidth',
-                    `Bandwidth is only ${mbps.toFixed(1)} Mbps — well below the 20 Mbps recommended for a good Cloud PC experience. Video, screen updates and file transfers will be severely impacted.`,
+                    `Bandwidth is only ${mbps.toFixed(1)} Mbps (${bwSource}) — well below the 20 Mbps recommended for a good Cloud PC experience. Video, screen updates and file transfers will be severely impacted.`,
                     'Use a wired connection if on WiFi. Contact your ISP if bandwidth is consistently below plan speeds.'));
             } else if (mbps < 10) {
                 findings.push(finding(SEV.WARNING, 'Low bandwidth',
-                    `Bandwidth is ${mbps.toFixed(1)} Mbps — below the 20 Mbps recommended for optimal Cloud PC performance.`,
+                    `Bandwidth is ${mbps.toFixed(1)} Mbps (${bwSource}) — below the 20 Mbps recommended for optimal Cloud PC performance.`,
                     'Ensure other bandwidth-heavy activities are minimised during Cloud PC use. A wired Ethernet connection can improve throughput stability.'));
             }
         }
@@ -248,7 +267,7 @@ function runAnalysisEngine(results) {
         const detail = (vpn.detailedInfo || '');
         const resVal = (vpn.resultValue || '');
         const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|routes via VPN interface/i.test(detail);
-        const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|VPN is active but RDP traffic correctly bypasses it|routes direct via/i.test(detail);
+        const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|VPN is active but RDP traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i.test(detail);
         const vpnDetected = /VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
 
         if (tunnelCarriesRdp) {
@@ -848,7 +867,7 @@ function runAnalysisEngine(results) {
                 const proxyVpn = r('L-TCP-07');
                 const pvDetail = ((proxyVpn && (proxyVpn.detailedInfo || proxyVpn.resultValue)) || '');
                 const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|RDP gateway [^\n]+ routes via VPN interface/i.test(pvDetail);
-                const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|RDP gateway [^\n]+ routes direct via|VPN is active but RDP traffic correctly bypasses it/i.test(pvDetail);
+                const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|RDP gateway [^\n]+ routes direct via|VPN is active but RDP traffic correctly bypasses it|Split-tunnelled \(direct\)/i.test(pvDetail);
 
                 // Corroborating signal: TLS chains on RDP endpoints
                 const rdpTlsTests = [r('L-TCP-06'), r('L-UDP-06'), r('25')].filter(Boolean);

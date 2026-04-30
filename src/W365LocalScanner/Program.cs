@@ -3437,19 +3437,22 @@ class Program
                 sb.AppendLine($"  Version: {driverInfo.Version}");
                 sb.AppendLine($"  Date: {driverInfo.Date?.ToString("yyyy-MM-dd") ?? "unknown"}");
 
-                // Check driver age
+                // Check driver age (informational only — old drivers are usually fine;
+                // most NIC vendors release updates infrequently and Windows Update keeps
+                // working drivers in place. Only surface as Info, never as a Warning,
+                // unless paired with a known-issue match below.)
                 if (driverInfo.Date.HasValue)
                 {
                     var ageDays = (DateTime.Now - driverInfo.Date.Value).TotalDays;
                     if (ageDays > 730) // > 2 years
                     {
                         var years = ageDays / 365.25;
-                        sb.AppendLine($"  ⚠ Driver is {years:F1} years old — consider updating from the manufacturer's website");
-                        warnings++;
+                        sb.AppendLine($"  ℹ Driver dates to {driverInfo.Date.Value:yyyy-MM} ({years:F1} years old). This is usually fine; if you experience instability, check the manufacturer's website for an update.");
                     }
                 }
 
-                // Check known problematic drivers
+                // Check known problematic drivers — these are the only conditions that
+                // should produce a Warning verdict for this test.
                 var issue = CheckKnownDriverIssue(driverInfo);
                 if (issue != null)
                 {
@@ -6463,7 +6466,8 @@ class Program
                 else
                 {
                     var (hostname, port, ip) = gw.Value;
-                    sb.AppendLine("Source: TCP connect probes to RD Gateway");
+                    sb.AppendLine("Source: TCP connect probes to RD Gateway (path proxy — not actual session RTT).");
+                    sb.AppendLine("For true session round-trip latency, run this tool inside the Cloud PC.");
                     sb.AppendLine($"Endpoint: {hostname}:{port}");
                     sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
                     sb.AppendLine("Samples: 30 TCP probes over ~60s");
@@ -6499,10 +6503,10 @@ class Program
                         sb.AppendLine($"Min: {rtts.Min():F0}ms | Avg: {avg:F0}ms | Max: {rtts.Max():F0}ms");
                         sb.AppendLine($"Values: {string.Join(", ", rtts.Select(r => $"{r:F0}ms"))}");
 
-                        result.ResultValue = $"{avg:F0}ms (TCP)";
+                        result.ResultValue = $"{avg:F0}ms (TCP path proxy)";
                         result.Status = avg < 100 ? "Passed" : avg < 200 ? "Warning" : "Failed";
                         if (avg >= 100)
-                            result.RemediationText = $"Latency is {avg:F0}ms. Check for proxy/VPN adding latency.";
+                            result.RemediationText = $"TCP-handshake RTT to gateway is {avg:F0}ms. This is a path-quality proxy; actual RDP session RTT may differ. Check for proxy/VPN adding latency.";
                     }
                 }
             }
@@ -6669,6 +6673,8 @@ class Program
             }
 
             var (hostname, port, ip) = gw.Value;
+            sb.AppendLine("Source: TCP connect probes to RD Gateway (path proxy — not actual session jitter).");
+            sb.AppendLine("For true session UDP jitter, run this tool inside the Cloud PC.");
             sb.AppendLine($"Endpoint: {hostname}:{port}");
             sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
             sb.AppendLine("Samples: 60 TCP connect probes at 1s intervals (~60s)");
@@ -6835,8 +6841,12 @@ class Program
             }
             else
             {
-                // TCP probe reliability from physical device
-                sb.AppendLine("Source: TCP connect probe reliability (from physical device)");
+                // TCP probe reliability from physical device.
+                // NOTE: this is a TCP-handshake stability proxy, not real frame/UDP loss.
+                // A network with packet loss on the RDP UDP stream but stable TCP handshakes
+                // would still report 0% here. Run inside the Cloud PC for true frame stats.
+                sb.AppendLine("Source: TCP connect handshake stability (from physical device).");
+                sb.AppendLine("This measures path-stability via TCP handshakes; it is NOT a measurement of RDP UDP frame loss.");
                 sb.AppendLine("For per-frame drop analysis, run this tool inside the Cloud PC.");
                 sb.AppendLine();
 
@@ -6875,10 +6885,10 @@ class Program
                     sb.AppendLine($"Failed:     {failure}/60");
                     sb.AppendLine($"Loss rate:  {lossRate:F1}%");
 
-                    if (failure == 0) { result.Status = "Passed"; result.ResultValue = "0% loss (60/60 successful)"; }
-                    else if (lossRate < 5) { result.Status = "Passed"; result.ResultValue = $"{lossRate:F1}% loss"; }
-                    else if (lossRate < 15) { result.Status = "Warning"; result.ResultValue = $"{lossRate:F0}% loss"; result.RemediationText = "Some connection attempts failed. Check network stability."; }
-                    else { result.Status = "Failed"; result.ResultValue = $"{lossRate:F0}% loss (significant)"; result.RemediationText = "High connection failure rate detected."; }
+                    if (failure == 0) { result.Status = "Passed"; result.ResultValue = "TCP path stable (60/60 handshakes)"; }
+                    else if (lossRate < 5) { result.Status = "Passed"; result.ResultValue = $"{lossRate:F1}% TCP handshake failures"; }
+                    else if (lossRate < 15) { result.Status = "Warning"; result.ResultValue = $"{lossRate:F0}% TCP handshake failures"; result.RemediationText = "Some TCP handshakes to the gateway failed. This is a path-stability proxy — actual RDP UDP frame loss may differ. Check network stability."; }
+                    else { result.Status = "Failed"; result.ResultValue = $"{lossRate:F0}% TCP handshake failures (significant)"; result.RemediationText = "High TCP connection failure rate. Path to gateway is unstable; this strongly suggests RDP UDP frame loss as well."; }
                 }
             }
 
