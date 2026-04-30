@@ -115,7 +115,6 @@ function createTestElement(test, result) {
             ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
         </div>
         <div class="test-meta">
-            ${durationSafe > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${durationSafe}ms</span>` : ''}
             ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
         </div>
     `;
@@ -175,7 +174,6 @@ function updateTestUI(testId, result) {
             ${result.remediationText ? `<div class="test-remediation-text">${escapeHtml(result.remediationText)}</div>` : ''}
         </div>
         <div class="test-meta">
-            ${durationSafe > 0 ? `<span class="test-duration" title="Test execution time">⏱ ${durationSafe}ms</span>` : ''}
             ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
         </div>
     `;

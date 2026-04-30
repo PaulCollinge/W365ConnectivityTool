@@ -2013,7 +2013,7 @@ async function generateExportText() {
                          r.status === 'Warning' ? '⚠' :
                          r.status === 'Failed' || r.status === 'Error' ? '✗' :
                          r.status === 'Skipped' ? '—' : '?';
-            const dur = r.duration ? ` (ran in ${r.duration}ms)` : '';
+            const dur = r.duration ? ` (test execution time: ${r.duration}ms)` : '';
             const src = r.source === 'cloudpc' ? ` [${hostLabelShort()}]` : r.source === 'local' ? ' [Local Scanner]' : ' [Browser]';
 
             lines.push(`  ${icon} [${r.status.toUpperCase()}] ${r.id} — ${r.name}${dur}${src}`);
