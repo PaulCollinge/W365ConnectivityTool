@@ -1981,7 +1981,11 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .fan-cpc-rdgw  { stroke: var(--accent); stroke-dasharray: 8 5; animation: flowFan 0.8s linear infinite; }
 .fan-cpc-turn  { stroke: var(--accent); stroke-dasharray: 6 4; animation: flowFan 0.7s linear infinite; }
 
-/* ── Animated SVG fanout lines (neutral accent; differentiated by dash pattern) ── */
+/* ── Animated SVG fanout lines (neutral accent; differentiated by dash pattern) ──
+   AFD  = solid
+   RDGW = long dash
+   TURN = dotted
+*/
 .fan-entry {
     stroke: var(--accent);
     stroke-dasharray: 8 5;
@@ -1994,17 +1998,18 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 }
 .fan-afd {
     stroke: var(--accent);
-    stroke-dasharray: 8 5;
+    /* solid */
     animation: flowFan 0.8s linear infinite;
 }
 .fan-rdgw {
     stroke: var(--accent);
-    stroke-dasharray: 8 5;
+    stroke-dasharray: 10 4;
     animation: flowFan 0.8s linear infinite;
 }
 .fan-turn {
     stroke: var(--accent);
-    stroke-dasharray: 3 4;
+    stroke-dasharray: 1 4;
+    stroke-linecap: round;
     animation: flowFan 0.7s linear infinite;
 }
 
@@ -2092,8 +2097,8 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .legend-item { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
 .legend-line { display: inline-block; width: 24px; height: 2px; flex-shrink: 0; border-radius: 1px; }
 .legend-line.line-afd  { background: var(--accent); }
-.legend-line.line-rdgw { background: var(--accent); }
-.legend-line.line-turn { background: repeating-linear-gradient(90deg, var(--accent) 0, var(--accent) 3px, transparent 3px, transparent 7px); }
+.legend-line.line-rdgw { background: repeating-linear-gradient(90deg, var(--accent) 0, var(--accent) 6px, transparent 6px, transparent 9px); }
+.legend-line.line-turn { background: repeating-linear-gradient(90deg, var(--accent) 0, var(--accent) 1.5px, transparent 1.5px, transparent 5px); }
 .legend-badges { display: flex; gap: 6px; }
 .legend-badge { font-size: 10px; padding: 3px 10px; border-radius: 100px; font-weight: 600; }
 .legend-badge.ok   { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
