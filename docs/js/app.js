@@ -1360,9 +1360,41 @@ function mapCategoryFromId(id) {
     return 'local';
 }
 
+// ─── Network address helpers ─────────────────────────────────────────
+// IP family detection: presence of ':' is sufficient — IPv4-mapped IPv6
+// (::ffff:1.2.3.4) is rare in browser/STUN reflexive context and treating
+// it as IPv6 is the right call for dual-stack identification.
+function isIpv6(ip) { return typeof ip === 'string' && ip.includes(':'); }
+function isIpv4(ip) { return typeof ip === 'string' && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip); }
+
+// RFC 6598 carrier-grade NAT range: 100.64.0.0/10 (100.64.0.0 — 100.127.255.255).
+// This is the address space ISPs assign to subscribers WAN-side when CGNAT is
+// in use. Subscribers behind CGNAT do NOT see this address externally — their
+// HTTP/STUN reflexive IPs are the ISP's shared public IP. The deterministic
+// external signal is therefore traceroute hops, NOT the egress IP.
+function isCgnRange(ip) {
+    if (!isIpv4(ip)) return false;
+    const [a, b] = ip.split('.').map(Number);
+    return a === 100 && b >= 64 && b <= 127;
+}
+
+// Examine traceroute output (L-TCP-10) for hops in 100.64.0.0/10.
+// Returns the list of CGN hops found (empty = none).
+function findCgnHopsInTraceroute(results) {
+    const trace = results.find(x => x.id === 'L-TCP-10');
+    if (!trace || !trace.detailedInfo) return [];
+    const hops = [];
+    // Match lines like "║  2    100.65.4.1   7ms" or "  2    100.65.4.1   7ms"
+    const re = /(?:^|\n)[^\n]*?(?:\d+)\s+(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})/g;
+    let m;
+    while ((m = re.exec(trace.detailedInfo)) !== null) {
+        if (!hops.includes(m[1])) hops.push(m[1]);
+    }
+    return hops;
+}
+
 // Helper: extract VPN/SWG names from resultValue "VPN detected (Name) — ..." or detailedInfo
-function extractVpnNames(tests) {
-    const names = new Set();
+function extractVpnNames(tests) {    const names = new Set();
     for (const t of tests) {
         if (!t) continue;
         // Try resultValue first: "VPN/SWG detected (Name1, Name2) — ..."
@@ -1787,12 +1819,18 @@ async function generateExportText() {
     const tcpDns = r('L-TCP-08');
     const tcpVpn = r('L-TCP-07');
 
-    // GeoIP the STUN IP to distinguish CGNAT from proxy
+    // Classify why HTTP and STUN egress IPs differ. Order of evidence:
+    //   1. Traceroute (L-TCP-10) hops in 100.64.0.0/10  → CGNAT confirmed
+    //   2. IPv4 vs IPv6                                 → dual-stack (no fault)
+    //   3. Different countries on GeoIP                 → split-path / proxy
+    //   4. Same country, same family, no CGN evidence   → different egress paths
     let reportStunCountry = '';
     let reportStunCity = '';
     let reportHttpCountry = freshLoc?.country || '';
     let reportHttpCity = freshLoc?.source === 'browser' ? (freshLoc?.city || '') : '';
     let reportIsSplitPath = false;
+    let reportIsDualStack = false;
+    let reportCgnHops = [];
     if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
         try {
             const geoResp = await fetch(`https://ipinfo.io/${reportStunIp}/json`, {
@@ -1804,11 +1842,16 @@ async function generateExportText() {
                 reportStunCity = geoData.city || '';
             }
         } catch (e) { /* GeoIP lookup failed */ }
-        // Different countries = proxy; same country = CGNAT
+        // Different countries = proxy / split-path
         if (reportStunCountry && reportHttpCountry &&
             reportStunCountry.toUpperCase() !== reportHttpCountry.toUpperCase()) {
             reportIsSplitPath = true;
         }
+        // IPv4 vs IPv6 = dual-stack (most common explanation when on UK/EU broadband)
+        reportIsDualStack = (isIpv6(reportHttpIp) && isIpv4(reportStunIp))
+                         || (isIpv4(reportHttpIp) && isIpv6(reportStunIp));
+        // Definitive CGNAT signal: traceroute hops in 100.64.0.0/10
+        reportCgnHops = findCgnHopsInTraceroute(results);
     }
 
     if (tcpTls || tcpDns || tcpVpn || (reportHttpIp && reportStunIp)) {
@@ -1847,8 +1890,14 @@ async function generateExportText() {
                 lines.push(`    ⚠ Split-path:         Proxy / split-path routing detected`);
                 lines.push(`                          HTTP: ${reportHttpIp} [${reportHttpCity}, ${reportHttpCountry}]`);
                 lines.push(`                          STUN: ${reportStunIp} [${reportStunCity}, ${reportStunCountry}]`);
+            } else if (reportIsDualStack) {
+                lines.push(`    ✓ Dual-stack:         IPv4 + IPv6 in use (HTTP via one, STUN via the other) — normal`);
+                lines.push(`                          HTTP: ${reportHttpIp}  ·  STUN: ${reportStunIp}`);
+            } else if (reportCgnHops.length > 0) {
+                lines.push(`    ⚠ CGNAT confirmed:    Traceroute shows CGN hop(s): ${reportCgnHops.join(', ')}`);
             } else {
-                lines.push(`    ✓ Split-path:         No proxy detected (CGNAT: different IPs, same country)`);
+                lines.push(`    ℹ Different egress:   HTTP and UDP exit via different IPs — no CGN hops or proxy detected`);
+                lines.push(`                          HTTP: ${reportHttpIp}  ·  STUN: ${reportStunIp}`);
             }
         }
     } else {
@@ -1858,13 +1907,10 @@ async function generateExportText() {
     lines.push('');
 
     // 7. TURN (UDP) Security Report
-    // Detect CGNAT in text report too
-    let reportIsCgnat = false;
-    if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp &&
-        reportStunCountry && reportHttpCountry &&
-        reportStunCountry.toUpperCase() === reportHttpCountry.toUpperCase()) {
-        reportIsCgnat = true;
-    }
+    // CGNAT in this section is keyed off traceroute evidence only — the old
+    // "different IPs, same country" heuristic mis-classified dual-stack and
+    // multi-egress ISP customers as CGNAT.
+    const reportIsCgnat = reportCgnHops.length > 0;
 
     const turnTls = r('L-UDP-06');
     const turnVpn = r('L-UDP-07');
@@ -1920,13 +1966,16 @@ async function generateExportText() {
             const natR = r('B-UDP-02');
             const natType = natR?.resultValue || '';
             const isSymmetric = natType.toLowerCase().includes('symmetric');
+            const cgnEvidence = `Traceroute hops in 100.64.0.0/10: ${reportCgnHops.join(', ')}`;
             if (isSymmetric) {
-                lines.push(`    ⚠ CGNAT:              Carrier-Grade NAT detected — Symmetric NAT confirmed`);
+                lines.push(`    ⚠ CGNAT:              Carrier-Grade NAT confirmed — Symmetric NAT`);
+                lines.push(`                          ${cgnEvidence}`);
                 lines.push(`                          STUN hole-punching unavailable; RDP Shortpath will use TURN relay`);
             } else if (natR && natR.status === 'Passed') {
-                lines.push(`    ✓ CGNAT:              Detected but NAT mapping is Cone — STUN should work`);
+                lines.push(`    ✓ CGNAT:              Detected (${cgnEvidence}) but NAT mapping is Cone — STUN should work`);
             } else {
-                lines.push(`    ⚠ CGNAT:              Carrier-Grade NAT detected — may limit STUN connectivity`);
+                lines.push(`    ⚠ CGNAT:              Carrier-Grade NAT confirmed — may limit STUN connectivity`);
+                lines.push(`                          ${cgnEvidence}`);
                 lines.push(`                          RDP Shortpath may fall back to TURN relay`);
             }
         }
@@ -3093,28 +3142,51 @@ async function updateKeyFindings(results) {
                     add('kf-info', 'Split Routing',
                         `UDP traffic routed via ${esc(stunProvider)}`,
                         `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg || 'direct')}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
-                } else if (stunCountry && httpCountry &&
-                    stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                    // Same country, same or unknown org — CGNAT
-                    const natVal = (natType?.resultValue || '').toLowerCase();
-                    if (natVal.includes('symmetric')) {
-                        add('kf-issue', 'CGNAT', 'Carrier-Grade NAT detected — Symmetric NAT confirmed',
-                            'STUN hole-punching unavailable; RDP Shortpath will use TURN relay');
-                    } else {
-                        add('kf-info', 'CGNAT', 'Carrier-Grade NAT detected — NAT traversal still possible',
-                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)} (same country)`);
-                    }
-                } else if (stunCountry && httpCountry) {
-                    // Different countries — split-path proxy
-                    add('kf-error', 'Split Routing',
-                        `🔺 TCP/UDP taking different paths — HTTP proxy or SWG likely`,
-                        `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
                 } else {
-                    // GeoIP incomplete — report what we know
-                    const orgHint = stunOrg ? ` (${esc(stunOrg)})` : '';
-                    add('kf-info', 'Split Routing',
-                        `Different egress IPs detected${stunOrg ? '' : ' (may be CGNAT)'}`,
-                        `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}${orgHint}`);
+                    // No SWG vendor identified — work out what the difference actually is.
+                    // Order of evidence from strongest to weakest:
+                    //   1. Traceroute hops in 100.64.0.0/10 → CGNAT confirmed
+                    //   2. IPv4 vs IPv6 → dual-stack (informational only)
+                    //   3. Same country, same family, no CGN evidence → different egress paths
+                    //   4. Different countries → split-path proxy
+                    const cgnHops = findCgnHopsInTraceroute(results);
+                    const dualStack = (isIpv6(httpEgressIp) && isIpv4(stunReflexiveIp))
+                                   || (isIpv4(httpEgressIp) && isIpv6(stunReflexiveIp));
+
+                    if (cgnHops.length > 0) {
+                        const natVal = (natType?.resultValue || '').toLowerCase();
+                        if (natVal.includes('symmetric')) {
+                            add('kf-issue', 'CGNAT', 'Carrier-Grade NAT confirmed — Symmetric NAT',
+                                `Traceroute shows CGN hop(s): ${esc(cgnHops.join(', '))}. STUN hole-punching unavailable; RDP Shortpath will use TURN relay.`);
+                        } else {
+                            add('kf-info', 'CGNAT', 'Carrier-Grade NAT detected — NAT traversal still possible',
+                                `Traceroute shows CGN hop(s): ${esc(cgnHops.join(', '))}. NAT mapping is Cone — Shortpath should work.`);
+                        }
+                    } else if (dualStack) {
+                        // The most common cause of "different IPs" — browser used IPv6 for HTTP,
+                        // STUN used IPv4 for UDP. Not CGNAT, not a problem.
+                        add('kf-pass', 'Dual-stack network', 'IPv4 + IPv6 in use ' + tag('pass', 'Normal'),
+                            `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg) || 'IPv6'}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg) || 'IPv4'})`);
+                    } else if (stunCountry && httpCountry &&
+                               stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
+                        // Same country, same family, no CGN hops, no SWG vendor.
+                        // Most often: separate v4 egress points within one ISP, or a load-balanced
+                        // dual-WAN setup. NOT enough evidence to call this CGNAT.
+                        add('kf-info', 'Different egress paths',
+                            'HTTP and UDP traffic exit via different IPs in the same country',
+                            `HTTP: ${esc(httpEgressIp)} · UDP: ${esc(stunReflexiveIp)}. No CGN hops in traceroute and no proxy/SWG vendor identified — likely two egress paths within your ISP. Not CGNAT.`);
+                    } else if (stunCountry && httpCountry) {
+                        // Different countries — split-path proxy
+                        add('kf-error', 'Split Routing',
+                            `\u{1F53A} TCP/UDP taking different paths — HTTP proxy or SWG likely`,
+                            `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
+                    } else {
+                        // GeoIP incomplete — report what we know without CGNAT speculation
+                        const orgHint = stunOrg ? ` (${esc(stunOrg)})` : '';
+                        add('kf-info', 'Different egress IPs',
+                            'HTTP and UDP traffic exit via different IPs (GeoIP incomplete)',
+                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}${orgHint}`);
+                    }
                 }
             }
         }
