@@ -2137,27 +2137,11 @@ async function sendResultsToIT() {
     if (critical > 0) statusLabel = `${critical} Critical Issue${critical > 1 ? 's' : ''}`;
     else if (warnings > 0) statusLabel = `${warnings} Warning${warnings > 1 ? 's' : ''}`;
 
-    // ── Rich summary for the email body ──
+    // Critical/warning details for the body
     const issueLines = exportResults
         .filter(r => r.status === 'Failed' || r.status === 'Error' || r.status === 'Warning')
-        .map(r => `  [${r.status.toUpperCase()}] ${r.id} ${r.name}: ${r.resultValue || ''}`.trimEnd())
+        .map(r => `  [${r.status.toUpperCase()}] ${r.name}: ${r.resultValue || ''}`.trimEnd())
         .join('\n');
-
-    // Pull a few headline diagnostics so IT can triage from the email alone.
-    const findResult = id => exportResults.find(r => r.id === id);
-    const headline = [];
-    const gw = findResult('L-TCP-09') || findResult('L-TCP-04');
-    if (gw && gw.resultValue) headline.push(`Gateway:    ${gw.resultValue}`);
-    const lat = findResult('18');
-    if (lat && lat.resultValue) headline.push(`Session RTT: ${lat.resultValue}`);
-    const jit = findResult('20');
-    if (jit && jit.resultValue) headline.push(`Jitter:     ${jit.resultValue}`);
-    const bw  = findResult('L-LE-07') || findResult('B-LE-03');
-    if (bw && bw.resultValue && bw.status !== 'Error') headline.push(`Bandwidth:  ${bw.resultValue}`);
-    const proxy = findResult('L-TCP-07');
-    if (proxy && proxy.resultValue) headline.push(`Proxy/VPN:  ${proxy.resultValue}`);
-    const tls = findResult('L-TCP-06');
-    if (tls && tls.resultValue) headline.push(`TLS Insp:   ${tls.resultValue}`);
 
     const titleText = `W365 Connectivity Results \u2014 ${machineName} \u2014 ${statusLabel} \u2014 ${dateStr}`;
     const bodyText =
@@ -2166,15 +2150,12 @@ async function sendResultsToIT() {
         `Device:   ${machineName}\n` +
         `Date:     ${dateStr}\n` +
         `Results:  ${critical} Critical, ${warnings} Warning, ${passed} Passed (${total} total)\n\n` +
-        (headline.length ? `Key diagnostics:\n${headline.map(l => '  ' + l).join('\n')}\n\n` : '') +
-        (issueLines ? `Issues found:\n${issueLines}\n\n` : 'No issues detected.\n\n') +
-        `For the full diagnostic JSON (per-test detail, traceroutes, certificate chains, etc.):\n` +
-        `  \u2022 The user can export it via the dashboard's "JSON" button and reply to this email with it attached, or\n` +
-        `  \u2022 Open the dashboard share link if one was generated.\n\n` +
-        `Tool: ${location.origin}${location.pathname}\n\n` +
+        (issueLines ? `Issues found:\n${issueLines}\n\n` : '') +
+        `Please find the full diagnostic JSON report attached (${filename}).\n\n` +
+        `To view the results, import the JSON file into the W365 Connectivity Tool web dashboard.\n\n` +
         `Regards`;
 
-    // Build JSON payload (still produced so Web Share API path can attach it).
+    // Build JSON payload
     const output = {
         timestamp: new Date().toISOString(),
         machineName,
@@ -2192,24 +2173,93 @@ async function sendResultsToIT() {
     const jsonBlob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
     const file = new File([jsonBlob], filename, { type: 'application/json' });
 
-    // 1) Try Web Share API first (mobile, Edge w/ file sharing). Carries attachment.
+    // Try Web Share API first (Edge/Chrome on Windows — auto-attaches file to Outlook/Teams/etc)
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try {
-            await navigator.share({ title: titleText, text: bodyText, files: [file] });
-            return; // Success
+            await navigator.share({
+                title: titleText,
+                text: bodyText,
+                files: [file]
+            });
+            return; // Success — user shared via OS share picker
         } catch (e) {
-            if (e.name === 'AbortError') return;
-            // Otherwise fall through to mailto.
+            if (e.name === 'AbortError') return; // User cancelled share picker
+            // Other error — fall through to download + mailto
         }
     }
 
-    // 2) Desktop fallback: open the user's mail client directly with mailto:.
-    //    No download. mailto cannot carry attachments (RFC) but the body now
-    //    contains a rich text summary that IT can triage from. The full JSON
-    //    is still one click away via the dashboard's "JSON" export button.
-    const subject = encodeURIComponent(titleText);
-    const body    = encodeURIComponent(bodyText);
-    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    // Fallback: generate an .eml file the user can open in their default mail
+    // client (Outlook / Apple Mail / Thunderbird). Unlike `mailto:`, .eml
+    // supports attachments — the JSON travels with the message draft.
+    const jsonBase64 = await blobToBase64(jsonBlob);
+    const boundary = `----=_W365_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+    // Encode subject as RFC 2047 to allow the en-dash and other non-ASCII chars.
+    const subjectHeader = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(titleText)))}?=`;
+
+    // Body: convert LF -> CRLF and use quoted-printable-safe 8bit (UTF-8 declared in headers).
+    const bodyCrlf = bodyText.replace(/\r?\n/g, '\r\n');
+
+    // Wrap base64 at 76 chars per RFC 2045.
+    const wrappedB64 = jsonBase64.match(/.{1,76}/g).join('\r\n');
+
+    const eml = [
+        `Subject: ${subjectHeader}`,
+        `X-Unsent: 1`, // Hint to Outlook: open as a draft, not a received message.
+        `To: `,
+        `MIME-Version: 1.0`,
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        ``,
+        `--${boundary}`,
+        `Content-Type: text/plain; charset="UTF-8"`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+        bodyCrlf,
+        ``,
+        `--${boundary}`,
+        `Content-Type: application/json; name="${filename}"`,
+        `Content-Disposition: attachment; filename="${filename}"`,
+        `Content-Transfer-Encoding: base64`,
+        ``,
+        wrappedB64,
+        ``,
+        `--${boundary}--`,
+        ``
+    ].join('\r\n');
+
+    const emlBlob = new Blob([eml], { type: 'message/rfc822' });
+    const emlName = filename.replace(/\.json$/, '.eml');
+    const url = URL.createObjectURL(emlBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = emlName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+
+    // Inform the user — opening the downloaded .eml launches their mail client
+    // with the JSON already attached as a draft.
+    setTimeout(() => {
+        alert(
+            `Email draft saved as ${emlName}.\n\n` +
+            `Open the downloaded file from your browser's downloads bar — it will launch your default mail client (Outlook / Apple Mail / Thunderbird) with the diagnostic JSON already attached.\n\n` +
+            `Address it to your IT team and send.`
+        );
+    }, 250);
+}
+
+// Helper: turn a Blob into a base64 string (no data: prefix).
+function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result;
+            resolve(dataUrl.slice(dataUrl.indexOf(',') + 1));
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════
