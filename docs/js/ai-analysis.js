@@ -238,22 +238,32 @@ function runAnalysisEngine(results) {
     }
 
     // ── 7. VPN / Proxy / SWG ──
+    // L-TCP-07 is authoritative: the scanner walks the routing table, finds the
+    // longest-prefix match for 40.64.144.0/20, 51.5.0.0/16 and the resolved RDP
+    // gateway IP, and reports whether the chosen interface IP belongs to a
+    // tunnel adapter. We key the verdict off the actual marker strings it emits
+    // rather than fuzzy substring matching against resultValue.
     const vpn = r('L-TCP-07');
-    if (vpn && vpn.status !== 'Passed' && vpn.status !== 'Skipped') {
-        const isVpn = vpn.resultValue.toLowerCase().includes('vpn');
-        let splitTunnel = false;
-        if (vpn.detailedInfo) {
-            splitTunnel = vpn.detailedInfo.toLowerCase().includes('routed direct') ||
-                          vpn.detailedInfo.toLowerCase().includes('split tunnel');
-        }
-        if (isVpn && !splitTunnel) {
-            findings.push(finding(SEV.WARNING, 'VPN detected \u2014 split tunnelling not confirmed',
-                `A VPN connection is active and split tunnelling for W365 traffic could not be confirmed. ${vpn.resultValue}`,
-                'Configure split tunnelling to exclude Windows 365 FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the VPN tunnel. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
-        } else if (isVpn && splitTunnel) {
+    if (vpn) {
+        const detail = (vpn.detailedInfo || '');
+        const resVal = (vpn.resultValue || '');
+        const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|routes via VPN interface/i.test(detail);
+        const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|VPN is active but RDP traffic correctly bypasses it|routes direct via/i.test(detail);
+        const vpnDetected = /VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
+
+        if (tunnelCarriesRdp) {
+            findings.push(finding(SEV.CRITICAL, 'VPN tunnel is carrying Windows 365 RDP traffic',
+                `The local routing table shows W365/AVD ranges or the resolved RDP gateway IP routing through a VPN/SASE tunnel adapter. ${resVal}`,
+                'Configure split tunnelling to exclude Windows 365 ranges (40.64.144.0/20 TCP/443 and 51.5.0.0/16 UDP/3478) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the VPN tunnel. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
+        } else if (vpnDetected && tunnelBypassesRdp) {
             findings.push(finding(SEV.INFO, 'VPN detected \u2014 correctly split-tunnelled',
-                'A VPN is active but Windows 365 traffic appears to be routed directly (not through the tunnel). This is the recommended configuration.',
+                'A VPN/SASE adapter is active, but the local routing table confirms Windows 365 ranges and the RDP gateway IP route outside the tunnel. This is the recommended configuration.',
                 null));
+        } else if (vpnDetected && vpn.status !== 'Passed' && vpn.status !== 'Skipped') {
+            // VPN present, route-table evidence inconclusive
+            findings.push(finding(SEV.WARNING, 'VPN detected \u2014 split tunnelling not confirmed',
+                `A VPN connection is active and route-table evidence for W365 traffic is inconclusive. ${resVal}`,
+                'Configure split tunnelling to exclude Windows 365 FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the VPN tunnel. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
         }
     }
     const vpnPerf = r('24');
@@ -265,15 +275,20 @@ function runAnalysisEngine(results) {
     }
 
     // ── 8. Proxy / SWG detection from DNS routing ──
+    // If a SWG vendor appears in B-TCP-04 DNS routing AND a route-table verdict
+    // already fired in section 7 above (CRITICAL or INFO bypass), don't double-
+    // up. Only emit the generic INFO when section 7 was silent.
     const dnsRoute = r('B-TCP-04');
     if (dnsRoute && dnsRoute.detailedInfo) {
         const detail = dnsRoute.detailedInfo.toLowerCase();
         const swgNames = ['zscaler', 'netskope', 'globalsecureaccess', 'cloudflare-gateway', 'swg', 'menlo'];
         const detectedSwg = swgNames.find(s => detail.includes(s));
-        if (detectedSwg) {
+        const alreadyHandled = findings.some(f =>
+            /carrying Windows 365 RDP traffic|correctly split-tunnelled|split tunnelling not confirmed/i.test(f.title));
+        if (detectedSwg && !alreadyHandled) {
             findings.push(finding(SEV.INFO, `Secure Web Gateway detected (${detectedSwg})`,
-                'Traffic is routing through a cloud security service.',
-                'Ensure Windows 365 endpoints are in the SWG bypass list for optimal performance.'));
+                'A SWG vendor name appears in DNS resolution chains for Windows 365 endpoints. The route-table check (L-TCP-07) did not produce a definitive verdict on whether RDP traffic transits the SWG.',
+                'Verify L-TCP-07 details and confirm Windows 365 endpoints are in the SWG bypass/direct policy.'));
         }
         // Private Link
         if (detail.includes('privatelink') && (detail.includes('10.') || detail.match(/172\.(1[6-9]|2\d|3[01])/) || detail.includes('192.168.'))) {
@@ -718,26 +733,47 @@ function runAnalysisEngine(results) {
     }
 
     // Correlation 10: TLS inspection + specific proxy vendor correlation
-    // Combine TLS detection with identified proxy vendor for actionable guidance
+    // Only fires when the TLS test ITSELF reports inspection (resultValue
+    // contains "TLS inspection detected") OR the cert-chain detail names a
+    // SWG vendor. Previously this would fire on any non-Passed TLS test
+    // combined with a vendor name in the ISP string, which mis-attributed
+    // unrelated TLS handshake failures (port blocks, expired certs, timeouts)
+    // as vendor-driven SSL inspection.
     const browserIsp = r('B-LE-02');
-    const tlsTests = [r('L-TCP-06'), r('L-UDP-06'), r('25')].filter(t => t && t.status !== 'Passed' && t.status !== 'Skipped');
-    if (tlsTests.length > 0 && browserIsp) {
-        const ispVal = (browserIsp.resultValue || '').toLowerCase();
-        const allTlsDetail = tlsTests.map(t => (t.detailedInfo || t.resultValue || '')).join(' ').toLowerCase();
+    const tlsTestsAll = [r('L-TCP-06'), r('L-UDP-06'), r('25')].filter(Boolean);
+    const tlsInspected = tlsTestsAll.filter(t => {
+        const rv = (t.resultValue || '').toLowerCase();
+        return rv.includes('tls inspection detected') || rv.includes('tls-intercept');
+    });
+    if (tlsInspected.length > 0) {
+        const ispVal = (browserIsp && browserIsp.resultValue || '').toLowerCase();
+        const allTlsDetail = tlsInspected.map(t => (t.detailedInfo || t.resultValue || '')).join(' ').toLowerCase();
         const vendorMap = {
             'zscaler':   { name: 'Zscaler',   guide: 'In ZIA, go to Administration > SSL Inspection Policy, add *.wvd.microsoft.com and *.avd.microsoft.com to the bypass list. Also bypass 40.64.144.0/20 and 51.5.0.0/16 by destination IP. See: https://techcommunity.microsoft.com/discussions/windows365discussions/optimizing-rdp-connectivity-for-windows-365/3554327' },
             'netskope':  { name: 'Netskope',  guide: 'In the Netskope admin console, add *.wvd.microsoft.com and *.avd.microsoft.com to the SSL Do Not Decrypt policy. Bypass 40.64.144.0/20 and 51.5.0.0/16.' },
             'palo alto': { name: 'Palo Alto', guide: 'In Panorama/Prisma Access, add *.wvd.microsoft.com and *.avd.microsoft.com to the SSL Decryption exclusion list. Bypass 40.64.144.0/20 and 51.5.0.0/16.' },
             'forcepoint':{ name: 'Forcepoint',guide: 'Add *.wvd.microsoft.com and *.avd.microsoft.com to the SSL inspection bypass list in your Forcepoint policy. Bypass 40.64.144.0/20 and 51.5.0.0/16.' }
         };
-        const detectedVendor = Object.keys(vendorMap).find(v => ispVal.includes(v) || allTlsDetail.includes(v));
+        // Prefer evidence found IN the cert chain (allTlsDetail) over the ISP
+        // hint, which only proves the vendor handles the IP-info HTTPS request.
+        const vendorInChain = Object.keys(vendorMap).find(v => allTlsDetail.includes(v));
+        const vendorInIsp = Object.keys(vendorMap).find(v => ispVal.includes(v));
+        const detectedVendor = vendorInChain || vendorInIsp;
         if (detectedVendor) {
             const vendor = vendorMap[detectedVendor];
+            const evidenceNote = vendorInChain
+                ? `${vendor.name} appears in the intercepted certificate chain.`
+                : `The TLS test detected interception; ${vendor.name} is on the HTTPS egress path (B-LE-02). Vendor attribution is inferred, not proven by the chain.`;
             findings.push(finding(SEV.CRITICAL,
                 `${vendor.name} is TLS-inspecting W365 RDP traffic`,
-                `${vendor.name} is intercepting and re-signing TLS certificates for Windows 365 gateway and/or TURN relay connections. `
-                + 'Microsoft does not support TLS inspection of RDP traffic — it adds latency and jitter with no security benefit, since RDP uses nested TLS encryption.',
+                `${evidenceNote} Microsoft does not support TLS inspection of RDP traffic — it adds latency and jitter with no security benefit, since RDP uses nested TLS encryption.`,
                 vendor.guide));
+        } else {
+            // TLS inspection confirmed but vendor unidentified — still surface it
+            findings.push(finding(SEV.CRITICAL,
+                'TLS inspection of W365 RDP traffic detected',
+                'A TLS-intercepting proxy is re-signing certificates for Windows 365 gateway and/or TURN relay connections. The specific vendor could not be identified from the certificate chain.',
+                'Identify the inspection device and add *.wvd.microsoft.com, *.infra.windows365.microsoft.com and turn.azure.com to its SSL bypass list.'));
         }
     }
 
