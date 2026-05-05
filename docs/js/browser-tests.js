@@ -1006,7 +1006,10 @@ async function testConnectionSpeed(test) {
     }
 
     if (!best) {
-        return makeResult(test, 'Warning', 'Speed test failed — could not download test files',
+        // Zero successful samples = the browser couldn't download any of the
+        // probe files. That is a hard connectivity problem, not a soft slow-link
+        // warning — surfacing it as Warning trains users to ignore it.
+        return makeResult(test, 'Failed', 'Speed test failed — no probe download succeeded',
             lines.join('\n'), duration, EndpointConfig.docs.bandwidth);
     }
 
@@ -1249,11 +1252,25 @@ async function testDnsPerformance(test) {
     const detail = results.map(r => `${r.host}: ${r.time}ms (${r.status})`).join('\n') +
         '\n\nNote: Timing includes DNS + TCP + TLS. For pure DNS timing, use the Local Scanner.';
 
+    // Verdict tiers:
+    //   - 0 of N hosts reachable  → Failed   (hard connectivity problem, not a soft slow-DNS warning)
+    //   - some reachable, avg>500 → Warning  (slow DNS+TCP+TLS path)
+    //   - some reachable, partial → Warning  (selective blocking — DNS or SWG dropping a subset)
+    //   - all reachable, avg<=500 → Passed
     let status = 'Passed';
-    if (avg < 0) status = 'Warning';
-    else if (avg > 500) status = 'Warning';
-
-    const value = avg > 0 ? `Avg ${avg}ms (DNS+TCP+TLS) across ${valid.length} endpoints` : 'Could not measure';
+    let value;
+    if (valid.length === 0) {
+        status = 'Failed';
+        value = `All ${results.length} endpoints unreachable`;
+    } else if (valid.length < results.length) {
+        status = 'Warning';
+        value = `Avg ${avg}ms across ${valid.length}/${results.length} endpoints (${results.length - valid.length} unreachable)`;
+    } else if (avg > 500) {
+        status = 'Warning';
+        value = `Avg ${avg}ms (DNS+TCP+TLS) across ${valid.length} endpoints`;
+    } else {
+        value = `Avg ${avg}ms (DNS+TCP+TLS) across ${valid.length} endpoints`;
+    }
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.dnsConfig);
 }
 
@@ -1370,9 +1387,16 @@ async function testNatType(test) {
                 natType = 'STUN OK — likely Cone NAT';
                 status = 'Passed';
             } else {
-                // Multiple reflexive IPs — could be Symmetric or multi-egress
-                natType = 'STUN OK — multiple egress IPs';
-                status = 'Passed';
+                // Multiple reflexive IPs from different STUN servers in browser
+                // mode is ambiguous: it could be benign multi-egress (load-balanced
+                // ISP) or it could be Symmetric NAT, which BREAKS Shortpath. The
+                // browser cannot distinguish them — separate sockets per server,
+                // dual-stack, and per-flow ECMP all look the same. Don't claim
+                // "Passed" with confidence; mark Warning and point users at
+                // L-UDP-05 (single-socket two-server test) for the authoritative
+                // classification.
+                natType = 'STUN OK — multiple egress IPs (NAT type unconfirmed)';
+                status = 'Warning';
             }
 
             detail += 'Server-reflexive candidates:\n';

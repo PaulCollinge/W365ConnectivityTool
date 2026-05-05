@@ -802,11 +802,20 @@ function runAnalysisEngine(results) {
         const detectedVendor = vendorInChain || vendorInIsp;
         if (detectedVendor) {
             const vendor = vendorMap[detectedVendor];
+            // Only state the vendor *is* inspecting RDP when the vendor's name
+            // appears in the actual intercepted certificate chain. If we only
+            // saw the vendor in B-LE-02 (ISP string), that proves the HTTPS
+            // egress path goes via that vendor's PoP — it does NOT prove that
+            // vendor is the one re-signing the RDP TLS handshake. Title must
+            // match the strength of the underlying signal.
             const evidenceNote = vendorInChain
                 ? `${vendor.name} appears in the intercepted certificate chain.`
-                : `The TLS test detected interception; ${vendor.name} is on the HTTPS egress path (B-LE-02). Vendor attribution is inferred, not proven by the chain.`;
+                : `The TLS test detected interception; ${vendor.name} is on the HTTPS egress path (B-LE-02). Vendor attribution is inferred from the ISP string, not proven by the certificate chain — the inspector could be a different device on the path.`;
+            const title = vendorInChain
+                ? `${vendor.name} is TLS-inspecting W365 RDP traffic`
+                : `Possible TLS inspection by ${vendor.name} (vendor inferred from ISP)`;
             findings.push(finding(SEV.CRITICAL,
-                `${vendor.name} is TLS-inspecting W365 RDP traffic`,
+                title,
                 `${evidenceNote} Microsoft does not support TLS inspection of RDP traffic — it adds latency and jitter with no security benefit, since RDP uses nested TLS encryption.`,
                 vendor.guide));
         } else {
