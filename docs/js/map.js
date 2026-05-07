@@ -2201,31 +2201,44 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
 
         // Try to extract a specific local-VPN product name from the test detail so
         // we can say "Cisco AnyConnect" instead of generic "VPN".
+        // IMPORTANT: exclude Windows transition pseudo-interfaces (Teredo / isatap /
+        // 6to4) — they show up as adapters but are NOT VPN tunnels. The scanner
+        // (v1.12.4+) filters them out, but older scanner builds will still surface
+        // them in the detail text, so we double-filter here as a safety net.
         let localVpnLabel = '';
+        const TRANSITION_RE = /\b(Teredo|isatap|6to4)\b/i;
         if (tcpVpn) {
             const txt = (tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || '');
             const m = txt.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP|Tailscale|Teleport|WireGuard)/i);
             if (m) localVpnLabel = m[1];
             else if (/VPN adapter detected:\s*([^\n]+)/i.test(txt)) {
                 const a = txt.match(/VPN adapter detected:\s*([^\n]+)/i);
-                if (a) localVpnLabel = a[1].trim().replace(/\s*\(.*\)\s*$/, '');
+                if (a) {
+                    const candidate = a[1].trim().replace(/\s*\(.*\)\s*$/, '');
+                    if (!TRANSITION_RE.test(candidate)) localVpnLabel = candidate;
+                }
             } else if (/VPN is active/i.test(txt)) {
                 localVpnLabel = 'VPN';
             }
         }
 
-        if (tcpBypass && (localVpnLabel || saseProvider)) {
-            const product = localVpnLabel || saseProvider;
+        // Headline product: prefer a real SASE provider over a local-VPN-adapter
+        // label. The SASE provider is detected from the actual public egress ISP,
+        // which is the strongest available signal; a VPN adapter line only proves
+        // an interface exists, not that it's the path traffic takes.
+        const headlineProduct = saseProvider || localVpnLabel;
+        if (tcpBypass && headlineProduct) {
             const parts = [];
             parts.push(`<span class="vpn-sum-icon">\u2705</span>`);
-            parts.push(`<span class="vpn-sum-title">${escapeHtml(product)} detected, but RDP traffic correctly bypasses it</span>`);
+            parts.push(`<span class="vpn-sum-title">${escapeHtml(headlineProduct)} detected, but RDP traffic correctly bypasses it</span>`);
             parts.push(`<span class="vpn-sum-sep">\u2192</span>`);
             parts.push(`<span class="vpn-sum-chip vpn-sum-chip-good">\u2713 RDP / TURN \u2014 direct via Azure backbone</span>`);
+            // Secondary chip: only add if it carries different information from the headline.
             if (saseProvider && localVpnLabel && saseProvider.toLowerCase() !== localVpnLabel.toLowerCase()) {
-                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${escapeHtml(saseProvider)}</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 ${escapeHtml(localVpnLabel)} adapter also present</span>`);
             } else if (saseProvider && !localVpnLabel) {
                 parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${escapeHtml(saseProvider)}</span>`);
-            } else if (localVpnLabel) {
+            } else if (localVpnLabel && !saseProvider) {
                 parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic may use the ${escapeHtml(localVpnLabel)} tunnel</span>`);
             }
             el.className = 'map-vpn-summary ok';
