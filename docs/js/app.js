@@ -1118,9 +1118,37 @@ function processImportedData(data) {
     }).filter(Boolean);
     if (skipped.length > 0) ilog('Skipped ' + skipped.length + ' invalid result entries during import');
 
-    // Detect Cloud PC vs AVD session host
-    const isCloudPcImport = data.scanMode === 'cloudpc';
+    // Detect Cloud PC vs AVD session host. The top-level scanMode field is
+    // present on raw scanner JSON, but the dashboard's own "Export Results"
+    // file drops it — so we also infer CPC origin from the results array
+    // (presence of any C-* test or cloudpc-categorised entry). Otherwise a
+    // re-imported dashboard export would be treated as a regular client scan
+    // and the CPC's own browser-tagged B-LE-01/B-LE-02 entries (run inside
+    // the CPC) would pollute the "This Device" / "ISP" cards on the importer's
+    // laptop. Either signal is sufficient.
+    const isCloudPcImport = data.scanMode === 'cloudpc'
+        || localResults.some(r => /^C-/.test(String(r.id || '')))
+        || localResults.some(r => (r.category || '').toLowerCase() === 'cloudpc'
+            || (r.source || '').toLowerCase() === 'cloudpc');
     if (isCloudPcImport) {
+        // Re-key any stale browser-tagged B-* entries to their C-* equivalents.
+        // These were produced by the W365 page running inside the CPC's own
+        // browser, so although they're tagged `source: browser`, they describe
+        // the CPC, not the importing laptop. Without this remap the CPC's
+        // location/IP/ISP appears as the user's device on the map.
+        let rekeyed = 0;
+        localResults = localResults.map(lr => {
+            const id = String(lr.id || '');
+            const target = BROWSER_TO_CPC_ID[id];
+            if (!target) return lr;
+            // If a real C-* entry for the same logical test is also present,
+            // drop the duplicate B-* one rather than overwriting.
+            const haveC = localResults.some(o => String(o.id) === target && o !== lr);
+            if (haveC) { rekeyed++; return null; }
+            rekeyed++;
+            return { ...lr, id: target, source: 'cloudpc', category: 'cloudpc' };
+        }).filter(Boolean);
+        if (rekeyed > 0) ilog('Re-keyed ' + rekeyed + ' B-* entries from CPC import to C-* (these described the CPC, not the importer)');
         // Read hostType from scanner output (cloudpc, avd, or absent for older builds)
         if (data.hostType === 'avd') {
             hostType = 'avd';
