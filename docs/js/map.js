@@ -2222,11 +2222,11 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
             parts.push(`<span class="vpn-sum-sep">\u2192</span>`);
             parts.push(`<span class="vpn-sum-chip vpn-sum-chip-good">\u2713 RDP / TURN \u2014 direct via Azure backbone</span>`);
             if (saseProvider && localVpnLabel && saseProvider.toLowerCase() !== localVpnLabel.toLowerCase()) {
-                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet via ${escapeHtml(saseProvider)}</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${escapeHtml(saseProvider)}</span>`);
             } else if (saseProvider && !localVpnLabel) {
-                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet via ${escapeHtml(saseProvider)}</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${escapeHtml(saseProvider)}</span>`);
             } else if (localVpnLabel) {
-                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic uses the ${escapeHtml(localVpnLabel)} tunnel</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic may use the ${escapeHtml(localVpnLabel)} tunnel</span>`);
             }
             el.className = 'map-vpn-summary ok';
             el.innerHTML = parts.join(' ');
