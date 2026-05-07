@@ -1930,45 +1930,8 @@ function updateMapAzureCard(lookup) {
             if (dot) dot.setAttribute('fill', '#3fb950');
             if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
         }
-    }
-
-    // ── SASE / proxy ISP indicator ──
-    // If the CPC's general-internet egress is via a SASE/proxy provider
-    // (Zscaler, Netskope, Cloudflare Gateway, etc.) AND the RDP/TURN tests
-    // confirm RDP routes direct, surface that explicitly. Without this, the
-    // ASN line on the Azure card just shows "AS22616 ZSCALER, INC." with no
-    // context, which makes it look like RDP itself flows via Zscaler.
-    const badge = document.getElementById('map-vpn-badge');
-    if (badge) {
-        const SASE_PROVIDERS = /(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i;
-        const ispText = (net && net.status === 'Passed') ? (net.resultValue || '') : '';
-        const isSase = SASE_PROVIDERS.test(ispText);
-
-        // Authoritative bypass evidence from the route-table check.
-        const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
-        const udpVpn = lookup['C-UDP-07'] || lookup['L-UDP-07'];
-        const bypassRegex = /No W365\/AVD service traffic goes through the VPN tunnel|RDP traffic correctly bypasses it|UDP\/TURN traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i;
-        const tcpBypass = tcpVpn && tcpVpn.status === 'Passed' && bypassRegex.test((tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || ''));
-        const udpBypass = udpVpn && udpVpn.status === 'Passed' && bypassRegex.test((udpVpn.detailedInfo || '') + ' ' + (udpVpn.resultValue || ''));
-
-        // updateMapVpnOverlay runs AFTER this function and owns the warning
-        // state. Replicate its trigger condition so we don't paint an info
-        // badge that the overlay would immediately overwrite.
-        const willWarn = (tcpVpn && tcpVpn.status === 'Warning') || (udpVpn && udpVpn.status === 'Warning');
-        if (isSase && tcpBypass && !willWarn) {
-            const m = ispText.match(SASE_PROVIDERS);
-            const provider = m ? (m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()) : 'SASE';
-            const udpNote = udpBypass ? '' : '';
-            badge.textContent = `✓ Internet via ${provider} · RDP routes direct${udpNote}`;
-            badge.title = 'General internet from this Cloud PC egresses via the corporate SASE/proxy. RDP and TURN traffic bypass it (route-table verified).';
-            badge.className = 'map-vpn-badge info-active';
-            // Re-label detail2 so the ASN doesn't read as if it's the Azure backbone.
-            if (detail2 && net && net.resultValue) detail2.textContent = `Internet egress: ${net.resultValue}`;
-        } else if (!willWarn) {
-            // No SASE detected and no warning — keep badge hidden.
-            badge.className = 'map-vpn-badge hidden';
-            badge.textContent = '';
-        }
+        // Re-label so the ASN doesn't read like the Azure backbone ASN.
+        if (detail2) detail2.textContent = `Internet egress: ${net.resultValue}`;
     }
 
     // Overall status based on egress check
@@ -2142,6 +2105,27 @@ function updateMapVpnOverlay(lookup) {
 
         // Remove tunnel labels
         document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
+
+        // ── SASE / proxy info badge ──
+        // No VPN warning was raised, so we own the badge here. If the CPC's
+        // general-internet egress (C-LE-02) is via a known SASE provider AND
+        // C-TCP-07 confirms RDP routes direct, paint a green info pill so the
+        // user can see at a glance that Zscaler/Netskope/etc. is in the path
+        // for general internet but NOT for RDP. Without this, the ASN line
+        // on the Azure card reads ambiguously.
+        const net = lookup['C-LE-02'] || lookup['B-LE-02'];
+        const ispText = (net && net.status === 'Passed') ? (net.resultValue || '') : '';
+        const SASE_PROVIDERS = /(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i;
+        const isSase = SASE_PROVIDERS.test(ispText);
+        const bypassRegex = /No W365\/AVD service traffic goes through the VPN tunnel|RDP traffic correctly bypasses it|UDP\/TURN traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i;
+        const tcpBypass = tcpVpn && tcpVpn.status === 'Passed' && bypassRegex.test((tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || ''));
+        if (isSase && tcpBypass) {
+            const m = ispText.match(SASE_PROVIDERS);
+            const provider = m ? (m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()) : 'SASE';
+            badge.textContent = `✓ Internet via ${provider} · RDP routes direct`;
+            badge.title = 'General internet from this Cloud PC egresses via the corporate SASE/proxy. RDP and TURN traffic bypass it (route-table verified).';
+            badge.className = 'map-vpn-badge info-active';
+        }
     }
 
     // ── Summary banner under the map ──
