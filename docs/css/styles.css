@@ -1548,6 +1548,16 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
     display: block;
     animation: vpnPulse 2.5s ease-in-out infinite;
 }
+.map-vpn-badge.info-active {
+    /* Used when a SASE/proxy ISP is detected for general-internet egress but
+       RDP and TURN are confirmed to route direct — this is the supported
+       split-tunnel pattern, not a problem. Green, no pulse. */
+    display: block;
+    background: rgba(63, 185, 80, 0.12);
+    color: #3fb950;
+    border-color: rgba(63, 185, 80, 0.3);
+    animation: none;
+}
 @keyframes vpnPulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(210,153,34,0.3); }
     50% { box-shadow: 0 0 8px 2px rgba(210,153,34,0.25); }
