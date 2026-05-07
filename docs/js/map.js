@@ -363,7 +363,18 @@ function updateMapClientCard(lookup, isSatellite) {
     let publicIp = '';
     let status = 'NotRun';
 
-    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+    // In client mode the "This device" card represents the actual machine the
+    // browser is running on — only B-LE-01 measures that. C-LE-01 describes the
+    // Cloud PC and must NOT back-fill this card when the user has imported a
+    // CPC-only JSON into their own tab; otherwise the left pane shows the CPC's
+    // egress and labels it "This Device", which is misleading.
+    // In CPC mode the page itself is being viewed from inside the CPC, so the
+    // CPC's own location IS "this device" and the fallback is correct.
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
+    const userLoc = isCpcMode
+        ? (lookup['B-LE-01'] || lookup['C-LE-01'])
+        : lookup['B-LE-01'];
+
     if (userLoc && userLoc.status !== 'NotRun') {
         location = userLoc.resultValue || '';
         status = userLoc.status;
@@ -545,8 +556,19 @@ function setIspLogo(ispName) {
 
 // ── ISP Card ──
 function updateMapIspCard(lookup) {
-    const isp = lookup['B-LE-02'] || lookup['C-LE-02'];
-    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+    // The ISP pill represents the ISP between THIS DEVICE and the W365 gateway.
+    // In client mode we must only use B-LE-02 (the actual device's egress ISP).
+    // C-LE-02 reports the CPC's general-internet egress ISP — if we fall back
+    // to it when only CPC data is loaded, the diagram makes it look like the
+    // client→gateway path goes via the CPC's ISP (e.g. "Zscaler"), even though
+    // RDP traffic on the CPC side has already been proven to route direct.
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
+    const isp = isCpcMode
+        ? (lookup['B-LE-02'] || lookup['C-LE-02'])
+        : lookup['B-LE-02'];
+    const userLoc = isCpcMode
+        ? (lookup['B-LE-01'] || lookup['C-LE-01'])
+        : lookup['B-LE-01'];
     if (!isp || isp.status === 'NotRun') {
         setText('map-isp-detail', 'Awaiting results...');
         setText('map-isp-detail2', '');
