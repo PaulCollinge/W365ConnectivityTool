@@ -1447,7 +1447,8 @@ html.early-cpc-mode .map-diagram { grid-template-rows: auto 8px auto 36px auto 8
 .map-internet-connector { display: flex; flex-direction: column; align-items: center; height: 100%; min-height: 32px; }
 .map-internet-arw { color: #79c0ff; font-size: 10px; line-height: 1; margin-top: -2px; }
 .map-internet-connector .map-vline { background: linear-gradient(180deg, transparent, rgba(121, 192, 255, 0.55), rgba(121, 192, 255, 0.55), transparent); }
-.device-internet-size { width: 64px; height: 36px; }
+.device-internet-size { width: 56px; }
+#map-internet .device-info { margin-top: 6px; }
 #map-internet .device-info .device-title { color: #79c0ff; }
 
 .map-diagram.has-cloudpc {
