@@ -363,18 +363,15 @@ function updateMapClientCard(lookup, isSatellite) {
     let publicIp = '';
     let status = 'NotRun';
 
-    // In client mode the "This device" card represents the actual machine the
-    // browser is running on — only B-LE-01 measures that. C-LE-01 describes the
-    // Cloud PC and must NOT back-fill this card when the user has imported a
-    // CPC-only JSON into their own tab; otherwise the left pane shows the CPC's
-    // egress and labels it "This Device", which is misleading.
-    // In CPC mode the page itself is being viewed from inside the CPC, so the
-    // CPC's own location IS "this device" and the fallback is correct.
-    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
-    const userLoc = isCpcMode
-        ? (lookup['B-LE-01'] || lookup['C-LE-01'])
-        : lookup['B-LE-01'];
-
+    // The "This Device" card is the machine the BROWSER is running on. Only
+    // B-LE-01 measures that. C-LE-01 describes the Cloud PC and is rendered
+    // separately by updateMapCloudPcCard — we must never alias the two, even
+    // when CPC mode is on, because cloudPcMode is set whenever a CPC JSON is
+    // imported (regardless of where the browser actually is). If B-LE-01
+    // hasn't run yet, leaving the card in the "Awaiting results" state is the
+    // honest answer; back-filling from C-LE-01 would mislabel the CPC's
+    // location/IP/ISP as the user's device.
+    const userLoc = lookup['B-LE-01'];
     if (userLoc && userLoc.status !== 'NotRun') {
         location = userLoc.resultValue || '';
         status = userLoc.status;
@@ -556,19 +553,15 @@ function setIspLogo(ispName) {
 
 // ── ISP Card ──
 function updateMapIspCard(lookup) {
-    // The ISP pill represents the ISP between THIS DEVICE and the W365 gateway.
-    // In client mode we must only use B-LE-02 (the actual device's egress ISP).
-    // C-LE-02 reports the CPC's general-internet egress ISP — if we fall back
-    // to it when only CPC data is loaded, the diagram makes it look like the
-    // client→gateway path goes via the CPC's ISP (e.g. "Zscaler"), even though
-    // RDP traffic on the CPC side has already been proven to route direct.
-    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
-    const isp = isCpcMode
-        ? (lookup['B-LE-02'] || lookup['C-LE-02'])
-        : lookup['B-LE-02'];
-    const userLoc = isCpcMode
-        ? (lookup['B-LE-01'] || lookup['C-LE-01'])
-        : lookup['B-LE-01'];
+    // The ISP pill represents the ISP between THIS DEVICE and the W365 path.
+    // Only B-LE-02 measures the actual browser device's egress ISP. C-LE-02
+    // describes the Cloud PC's general-internet egress — if we fall back to it
+    // (which used to happen automatically when the only data loaded was a CPC
+    // JSON), the diagram makes it look like the client→gateway path goes via
+    // the CPC's ISP (commonly Zscaler/SASE), even though the CPC's own routing
+    // table check has already proven RDP routes direct. Never alias the two.
+    const isp = lookup['B-LE-02'];
+    const userLoc = lookup['B-LE-01'];
     if (!isp || isp.status === 'NotRun') {
         setText('map-isp-detail', 'Awaiting results...');
         setText('map-isp-detail2', '');
