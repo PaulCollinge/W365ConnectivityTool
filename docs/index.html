@@ -23,7 +23,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=239">
+    <link rel="stylesheet" href="css/styles.css?v=240">
     <link rel="icon" href="images/w365-logo.png" type="image/png">
     <!--
       Bootstrap: read URL ASAP (before <body> renders) to decide whether this
@@ -479,6 +479,12 @@
                     <div class="device-info">
                         <div class="device-title" id="map-azure-title">Azure Network</div>
                         <div class="device-detail" id="map-azure-detail">Awaiting results...</div>
+                        <!-- Path 1: RDP / TURN — always over Microsoft Azure backbone when route table confirms direct -->
+                        <div class="map-path-pill hidden" id="map-azure-rdp-pill"></div>
+                        <!-- Path 2: General internet — only shown when a SASE/proxy ISP is detected.
+                             Visually distinct so users see this is a SEPARATE path, not the RDP path. -->
+                        <div class="map-path-pill hidden" id="map-azure-internet-pill"></div>
+                        <!-- Legacy single-line badge kept as fallback for VPN-detected warnings -->
                         <div class="device-detail" id="map-azure-detail2"></div>
                         <div class="map-vpn-badge hidden" id="map-vpn-badge"></div>
                     </div>
@@ -848,11 +854,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=239"></script>
-    <script src="js/browser-tests.js?v=239"></script>
-    <script src="js/ui.js?v=239"></script>
-    <script src="js/map.js?v=239"></script>
-    <script src="js/ai-analysis.js?v=239"></script>
-    <script src="js/app.js?v=239"></script>
+    <script src="js/config.js?v=240"></script>
+    <script src="js/browser-tests.js?v=240"></script>
+    <script src="js/ui.js?v=240"></script>
+    <script src="js/map.js?v=240"></script>
+    <script src="js/ai-analysis.js?v=240"></script>
+    <script src="js/app.js?v=240"></script>
 </body>
 </html>

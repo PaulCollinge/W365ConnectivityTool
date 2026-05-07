@@ -1924,14 +1924,15 @@ function updateMapAzureCard(lookup) {
 
     // Show org/ISP info
     if (net && net.status === 'Passed' && net.resultValue) {
-        if (detail2) detail2.textContent = net.resultValue;
+        // Don't render the ASN string into the legacy detail2 line — the two
+        // path pills below will show this instead, separately from the Azure
+        // backbone info, so it's unambiguous they describe different paths.
+        if (detail2) detail2.textContent = '';
         // Set status from ISP data when no egress check available
         if (!egress) {
             if (dot) dot.setAttribute('fill', '#3fb950');
             if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
         }
-        // Re-label so the ASN doesn't read like the Azure backbone ASN.
-        if (detail2) detail2.textContent = `Internet egress: ${net.resultValue}`;
     }
 
     // Overall status based on egress check
@@ -2060,6 +2061,13 @@ function updateMapVpnOverlay(lookup) {
         if (natDot) natDot.setAttribute('fill', '#d29922');
         if (natAccent) natAccent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
 
+        // Real VPN warning is in play \u2014 hide the two-path pills so they don't
+        // contradict the warning banner.
+        const rdpPill = document.getElementById('map-azure-rdp-pill');
+        const inetPill = document.getElementById('map-azure-internet-pill');
+        if (rdpPill) { rdpPill.className = 'map-path-pill hidden'; rdpPill.innerHTML = ''; }
+        if (inetPill) { inetPill.className = 'map-path-pill hidden'; inetPill.innerHTML = ''; }
+
         // Add VPN detail badge under the VPN Endpoint card
         const natBadgeContainer = natCard;
         if (natBadgeContainer && !natBadgeContainer.querySelector('.map-vpn-endpoint-badge')) {
@@ -2106,25 +2114,51 @@ function updateMapVpnOverlay(lookup) {
         // Remove tunnel labels
         document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
 
-        // ── SASE / proxy info badge ──
-        // No VPN warning was raised, so we own the badge here. If the CPC's
-        // general-internet egress (C-LE-02) is via a known SASE provider AND
-        // C-TCP-07 confirms RDP routes direct, paint a green info pill so the
-        // user can see at a glance that Zscaler/Netskope/etc. is in the path
-        // for general internet but NOT for RDP. Without this, the ASN line
-        // on the Azure card reads ambiguously.
+        // ── Two-path split on the Azure card ──
+        // No VPN warning was raised. Render the RDP / TURN path and (if
+        // applicable) the general-internet path as TWO separate pills so the
+        // user can see at a glance that RDP and general internet take
+        // different paths. Confused users mistook the previous single-card
+        // layout for "all traffic exits via Zscaler".
+        const rdpPill = document.getElementById('map-azure-rdp-pill');
+        const inetPill = document.getElementById('map-azure-internet-pill');
         const net = lookup['C-LE-02'] || lookup['B-LE-02'];
         const ispText = (net && net.status === 'Passed') ? (net.resultValue || '') : '';
         const SASE_PROVIDERS = /(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i;
         const isSase = SASE_PROVIDERS.test(ispText);
         const bypassRegex = /No W365\/AVD service traffic goes through the VPN tunnel|RDP traffic correctly bypasses it|UDP\/TURN traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i;
         const tcpBypass = tcpVpn && tcpVpn.status === 'Passed' && bypassRegex.test((tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || ''));
-        if (isSase && tcpBypass) {
-            const m = ispText.match(SASE_PROVIDERS);
-            const provider = m ? (m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()) : 'SASE';
-            badge.textContent = `✓ Internet via ${provider} · RDP routes direct`;
-            badge.title = 'General internet from this Cloud PC egresses via the corporate SASE/proxy. RDP and TURN traffic bypass it (route-table verified).';
-            badge.className = 'map-vpn-badge info-active';
+
+        if (rdpPill) {
+            if (tcpBypass) {
+                rdpPill.className = 'map-path-pill path-rdp';
+                rdpPill.innerHTML = '<span class="pp-icon">✓</span><span class="pp-text">'
+                    + '<span class="pp-label">RDP / TURN path</span>'
+                    + '<span class="pp-detail">Direct via Microsoft Azure backbone</span>'
+                    + '</span>';
+                rdpPill.title = 'Route-table check confirms W365 ranges (40.64.144.0/20, 51.5.0.0/16) and the RDP gateway IP route directly through the Cloud PC NIC — NOT through the SASE/proxy tunnel.';
+            } else {
+                rdpPill.className = 'map-path-pill hidden';
+                rdpPill.innerHTML = '';
+            }
+        }
+        if (inetPill) {
+            if (isSase) {
+                const m = ispText.match(SASE_PROVIDERS);
+                const provider = m ? (m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()) : 'SASE';
+                const asMatch = ispText.match(/AS\d+/i);
+                const asn = asMatch ? asMatch[0].toUpperCase() : '';
+                const detailLine = asn ? `${provider} (${asn}) — separate path` : `${provider} — separate path`;
+                inetPill.className = 'map-path-pill path-internet';
+                inetPill.innerHTML = '<span class="pp-icon">🌐</span><span class="pp-text">'
+                    + '<span class="pp-label">General internet</span>'
+                    + `<span class="pp-detail">${detailLine}</span>`
+                    + '</span>';
+                inetPill.title = `General-internet traffic from this Cloud PC egresses via ${provider}. This is a different path from RDP — RDP/TURN go direct (see the RDP pill above).`;
+            } else {
+                inetPill.className = 'map-path-pill hidden';
+                inetPill.innerHTML = '';
+            }
         }
     }
 
