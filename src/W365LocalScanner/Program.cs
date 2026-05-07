@@ -925,16 +925,30 @@ class Program
             "Wintun", "PANGP", "SoftEther", "Tunnel"
         };
 
+        // IPv6 transition pseudo-adapters that Windows installs by default. Their
+        // descriptions match the "Tunnel" keyword above (e.g. "Teredo Tunneling
+        // Pseudo-Interface") but they are NOT VPNs — flagging them as such caused
+        // false "VPN/SWG detected" verdicts on stock Cloud PCs / Windows machines.
+        var transitionExclusions = new[] { "Teredo", "isatap", "6to4" };
+
         return NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
             .Where(n =>
             {
+                var desc = n.Description ?? "";
+                var name = n.Name ?? "";
+
+                // Exclude IPv6 transition pseudo-adapters first — these match
+                // "Tunnel" but are not VPNs.
+                if (transitionExclusions.Any(k =>
+                        desc.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                    return false;
+
                 // PPP adapters are almost always VPN connections (Azure VPN, SSTP, IKEv2, L2TP, PPTP, RAS)
                 if (n.NetworkInterfaceType == NetworkInterfaceType.Ppp) return true;
 
                 // Check both Name and Description for known VPN keywords
-                var desc = n.Description ?? "";
-                var name = n.Name ?? "";
                 return keywords.Any(k =>
                     desc.Contains(k, StringComparison.OrdinalIgnoreCase) ||
                     name.Contains(k, StringComparison.OrdinalIgnoreCase));
