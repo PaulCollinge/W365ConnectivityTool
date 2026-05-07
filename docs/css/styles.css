@@ -1431,6 +1431,15 @@ main {
 .map-diagram .map-g-arrow4  { display: none; }
 .map-diagram .map-g-nat     { display: none; }
 .map-diagram .map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
+.map-diagram .map-g-internet-line { grid-column: 9; grid-row: 6; justify-self: center; align-self: stretch; z-index: 0; pointer-events: none; }
+.map-diagram .map-g-internet      { grid-column: 9; grid-row: 7; align-self: start; justify-self: center; }
+.map-diagram .map-g-internet-line.hidden,
+.map-diagram .map-g-internet.hidden { display: none !important; }
+.map-internet-connector { display: flex; flex-direction: column; align-items: center; height: 100%; min-height: 32px; }
+.map-internet-arw { color: #79c0ff; font-size: 10px; line-height: 1; margin-top: -2px; }
+.map-internet-connector .map-vline { background: linear-gradient(180deg, transparent, rgba(121, 192, 255, 0.55), rgba(121, 192, 255, 0.55), transparent); }
+.device-internet-size { width: 64px; height: 36px; }
+#map-internet .device-info .device-title { color: #79c0ff; }
 
 .map-diagram.has-cloudpc {
     grid-template-columns: 1fr 60px 1fr 60px 1fr 50px 1.2fr 50px 1fr 60px 1fr;

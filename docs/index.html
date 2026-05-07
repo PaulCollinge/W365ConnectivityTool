@@ -23,7 +23,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=240">
+    <link rel="stylesheet" href="css/styles.css?v=241">
     <link rel="icon" href="images/w365-logo.png" type="image/png">
     <!--
       Bootstrap: read URL ASAP (before <body> renders) to decide whether this
@@ -479,14 +479,40 @@
                     <div class="device-info">
                         <div class="device-title" id="map-azure-title">Azure Network</div>
                         <div class="device-detail" id="map-azure-detail">Awaiting results...</div>
-                        <!-- Path 1: RDP / TURN — always over Microsoft Azure backbone when route table confirms direct -->
+                        <!-- Path 1: RDP / TURN — always over Microsoft Azure backbone when route table confirms direct.
+                             The general-internet branch is rendered as a SEPARATE card below this one
+                             (see #map-internet) when a SASE/proxy ISP is detected for the CPC's egress IP. -->
                         <div class="map-path-pill hidden" id="map-azure-rdp-pill"></div>
-                        <!-- Path 2: General internet — only shown when a SASE/proxy ISP is detected.
-                             Visually distinct so users see this is a SEPARATE path, not the RDP path. -->
-                        <div class="map-path-pill hidden" id="map-azure-internet-pill"></div>
                         <!-- Legacy single-line badge kept as fallback for VPN-detected warnings -->
                         <div class="device-detail" id="map-azure-detail2"></div>
                         <div class="map-vpn-badge hidden" id="map-vpn-badge"></div>
+                    </div>
+                </div>
+
+                <!-- Internet egress branch: visually shows the SEPARATE general-internet path
+                     from Azure Network. Connector + card; hidden by default and only revealed
+                     when JS detects a SASE/proxy ISP on C-LE-02 with a clean RDP route-table check. -->
+                <div class="map-internet-connector map-g-internet-line hidden" id="map-internet-line">
+                    <div class="map-vline"></div><span class="map-internet-arw">▾</span>
+                </div>
+
+                <div class="map-client-device map-g-internet hidden" id="map-internet">
+                    <div class="device-laptop device-internet-size">
+                        <svg class="device-svg" viewBox="0 0 100 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <!-- Globe / internet -->
+                            <circle cx="50" cy="28" r="22" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <ellipse cx="50" cy="28" rx="22" ry="8" fill="none" stroke="#30363d" stroke-width="1"/>
+                            <ellipse cx="50" cy="28" rx="10" ry="22" fill="none" stroke="#30363d" stroke-width="1"/>
+                            <line x1="28" y1="28" x2="72" y2="28" stroke="#30363d" stroke-width="1"/>
+                            <line x1="50" y1="6" x2="50" y2="50" stroke="#30363d" stroke-width="1"/>
+                            <circle class="device-status-dot" id="device-internet-dot" cx="50" cy="28" r="2.5" fill="#484f58"/>
+                        </svg>
+                        <div class="device-accent" id="map-internet-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title">Internet egress</div>
+                        <div class="device-detail" id="map-internet-detail">—</div>
+                        <div class="device-detail" id="map-internet-detail2"></div>
                     </div>
                 </div>
 
@@ -854,11 +880,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=240"></script>
-    <script src="js/browser-tests.js?v=240"></script>
-    <script src="js/ui.js?v=240"></script>
-    <script src="js/map.js?v=240"></script>
-    <script src="js/ai-analysis.js?v=240"></script>
-    <script src="js/app.js?v=240"></script>
+    <script src="js/config.js?v=241"></script>
+    <script src="js/browser-tests.js?v=241"></script>
+    <script src="js/ui.js?v=241"></script>
+    <script src="js/map.js?v=241"></script>
+    <script src="js/ai-analysis.js?v=241"></script>
+    <script src="js/app.js?v=241"></script>
 </body>
 </html>

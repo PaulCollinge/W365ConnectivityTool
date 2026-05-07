@@ -2114,14 +2114,21 @@ function updateMapVpnOverlay(lookup) {
         // Remove tunnel labels
         document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
 
-        // ── Two-path split on the Azure card ──
-        // No VPN warning was raised. Render the RDP / TURN path and (if
-        // applicable) the general-internet path as TWO separate pills so the
-        // user can see at a glance that RDP and general internet take
-        // different paths. Confused users mistook the previous single-card
-        // layout for "all traffic exits via Zscaler".
+        // ── Two-path split ──
+        // No VPN warning was raised. Render RDP/TURN as a green pill on the
+        // Azure card AND, when a SASE provider is detected for the CPC's
+        // general-internet egress, reveal the dedicated Internet sidecar
+        // (#map-internet) below the Azure card with a downward connector.
+        // Confused users mistook the previous single-card layout for
+        // "all traffic exits via Zscaler" — the visual branch makes the
+        // two paths physically separate on the diagram.
         const rdpPill = document.getElementById('map-azure-rdp-pill');
-        const inetPill = document.getElementById('map-azure-internet-pill');
+        const inetCard = document.getElementById('map-internet');
+        const inetLine = document.getElementById('map-internet-line');
+        const inetDetail = document.getElementById('map-internet-detail');
+        const inetDetail2 = document.getElementById('map-internet-detail2');
+        const inetDot = document.getElementById('device-internet-dot');
+        const inetAccent = document.getElementById('map-internet-accent');
         const net = lookup['C-LE-02'] || lookup['B-LE-02'];
         const ispText = (net && net.status === 'Passed') ? (net.resultValue || '') : '';
         const SASE_PROVIDERS = /(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i;
@@ -2142,22 +2149,22 @@ function updateMapVpnOverlay(lookup) {
                 rdpPill.innerHTML = '';
             }
         }
-        if (inetPill) {
+        if (inetCard && inetLine) {
             if (isSase) {
                 const m = ispText.match(SASE_PROVIDERS);
                 const provider = m ? (m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()) : 'SASE';
                 const asMatch = ispText.match(/AS\d+/i);
                 const asn = asMatch ? asMatch[0].toUpperCase() : '';
-                const detailLine = asn ? `${provider} (${asn}) — separate path` : `${provider} — separate path`;
-                inetPill.className = 'map-path-pill path-internet';
-                inetPill.innerHTML = '<span class="pp-icon">🌐</span><span class="pp-text">'
-                    + '<span class="pp-label">General internet</span>'
-                    + `<span class="pp-detail">${detailLine}</span>`
-                    + '</span>';
-                inetPill.title = `General-internet traffic from this Cloud PC egresses via ${provider}. This is a different path from RDP — RDP/TURN go direct (see the RDP pill above).`;
+                if (inetDetail) inetDetail.textContent = provider + (asn ? ` (${asn})` : '');
+                if (inetDetail2) inetDetail2.textContent = 'General internet — separate path';
+                if (inetDot) inetDot.setAttribute('fill', '#79c0ff');
+                if (inetAccent) inetAccent.style.background = 'linear-gradient(180deg, rgba(121,192,255,0.5), transparent)';
+                inetCard.classList.remove('hidden');
+                inetLine.classList.remove('hidden');
+                inetCard.title = `General-internet traffic from this Cloud PC egresses via ${provider}. RDP and TURN take a different path direct via Microsoft Azure backbone (see the green pill on the Azure card).`;
             } else {
-                inetPill.className = 'map-path-pill hidden';
-                inetPill.innerHTML = '';
+                inetCard.classList.add('hidden');
+                inetLine.classList.add('hidden');
             }
         }
     }
