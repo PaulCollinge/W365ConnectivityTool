@@ -1436,9 +1436,11 @@ main {
 .map-diagram .map-g-internet      { grid-column: 9; grid-row: 7; align-self: start; justify-self: center; }
 .map-diagram .map-g-internet-line.hidden,
 .map-diagram .map-g-internet.hidden { display: none !important; }
-/* cpc-mode (7-col grid, 5 rows) — branch from Azure NAT (col 5) downward into a new row below the main flow. */
+/* cpc-mode (7-col grid) — branch from Azure NAT (col 5) downward into a new row below the main flow.
+   Connector spans the empty rows between the Azure NAT card bottom (end of row 3) and the
+   Internet card top (row 7) so the line is actually visible (not just an 8px sliver). */
 .map-diagram.cpc-mode { grid-template-rows: auto 8px auto 36px auto 8px auto; }
-.map-diagram.cpc-mode .map-g-internet-line { grid-column: 5; grid-row: 6; justify-self: center; align-self: stretch; }
+.map-diagram.cpc-mode .map-g-internet-line { grid-column: 5; grid-row: 4 / 7; justify-self: center; align-self: stretch; }
 .map-diagram.cpc-mode .map-g-internet      { grid-column: 5; grid-row: 7; align-self: start; justify-self: center; }
 /* early-cpc bootstrap uses similar 7-col layout — add the same row to avoid the card landing in an implicit row. */
 html.early-cpc-mode .map-diagram { grid-template-rows: auto 8px auto 36px auto 8px auto; }
