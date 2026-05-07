@@ -1973,14 +1973,28 @@ function updateMapVpnOverlay(lookup) {
 
         // 1. Specific VPN adapter (e.g. "Teleport", "Unifi Teleport VPN") — prefer this
         //    so we show the actual product name rather than generic "VPN/SWG".
-        const vpnLine = lines.find(l => /VPN adapter detected:/i.test(l));
+        //    EXCLUDE Windows transition pseudo-interfaces (Teredo / isatap / 6to4) —
+        //    these are not VPN tunnels. Scanner v1.12.4+ filters them out, but older
+        //    scanner exports still contain them, so we re-filter here.
+        const TRANSITION_RE = /\b(Teredo|isatap|6to4)\b/i;
+        const vpnLine = lines.find(l => /VPN adapter detected:/i.test(l) && !TRANSITION_RE.test(l));
         // 2. Specific SWG product lines — only match actual vendor names, NOT the
         //    generic summary "W365 traffic may be routing through VPN/SWG".
         const swgLine = lines.find(l => /(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP)/i.test(l));
         // 3. System proxy
         const proxyLine = lines.find(l => /proxy detected|Proxy Server/i.test(l));
 
-        if (vpnLine) {
+        // If the only "VPN adapter" line in the test detail named a transition
+        // pseudo-interface AND no real SWG / proxy line exists, demote: the
+        // scanner flagged this as Warning but our filtered view sees nothing
+        // real. Falling back to vpnDetected=false lets the positive bypass
+        // banner run instead (so SASE-on-internet-only deployments aren't
+        // mis-labeled as "Teredo intercepting RDP").
+        const onlyTransition = !vpnLine && !swgLine && !proxyLine
+            && lines.some(l => /VPN adapter detected:/i.test(l) && TRANSITION_RE.test(l));
+        if (onlyTransition) {
+            vpnDetected = false;
+        } else if (vpnLine) {
             // Parse: "ℹ VPN adapter detected: Teleport (Unifi Teleport VPN)"
             const m = vpnLine.match(/VPN adapter detected:\s*(.+?)(?:\s*\(([^)]+)\))?\s*$/i);
             if (m) {
