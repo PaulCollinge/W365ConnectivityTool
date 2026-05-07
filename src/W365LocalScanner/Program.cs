@@ -8694,16 +8694,30 @@ class Program
         return false;
     }
 
+    private const string WsaEAccessResultValue =
+        "WireServer port restricted to Guest Agent (WFP filter) — expected on modern Cloud PC images";
+
     private const string WsaEAccessDetailedInfo =
-        "WSAEACCES (10013) means the socket was refused by local policy — not by the\n" +
-        "network. The most common causes are:\n" +
+        "WSAEACCES (10013) means the socket was refused by a Windows Filtering Platform\n" +
+        "filter — not by the network. On modern Azure / Cloud PC images Microsoft itself\n" +
+        "ships WFP filters that restrict WireServer (168.63.129.16) traffic to the Guest\n" +
+        "Agent process (WaAppAgent / RDAgent) by design. A user-mode probe therefore\n" +
+        "sees WSAEACCES on a perfectly healthy Cloud PC and the result is informational,\n" +
+        "not a failure.\n\n" +
+        "This becomes a real problem only if WireServer is broken end-to-end — which\n" +
+        "surfaces as Guest Agent heartbeat failures, extension install errors, or\n" +
+        "provisioning timeouts. If those are absent, this warning can be safely ignored.\n\n" +
+        "If you DO see Guest Agent / extension symptoms alongside this, the typical\n" +
+        "third-party causes are:\n" +
         "  \u2022 Endpoint protection / EDR (CrowdStrike, SentinelOne, Defender ASR, Symantec,\n" +
         "    Trend, Sophos, Cortex XDR) with a host-firewall rule against 168.63.129.16\n" +
         "  \u2022 Windows Firewall custom outbound block rule (GPO or Intune)\n" +
         "  \u2022 VPN client WFP filter redirecting or denying the fabric IP\n" +
         "  \u2022 Corrupt Azure Guest Agent WFP filter set (reinstall GA to reset)\n\n" +
-        "To find the provider: 'netsh wfp show state file=wfp.xml' then search wfp.xml\n" +
-        "for 168.63.129.16 under BLOCK filters — the providerName names the product.";
+        "To inspect the WFP filter set: 'netsh wfp show state file=wfp.xml' then search\n" +
+        "wfp.xml for 168.63.129.16. Microsoft-shipped filters list providerName as\n" +
+        "'Microsoft Corporation' / 'Azure Networking'; third-party filters name the\n" +
+        "product (e.g. 'CrowdStrike Falcon Sensor').";
 
     /// <summary>
     /// C-AZ-01: Raw TCP connect to 168.63.129.16:80. A healthy Cloud PC
@@ -8757,8 +8771,13 @@ class Program
         }
         catch (SocketException ex) when ((int)ex.SocketErrorCode == 10013 /* WSAEACCES */)
         {
-            result.Status = "Failed";
-            result.ResultValue = "Access denied (WSAEACCES) — local filter blocking WireServer";
+            // Microsoft itself ships WFP filters on modern Cloud PC images that restrict
+            // WireServer to the Guest Agent process. WSAEACCES from a user-mode probe is
+            // therefore expected baseline, not a failure. Surface as Warning so it stays
+            // visible (in case Guest Agent symptoms also appear) without flagging healthy
+            // CPCs as broken.
+            result.Status = "Warning";
+            result.ResultValue = WsaEAccessResultValue;
             result.DetailedInfo = WsaEAccessDetailedInfo;
             result.RemediationUrl = AzureFabricDocsUrl;
         }
@@ -8852,8 +8871,9 @@ class Program
         }
         catch (Exception ex) when (IsWsaEAccess(ex))
         {
-            result.Status = "Failed";
-            result.ResultValue = "Access denied (WSAEACCES) — local filter blocking WireServer";
+            // See C-AZ-01 — same rationale.
+            result.Status = "Warning";
+            result.ResultValue = WsaEAccessResultValue;
             result.DetailedInfo = WsaEAccessDetailedInfo;
             result.RemediationUrl = AzureFabricDocsUrl;
         }
