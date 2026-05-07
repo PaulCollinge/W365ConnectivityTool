@@ -1431,10 +1431,17 @@ main {
 .map-diagram .map-g-arrow4  { display: none; }
 .map-diagram .map-g-nat     { display: none; }
 .map-diagram .map-g-cloudpc { grid-column: 11; grid-row: 1 / 6; align-self: center; display: none; }
+/* Internet egress branch — placement varies by layout mode (set below). Default = has-cloudpc 11-col grid: under Azure (col 9). */
 .map-diagram .map-g-internet-line { grid-column: 9; grid-row: 6; justify-self: center; align-self: stretch; z-index: 0; pointer-events: none; }
 .map-diagram .map-g-internet      { grid-column: 9; grid-row: 7; align-self: start; justify-self: center; }
 .map-diagram .map-g-internet-line.hidden,
 .map-diagram .map-g-internet.hidden { display: none !important; }
+/* cpc-mode (7-col grid, 5 rows) — branch from Azure NAT (col 5) downward into a new row below the main flow. */
+.map-diagram.cpc-mode { grid-template-rows: auto 8px auto 36px auto 8px auto; }
+.map-diagram.cpc-mode .map-g-internet-line { grid-column: 5; grid-row: 6; justify-self: center; align-self: stretch; }
+.map-diagram.cpc-mode .map-g-internet      { grid-column: 5; grid-row: 7; align-self: start; justify-self: center; }
+/* early-cpc bootstrap uses similar 7-col layout — add the same row to avoid the card landing in an implicit row. */
+html.early-cpc-mode .map-diagram { grid-template-rows: auto 8px auto 36px auto 8px auto; }
 .map-internet-connector { display: flex; flex-direction: column; align-items: center; height: 100%; min-height: 32px; }
 .map-internet-arw { color: #79c0ff; font-size: 10px; line-height: 1; margin-top: -2px; }
 .map-internet-connector .map-vline { background: linear-gradient(180deg, transparent, rgba(121, 192, 255, 0.55), rgba(121, 192, 255, 0.55), transparent); }
