@@ -2170,14 +2170,69 @@ function updateMapVpnOverlay(lookup) {
     }
 
     // ── Summary banner under the map ──
-    updateMapVpnSummary(vpnDetected, vpnLabel, lookup);
+    // Pass through extra context so the banner can also render the positive
+    // "VPN/SWG detected but RDP correctly bypasses it" case computed in the
+    // else branch above.
+    updateMapVpnSummary(vpnDetected, vpnLabel, lookup, {
+        bypassConfirmed: typeof tcpBypass !== 'undefined' ? tcpBypass : false,
+        saseProvider: (typeof isSase !== 'undefined' && isSase && typeof ispText === 'string')
+            ? (ispText.match(/(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i) || [])[1]
+            : ''
+    });
 }
 
 // Build a human-readable banner summarising VPN/SWG egress path.
-function updateMapVpnSummary(vpnDetected, vpnLabel, lookup) {
+function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
+    ctx = ctx || {};
     const el = document.getElementById('map-vpn-summary');
     if (!el) return;
+
+    // ── Positive case: VPN / SASE detected somewhere but RDP correctly bypasses ──
+    // Surfaces three signals as a single green banner so the user doesn't have to
+    // hunt through individual test results to confirm "this is OK".
+    //   1) tcpVpn (L/C-TCP-07) Passed with bypass language → real local VPN, RDP direct
+    //   2) SASE provider detected on C-LE-02 with route-table direct → SASE on internet only
     if (!vpnDetected) {
+        const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
+        const bypassRegex = /No W365\/AVD service traffic goes through the VPN tunnel|RDP traffic correctly bypasses it|UDP\/TURN traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i;
+        const tcpBypass = !!ctx.bypassConfirmed || (tcpVpn && tcpVpn.status === 'Passed' && bypassRegex.test((tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || '')));
+        const saseRaw = ctx.saseProvider || '';
+        const saseProvider = saseRaw ? (saseRaw.charAt(0).toUpperCase() + saseRaw.slice(1).toLowerCase()) : '';
+
+        // Try to extract a specific local-VPN product name from the test detail so
+        // we can say "Cisco AnyConnect" instead of generic "VPN".
+        let localVpnLabel = '';
+        if (tcpVpn) {
+            const txt = (tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || '');
+            const m = txt.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP|Tailscale|Teleport|WireGuard)/i);
+            if (m) localVpnLabel = m[1];
+            else if (/VPN adapter detected:\s*([^\n]+)/i.test(txt)) {
+                const a = txt.match(/VPN adapter detected:\s*([^\n]+)/i);
+                if (a) localVpnLabel = a[1].trim().replace(/\s*\(.*\)\s*$/, '');
+            } else if (/VPN is active/i.test(txt)) {
+                localVpnLabel = 'VPN';
+            }
+        }
+
+        if (tcpBypass && (localVpnLabel || saseProvider)) {
+            const product = localVpnLabel || saseProvider;
+            const parts = [];
+            parts.push(`<span class="vpn-sum-icon">\u2705</span>`);
+            parts.push(`<span class="vpn-sum-title">${escapeHtml(product)} detected, but RDP traffic correctly bypasses it</span>`);
+            parts.push(`<span class="vpn-sum-sep">\u2192</span>`);
+            parts.push(`<span class="vpn-sum-chip vpn-sum-chip-good">\u2713 RDP / TURN \u2014 direct via Azure backbone</span>`);
+            if (saseProvider && localVpnLabel && saseProvider.toLowerCase() !== localVpnLabel.toLowerCase()) {
+                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet via ${escapeHtml(saseProvider)}</span>`);
+            } else if (saseProvider && !localVpnLabel) {
+                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet via ${escapeHtml(saseProvider)}</span>`);
+            } else if (localVpnLabel) {
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic uses the ${escapeHtml(localVpnLabel)} tunnel</span>`);
+            }
+            el.className = 'map-vpn-summary ok';
+            el.innerHTML = parts.join(' ');
+            return;
+        }
+
         el.classList.add('hidden');
         el.innerHTML = '';
         return;

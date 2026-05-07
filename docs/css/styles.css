@@ -2218,6 +2218,21 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
     background: var(--red-bg);
     color: var(--red);
 }
+/* Positive variant — a VPN/SWG was detected but RDP correctly bypasses it.
+   Renders the same shape as the warning banner but with green chrome so the
+   user can see at a glance that the diagnosis is benign. */
+.map-vpn-summary.ok {
+    background: var(--green-bg);
+    border-top-color: var(--green-border);
+    border-bottom-color: var(--green-border);
+}
+.map-vpn-summary.ok .vpn-sum-title { color: var(--green); }
+.map-vpn-summary.ok .vpn-sum-chip { border-color: var(--green-border); }
+.map-vpn-summary.ok .vpn-sum-chip-good {
+    border-color: var(--green-border);
+    background: var(--green-bg);
+    color: var(--green);
+}
 
 /* Map responsive */
 @media (max-width: 900px) {
