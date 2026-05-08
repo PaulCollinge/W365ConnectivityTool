@@ -666,6 +666,14 @@ function toggleCloudPcMode(enabled) {
                 (hasResults ? 'Re-run Browser Tests' : 'Run Browser Tests');
         }
     }
+
+    // Re-paint the connectivity map so right-side cards are re-revealed (when
+    // flipping back ON) or fully hidden (when flipping OFF). Without this the
+    // cpc-revealed markers stripped on OFF stay gone, and a subsequent ON
+    // shows an empty CPC layout.
+    if (typeof updateConnectivityMap === 'function' && Array.isArray(allResults)) {
+        updateConnectivityMap(allResults);
+    }
 }
 
 
