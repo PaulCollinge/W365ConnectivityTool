@@ -2949,7 +2949,25 @@ class Program
                     // Check if this differs from configured DNS
                     if (!uniqueDns.Any(d => d.ip == resolverEgressIp))
                     {
-                        sb.AppendLine("Note: Resolver egress IP differs from configured DNS — DNS forwarding or encrypted DNS may be in use");
+                        // Differentiate the two common patterns:
+                        //   (a) Configured DNS is RFC1918 (router/DHCP) but the resolver
+                        //       egress IP is public — almost always means the local
+                        //       router/firewall is forwarding upstream to a public resolver
+                        //       (typical of consumer routers, captive networks, mobile/transit
+                        //       gateways). This is normal, not encrypted DNS.
+                        //   (b) Configured DNS is public but resolver egress differs — could
+                        //       indicate DoH/DoT or a transparent DNS interception by a SWG.
+                        bool allConfiguredArePrivate = uniqueDns.Count > 0
+                            && uniqueDns.All(d => IsPrivateIp(d.ip));
+                        bool resolverIsPublic = !IsPrivateIp(resolverEgressIp);
+                        if (allConfiguredArePrivate && resolverIsPublic)
+                        {
+                            sb.AppendLine("Note: Local router/DHCP DNS forwards upstream to a public resolver (typical of consumer/transit/mobile gateways).");
+                        }
+                        else
+                        {
+                            sb.AppendLine("Note: Resolver egress IP differs from configured DNS — DNS forwarding, encrypted DNS (DoH/DoT), or a SWG transparent DNS proxy may be in use.");
+                        }
                     }
                 }
                 else
@@ -3231,9 +3249,14 @@ class Program
                     sb.AppendLine($"  {a.Name}: Interface MTU = {mtu}");
                     if (mtu < 1500)
                     {
+                        // 1492 has multiple legitimate causes — PPPoE is only one of them.
+                        // Mobile / transit / bonded-cellular gateways and many carrier
+                        // L2TP/MPLS access products clamp to ~1492 too. Naming PPPoE
+                        // specifically misleads users on those networks; describe the
+                        // observation generically and list common causes.
                         string explanation = mtu switch
                         {
-                            1492 => "PPPoE link (typical for UK FTTC/FTTP and many consumer/SMB broadband ISPs) \u2014 expected, not a problem",
+                            1492 => "common on PPPoE access (UK FTTC/FTTP, many DSL/fibre ISPs) and on mobile / transit / bonded-cellular gateways — usually expected, not a problem",
                             1480 => "GRE / IP-in-IP tunnel \u2014 typical for some corporate networks",
                             1452 => "PPPoE with additional VLAN tag",
                             1428 => "PPPoE + IPSec",
@@ -4696,6 +4719,9 @@ class Program
 
             // VPN adapters — detect presence, then check if RDP traffic actually routes through them
             var vpnAdapters = FindVpnAdapters();
+            // Hoisted so the post-detection summary block (below) can tell whether
+            // we positively confirmed RDP-gateway bypass via the routing table.
+            bool rdpGwDirect = false;
 
             if (vpnAdapters.Count > 0)
             {
@@ -4715,7 +4741,6 @@ class Program
                     issues.Add($"W365/AVD range {range} routes through VPN tunnel");
 
                 // Probe the actual discovered RDP gateway for VPN routing
-                bool rdpGwDirect = false;
                 try
                 {
                     var gwIps = Dns.GetHostAddresses(probeHost);
@@ -4765,14 +4790,49 @@ class Program
             }
             else if (issues.Count == 0 && detected.Count > 0)
             {
-                // Include adapter/process names in the result value so the dashboard can display them
-                var names = detected.Select(d => d.Contains(':') ? d.Substring(d.IndexOf(':') + 1).Trim() : d).ToList();
-                // Extract just the adapter name (first part before the parenthesised description)
-                var shortNames = names.Select(n => {
-                    var pIdx = n.IndexOf('(');
-                    return pIdx > 0 ? n.Substring(0, pIdx).Trim() : n;
-                }).ToList();
-                result.ResultValue = $"VPN/SWG detected ({string.Join(", ", shortNames)}) — RDP correctly bypassed (split-tunnel)";
+                // Distinguish three cases:
+                //   1. VPN adapter present AND we positively confirmed RDP gateway
+                //      routes direct (rdpGwDirect && caught.Count == 0) — real
+                //      split-tunnel evidence; the existing "VPN is active but RDP
+                //      traffic correctly bypasses it (split-tunnel)" line above
+                //      already wrote that to the body.
+                //   2. SWG agent process present, no VPN adapter — we have NOT
+                //      probed any traffic-capturing tunnel; the agent may simply
+                //      be running without a forwarding profile attached. Saying
+                //      "split-tunnel" overstates the evidence.
+                //   3. Mix — describe accurately.
+                var vpnAdapterNames = detected
+                    .Where(d => d.StartsWith("VPN:", StringComparison.OrdinalIgnoreCase))
+                    .Select(d => {
+                        var rest = d.Substring(d.IndexOf(':') + 1).Trim();
+                        var pIdx = rest.IndexOf('(');
+                        return pIdx > 0 ? rest.Substring(0, pIdx).Trim() : rest;
+                    }).ToList();
+                var swgProcNames = detected
+                    .Where(d => d.StartsWith("SWG:", StringComparison.OrdinalIgnoreCase))
+                    .Select(d => d.Substring(d.IndexOf(':') + 1).Trim())
+                    .ToList();
+
+                if (vpnAdapterNames.Count > 0 && rdpGwDirect)
+                {
+                    var summary = string.Join(", ", vpnAdapterNames);
+                    if (swgProcNames.Count > 0) summary += " + SWG: " + string.Join(", ", swgProcNames);
+                    result.ResultValue = $"VPN active ({summary}) — RDP correctly bypassed (split-tunnel verified)";
+                }
+                else if (vpnAdapterNames.Count > 0)
+                {
+                    // VPN adapter exists but we couldn't positively confirm bypass for the
+                    // RDP gateway IP via the routing-table check above.
+                    var summary = string.Join(", ", vpnAdapterNames);
+                    result.ResultValue = $"VPN active ({summary}) — bypass for RDP gateway not confirmed";
+                }
+                else
+                {
+                    // SWG-only: process is present but no VPN/tunnel adapter and no
+                    // captured route. State the fact, do not claim split-tunnel.
+                    var summary = string.Join(", ", swgProcNames);
+                    result.ResultValue = $"SWG agent present ({summary}) — no traffic-capturing tunnel detected";
+                }
                 result.Status = "Passed";
             }
             else
@@ -7547,7 +7607,12 @@ class Program
                     var avgRtt = rtts.Average();
                     sb.AppendLine($"Gateway latency: {avgRtt:F0}ms avg (min {rtts.Min():F0}ms, max {rtts.Max():F0}ms)");
                     if (avgRtt > 100)
-                        sb.AppendLine("⚠ High latency — may indicate traffic is not egressing locally.");
+                        // High RTT alone is NOT a non-local-egress signal. Constrained access
+                        // links (mobile/transit/satellite Wi-Fi) routinely produce >100ms even
+                        // when the gateway is geographically adjacent. Egress locality is
+                        // judged from gateway distance above; latency is reported here only
+                        // as informational context for test 18 (Session Round-Trip Latency).
+                        sb.AppendLine("ℹ Elevated TCP RTT — see test 18 (Session Latency) and L-LE-07 (Bandwidth) for access-link assessment.");
                     else
                         sb.AppendLine("✓ Low latency — consistent with local egress.");
                 }
@@ -7602,9 +7667,13 @@ class Program
             }
             catch (Exception ex) { sb.AppendLine($"TURN check failed: {ex.Message}"); }
 
-            // Determine overall result
+            // Determine overall result. Egress locality is judged ONLY from
+            // geographic proximity (gateway distance > 1500 km from egress);
+            // latency is reported in the body but does not flip the verdict —
+            // a constrained access link (train/mobile/satellite Wi-Fi) can
+            // produce 100ms+ RTT against a gateway 0 km away.
             var text = sb.ToString();
-            if (text.Contains("⚠ Gateway is far") || text.Contains("⚠ High latency"))
+            if (text.Contains("⚠ Gateway is far"))
             {
                 result.Status = "Warning";
                 result.ResultValue = "Traffic may not be egressing locally";

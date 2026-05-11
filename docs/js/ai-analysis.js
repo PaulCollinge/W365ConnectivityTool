@@ -553,10 +553,42 @@ function runAnalysisEngine(results) {
                 `${egress.resultValue} — On satellite and in-flight internet, traffic exits through the provider's ground station, which may be far from the device's GPS location. This is normal and not a routing problem.`,
                 'No action needed. Satellite internet routes through fixed ground stations regardless of aircraft position.'));
         } else {
-            findings.push(finding(egress.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING,
-                'Non-local egress detected',
-                `RDP traffic is not egressing locally: ${egress.resultValue}`,
-                'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
+            // Distinguish two completely different failure modes:
+            //   (a) Geographic: gateway is far from egress (real backhaul/VPN hairpin).
+            //       Body contains "⚠ Gateway is far".
+            //   (b) Constrained access link: gateway is local but the access link is slow
+            //       (mobile/transit Wi-Fi, congested home broadband). The "may not be
+            //       egressing locally" verdict in older scanner builds could fire on
+            //       latency alone — do not parrot that as "split-tunnel" remediation,
+            //       since rerouting will make nothing better.
+            const detail = (egress.detailedInfo || '');
+            const isReallyNonLocal = /⚠\s*Gateway is far/i.test(detail);
+            const isLocalGw = /✓\s*Gateway is near your egress location/i.test(detail);
+            const bwMbps = bw ? parseMbps(bw.resultValue) : NaN;
+            const isConstrainedLink = !isNaN(bwMbps) && bwMbps < 5;
+
+            if (isReallyNonLocal) {
+                findings.push(finding(egress.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING,
+                    'Non-local egress detected',
+                    `RDP traffic appears to be backhauling: ${egress.resultValue}`,
+                    'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
+            } else if (isLocalGw && isConstrainedLink) {
+                findings.push(finding(SEV.WARNING, 'Constrained access network',
+                    `Gateway is geographically local (egress and gateway in the same city) but the access link is the bottleneck (${bwMbps.toFixed(1)} Mbps). This is typical of mobile, transit (train/aircraft) or congested Wi-Fi — rerouting traffic will not improve it.`,
+                    'Use a wired or higher-bandwidth Wi-Fi network if available. Avoid bandwidth-heavy background activity during the session.'));
+            } else if (isLocalGw) {
+                // Gateway local, link not measurably constrained — most likely a transient
+                // probe outlier; surface as informational so the user isn't alarmed.
+                findings.push(finding(SEV.INFO, 'Gateway local, transient latency observed',
+                    `${egress.resultValue} — gateway is geographically adjacent to your egress; latency variance is most likely access-link or path congestion rather than a routing/backhaul problem.`,
+                    null));
+            } else {
+                // Original generic fallback for builds that don't emit the geo markers.
+                findings.push(finding(egress.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING,
+                    'Non-local egress detected',
+                    `RDP traffic is not egressing locally: ${egress.resultValue}`,
+                    'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
+            }
         }
     }
 
@@ -720,12 +752,19 @@ function runAnalysisEngine(results) {
             'Remove the fClientDisableUDP=1 or SelectTransport=2 policy. See https://learn.microsoft.com/azure/virtual-desktop/configure-rdp-shortpath'));
     }
 
-    // Correlation 4: High latency + non-local egress = traffic routing issue
+    // Correlation 4: High latency + non-local egress = traffic routing issue.
+    // Only fire when test 27 actually identified geographic backhaul ("Gateway
+    // is far"). Latency on a constrained access link to a geographically local
+    // gateway is NOT a routing problem and the split-tunnel remediation will
+    // make nothing better — those are surfaced separately above.
     const sessionAvg = session ? parseMs(session.resultValue) : NaN;
-    const egressBad = egress && (egress.status === 'Failed' || egress.status === 'Warning');
-    if (!isNaN(sessionAvg) && sessionAvg > 100 && egressBad) {
+    const egressDetail = egress ? (egress.detailedInfo || '') : '';
+    const egressIsGeoBackhaul = egress
+        && (egress.status === 'Failed' || egress.status === 'Warning')
+        && /⚠\s*Gateway is far/i.test(egressDetail);
+    if (!isNaN(sessionAvg) && sessionAvg > 100 && egressIsGeoBackhaul) {
         findings.push(finding(SEV.CRITICAL, 'High latency due to non-local egress',
-            `Session latency is ${sessionAvg.toFixed(0)} ms and RDP traffic is not egressing locally. The indirect routing path is adding significant delay.`,
+            `Session latency is ${sessionAvg.toFixed(0)} ms and RDP traffic is backhauling through a remote gateway. The indirect routing path is adding significant delay.`,
             'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
     }
 
