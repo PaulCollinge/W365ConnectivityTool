@@ -260,6 +260,39 @@
                             </svg>
                             <div class="inflight-clouds">&#9729;&nbsp;&nbsp;&#9729;</div>
                         </div>
+                        <!-- Train overlay — easter egg shown when on-train Wi-Fi (e.g. WIFIonICE, Eurostar, Amtrak) is detected -->
+                        <div class="train-frame" id="map-client-train-frame" aria-hidden="true">
+                            <svg class="train-loco" viewBox="0 0 160 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <!-- Track shadow -->
+                                <rect x="0" y="34" width="160" height="2" fill="#21262d" opacity="0.6"/>
+                                <!-- Aerodynamic nose (ICE-style) -->
+                                <path d="M 4,28 Q 14,8 38,6 L 150,6 Q 156,6 156,12 L 156,28 Z" fill="#f0f6fc" stroke="#c9d1d9" stroke-width="0.8"/>
+                                <!-- Red signature stripe -->
+                                <rect x="38" y="22" width="118" height="3" fill="#d92626"/>
+                                <rect x="6" y="25" width="150" height="1.2" fill="#d92626" opacity="0.85"/>
+                                <!-- Cab windscreen -->
+                                <path d="M 10,22 Q 18,12 30,11 L 36,11 L 36,22 Z" fill="#1f6feb" opacity="0.85"/>
+                                <!-- Carriage windows -->
+                                <rect x="42" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="56" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="70" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="84" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="98" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="112" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="126" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <rect x="140" y="11" width="10" height="7" rx="1" fill="#1f6feb" opacity="0.6"/>
+                                <!-- Bogies / wheels -->
+                                <circle cx="22" cy="32" r="3.2" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <circle cx="34" cy="32" r="3.2" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <circle cx="80" cy="32" r="3.2" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <circle cx="92" cy="32" r="3.2" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <circle cx="138" cy="32" r="3.2" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <circle cx="150" cy="32" r="3.2" fill="#0d1117" stroke="#30363d" stroke-width="0.8"/>
+                                <!-- Headlight -->
+                                <circle cx="9" cy="26" r="1.6" fill="#ffd866" opacity="0.9"/>
+                            </svg>
+                            <div class="train-rails">═&nbsp;═&nbsp;═&nbsp;═&nbsp;═&nbsp;═&nbsp;═&nbsp;═</div>
+                        </div>
                         <div class="device-accent" id="map-client-accent"></div>
                     </div>
                     <div class="device-info">

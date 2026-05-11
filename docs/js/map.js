@@ -10,7 +10,8 @@ function updateConnectivityMap(results) {
     }
 
     const isSatellite = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
-    updateMapClientCard(lookup, isSatellite);
+    const isTrain     = typeof detectTrainConnection     === 'function' && detectTrainConnection(results);
+    updateMapClientCard(lookup, isSatellite, isTrain);
     updateMapWifiBadge(lookup);
     updateMapLocalGwCard(lookup);
     updateMapIspCard(lookup);
@@ -358,7 +359,7 @@ function setClientOSIcon() {
 setClientOSIcon();
 
 // ── Client Card ──
-function updateMapClientCard(lookup, isSatellite) {
+function updateMapClientCard(lookup, isSatellite, isTrain) {
     let location = '';
     let publicIp = '';
     let status = 'NotRun';
@@ -386,7 +387,10 @@ function updateMapClientCard(lookup, isSatellite) {
     // In-flight visual: toggle aircraft overlay and card label
     const card = document.getElementById('map-client');
     if (card) card.classList.toggle('in-flight', !!isSatellite);
-    setText('map-client-title', isSatellite ? '✈ In Flight' : 'This Device');
+    // Train easter egg: an SSID/ISP signal that says we're on rails. Plane
+    // detection wins if both somehow fire (shouldn't happen — detector guards).
+    if (card) card.classList.toggle('on-train', !!isTrain && !isSatellite);
+    setText('map-client-title', isSatellite ? '✈ In Flight' : (isTrain ? '🚆 On Train' : 'This Device'));
 }
 
 // ── WiFi / Wired badge on the Client→Gateway path ──

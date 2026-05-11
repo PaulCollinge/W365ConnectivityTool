@@ -1083,6 +1083,52 @@ main {
     0%, 100% { transform: translateX(-50%) translateY(0px); }
     50% { transform: translateX(-50%) translateY(-4px); }
 }
+
+/* ── On-train (rail Wi-Fi) easter egg ── */
+.train-frame {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 3px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 170px;
+    pointer-events: none;
+    z-index: 2;
+    overflow: hidden;
+}
+.train-loco {
+    width: 100%;
+    height: auto;
+    display: block;
+    filter: drop-shadow(0 2px 6px rgba(217, 38, 38, 0.35));
+    animation: train-pass 6s linear infinite;
+}
+.train-rails {
+    text-align: center;
+    font-size: 10px;
+    color: #6e7681;
+    opacity: 0.55;
+    letter-spacing: 1px;
+    margin-top: -2px;
+    animation: train-sleeper 0.6s linear infinite;
+}
+#map-client.on-train .train-frame { display: block; }
+#map-client.on-train .device-laptop {
+    background: linear-gradient(180deg, #1a1f2e 0%, #0d1117 100%);
+    border-radius: 6px;
+    padding: 5px 5px 3px;
+    box-shadow: 0 0 12px rgba(217, 38, 38, 0.18);
+}
+@keyframes train-pass {
+    0%   { transform: translateX(-110%); }
+    8%   { transform: translateX(0%); }
+    92%  { transform: translateX(0%); }
+    100% { transform: translateX(110%); }
+}
+@keyframes train-sleeper {
+    0%   { letter-spacing: 1px; }
+    100% { letter-spacing: 4px; }
+}
 @keyframes inflight-drift {
     0%, 100% { opacity: 0.28; transform: translateX(0); }
     50% { opacity: 0.18; transform: translateX(4px); }

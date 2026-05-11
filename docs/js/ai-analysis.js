@@ -93,6 +93,32 @@ const INFLIGHT_SSID_PATTERNS = [
     /^swa[_ -]wifi/i, /^jetblue/i, /^spirit.*wifi/i, /^_wifi.*airlines/i
 ];
 
+// On-train Wi-Fi SSIDs across major European/UK/US passenger rail operators.
+// Used purely for the connectivity-map easter egg + an informational note —
+// nothing about test interpretation depends on it (cf. INFLIGHT_SSID_PATTERNS,
+// which feeds latency/jitter context-aware findings).
+const TRAIN_SSID_PATTERNS = [
+    /^wifionice$/i,         // Deutsche Bahn ICE
+    /^wifi@db$/i,           // DB Regio
+    /^ice[ _-]?portal$/i,   // DB ICE Portal
+    /^_trenitalia/i,        // Trenitalia
+    /^o?bb[ _-]?wlan/i,     // ÖBB Railjet
+    /^sbb[ _-]?free/i,      // SBB / Swiss Federal Railways
+    /^ns[ _-]?internet$/i,  // Nederlandse Spoorwegen
+    /^thalys/i,             // Thalys / Eurostar
+    /^eurostar/i,
+    /^tgv[ _-]?inoui/i,     // SNCF TGV inOui
+    /^sncf[ _-]?wifi/i,
+    /^renfe[ _-]?wifi/i,    // Renfe
+    /^avanti[ _-]?free/i,   // Avanti West Coast
+    /^lner[ _-]?free/i,     // LNER
+    /^gwr[ _-]?wifi/i,      // Great Western Railway
+    /^cross[ _-]?country/i,
+    /^amtrak[ _-]?wifi/i,
+    /^via[ _-]?wifi/i,      // Via Rail Canada
+    /wifi[ _-]?on[ _-]?board/i
+];
+
 function detectSatelliteConnection(results) {
     // Satellite/aircraft detection requires BOTH conditions to be true:
     //   1. Live browser ISP (B-LE-02) matches a known satellite/aviation provider name
@@ -125,6 +151,35 @@ function detectSatelliteConnection(results) {
     const ssidMatch = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
     const ssid = ssidMatch ? ssidMatch[1].trim() : '';
     return !!ssid && INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid));
+}
+
+// Rail Wi-Fi detection. Two paths:
+//   1. Local scanner provides L-LE-04 with an SSID matching a known train pattern.
+//   2. No scanner SSID, but the live browser ISP (B-LE-02) is Icomera, the
+//      dominant operator of multi-WAN bonded gateways on European/UK rolling
+//      stock. Used carefully — Icomera also provides bus/coach Wi-Fi — so we
+//      gate on "no aircraft SSID match" and treat ISP-only matches as
+//      "probably train" for the easter egg only.
+function detectTrainConnection(results) {
+    const wifiResult = results.find(r => r.id === 'L-LE-04');
+    if (wifiResult && wifiResult.status !== 'NotRun' && wifiResult.status !== 'Pending' && wifiResult.status !== 'Skipped') {
+        const m = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
+        const ssid = m ? m[1].trim() : '';
+        if (ssid && TRAIN_SSID_PATTERNS.some(p => p.test(ssid))) return true;
+    }
+
+    // ISP fallback — Icomera is the giveaway for European trains, but only
+    // accept it when no inflight SSID is present (avoid mis-labelling planes
+    // that happen to use Icomera's regional ground service).
+    if (typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results)) return false;
+
+    const isp = results.find(r => r.id === 'B-LE-02' && r.source === 'browser');
+    if (isp && isp.status !== 'NotRun' && isp.status !== 'Pending' && isp.status !== 'Skipped') {
+        if (/icomera|nomad\s+digital|hotsplots|gosmart\s*media/i.test(isp.resultValue || '')) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════
