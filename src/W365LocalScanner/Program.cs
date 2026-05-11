@@ -245,70 +245,91 @@ class Program
             catch { /* Not in Azure — client mode */ }
 
             // ── Fallback detection when IMDS is unavailable (VPN/firewall blocking link-local) ──
+            //
+            // Important: registry keys like HKLM\SOFTWARE\Microsoft\Windows 365 are also
+            // created on regular laptops by the **Windows 365 client app** (Windows App).
+            // RDInfraAgent / RDAgentBootLoader are similarly available outside CPC images
+            // when admins install Remote Desktop tooling. Treating any of these as a
+            // standalone CPC signal mis-flags client laptops as Cloud PCs, which then
+            // cascades through the dashboard (mode=cloudpc, CPC cards populated from
+            // laptop data, "run the local scanner" CTA still showing). Require an
+            // Azure-VM-only corroborating signal (WindowsAzureGuestAgent service) before
+            // accepting the registry/service hints below.
             if (!_isCloudPcMode)
             {
-                bool detectedViaFallback = false;
-                string fallbackSignal = "";
-
-                // 1. Registry: Windows 365 key (definitive Cloud PC signal)
+                bool isAzureVm = false;
                 try
                 {
-                    using var w365Key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows 365");
-                    if (w365Key != null)
-                    {
-                        detectedViaFallback = true;
-                        _hostType = "cloudpc";
-                        fallbackSignal = "registry HKLM\\SOFTWARE\\Microsoft\\Windows 365";
-                    }
+                    using var sc = new System.ServiceProcess.ServiceController("WindowsAzureGuestAgent");
+                    _ = sc.Status; // Throws if service doesn't exist
+                    isAzureVm = true;
                 }
-                catch { /* Registry access restricted */ }
+                catch { /* Not an Azure VM */ }
 
-                // 2. Registry: RDInfraAgent key (AVD/W365 infrastructure agent)
-                if (!detectedViaFallback)
+                if (!isAzureVm)
                 {
+                    Console.WriteLine("  Running in client mode");
+                    Console.WriteLine("  Tip: If this is a Cloud PC where IMDS is blocked, use --cloudpc flag");
+                }
+                else
+                {
+                    bool detectedViaFallback = false;
+                    string fallbackSignal = "";
+
+                    // 1. Registry: Windows 365 key — only meaningful on an Azure VM
+                    //    (on laptops it's left behind by the W365 client app).
                     try
                     {
-                        using var rdKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\RDInfraAgent");
-                        if (rdKey != null)
+                        using var w365Key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows 365");
+                        if (w365Key != null)
                         {
-                            // RDInfraAgent is present on both Cloud PC and AVD session hosts
                             detectedViaFallback = true;
-                            _hostType = "cloudpc"; // Default to CPC, refine below
-                            fallbackSignal = "registry HKLM\\SOFTWARE\\Microsoft\\RDInfraAgent";
-
-                            // Check if it's specifically an AVD host
-                            var isTemp = rdKey.GetValue("IsRegisteredAsSessionHost");
-                            if (isTemp != null && isTemp.ToString() == "1")
-                            {
-                                _hostType = "avd";
-                            }
+                            _hostType = "cloudpc";
+                            fallbackSignal = "Azure VM + registry HKLM\\SOFTWARE\\Microsoft\\Windows 365";
                         }
                     }
                     catch { /* Registry access restricted */ }
-                }
 
-                // 3. Service: RDAgentBootLoader (present on Cloud PCs and AVD session hosts)
-                if (!detectedViaFallback)
-                {
-                    try
+                    // 2. Registry: RDInfraAgent key (AVD/W365 infrastructure agent)
+                    if (!detectedViaFallback)
                     {
-                        using var sc = new System.ServiceProcess.ServiceController("RDAgentBootLoader");
-                        _ = sc.Status; // Throws if service doesn't exist
-                        detectedViaFallback = true;
-                        _hostType = "cloudpc";
-                        fallbackSignal = "service RDAgentBootLoader";
+                        try
+                        {
+                            using var rdKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\RDInfraAgent");
+                            if (rdKey != null)
+                            {
+                                detectedViaFallback = true;
+                                _hostType = "cloudpc"; // Default to CPC, refine below
+                                fallbackSignal = "Azure VM + registry HKLM\\SOFTWARE\\Microsoft\\RDInfraAgent";
+
+                                // Check if it's specifically an AVD host
+                                var isTemp = rdKey.GetValue("IsRegisteredAsSessionHost");
+                                if (isTemp != null && isTemp.ToString() == "1")
+                                {
+                                    _hostType = "avd";
+                                }
+                            }
+                        }
+                        catch { /* Registry access restricted */ }
                     }
-                    catch { /* Service not found */ }
-                }
 
-                // 4. Service: WindowsAzureGuestAgent (present on Azure VMs)
-                if (!detectedViaFallback)
-                {
-                    try
+                    // 3. Service: RDAgentBootLoader (present on Cloud PCs and AVD session hosts)
+                    if (!detectedViaFallback)
                     {
-                        using var sc = new System.ServiceProcess.ServiceController("WindowsAzureGuestAgent");
-                        _ = sc.Status; // Throws if service doesn't exist
-                        // Azure VM confirmed, but not sure if CPC — ask user
+                        try
+                        {
+                            using var sc = new System.ServiceProcess.ServiceController("RDAgentBootLoader");
+                            _ = sc.Status; // Throws if service doesn't exist
+                            detectedViaFallback = true;
+                            _hostType = "cloudpc";
+                            fallbackSignal = "Azure VM + service RDAgentBootLoader";
+                        }
+                        catch { /* Service not found */ }
+                    }
+
+                    // 4. Azure VM with no CPC/AVD-specific signal — ask the user
+                    if (!detectedViaFallback)
+                    {
                         Console.WriteLine("  Azure VM detected via Guest Agent (IMDS unreachable — VPN may be blocking link-local)");
                         Console.Write("  Is this a Cloud PC (C) or AVD Session Host (A)? [C/a/skip]: ");
                         var key = Console.ReadLine()?.Trim();
@@ -316,29 +337,29 @@ class Program
                         {
                             detectedViaFallback = true;
                             _hostType = "avd";
+                            fallbackSignal = "Azure VM + user confirmed AVD";
                         }
                         else if (key == null || !key.StartsWith("s", StringComparison.OrdinalIgnoreCase))
                         {
                             detectedViaFallback = true;
                             _hostType = "cloudpc";
+                            fallbackSignal = "Azure VM + user confirmed Cloud PC";
                         }
                     }
-                    catch { /* Service not found */ }
-                }
 
-                if (detectedViaFallback)
-                {
-                    _isCloudPcMode = true;
-                    Console.WriteLine($"  Detected as {(_hostType == "avd" ? "AVD Session Host" : "Cloud PC")} via {fallbackSignal}");
-                    if (_azureVmRegion == null)
+                    if (detectedViaFallback)
                     {
-                        Console.WriteLine("  Note: Azure region unknown (IMDS unavailable). Location tests may be limited.");
+                        _isCloudPcMode = true;
+                        Console.WriteLine($"  Detected as {(_hostType == "avd" ? "AVD Session Host" : "Cloud PC")} via {fallbackSignal}");
+                        if (_azureVmRegion == null)
+                        {
+                            Console.WriteLine("  Note: Azure region unknown (IMDS unavailable). Location tests may be limited.");
+                        }
                     }
-                }
-                else
-                {
-                    Console.WriteLine("  Running in client mode");
-                    Console.WriteLine("  Tip: If this is a Cloud PC, use --cloudpc flag");
+                    else
+                    {
+                        Console.WriteLine("  Running in client mode");
+                    }
                 }
             }
         }
