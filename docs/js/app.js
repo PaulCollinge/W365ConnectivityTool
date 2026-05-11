@@ -2668,6 +2668,18 @@ function setResultFilter(filter) {
     updateFilterCount();
 }
 
+// Click handler for the summary cards (Total / Passed / Warnings / Failed /
+// Needs Local Scan). Sets the filter and scrolls the test list into view so
+// the user lands on the matching items rather than just seeing the filter
+// chip flip silently above the fold.
+function filterAndScroll(filter) {
+    setResultFilter(filter);
+    const target = document.getElementById('filter-bar') || document.getElementById('test-results');
+    if (target && !target.classList.contains('hidden')) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
 function updateFilterCount() {
     const countEl = document.getElementById('filter-count');
     if (!countEl) return;

@@ -167,26 +167,26 @@
 
         <!-- Summary Bar -->
         <div id="summary-bar" class="summary-bar hidden">
-            <div class="summary-item">
+            <button type="button" class="summary-item" onclick="filterAndScroll('all')" aria-label="Show all tests">
                 <span class="summary-count" id="summary-total">0</span>
                 <span class="summary-label">Total</span>
-            </div>
-            <div class="summary-item passed">
+            </button>
+            <button type="button" class="summary-item passed" onclick="filterAndScroll('passed')" aria-label="Show passed tests">
                 <span class="summary-count" id="summary-passed">0</span>
                 <span class="summary-label">Passed</span>
-            </div>
-            <div class="summary-item warning">
+            </button>
+            <button type="button" class="summary-item warning" onclick="filterAndScroll('warning')" aria-label="Show warnings">
                 <span class="summary-count" id="summary-warnings">0</span>
                 <span class="summary-label">Warnings</span>
-            </div>
-            <div class="summary-item failed">
+            </button>
+            <button type="button" class="summary-item failed" onclick="filterAndScroll('failed')" aria-label="Show failed tests">
                 <span class="summary-count" id="summary-failed">0</span>
                 <span class="summary-label">Failed</span>
-            </div>
-            <div class="summary-item pending">
+            </button>
+            <button type="button" class="summary-item pending" onclick="filterAndScroll('pending')" aria-label="Show tests that need the local scanner">
                 <span class="summary-count" id="summary-pending">0</span>
                 <span class="summary-label">Needs Local Scan</span>
-            </div>
+            </button>
         </div>
 
         <!-- Connectivity Map -->
