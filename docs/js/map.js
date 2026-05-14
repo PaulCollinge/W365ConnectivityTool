@@ -568,7 +568,6 @@ function updateMapIspCard(lookup) {
     if (!isp || isp.status === 'NotRun') {
         setText('map-isp-detail', 'Awaiting results...');
         setText('map-isp-detail2', '');
-        setText('map-isp-detail3', '');
         setAccentStatus('map-isp-accent', 'NotRun');
         return;
     }
@@ -611,8 +610,8 @@ function updateMapIspCard(lookup) {
         egressCity = userLoc ? userLoc.resultValue : '';
     }
 
-    // Detail3: just the egress city with flag
-    setFlaggedText('map-isp-detail3', egressCity ? `📍 ${egressCity}` : '');
+    // The egress city is shown only in the pill badge below; the plain text
+    // line was removed because it duplicated the badge content verbatim.
 
     // Egress location badge
     if (egressCity) {
@@ -634,7 +633,6 @@ function updateMapIspCard(lookup) {
                 if (!fallbackCity || Number.isNaN(geoLat) || Number.isNaN(geoLon)) return;
                 const distKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoLat, geoLon);
                 const bestCity = egressCity || fallbackCity;
-                setFlaggedText('map-isp-detail3', `📍 ${bestCity}`);
                 setFlaggedBadge('map-isp-egress-badge', `📍 ${bestCity}`, 'location-badge', bestCity);
                 setEgressDistanceBadge(distKm);
             })
