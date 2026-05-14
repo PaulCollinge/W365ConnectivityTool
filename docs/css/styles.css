@@ -103,8 +103,8 @@ textarea:focus-visible,
     --purple-border: rgba(188,140,255,0.30);
 
     /* ── Typography ── */
-    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    --mono: 'Cascadia Code', 'Fira Code', 'SF Mono', 'Consolas', monospace;
+    --font: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: 'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'SF Mono', 'Consolas', monospace;
     --text-xs:   0.6875rem;
     --text-sm:   0.8125rem;
     --text-base: 0.875rem;
@@ -171,12 +171,12 @@ body {
 .bg-glow-1 {
     width: 600px; height: 600px;
     top: -200px; right: -100px;
-    background: radial-gradient(circle, rgba(56,139,253,0.08) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(56,139,253,0.04) 0%, transparent 70%);
 }
 .bg-glow-2 {
     width: 500px; height: 500px;
     bottom: 20%; left: -150px;
-    background: radial-gradient(circle, rgba(63,185,80,0.05) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(56,139,253,0.025) 0%, transparent 70%);
 }
 
 /* ════════════════════════════════════════
@@ -374,6 +374,14 @@ header {
     transform: none;
     box-shadow: 0 0 0 1px var(--border-default);
 }
+
+/* Quiet AI button — neutral chrome, purple sparkle accent only */
+.btn-ai-quiet .ai-sparkle { color: var(--purple); }
+.btn-ai-quiet:hover:not(:disabled) {
+    border-color: var(--purple-border);
+    box-shadow: 0 0 0 1px var(--purple-border), 0 0 12px rgba(188,140,255,0.10);
+}
+.btn-ai-quiet:disabled .ai-sparkle { color: var(--text-muted); }
 
 /* ── Dropdown menu (Export ▾) ── */
 .menu-wrap { position: relative; display: inline-block; }
@@ -2423,6 +2431,40 @@ footer {
     transition: color var(--transition);
 }
 .footer-links a:hover { text-decoration: underline; color: var(--accent-bright); }
+
+/* Build pill in the footer — quiet, neutral */
+.footer-build {
+    display: inline-block;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    font-family: var(--mono);
+}
+
+/* Generic icon-container alignment for the SVG icons that replaced emojis. */
+.compare-icon,
+.history-icon,
+.category-icon,
+.live-icon,
+.satellite-banner-icon,
+.live-info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: currentColor;
+    line-height: 1;
+}
+.compare-icon { color: var(--accent); }
+.history-icon { color: var(--text-secondary); }
+.category-icon { color: var(--accent); }
+.live-icon { color: var(--accent); }
+.satellite-banner-icon { color: #e3b341; }
+.live-info-icon { color: currentColor; }
 .footer-sep { color: var(--border-emphasis); }
 
 /* ════════════════════════════════════════

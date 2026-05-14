@@ -4,7 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <title>Windows 365 Connectivity Diagnostics</title>
+    <title>Windows 365 Connectivity Diagnostics &mdash; Preview</title>
+    <meta name="description" content="Browser-based network readiness assessment for Windows 365 Cloud PC and Azure Virtual Desktop. Runs locally; no data uploaded.">
+    <meta name="theme-color" content="#080c14">
+    <meta property="og:title" content="Windows 365 Connectivity Diagnostics">
+    <meta property="og:description" content="Browser-based network readiness assessment for Windows 365 Cloud PC and Azure Virtual Desktop.">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="images/w365-logo.png">
+    <meta name="twitter:card" content="summary">
     <!--
       Content Security Policy — defence in depth.
       - default-src 'self'  : only load resources from same origin by default
@@ -149,8 +156,8 @@
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 7a6 6 0 0111.6-2M13 7a6 6 0 01-11.6 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M13 1v4h-4M1 13V9h4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
                     Re-test Failed
                 </button>
-                <button id="btn-ai-analysis" class="btn btn-ai" onclick="launchAiAnalysis()" disabled aria-label="Analyze results with Copilot (opens in a side panel; run tests first)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L1 4l6 3 6-3-6-3z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M1 10l6 3 6-3M1 7l6 3 6-3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                <button id="btn-ai-analysis" class="btn btn-secondary btn-ai-quiet" onclick="launchAiAnalysis()" disabled aria-label="Analyze results with Copilot (opens in a side panel; run tests first)">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="ai-sparkle"><path d="M7 1l1.2 3.3 3.3 1.2-3.3 1.2L7 10l-1.2-3.3L2.5 5.5l3.3-1.2L7 1zM11.5 9l.6 1.4 1.4.6-1.4.6L11.5 13l-.6-1.4-1.4-.6 1.4-.6L11.5 9z" fill="currentColor"/></svg>
                     Analyze with AI
                 </button>
                 <button id="btn-compare" class="btn btn-secondary" onclick="document.getElementById('file-baseline').click()" disabled aria-label="Compare these results against a previous scan (run tests first)">
@@ -187,7 +194,9 @@
         <!-- Before/After Comparison Panel -->
         <div id="compare-panel" class="compare-panel hidden">
             <div class="compare-header">
-                <span class="compare-icon">⚖️</span>
+                <span class="compare-icon" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 2v14M3 6h12M3 6l-2 5a3 3 0 006 0L5 6M15 6l-2 5a3 3 0 006 0L17 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
                 <h2 class="compare-title">Before / After Comparison</h2>
                 <div class="compare-meta" id="compare-meta"></div>
                 <button class="btn btn-secondary btn-sm" onclick="clearComparison()">✕ Close</button>
@@ -743,7 +752,9 @@
         <!-- History Bar -->
         <div id="history-bar" class="history-bar hidden">
             <div class="history-header">
-                <span class="history-icon">📊</span>
+                <span class="history-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 13V3M2 13h11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="4.5" y="7" width="2" height="4" fill="currentColor"/><rect x="7.5" y="5" width="2" height="6" fill="currentColor"/><rect x="10.5" y="8" width="2" height="3" fill="currentColor"/></svg>
+                </span>
                 <span class="history-title">Previous Results</span>
                 <select id="history-select" class="history-select" onchange="loadHistoryEntry(this.value)">
                     <option value="">Select a previous scan...</option>
@@ -776,7 +787,9 @@
 
         <!-- Aircraft / Satellite WiFi Banner -->
         <div id="satellite-banner" class="satellite-banner hidden">
-            <div class="satellite-banner-icon">✈</div>
+            <div class="satellite-banner-icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M21 11l-9 2-3 6h-1l1-5-5-2 1-1 6 1 4-4-2-7h1l5 6 4-1z" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.15" stroke-linejoin="round"/></svg>
+            </div>
             <div class="satellite-banner-body">
                 <div class="satellite-banner-title">Aircraft / Satellite WiFi detected</div>
                 <div class="satellite-banner-detail" id="satellite-banner-detail">Some results will differ from normal broadband — this is expected.</div>
@@ -806,7 +819,9 @@
         <div id="test-results" class="test-categories" aria-live="polite" aria-relevant="additions text" aria-busy="false">
             <section class="category" id="cat-endpoint">
                 <div class="category-header">
-                    <span class="category-icon">🌐</span>
+                    <span class="category-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.4"/><path d="M2 9h14M9 2c2.5 2 2.5 12 0 14M9 2c-2.5 2-2.5 12 0 14" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
+                    </span>
                     <h2>Required Endpoint Access</h2>
                     <span class="category-badge" id="badge-endpoint"></span>
                 </div>
@@ -815,7 +830,9 @@
 
             <section class="category" id="cat-local">
                 <div class="category-header">
-                    <span class="category-icon">💻</span>
+                    <span class="category-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="3" width="14" height="10" rx="1.5" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M6 16h6M9 13v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                    </span>
                     <h2>Local Environment</h2>
                     <span class="category-badge" id="badge-local"></span>
                     <span class="source-tag local-only">Requires Local Scanner</span>
@@ -825,7 +842,9 @@
 
             <section class="category" id="cat-tcp">
                 <div class="category-header">
-                    <span class="category-icon">🔗</span>
+                    <span class="category-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M7 11l-3 3a2.5 2.5 0 01-3.5-3.5l3-3M11 7l3-3a2.5 2.5 0 013.5 3.5l-3 3M6 12l6-6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                    </span>
                     <h2>TCP Based RDP Connectivity</h2>
                     <span class="category-badge" id="badge-tcp"></span>
                 </div>
@@ -834,7 +853,9 @@
 
             <section class="category" id="cat-udp">
                 <div class="category-header">
-                    <span class="category-icon">⚡</span>
+                    <span class="category-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M10 1L3 10h5l-2 7 7-9h-5l2-7z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+                    </span>
                     <h2>UDP Based RDP Connectivity</h2>
                     <span class="category-badge" id="badge-udp"></span>
                 </div>
@@ -849,7 +870,9 @@
         <div id="cloudpc-diagnostics-section" class="live-diagnostics-section">
             <div class="live-header cloudpc-header">
                 <div class="live-header-left">
-                    <span class="live-icon">☁️</span>
+                    <span class="live-icon" aria-hidden="true">
+                        <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M6 15a4 4 0 010-8 5 5 0 019.5-1.5A4 4 0 0118 14a4 4 0 01-4 1H6z" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.15" stroke-linejoin="round"/></svg>
+                    </span>
                     <div>
                         <h2 class="live-title">Cloud PC Diagnostics</h2>
                         <p class="live-subtitle">Connectivity tests run from within the Cloud PC (Azure VM), including <a href="https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips" target="_blank" rel="noopener noreferrer">Azure fabric communication IPs</a></p>
@@ -858,7 +881,9 @@
                 <span class="category-badge" id="badge-cloudpc"></span>
             </div>
             <div class="live-info-bar" id="cloudpc-info-bar">
-                <span class="live-info-icon">ℹ️</span>
+                <span class="live-info-icon" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M7 6v4M7 4v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </span>
                 <span>Run <code>W365LocalScanner.exe --cloudpc</code> inside your Cloud PC, then drag &amp; drop the <code>W365ScanResults.json</code> file here, or&nbsp;<button class="info-bar-link" onclick="document.getElementById('file-import').click()">browse to import it</button>.</span>
             </div>
             <div class="test-list" id="tests-cloudpc"></div>
@@ -870,7 +895,9 @@
         <div id="live-diagnostics-section" class="live-diagnostics-section">
             <div class="live-header">
                 <div class="live-header-left">
-                    <span class="live-icon">📡</span>
+                    <span class="live-icon" aria-hidden="true">
+                        <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 11v0M7 11a4 4 0 018 0M4 11a7 7 0 0114 0M1 11a10 10 0 0120 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+                    </span>
                     <div>
                         <h2 class="live-title">Live Connection Diagnostics</h2>
                         <p class="live-subtitle">Real-time analysis of your active Cloud PC session</p>
@@ -879,7 +906,9 @@
                 <span class="category-badge" id="badge-cloud"></span>
             </div>
             <div class="live-info-bar" id="cloud-info-bar">
-                <span class="live-info-icon">ℹ️</span>
+                <span class="live-info-icon" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M7 6v4M7 4v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </span>
                 <span>Run the desktop tool while connected to your Cloud PC, or from within the Cloud PC session itself.</span>
             </div>
             <div class="test-list" id="tests-cloud"></div>
@@ -898,6 +927,8 @@
                 <a href="https://github.com/PaulCollinge/W365ConnectivityTool" target="_blank">GitHub</a>
                 <span class="footer-sep">·</span>
                 <a href="https://forms.cloud.microsoft/Pages/ResponsePage.aspx?id=v4j5cvGGr0GRqy180BHbR_4Hfn4E7x5MrD4K8pxyk8ZUMjY4RkJBUVA2WFBYU0w5S1lOWUM1Mlc4Ui4u" target="_blank" rel="noopener">Send Feedback</a>
+                <span class="footer-sep">·</span>
+                <span class="footer-build" title="Static dashboard build">Build v48</span>
             </div>
         </div>
     </footer>
