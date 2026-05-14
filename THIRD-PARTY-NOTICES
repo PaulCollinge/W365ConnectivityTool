@@ -14,14 +14,7 @@ This project incorporates components from the projects listed below.
 Licensed under the MIT License.
 https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
 
-2. Microsoft.Web.WebView2 (BSD-style License)
-------------------------------------------------------------------------
-https://www.nuget.org/packages/Microsoft.Web.WebView2
-https://learn.microsoft.com/en-us/microsoft-edge/webview2/
-
-Licensed under the Microsoft Edge WebView2 Runtime License.
-
-3. Inter Font (SIL Open Font License 1.1)
+2. Inter Font (SIL Open Font License 1.1)
 ------------------------------------------------------------------------
 Used in the web dashboard (docs/).
 https://github.com/rsms/inter

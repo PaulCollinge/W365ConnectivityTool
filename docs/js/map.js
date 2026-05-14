@@ -1,6 +1,5 @@
 /**
  * Connectivity Map — updates the network flow diagram cards from test results.
- * Mirrors the WPF ConnectivityMapControl logic for the web dashboard.
  */
 
 function updateConnectivityMap(results) {
