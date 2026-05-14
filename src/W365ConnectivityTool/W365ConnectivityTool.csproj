@@ -14,6 +14,21 @@
     <Description>Connectivity diagnostics tool for Windows 365 and Azure Virtual Desktop.</Description>
     <Copyright>Copyright © Microsoft 2025-2026</Copyright>
     <NeutralLanguage>en</NeutralLanguage>
+
+    <!-- Reproducible build settings. <Deterministic> is true by default in
+         the .NET SDK; declared here explicitly so it's visible to reviewers.
+         <ContinuousIntegrationBuild> activates only under CI and normalises
+         embedded source paths so signed binaries can be verified against a
+         known commit. Embedded PDBs + embedded untracked sources keep the
+         signing pipeline single-artifact. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <DebugType>embedded</DebugType>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+    <!-- Application manifest declares DPI awareness, supported OS, long-path
+         support, and that this app runs as the invoking user (no UAC). -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

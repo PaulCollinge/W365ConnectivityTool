@@ -30,6 +30,17 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishTrimmed>true</PublishTrimmed>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- Reproducible build settings. <Deterministic> is true by default in
+         the .NET SDK; declared here explicitly so it's visible to reviewers.
+         <ContinuousIntegrationBuild> activates only under CI and normalises
+         embedded source paths so signed binaries can be verified against a
+         known commit. Embedded PDBs + embedded untracked sources keep the
+         signing pipeline single-artifact. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <DebugType>embedded</DebugType>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
   <ItemGroup>

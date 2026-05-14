@@ -9,6 +9,7 @@ This project incorporates components from the projects listed below.
 - System.Text.Json (https://github.com/dotnet/runtime)
 - System.Diagnostics.EventLog (https://github.com/dotnet/runtime)
 - System.Diagnostics.PerformanceCounter (https://github.com/dotnet/runtime)
+- System.ServiceProcess.ServiceController (https://github.com/dotnet/runtime)
 
 Licensed under the MIT License.
 https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
