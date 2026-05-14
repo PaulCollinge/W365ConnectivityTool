@@ -86,9 +86,11 @@
                     <img src="images/w365-logo.png" alt="Windows 365" width="36" height="36">
                 </div>
                 <div class="logo-text">
-                    <h1>Windows 365 Connectivity Diagnostics</h1>
+                    <h1>
+                        Windows 365 Connectivity Diagnostics
+                        <span class="preview-pill" title="This tool is a work in progress. Please use Send Feedback if something looks wrong.">Preview</span>
+                    </h1>
                     <p class="logo-subtitle">Network readiness assessment for Cloud PC and Azure Virtual Desktop</p>
-                    <p class="logo-wip">This tool is a work in progress and may still have rough edges or bugs &mdash; please use <em>Send Feedback</em> if something looks wrong.</p>
                 </div>
             </div>
             <div class="header-actions">
@@ -168,13 +170,19 @@
 
     <main>
         <!-- Privacy notice — runs entirely in your browser; no telemetry. -->
-        <div class="privacy-notice" role="note" aria-label="Privacy notice">
-            <svg class="privacy-notice-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M8 1.5l5.5 2v4.25c0 3.4-2.3 6.25-5.5 6.75-3.2-.5-5.5-3.35-5.5-6.75V3.5L8 1.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/>
-                <path d="M5.75 8L7.25 9.5 10.5 6.25" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span><strong>Your data stays with you.</strong> All tests run locally in your browser. Results are never uploaded, logged, or sent to any server we control. External requests go only to the Microsoft / public endpoints being probed (e.g. Microsoft 365, DNS-over-HTTPS, GeoIP lookups) so the diagnostic can measure real connectivity. Exports (Text / JSON / CSV / Email to IT / Copy Share Link) are produced on-device and only leave your machine if <em>you</em> share them.</span>
-        </div>
+        <details class="privacy-notice privacy-notice-compact" role="note" aria-label="Privacy notice">
+            <summary>
+                <svg class="privacy-notice-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 1.5l5.5 2v4.25c0 3.4-2.3 6.25-5.5 6.75-3.2-.5-5.5-3.35-5.5-6.75V3.5L8 1.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/>
+                    <path d="M5.75 8L7.25 9.5 10.5 6.25" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="privacy-summary-text"><strong>Your data stays with you.</strong> All tests run locally in your browser &mdash; nothing is uploaded to a server we control.</span>
+                <span class="privacy-toggle-hint" aria-hidden="true">Details</span>
+            </summary>
+            <div class="privacy-notice-body">
+                External requests go only to the Microsoft / public endpoints being probed (e.g. Microsoft 365, DNS-over-HTTPS, GeoIP lookups) so the diagnostic can measure real connectivity. Exports (Text / JSON / CSV / Email to IT / Copy Share Link) are produced on-device and only leave your machine if <em>you</em> share them.
+            </div>
+        </details>
 
         <!-- Before/After Comparison Panel -->
         <div id="compare-panel" class="compare-panel hidden">
