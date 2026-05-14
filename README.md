@@ -61,8 +61,7 @@ W365ConnectivityTool/
 │       ├── ui.js                  # UI rendering
 │       └── app.js                 # Main application logic
 ├── src/
-│   ├── W365ConnectivityTool/      # WPF desktop app (full-featured)
-│   └── W365LocalScanner/          # Console app (JSON output)
+│   └── W365LocalScanner/          # Console scanner (produces W365ScanResults.json)
 ├── .github/workflows/
 │   ├── deploy-pages.yml           # Deploy website to GitHub Pages
 │   └── build-scanner.yml          # Build & release scanner exe
@@ -111,12 +110,6 @@ dotnet build src/W365LocalScanner/W365LocalScanner.csproj
 dotnet publish src/W365LocalScanner/W365LocalScanner.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishTrimmed=true -o publish
 ```
 
-### WPF Desktop App
-```powershell
-dotnet build src/W365ConnectivityTool/W365ConnectivityTool.csproj
-dotnet run --project src/W365ConnectivityTool/W365ConnectivityTool.csproj
-```
-
 ## Deployment
 
 1. **Push to GitHub** — the `deploy-pages.yml` workflow automatically deploys the web dashboard to GitHub Pages
@@ -127,7 +120,6 @@ dotnet run --project src/W365ConnectivityTool/W365ConnectivityTool.csproj
 
 - **Web Dashboard**: Any modern browser (Chrome, Edge, Firefox, Safari)
 - **Local Scanner**: Windows 10/11 (x64), no dependencies (self-contained .NET 8)
-- **WPF App**: Windows 10/11 with .NET 10 SDK
 
 ## References
 
