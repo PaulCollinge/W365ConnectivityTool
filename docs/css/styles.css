@@ -242,6 +242,21 @@ header {
     letter-spacing: 0.02em;
 }
 
+.logo-wip {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #e3b341;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    line-height: 1.4;
+    max-width: 640px;
+}
+.logo-wip em {
+    font-style: normal;
+    font-weight: 600;
+    color: #f0c651;
+}
+
 .header-actions {
     display: flex;
     gap: 10px;
@@ -1045,18 +1060,6 @@ main {
     font-size: var(--text-xs);
     border: 1px solid var(--accent-border);
 }
-.info-note {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: rgba(227, 179, 65, 0.08);
-    border: 1px solid rgba(227, 179, 65, 0.35);
-    border-left: 3px solid #e3b341;
-    border-radius: 4px;
-    font-size: var(--text-xs);
-    line-height: 1.6;
-    color: var(--text-secondary);
-}
-.info-note strong { color: #e3b341; }
 
 /* ════════════════════════════════════════
    SATELLITE / AIRCRAFT WIFI BANNER
