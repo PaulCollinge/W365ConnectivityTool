@@ -20,28 +20,15 @@ W365_OpenResults.html
 
 # Helper files (not part of the project)
 ServiceTags.json
-gen_lookup.py
-gen_gw_lookup.py
-gen_gw_lookup2.py
-gen_gw_final.py
 
 # Developer working files
-_push.ps1
-_push_result.json
-_push_err.txt
-_push_stderr.txt
-_push_ec.txt
+# Catch-all: any root-level file beginning with an underscore is treated as scratch.
+/_*
 push_result.txt
 git_status.txt
 gitcheck.txt
-_notes.txt
-_prev.html
-_git_head.html
 scanner_diff.txt
 test_url.txt
-_release_notes*.md
-_scan_b64.txt
-_scan_noblom.json
 
 # Generated / downloaded data (fetched fresh at runtime)
 ServiceTags_Latest.json
