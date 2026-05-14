@@ -2087,9 +2087,56 @@ async function exportTextReport() {
     URL.revokeObjectURL(url);
 }
 
+// ── Export / share menu ──
+function toggleExportMenu(ev) {
+    if (ev) ev.stopPropagation();
+    const menu = document.getElementById('export-menu');
+    const trigger = document.getElementById('btn-export-menu');
+    if (!menu || !trigger) return;
+    if (trigger.disabled) return;
+    const willOpen = menu.hasAttribute('hidden');
+    if (willOpen) openExportMenu(); else closeExportMenu();
+}
+function openExportMenu() {
+    const menu = document.getElementById('export-menu');
+    const trigger = document.getElementById('btn-export-menu');
+    if (!menu || !trigger) return;
+    menu.removeAttribute('hidden');
+    trigger.setAttribute('aria-expanded', 'true');
+    // Bind one-shot dismiss handlers
+    setTimeout(() => {
+        document.addEventListener('click', _exportMenuOutsideClick, true);
+        document.addEventListener('keydown', _exportMenuKey, true);
+    }, 0);
+}
+function closeExportMenu() {
+    const menu = document.getElementById('export-menu');
+    const trigger = document.getElementById('btn-export-menu');
+    if (menu) menu.setAttribute('hidden', '');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', _exportMenuOutsideClick, true);
+    document.removeEventListener('keydown', _exportMenuKey, true);
+}
+function _exportMenuOutsideClick(e) {
+    const wrap = document.getElementById('export-menu')?.parentElement;
+    if (wrap && !wrap.contains(e.target)) closeExportMenu();
+}
+function _exportMenuKey(e) {
+    if (e.key === 'Escape') {
+        closeExportMenu();
+        document.getElementById('btn-export-menu')?.focus();
+    }
+}
+
 // ── Enable the export button when results are available ──
 function updateExportButton() {
     const hasResults = allResults.length > 0;
+    const menuBtn = document.getElementById('btn-export-menu');
+    if (menuBtn) {
+        menuBtn.disabled = !hasResults;
+        menuBtn.title = !hasResults ? 'Run tests first' : 'Export or share results';
+        if (!hasResults) closeExportMenu();
+    }
     const btn = document.getElementById('btn-export-text');
     if (btn) {
         btn.disabled = !hasResults;

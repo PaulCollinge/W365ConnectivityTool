@@ -104,26 +104,44 @@
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1.5v11l9-5.5L3 1.5z" fill="currentColor"/></svg>
                     Run Browser Tests
                 </button>
-                <button id="btn-export-text" class="btn btn-secondary" onclick="exportTextReport()" disabled aria-label="Export results as a text report (run tests first)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3M5 7h4M5 9.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-                    Export Text
-                </button>
-                <button id="btn-export-json" class="btn btn-secondary" onclick="exportJsonReport()" disabled aria-label="Export results as a JSON file (run tests first)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 1C2.9 1 2 1.9 2 3v2c0 .6-.4 1-1 1v2c.6 0 1 .4 1 1v2c0 1.1.9 2 2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M10 1c1.1 0 2 .9 2 2v2c0 .6.4 1 1 1v2c-.6 0-1 .4-1 1v2c0 1.1-.9 2-2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-                    Export JSON
-                </button>
-                <button id="btn-export-csv" class="btn btn-secondary" onclick="exportCsvReport()" disabled aria-label="Export results as a CSV file (run tests first)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M4.5 8.5l1.5 1.5-1.5 1.5M7 10h2.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    Export CSV
-                </button>
-                <button id="btn-send-it" class="btn btn-secondary" onclick="sendResultsToIT()" disabled aria-label="Email results to IT (run tests first)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 2.5h12L7 8 1 2.5z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M1 2.5v9h12v-9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
-                    Send to IT
-                </button>
-                <button id="btn-copy-link" class="btn btn-secondary" onclick="copyShareLink()" disabled aria-label="Copy a shareable link to these results (run tests first)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M6 8a3 3 0 004.24 0l2-2a3 3 0 00-4.24-4.24l-1 1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M8 6a3 3 0 00-4.24 0l-2 2a3 3 0 004.24 4.24l1-1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-                    Copy Link
-                </button>
+                <div class="menu-wrap">
+                    <button id="btn-export-menu" class="btn btn-secondary menu-trigger" type="button" disabled
+                            aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu"
+                            onclick="toggleExportMenu(event)"
+                            aria-label="Export or share results (run tests first)">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v1a1 1 0 001 1h8a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                        Export
+                        <svg class="menu-caret" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 3.5l3 3 3-3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div id="export-menu" class="menu-popup" role="menu" aria-labelledby="btn-export-menu" hidden>
+                        <button id="btn-export-text" class="menu-item" role="menuitem" type="button" onclick="exportTextReport(); closeExportMenu();" disabled>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3M5 7h4M5 9.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                            <span class="menu-item-label">Save as Text</span>
+                            <span class="menu-item-hint">.txt report</span>
+                        </button>
+                        <button id="btn-export-json" class="menu-item" role="menuitem" type="button" onclick="exportJsonReport(); closeExportMenu();" disabled>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M4 1C2.9 1 2 1.9 2 3v2c0 .6-.4 1-1 1v2c.6 0 1 .4 1 1v2c0 1.1.9 2 2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M10 1c1.1 0 2 .9 2 2v2c0 .6.4 1 1 1v2c-.6 0-1 .4-1 1v2c0 1.1-.9 2-2 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                            <span class="menu-item-label">Save as JSON</span>
+                            <span class="menu-item-hint">re-importable</span>
+                        </button>
+                        <button id="btn-export-csv" class="menu-item" role="menuitem" type="button" onclick="exportCsvReport(); closeExportMenu();" disabled>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M3 1h5l3 3v8a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 1v3h3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M4.5 8.5l1.5 1.5-1.5 1.5M7 10h2.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            <span class="menu-item-label">Save as CSV</span>
+                            <span class="menu-item-hint">opens in Excel</span>
+                        </button>
+                        <div class="menu-sep" role="separator"></div>
+                        <button id="btn-send-it" class="menu-item" role="menuitem" type="button" onclick="sendResultsToIT(); closeExportMenu();" disabled>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1 2.5h12L7 8 1 2.5z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M1 2.5v9h12v-9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
+                            <span class="menu-item-label">Email to IT</span>
+                            <span class="menu-item-hint">opens mail client</span>
+                        </button>
+                        <button id="btn-copy-link" class="menu-item" role="menuitem" type="button" onclick="copyShareLink(); closeExportMenu();" disabled>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M6 8a3 3 0 004.24 0l2-2a3 3 0 00-4.24-4.24l-1 1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M8 6a3 3 0 00-4.24 0l-2 2a3 3 0 004.24 4.24l1-1" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+                            <span class="menu-item-label">Copy Share Link</span>
+                            <span class="menu-item-hint">to clipboard</span>
+                        </button>
+                    </div>
+                </div>
                 <button id="btn-retest" class="btn btn-secondary" onclick="retestFailedItems()" disabled aria-label="Re-run only the tests that failed" style="display:none">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 7a6 6 0 0111.6-2M13 7a6 6 0 01-11.6 2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M13 1v4h-4M1 13V9h4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
                     Re-test Failed
@@ -154,7 +172,7 @@
                 <path d="M8 1.5l5.5 2v4.25c0 3.4-2.3 6.25-5.5 6.75-3.2-.5-5.5-3.35-5.5-6.75V3.5L8 1.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/>
                 <path d="M5.75 8L7.25 9.5 10.5 6.25" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <span><strong>Your data stays with you.</strong> All tests run locally in your browser. Results are never uploaded, logged, or sent to any server we control. External requests go only to the Microsoft / public endpoints being probed (e.g. Microsoft 365, DNS-over-HTTPS, GeoIP lookups) so the diagnostic can measure real connectivity. Exports (Text / JSON / CSV / Send to IT / Copy Link) are produced on-device and only leave your machine if <em>you</em> share them.</span>
+            <span><strong>Your data stays with you.</strong> All tests run locally in your browser. Results are never uploaded, logged, or sent to any server we control. External requests go only to the Microsoft / public endpoints being probed (e.g. Microsoft 365, DNS-over-HTTPS, GeoIP lookups) so the diagnostic can measure real connectivity. Exports (Text / JSON / CSV / Email to IT / Copy Share Link) are produced on-device and only leave your machine if <em>you</em> share them.</span>
         </div>
 
         <!-- Before/After Comparison Panel -->
