@@ -15,6 +15,14 @@
     <Copyright>Copyright © Microsoft 2025-2026</Copyright>
     <NeutralLanguage>en</NeutralLanguage>
 
+    <!-- Version stamping. Kept in lock-step with the scanner (W365LocalScanner)
+         since the two ship as a single product. Update both csproj files
+         together at release time. The signing pipeline reads these to stamp
+         FileVersion / ProductVersion on the signed binary. -->
+    <Version>1.12.7</Version>
+    <FileVersion>1.12.7.0</FileVersion>
+    <AssemblyVersion>1.12.7.0</AssemblyVersion>
+
     <!-- Reproducible build settings. <Deterministic> is true by default in
          the .NET SDK; declared here explicitly so it's visible to reviewers.
          <ContinuousIntegrationBuild> activates only under CI and normalises
