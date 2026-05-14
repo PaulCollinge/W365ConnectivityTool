@@ -3442,12 +3442,18 @@ async function updateKeyFindings(results) {
             if (m) dnsLatMs = parseInt(m[1]);
         }
         const hijacked = dnsHijack && dnsHijack.status !== 'Passed' && dnsHijack.status !== 'NotRun' && dnsHijack.status !== 'Pending';
+        // B-TCP-03 measures DNS + TCP + TLS combined, so timings of 150-300ms
+        // over the public internet (e.g. a home Cloudflare connection) are
+        // completely normal. Only flag as "slow" when the test itself decided
+        // it crossed its own threshold (>500ms → Warning, >1000ms → Failed),
+        // not on a stricter Key-Findings re-threshold that contradicts the
+        // test result the user already sees.
         if (hijacked) {
             add('kf-error', 'DNS', 'Hijacking detected — responses being altered');
-        } else if (dnsLatMs != null && dnsLatMs > 100) {
-            add('kf-issue', 'DNS', `Slow — ${dnsLatMs}ms avg (delays connection setup)`);
         } else if (dns03.status === 'Passed') {
             add('kf-pass', 'DNS', `Healthy${dnsLatMs != null ? ` · ${dnsLatMs}ms` : ''}`);
+        } else if (dnsLatMs != null && dnsLatMs > 500) {
+            add('kf-issue', 'DNS', `Slow — ${dnsLatMs}ms avg (delays connection setup)`);
         } else {
             add('kf-issue', 'DNS', esc(dns03.resultValue || 'Issues detected'));
         }
