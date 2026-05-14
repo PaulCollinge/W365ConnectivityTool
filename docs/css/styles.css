@@ -1045,6 +1045,18 @@ main {
     font-size: var(--text-xs);
     border: 1px solid var(--accent-border);
 }
+.info-note {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(227, 179, 65, 0.08);
+    border: 1px solid rgba(227, 179, 65, 0.35);
+    border-left: 3px solid #e3b341;
+    border-radius: 4px;
+    font-size: var(--text-xs);
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+.info-note strong { color: #e3b341; }
 
 /* ════════════════════════════════════════
    SATELLITE / AIRCRAFT WIFI BANNER
