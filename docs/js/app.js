@@ -1180,13 +1180,24 @@ function processImportedData(data) {
             }
         }
         updateHostTypeLabels();
-        // Enable CPC mode in the UI (shows Cloud PC / Azure Network cards on map)
-        if (!cloudPcMode) {
-            const toggle = document.getElementById('cpc-mode-toggle');
-            if (toggle) toggle.checked = true;
-            toggleCloudPcMode(true);
-            ilog('CPC mode enabled via imported scanner data (scanMode=cloudpc)');
-        }
+        // Reveal the CPC right-side cards on the map in ADDITIVE mode.
+        // The `has-cloudpc` class shows the Cloud PC / Azure column alongside
+        // the existing client-side cards (11-col grid). The exclusive
+        // `cpc-mode` class — which HIDES the client-side cards — is reserved
+        // for tabs where we have proof the dashboard is running ON a CPC
+        // (URL ?mode=cloudpc set by the scanner exe, or a live IMDS probe).
+        // Both of those run at init, before any import — so if cloudPcMode is
+        // still false here, this is a laptop merging in someone's CPC scan
+        // and we must NOT swallow the client view. The user can flip to
+        // cpc-only via the Cloud PC Mode toggle if they actually want that.
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
+        // Hide the "run the local scanner first" info bar — we now have data.
+        const cpcInfoBar = document.getElementById('cloudpc-info-bar');
+        if (cpcInfoBar) cpcInfoBar.style.display = 'none';
+        ilog(cloudPcMode
+            ? 'CPC data merged into existing CPC-mode tab'
+            : 'CPC data merged additively (end-to-end view) — client cards preserved');
         // NOTE: deliberately do NOT persist `w365-last-mode` here. An imported
         // JSON is data about *some* machine — not necessarily this one. If we
         // wrote the sticky flag on import, a user who imports a colleague's
