@@ -1187,14 +1187,34 @@ function processImportedData(data) {
             toggleCloudPcMode(true);
             ilog('CPC mode enabled via imported scanner data (scanMode=cloudpc)');
         }
-        // Remember this machine is a CPC/AVD so subsequent manual loads skip
-        // the client-mode flash even before the scanner runs again.
-        try { localStorage.setItem('w365-last-mode', hostType); } catch (e) {}
+        // NOTE: deliberately do NOT persist `w365-last-mode` here. An imported
+        // JSON is data about *some* machine — not necessarily this one. If we
+        // wrote the sticky flag on import, a user who imports a colleague's
+        // CPC scan onto their laptop would get permanently forced into CPC
+        // mode on every subsequent page load (across tab closures), even
+        // after running a fresh local scan from their own laptop. The
+        // sticky flag is reserved for evidence that THIS device is a CPC
+        // (URL param ?mode=cloudpc set by the scanner exe, or successful
+        // IMDS detection on the current machine).
         // Sync host-type dropdown and hide picker banner
         const htSel = document.getElementById('host-type-select');
         if (htSel) htSel.value = hostType;
         const picker = document.getElementById('host-type-picker');
         if (picker) picker.classList.add('hidden');
+    } else {
+        // Imported scan is from a regular client/laptop (not a CPC). Clear any
+        // stale `w365-last-mode=cloudpc` sticky flag that an earlier CPC
+        // import on this same browser may have left behind — otherwise the
+        // page would re-promote to CPC mode on every reload even though the
+        // user is now scanning their own laptop. Also flip the runtime mode
+        // off if it's currently on from a previous CPC import.
+        try { localStorage.removeItem('w365-last-mode'); } catch (e) {}
+        if (cloudPcMode) {
+            const toggle = document.getElementById('cpc-mode-toggle');
+            if (toggle) toggle.checked = false;
+            toggleCloudPcMode(false);
+            ilog('CPC mode disabled — imported scan is from a regular client');
+        }
     }
 
     // Import complete — remove the "importing" shroud applied by the inline
