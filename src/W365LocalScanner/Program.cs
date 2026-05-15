@@ -485,10 +485,21 @@ class Program
             Console.WriteLine();
             Console.WriteLine("  Traceroute complete — updating results...");
 
-            // Rewrite JSON with complete results (including traceroute)
+            // Rewrite JSON with complete results (including traceroute).
+            // Deliberately do NOT call OpenBrowserWithResults again here:
+            // Process.Start always spawns a new browser tab, and the previous
+            // comment ("BroadcastChannel merges updated results into the
+            // existing tab") was wrong — BroadcastChannel only carries
+            // messages between already-open tabs, it cannot post into a
+            // freshly-launched one. Re-opening therefore produced a 3rd tab
+            // (original dashboard + post-fast-tests tab + post-traceroute
+            // tab) on every scan that included traceroute. The first tab
+            // we opened (after fast tests) is already showing live results;
+            // the user can drag-and-drop the updated JSON if they want the
+            // traceroute findings merged in.
             await WriteResultsJson(outputPath, results);
-            // Re-open browser: BroadcastChannel merges updated results into the existing tab
-            await OpenBrowserWithResults(outputPath, results);
+            Console.WriteLine($"  Updated JSON written to: {Path.GetFullPath(outputPath)}");
+            Console.WriteLine("  Drag-and-drop this file onto the dashboard tab to see traceroute data.");
         }
         else
         {
