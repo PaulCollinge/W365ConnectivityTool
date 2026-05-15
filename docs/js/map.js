@@ -375,10 +375,14 @@ function extractMsFromSection(detailedInfo, sectionRe, preferHttps) {
     let tcpMs = null;
     let httpsMs = null;
     for (const raw of lines) {
-        const line = raw;
-        // A header line is one that contains `[Some Label]` or `host:port`-style
-        // — they're typically not indented with whitespace.
-        const isHeader = /^\S.*\[[^\]]+\]\s*$/.test(line) || /^\S+:\d+\s/.test(line);
+        // Strip trailing \r (CRLF-split files leave one behind) but preserve
+        // leading whitespace — we need that to distinguish header lines from
+        // their indented body. Block headers may themselves be indented when
+        // they're not the first block in the field (the scanner emits the
+        // 2nd, 3rd... probes with two leading spaces), so we allow optional
+        // leading whitespace in the header pattern instead of requiring \S.
+        const line = raw.replace(/\r$/, '');
+        const isHeader = /^\s*\S.*\[[^\]]+\]\s*$/.test(line) || /^\s*\S+:\d+\s/.test(line);
         if (isHeader) {
             if (inBlock) break; // exited our block — stop scanning
             if (re.test(line)) inBlock = true;
