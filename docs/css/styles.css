@@ -2175,6 +2175,46 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .map-card-badge.proximity-moderate { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
 .map-card-badge.proximity-far  { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
+/* Dual-latency badge — used on AFD / RD Gateway / TURN cards when both a
+   client-side probe and a Cloud PC-side probe reached the same node. The
+   outer .map-card-badge.map-card-badge-dual is a transparent flex container;
+   each inner .dual-pill carries its own latency colour so a quick visual
+   scan immediately shows which side is faster. The small Client/Cloud PC
+   label makes the attribution explicit. */
+.map-card-badge.map-card-badge-dual {
+    background: transparent;
+    border: none;
+    padding: 0;
+    gap: 4px;
+    display: inline-flex;
+    flex-wrap: wrap;
+}
+.map-card-badge .dual-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+    border: 1px solid transparent;
+}
+.map-card-badge .dual-pill.latency-good   { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
+.map-card-badge .dual-pill.latency-medium { background: var(--yellow-bg); color: var(--yellow); border-color: var(--yellow-border); }
+.map-card-badge .dual-pill.latency-bad    { background: var(--red-bg); color: var(--red); border-color: var(--red-border); }
+.map-card-badge .dual-pill-label {
+    font-size: 8.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.75;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+}
+
 .map-dns-connector { display: flex; flex-direction: column; align-items: center; height: 100%; min-height: 32px; }
 .map-vline {
     width: 2px;

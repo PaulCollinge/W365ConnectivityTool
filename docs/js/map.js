@@ -258,6 +258,76 @@ function setBadge(elementId, text, cssClass) {
     el.className = 'map-card-badge ' + cssClass;
 }
 
+/**
+ * Render a latency badge that may show one OR two values depending on what's
+ * available. Used for nodes (AFD, RD Gateway, TURN) that sit between the
+ * client and the Cloud PC in an end-to-end merged view — when both a client
+ * probe (B-* / L-*) and a Cloud PC probe (C-*) reached the same node, the
+ * two latencies are genuinely different measurements (different source
+ * machines, different network paths) and we shouldn't hide one behind the
+ * other. Falls back to the existing single-pill look when only one side
+ * has data, so unchanged behaviour for client-only or CPC-only scans.
+ *
+ * clientMs / cpcMs: numeric ms or null. isTcp: passed to latencyClass.
+ */
+function setDualLatencyBadge(elementId, clientMs, cpcMs, isTcp) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const haveClient = clientMs != null && !isNaN(clientMs);
+    const haveCpc = cpcMs != null && !isNaN(cpcMs);
+    if (!haveClient && !haveCpc) {
+        el.classList.add('hidden');
+        return;
+    }
+    const latencyType = isTcp ? 'tcp' : 'udp';
+    if (haveClient && haveCpc) {
+        // Render two pills inside the badge container. Each pill keeps its
+        // own colour (latencyClass) so a fast client + slow CPC reads at a
+        // glance. The wrapper carries no colour class; .map-card-badge-dual
+        // styles it as a borderless flex row in CSS.
+        const cMs = Math.round(clientMs);
+        const pMs = Math.round(cpcMs);
+        const cCls = latencyClass(cMs, isTcp);
+        const pCls = latencyClass(pMs, isTcp);
+        const cHealth = latencyLabel(cMs, latencyType);
+        const pHealth = latencyLabel(pMs, latencyType);
+        el.className = 'map-card-badge map-card-badge-dual';
+        el.innerHTML =
+            `<span class="dual-pill ${cCls}" title="From this device (client probe)">` +
+                `<span class="dual-pill-label">Client</span> ⏱ ${cMs}ms · ${cHealth}` +
+            `</span>` +
+            `<span class="dual-pill ${pCls}" title="From the Cloud PC (scanner probe)">` +
+                `<span class="dual-pill-label">Cloud PC</span> ⏱ ${pMs}ms · ${pHealth}` +
+            `</span>`;
+        return;
+    }
+    // Single-side fallback — preserve original look.
+    const ms = Math.round(haveClient ? clientMs : cpcMs);
+    const health = latencyLabel(ms, latencyType);
+    el.textContent = `⏱ ${ms}ms · ${health}`;
+    el.className = 'map-card-badge ' + latencyClass(ms, isTcp);
+}
+
+/** Pull "(N)ms" out of a result's resultValue or detailedInfo. */
+function extractMs(result) {
+    if (!result) return null;
+    if (result.resultValue) {
+        const m = result.resultValue.match(/(\d+)\s*ms/);
+        if (m) return parseInt(m[1]);
+    }
+    if (result.detailedInfo) {
+        const latLine = result.detailedInfo.split('\n').find(l => /^\s*Latency:/i.test(l));
+        if (latLine) {
+            const m = latLine.match(/(\d+)\s*ms/);
+            if (m) return parseInt(m[1]);
+        }
+    }
+    if (result.status === 'Passed' && result.duration > 0) {
+        return result.duration;
+    }
+    return null;
+}
+
 function latencyClass(ms, isTcp) {
     if (isTcp) {
         if (ms < 100) return 'latency-good';
@@ -664,7 +734,13 @@ function setEgressDistanceBadge(distKm) {
 // ── AFD Edge Card ──
 function updateMapAfdCard(lookup) {
     const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'] || lookup['C-TCP-04'];
-    const latency = lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    // Dual-side latency: client probe (B-TCP-02 from this device's browser)
+    // and Cloud PC probe (C-TCP-04 from the CPC scanner). When merged from
+    // an end-to-end import these are independent measurements over different
+    // network paths and we render both side-by-side; otherwise single pill.
+    const clientLat = lookup['B-TCP-02'];
+    const cpcLat = lookup['C-TCP-04'];
+    const latency = clientLat || cpcLat;
     const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
 
     let status = 'NotRun';
@@ -698,15 +774,8 @@ function updateMapAfdCard(lookup) {
 
     setText('map-afd-detail', detail1);
 
-    // Latency badge
-    if (latency && latency.resultValue) {
-        const match = latency.resultValue.match(/(\d+)\s*ms/);
-        if (match) {
-            const ms = parseInt(match[1]);
-            const health = latencyLabel(ms, 'tcp');
-            setBadge('map-afd-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
-        }
-    }
+    // Latency badge — render dual when both sides are present.
+    setDualLatencyBadge('map-afd-badge', extractMs(clientLat), extractMs(cpcLat), true);
 
     setAccentStatus('map-afd-accent', status);
 }
@@ -886,7 +955,12 @@ function isLocationInSameGeoAsRegion(locStr, regionCode) {
 // ── RD Gateway Card ──
 function updateMapRdGwCard(lookup) {
     const tcpPorts = lookup['L-TCP-04'];
-    const latency = lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    // Dual-side latency for the RD Gateway. Client = browser HTTPS probe
+    // (B-TCP-02 is the closest client-side measurement we have for the
+    // gateway endpoint); Cloud PC = scanner gateway probe (C-TCP-04).
+    const clientLat = lookup['B-TCP-02'];
+    const cpcLat = lookup['C-TCP-04'];
+    const latency = clientLat || cpcLat;
     const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
 
     let status = 'NotRun';
@@ -939,14 +1013,8 @@ function updateMapRdGwCard(lookup) {
         }
     }
 
-    if (latency && latency.resultValue) {
-        const match = latency.resultValue.match(/(\d+)\s*ms/);
-        if (match) {
-            const ms = parseInt(match[1]);
-            const health = latencyLabel(ms, 'tcp');
-            setBadge('map-rdgw-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
-        }
-    }
+    // Latency badge — render dual when both client and Cloud PC probed the gateway.
+    setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat), extractMs(cpcLat), true);
 
     // ── Region-steering diagnostic ──
     // Compare CPC Azure region (from IMDS — authoritative) with the actual
@@ -1088,23 +1156,16 @@ function updateMapTurnCard(lookup) {
         }
     }
 
-    // Latency badge — extract RTT from detailedInfo, resultValue, or duration field
-    let turnMs = null;
-    if (turnReach && turnReach.detailedInfo) {
-        const latLine = turnReach.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
-        if (latLine) { const m = latLine.match(/(\d+)\s*ms/); if (m) turnMs = parseInt(m[1]); }
-    }
-    if (turnMs == null && turnReach && turnReach.resultValue) {
-        const m = turnReach.resultValue.match(/(\d+)\s*ms/);
-        if (m) turnMs = parseInt(m[1]);
-    }
-    if (turnMs == null && turnReach && turnReach.status === 'Passed' && turnReach.duration > 0) {
-        turnMs = turnReach.duration;
-    }
-    if (turnMs != null && !isNaN(turnMs)) {
-        const health = latencyLabel(turnMs, 'udp');
-        setBadge('map-turn-lat-badge', `⏱ ${turnMs}ms · ${health}`, latencyClass(turnMs, false));
-    }
+    // Latency badge — render dual when both client and Cloud PC have a TURN
+    // probe. Client side is L-UDP-03 (laptop scanner, when present);
+    // Cloud PC side is C-UDP-03 (CPC scanner). On a laptop without the
+    // local scanner there's no client-side TURN latency probe, so this
+    // falls back to single-pill behaviour automatically.
+    const clientTurn = lookup['L-UDP-03'];
+    const cpcTurnLat = lookup['C-UDP-03'];
+    // Don't double-count: `turnReach` above already prefers L-UDP-03, so if
+    // we have a CPC-side reading too, render both.
+    setDualLatencyBadge('map-turn-lat-badge', extractMs(clientTurn), extractMs(cpcTurnLat), false);
 
     setText('map-turn-detail', detail1);
     setAccentStatus('map-turn-accent', status);
