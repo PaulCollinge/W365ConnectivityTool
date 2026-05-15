@@ -308,13 +308,44 @@ function setDualLatencyBadge(elementId, clientMs, cpcMs, isTcp) {
     el.className = 'map-card-badge ' + latencyClass(ms, isTcp);
 }
 
-/** Pull "(N)ms" out of a result's resultValue or detailedInfo. */
-function extractMs(result) {
+/**
+ * Pull a latency value (ms) out of a result.
+ *
+ * Search order:
+ *   1. If `opts.section` is supplied AND the result's detailedInfo contains a
+ *      header line matching that pattern, extract the latency from inside that
+ *      block only. Within the block we prefer `TCP connected in Nms` (closest
+ *      to a raw RTT) over `HTTPS NNN in Nms` (which includes TLS handshake).
+ *      `opts.prefer = 'https' | 'tcp'` overrides the default preference.
+ *   2. A "Nms" number directly in resultValue (most browser tests).
+ *   3. A line beginning `Latency:` in detailedInfo.
+ *   4. Fall back to `result.duration` ONLY when the caller passes
+ *      `opts.allowDuration = true`. `duration` is wall-clock for the whole
+ *      test, which can be many times the network RTT when a test runs several
+ *      sub-probes (e.g. C-TCP-04 probes 4 endpoints serially), so the fallback
+ *      is opt-in to avoid silently surfacing a meaningless number on cards
+ *      that map to a specific sub-probe.
+ */
+function extractMs(result, opts) {
     if (!result) return null;
+    const allowDuration = !opts || opts.allowDuration === true;
+    const preferHttps = opts && opts.prefer === 'https';
+
+    // 1. Section-scoped extraction (must be tried first when requested)
+    if (opts && opts.section && result.detailedInfo) {
+        const ms = extractMsFromSection(result.detailedInfo, opts.section, preferHttps);
+        if (ms != null) return ms;
+        // Section was requested but not found / no latency in it — fall through
+        // to the generic strategies rather than returning null, so that older
+        // scanner outputs that don't carry the structured blocks still render.
+    }
+
+    // 2. resultValue with embedded "Nms"
     if (result.resultValue) {
         const m = result.resultValue.match(/(\d+)\s*ms/);
         if (m) return parseInt(m[1]);
     }
+    // 3. "Latency:" line in detailedInfo
     if (result.detailedInfo) {
         const latLine = result.detailedInfo.split('\n').find(l => /^\s*Latency:/i.test(l));
         if (latLine) {
@@ -322,10 +353,49 @@ function extractMs(result) {
             if (m) return parseInt(m[1]);
         }
     }
-    if (result.status === 'Passed' && result.duration > 0) {
+    // 4. Whole-test duration (opt-in; misleading for multi-probe tests)
+    if (allowDuration && result.status === 'Passed' && result.duration > 0) {
         return result.duration;
     }
     return null;
+}
+
+/**
+ * Find the section in `detailedInfo` whose header matches `sectionRe`
+ * (e.g. /\[RDP Gateway\]/), then return the first "TCP connected in Nms"
+ * (or HTTPS time if preferred / no TCP line) found within that block.
+ * Block boundary = next non-indented line that looks like a header or end of
+ * string.
+ */
+function extractMsFromSection(detailedInfo, sectionRe, preferHttps) {
+    if (!detailedInfo) return null;
+    const re = sectionRe instanceof RegExp ? sectionRe : new RegExp(sectionRe);
+    const lines = detailedInfo.split('\n');
+    let inBlock = false;
+    let tcpMs = null;
+    let httpsMs = null;
+    for (const raw of lines) {
+        const line = raw;
+        // A header line is one that contains `[Some Label]` or `host:port`-style
+        // — they're typically not indented with whitespace.
+        const isHeader = /^\S.*\[[^\]]+\]\s*$/.test(line) || /^\S+:\d+\s/.test(line);
+        if (isHeader) {
+            if (inBlock) break; // exited our block — stop scanning
+            if (re.test(line)) inBlock = true;
+            continue;
+        }
+        if (!inBlock) continue;
+        if (tcpMs == null) {
+            const m = line.match(/TCP connected in\s+(\d+)\s*ms/i);
+            if (m) tcpMs = parseInt(m[1]);
+        }
+        if (httpsMs == null) {
+            const m = line.match(/HTTPS\s+\d+\s+in\s+(\d+)\s*ms/i);
+            if (m) httpsMs = parseInt(m[1]);
+        }
+    }
+    if (preferHttps) return httpsMs ?? tcpMs;
+    return tcpMs ?? httpsMs;
 }
 
 function latencyClass(ms, isTcp) {
@@ -775,7 +845,18 @@ function updateMapAfdCard(lookup) {
     setText('map-afd-detail', detail1);
 
     // Latency badge — render dual when both sides are present.
-    setDualLatencyBadge('map-afd-badge', extractMs(clientLat), extractMs(cpcLat), true);
+    // C-TCP-04 is a multi-probe test (4 endpoints), so its `duration` field is
+    // the wall-clock for ALL probes serially, not the AFD edge RTT. Pull the
+    // AFD-edge HTTPS time out of the structured detailedInfo block instead,
+    // and disallow the duration fallback so we never accidentally render the
+    // ~300ms total as the AFD latency. B-TCP-02 is single-probe, its
+    // resultValue carries the ms number directly, so the simple path is fine.
+    const cpcAfdMs = extractMs(cpcLat, {
+        section: /\[Gateway Discovery \(AFD\)\]/i,
+        prefer: 'https',
+        allowDuration: false
+    });
+    setDualLatencyBadge('map-afd-badge', extractMs(clientLat), cpcAfdMs, true);
 
     setAccentStatus('map-afd-accent', status);
 }
@@ -1014,7 +1095,16 @@ function updateMapRdGwCard(lookup) {
     }
 
     // Latency badge — render dual when both client and Cloud PC probed the gateway.
-    setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat), extractMs(cpcLat), true);
+    // C-TCP-04 bundles 4 sub-probes; its `duration` covers all of them and is
+    // not the gateway RTT. Pull the gateway-block TCP latency (matches what
+    // PsPing would show) out of the structured detailedInfo and disallow the
+    // duration fallback.
+    const cpcRdgwMs = extractMs(cpcLat, {
+        section: /\[RDP Gateway\]/i,
+        prefer: 'tcp',
+        allowDuration: false
+    });
+    setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat), cpcRdgwMs, true);
 
     // ── Region-steering diagnostic ──
     // Compare CPC Azure region (from IMDS — authoritative) with the actual
