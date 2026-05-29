@@ -408,14 +408,10 @@ function runAnalysisEngine(results) {
     const turn = r('L-UDP-03');
     const turnUnreachable = turn && (turn.status === 'Failed' || turn.status === 'Error' ||
         (turn.status === 'Warning' && /unreachable|timed out|timeout|blocked/i.test(turn.resultValue || '')));
-    if (turn && turn.status === 'Error') {
-        findings.push(finding(SEV.WARNING, 'TURN relay test could not run',
-            `The TURN relay reachability test errored, so UDP Shortpath could not be verified. ${turn.resultValue}`,
-            'Re-run the scanner. If this persists, check that DNS resolution for the AVD TURN relay host is working.'));
-    } else if (turnUnreachable) {
-        findings.push(finding(SEV.WARNING, 'UDP Shortpath unavailable (TCP fallback active)',
-            `TURN relay on UDP 3478 did not respond, so RDP Shortpath (the low-latency UDP path) cannot be used. The session still connects over the TCP gateway path on port 443 — but with higher latency and less resilience to packet loss. ${turn.resultValue}`,
-            'For best performance, allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances. RDP works without it, but Shortpath gives a noticeably better experience.'));
+    if (turnUnreachable) {
+        findings.push(finding(SEV.CRITICAL, 'RDP Shortpath unavailable — UDP 3478 blocked',
+            `TURN relay on UDP 3478 did not respond, so RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway, so a session can still be made — but the experience is significantly degraded: higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience this must be fixed. ${turn.resultValue}`,
+            'Allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.'));
     }
 
     // ── 11. Session latency (Test 18) ──

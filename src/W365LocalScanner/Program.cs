@@ -5109,9 +5109,9 @@ class Program
                 }
                 else
                 {
-                    result.Status = "Warning";
-                    result.ResultValue = $"TURN relay {ip}:{port} — UDP 3478 blocked (RDP Shortpath unavailable; TCP fallback works)";
-                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent a STUN binding request but received no response, so outbound UDP 3478 appears to be blocked by a firewall or network policy.\n\nImpact: RDP Shortpath (the low-latency UDP path) cannot be used. RDP still connects over the TCP gateway path on port 443, so the session will work — but with higher latency and less resilience to packet loss.\n\nTo enable Shortpath, allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and security appliances.";
+                    result.Status = "Failed";
+                    result.ResultValue = $"TURN relay {ip}:{port} — UDP 3478 blocked (RDP Shortpath will not work)";
+                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent a STUN binding request but received no response, so outbound UDP 3478 is blocked by a firewall or network policy.\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded — higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
                     result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
                 }
             }
@@ -5640,12 +5640,12 @@ class Program
             if (mapped1 == null && mapped2 == null)
             {
                 sb.AppendLine("✗ Neither STUN server responded.");
-                sb.AppendLine("  UDP port 3478 is likely blocked by firewall, VPN, or SWG.");
+                sb.AppendLine("  UDP port 3478 is blocked by firewall, VPN, or SWG.");
                 sb.AppendLine("  RDP Shortpath for public networks will NOT work — RDP falls back to TCP via the gateway (port 443).");
-                sb.AppendLine("  The session will still connect over TCP, but with higher latency and less resilience to packet loss.");
-                result.Status = "Warning";
-                result.ResultValue = "STUN failed — UDP 3478 blocked (Shortpath unavailable; TCP fallback works)";
-                result.RemediationText = "For best performance, allow outbound UDP 3478 to Microsoft STUN/TURN servers. RDP works without it via TCP.";
+                sb.AppendLine("  A session can still be made over TCP, but the experience is significantly degraded (higher latency, poor under packet loss).");
+                result.Status = "Failed";
+                result.ResultValue = "STUN failed — UDP 3478 blocked (RDP Shortpath will not work)";
+                result.RemediationText = "Allow outbound UDP 3478 to Microsoft STUN/TURN servers so RDP Shortpath can be used.";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
             else if (mapped1 == null || mapped2 == null)

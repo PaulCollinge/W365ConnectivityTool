@@ -3215,9 +3215,7 @@ async function updateKeyFindings(results) {
         }
         const latPart = lat ? ` · ${esc(lat)}` : '';
         if (turn03 && (turn03.status === 'Failed' || turn03.status === 'Error')) {
-            add('kf-error', 'TURN Relay', 'Unreachable — UDP 3478 blocked');
-        } else if (turn03 && turn03.status === 'Warning') {
-            add('kf-issue', 'TURN Relay', flagImg(turnLoc) + esc(turnLoc) + ' · UDP 3478 blocked (TCP fallback)');
+            add('kf-error', 'TURN Relay', 'Unreachable — UDP 3478 blocked (Shortpath will not work)');
         } else {
             add('kf-pass', 'TURN Relay', flagImg(turnLoc) + esc(turnLoc) + latPart);
         }
