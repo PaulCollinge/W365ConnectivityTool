@@ -1993,6 +1993,9 @@ async function generateExportText() {
         if (nlc.includes('cone') || nlc.includes('open internet')) {
             nIcon = '✓';
             nLabel = nlc.includes('open internet') ? 'Open Internet (No NAT)' : 'Cone NAT — Shortpath ready';
+        } else if (nlc.includes('multiple egress paths') || nlc.includes('split egress')) {
+            nIcon = 'ℹ';
+            nLabel = 'Multiple egress paths (SWG/ZTNA) — NAT type undetermined, not Symmetric NAT';
         } else if (nlc.includes('symmetric')) {
             nIcon = '✗';
             nLabel = 'Symmetric NAT — STUN hole-punching unlikely';
@@ -3211,8 +3214,10 @@ async function updateKeyFindings(results) {
             if (!lat) { const m = (turn03.resultValue || '').match(/(\d+)\s*ms/); if (m) lat = m[1] + 'ms'; }
         }
         const latPart = lat ? ` · ${esc(lat)}` : '';
-        if (turn03 && turn03.status === 'Failed') {
+        if (turn03 && (turn03.status === 'Failed' || turn03.status === 'Error')) {
             add('kf-error', 'TURN Relay', 'Unreachable — UDP 3478 blocked');
+        } else if (turn03 && turn03.status === 'Warning') {
+            add('kf-issue', 'TURN Relay', flagImg(turnLoc) + esc(turnLoc) + ' · UDP 3478 blocked (TCP fallback)');
         } else {
             add('kf-pass', 'TURN Relay', flagImg(turnLoc) + esc(turnLoc) + latPart);
         }
@@ -3468,8 +3473,12 @@ async function updateKeyFindings(results) {
     const dnsHijack = r('L-TCP-08');
     if (dns03 && dns03.status !== 'NotRun' && dns03.status !== 'Pending') {
         let dnsLatMs = null;
-        if (dns03.detailedInfo) {
-            const m = dns03.detailedInfo.match(/avg\s+(\d+)ms/i) || dns03.detailedInfo.match(/(\d+)\s*ms/);
+        // Parse the average from resultValue ("Avg 1702ms (DNS+TCP+TLS) across 3 endpoints").
+        // Do NOT fall back to scanning detailedInfo for "(\d+)ms" — that picks up the
+        // first per-endpoint timing (often the slowest one listed first), producing a
+        // Key-Findings number that disagrees with the test card's own avg.
+        if (dns03.resultValue) {
+            const m = dns03.resultValue.match(/avg\s+(\d+)\s*ms/i);
             if (m) dnsLatMs = parseInt(m[1]);
         }
         const hijacked = dnsHijack && dnsHijack.status !== 'Passed' && dnsHijack.status !== 'NotRun' && dnsHijack.status !== 'Pending';

@@ -323,12 +323,17 @@ function runAnalysisEngine(results) {
         const resVal = (vpn.resultValue || '');
         const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|routes via VPN interface/i.test(detail);
         const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|VPN is active but RDP traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i.test(detail);
+        const tunnelDivertsRdp = /egresses via an UNRECOGNISED non-primary interface|diverts via an unrecognised non-primary interface/i.test(detail) || /unrecognised interface/i.test(resVal);
         const vpnDetected = /VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
 
         if (tunnelCarriesRdp) {
             findings.push(finding(SEV.CRITICAL, 'VPN tunnel is carrying Windows 365 RDP traffic',
                 `The local routing table shows W365/AVD ranges or the resolved RDP gateway IP routing through a VPN/SASE tunnel adapter. ${resVal}`,
                 'Configure split tunnelling to exclude Windows 365 ranges (40.64.144.0/20 TCP/443 and 51.5.0.0/16 UDP/3478) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the VPN tunnel. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
+        } else if (tunnelDivertsRdp) {
+            findings.push(finding(SEV.WARNING, 'Windows 365 traffic diverts via an unrecognised interface',
+                `The routing table shows W365/AVD ranges egressing on an interface that is neither your direct internet path nor a named VPN adapter \u2014 most likely a VPN/SWG tunnel whose adapter name wasn't recognised. ${resVal}`,
+                'Confirm what that interface is. If it is a VPN/SWG tunnel, add the listed Windows 365 CIDRs (40.64.144.0/20, 51.5.0.0/16) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) to its bypass/exclude list. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
         } else if (vpnDetected && tunnelBypassesRdp) {
             findings.push(finding(SEV.INFO, 'VPN detected \u2014 correctly split-tunnelled',
                 'A VPN/SASE adapter is active, but the local routing table confirms Windows 365 ranges and the RDP gateway IP route outside the tunnel. This is the recommended configuration.',
@@ -376,7 +381,11 @@ function runAnalysisEngine(results) {
     const nat = r('L-UDP-05') || r('B-UDP-02');
     if (nat && !isSatellite) {
         const val = (nat.resultValue || '').toLowerCase();
-        if (val.includes('symmetric')) {
+        if (val.includes('multiple egress paths') || val.includes('split egress')) {
+            findings.push(finding(SEV.INFO, 'Multiple network egress paths (SWG/ZTNA)',
+                'A Secure Web Gateway / ZTNA agent (e.g. Microsoft Global Secure Access) is forwarding some Azure traffic through its tunnel while W365 traffic egresses directly via the ISP. The two STUN servers returned different reflexive IPs because they reached the internet via two different paths — this is NOT Symmetric NAT.',
+                'No action required. The W365 TURN/RDP ranges are correctly excluded from the SWG forwarding profile (best practice). TURN reachability (L-UDP-03) confirms the UDP path is healthy.'));
+        } else if (val.includes('symmetric')) {
             findings.push(finding(SEV.INFO, 'Symmetric NAT (Standard Enterprise Security)',
                 'Your network uses Symmetric NAT, which is typical for enterprise environments and provides strong security. Windows 365 will use TURN relay for reliable UDP connectivity.',
                 'This is normal and expected behavior. TURN relay provides excellent performance and reliability. No action required.'));
@@ -397,10 +406,16 @@ function runAnalysisEngine(results) {
 
     // ── 10. TURN reachability ──
     const turn = r('L-UDP-03');
-    if (turn && (turn.status === 'Failed' || turn.status === 'Error')) {
-        findings.push(finding(SEV.CRITICAL, 'TURN relay unreachable',
-            `TURN relay servers on UDP 3478 are not reachable. UDP Shortpath cannot be established. ${turn.resultValue}`,
-            'Ensure outbound UDP 3478 to turn.azure.com is allowed through all firewalls and network security appliances.'));
+    const turnUnreachable = turn && (turn.status === 'Failed' || turn.status === 'Error' ||
+        (turn.status === 'Warning' && /unreachable|timed out|timeout|blocked/i.test(turn.resultValue || '')));
+    if (turn && turn.status === 'Error') {
+        findings.push(finding(SEV.WARNING, 'TURN relay test could not run',
+            `The TURN relay reachability test errored, so UDP Shortpath could not be verified. ${turn.resultValue}`,
+            'Re-run the scanner. If this persists, check that DNS resolution for the AVD TURN relay host is working.'));
+    } else if (turnUnreachable) {
+        findings.push(finding(SEV.WARNING, 'UDP Shortpath unavailable (TCP fallback active)',
+            `TURN relay on UDP 3478 did not respond, so RDP Shortpath (the low-latency UDP path) cannot be used. The session still connects over the TCP gateway path on port 443 — but with higher latency and less resilience to packet loss. ${turn.resultValue}`,
+            'For best performance, allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances. RDP works without it, but Shortpath gives a noticeably better experience.'));
     }
 
     // ── 11. Session latency (Test 18) ──
@@ -736,7 +751,7 @@ function runAnalysisEngine(results) {
 
     // Correlation 2: Symmetric NAT + TURN unreachable = no UDP path at all
     const natVal = nat ? (nat.resultValue || '').toLowerCase() : '';
-    const turnFailed = turn && (turn.status === 'Failed' || turn.status === 'Error');
+    const turnFailed = turnUnreachable;
     if (natVal.includes('symmetric') && turnFailed) {
         findings.push(finding(SEV.CRITICAL, 'No UDP path available',
             'NAT type is Symmetric and TURN relay is unreachable. There is no UDP path — the session will use TCP only, with higher latency and no Shortpath benefit.',
