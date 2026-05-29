@@ -326,13 +326,25 @@ function runAnalysisEngine(results) {
         const tunnelDivertsRdp = /egresses via an UNRECOGNISED non-primary interface|diverts via an unrecognised non-primary interface/i.test(detail) || /unrecognised interface/i.test(resVal);
         const vpnDetected = /VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
 
+        // Pull the precise captured CIDRs from the routing analysis so the finding
+        // names exactly what is NOT being bypassed (not just the interceptor name).
+        const grabRanges = (re) => {
+            const m = detail.match(re);
+            if (!m) return [];
+            return m[1].split('\u2014')[0].split(',').map(s => s.trim()).filter(Boolean);
+        };
+        const caughtCidrs = grabRanges(/VPN tunnel is carrying W365\/AVD traffic for:\s*([^\n]+)/i);
+        const divertedCidrs = grabRanges(/egresses via an UNRECOGNISED non-primary interface for:\s*([^\n]+)/i);
+
         if (tunnelCarriesRdp) {
+            const caughtStr = caughtCidrs.length ? ` Captured by the tunnel: ${caughtCidrs.join(', ')}.` : '';
             findings.push(finding(SEV.CRITICAL, 'VPN tunnel is carrying Windows 365 RDP traffic',
-                `The local routing table shows W365/AVD ranges or the resolved RDP gateway IP routing through a VPN/SASE tunnel adapter. ${resVal}`,
+                `The local routing table shows W365/AVD ranges or the resolved RDP gateway IP routing through a VPN/SASE tunnel adapter.${caughtStr} ${resVal}`,
                 'Configure split tunnelling to exclude Windows 365 ranges (40.64.144.0/20 TCP/443 and 51.5.0.0/16 UDP/3478) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the VPN tunnel. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
         } else if (tunnelDivertsRdp) {
+            const divertedStr = divertedCidrs.length ? ` Diverted ranges: ${divertedCidrs.join(', ')}.` : '';
             findings.push(finding(SEV.WARNING, 'Windows 365 traffic diverts via an unrecognised interface',
-                `The routing table shows W365/AVD ranges egressing on an interface that is neither your direct internet path nor a named VPN adapter \u2014 most likely a VPN/SWG tunnel whose adapter name wasn't recognised. ${resVal}`,
+                `The routing table shows W365/AVD ranges egressing on an interface that is neither your direct internet path nor a named VPN adapter \u2014 most likely a VPN/SWG tunnel whose adapter name wasn't recognised.${divertedStr} ${resVal}`,
                 'Confirm what that interface is. If it is a VPN/SWG tunnel, add the listed Windows 365 CIDRs (40.64.144.0/20, 51.5.0.0/16) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) to its bypass/exclude list. See https://learn.microsoft.com/windows-365/enterprise/azure-network-connections'));
         } else if (vpnDetected && tunnelBypassesRdp) {
             findings.push(finding(SEV.INFO, 'VPN detected \u2014 correctly split-tunnelled',

@@ -1516,6 +1516,37 @@ function extractInterceptorNames(tests) {
     return [...new Set(interceptors)].join(', ') || '';
 }
 
+// Extract the precise W365/AVD service ranges a VPN/tunnel is actually capturing
+// (i.e. NOT being bypassed), from the scanner's routing-table analysis written
+// into detailedInfo by ProbeAvdServiceRanges. Returns labelled, de-duplicated
+// strings the user can act on, e.g. "40.64.144.0/20 (via VPN tunnel)".
+function extractVpnCapturedRanges(tests) {
+    const out = [];
+    const seen = new Set();
+    const push = (range, via) => {
+        const r = (range || '').trim();
+        const key = r + '|' + via;
+        if (r && !seen.has(key)) { seen.add(key); out.push(`${r} (${via})`); }
+    };
+    // Split "a/24, b/16 (within X)" into individual CIDRs, dropping trailing prose.
+    const splitRanges = (s) => s.split(',')
+        .map(x => x.replace(/\s*\u2014.*$/, '').trim())
+        .filter(Boolean);
+    for (const t of tests) {
+        if (!t || !t.detailedInfo) continue;
+        for (const raw of t.detailedInfo.split('\n')) {
+            const line = raw.trim();
+            let m = line.match(/VPN tunnel is carrying W365\/AVD traffic for:\s*(.+)$/i);
+            if (m) { splitRanges(m[1]).forEach(r => push(r, 'via VPN tunnel')); continue; }
+            m = line.match(/egresses via an UNRECOGNISED non-primary interface for:\s*(.+)$/i);
+            if (m) { splitRanges(m[1].split('\u2014')[0]).forEach(r => push(r, 'diverted \u2014 unrecognised interface')); continue; }
+            m = line.match(/RDP gateway\s+([\d.]+)\s*\(([^)]+)\)\s*routes via VPN/i);
+            if (m) { push(m[2] || m[1], 'RDP gateway via VPN'); continue; }
+        }
+    }
+    return out;
+}
+
 // ── Export results as a text report ──
 // ═══════════════════════════════════════════════════════════════════
 //  Key-Findings Summary (used by text, JSON and CSV exports)
@@ -3422,7 +3453,14 @@ async function updateKeyFindings(results) {
         } else {
             // Extract the actual interceptor (works with both old and new scanner output)
             const interceptorStr = extractInterceptorNames([vpnTcp, vpnUdp]);
-            const vpnDetail = interceptorStr ? `Interceptor: ${esc(interceptorStr)}` : '';
+            // Pull the precise W365/AVD ranges the tunnel is capturing so the user
+            // can see exactly what is NOT being bypassed (and what to add to the
+            // VPN/SWG exclude list).
+            const capturedRanges = extractVpnCapturedRanges([vpnTcp, vpnUdp]);
+            const vpnDetail = [
+                interceptorStr ? `Interceptor: ${esc(interceptorStr)}` : '',
+                capturedRanges.length ? `Caught by tunnel: ${esc(capturedRanges.join(', '))}` : ''
+            ].filter(Boolean).join('<br>');
             // If both tests timed out (not a proxy/VPN issue — just slow checks)
             if (tcpTimedOut && udpTimedOut) {
                 add('kf-pass', 'VPN / Proxy', '⚠ Tests timed out — could not determine',
