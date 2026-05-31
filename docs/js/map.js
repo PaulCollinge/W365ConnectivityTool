@@ -848,12 +848,29 @@ function setEgressDistanceBadge(distKm) {
         return;
     }
     const label = formatDistanceKmMi(distKm);
+    // RTT-aware reconciliation: a LARGE GeoIP egress distance that is
+    // contradicted by a LOW measured RTT is unreliable (the egress is actually
+    // local; the IP just geolocates poorly). Show it neutrally rather than
+    // raising a false "far" alarm. When latency corroborates the distance, the
+    // egress really is non-local — surface that as the root cause, since it
+    // forces AFD and the RD gateway to follow the egress (suboptimal path).
+    const lookup = {};
+    if (Array.isArray(_lastMapResults)) for (const r of _lastMapResults) lookup[r.id] = r;
+    const measuredNear = gatewayIsMeasurablyNear(lookup);
+    if (distKm >= EGRESS_FAR_MIN_KM && measuredNear) {
+        el.textContent = `≈ GPS→egress ${label} (latency local)`;
+        el.className = 'map-card-badge proximity-moderate';
+        el.classList.remove('hidden');
+        return;
+    }
     const proxClass = distKm < 100 ? 'proximity-near'
         : distKm < 500 ? 'proximity-moderate'
         : 'proximity-far';
     const icon = distKm < 100 ? '✔' : distKm < 500 ? '≈' : '⚠';
-    el.textContent = `${icon} GPS→egress ${label}`;
+    const suffix = distKm >= EGRESS_FAR_MIN_KM ? ' · non-local breakout' : '';
+    el.textContent = `${icon} GPS→egress ${label}${suffix}`;
     el.className = `map-card-badge ${proxClass}`;
+    el.classList.remove('hidden');
 }
 
 // ── AFD Edge Card ──
@@ -898,6 +915,19 @@ function updateMapAfdCard(lookup) {
     }
 
     setText('map-afd-detail', detail1);
+
+    // Proximity: AFD picks the edge nearest the EGRESS, so when the egress is
+    // genuinely far from the user (corroborated by a high measured RTT) the
+    // edge is suboptimal — and the cause is non-local egress, not AFD itself.
+    if (egressGenuinelyFar(lookup)) {
+        setBadge('map-afd-prox-badge', '⚠ Suboptimal · distant egress', 'proximity-far');
+    } else if (gatewayIsMeasurablyNear(lookup)) {
+        const ms = gatewayMeasuredRttMs(lookup);
+        setBadge('map-afd-prox-badge', ms != null ? `✔ Near (${ms} ms)` : '✔ Near', 'proximity-near');
+    } else {
+        const el = document.getElementById('map-afd-prox-badge');
+        if (el) el.classList.add('hidden');
+    }
 
     // Latency badge — render dual when both sides are present.
     // C-TCP-04 is a multi-probe test (4 endpoints), so its `duration` field is
@@ -986,6 +1016,71 @@ function getRdGatewayRegion(lookup) {
 function extractGwFqdn(info) {
     const m = info.match(/rdgateway-[^\s]+\.wvd\.microsoft\.com/i);
     return m ? m[0] : null;
+}
+
+// The RD Gateway is selected by AFD based on the USER's location, so a healthy
+// session reaches a gateway that is genuinely NEAR the user. The measured
+// client RTT is the authoritative proximity signal: a low RTT proves the
+// serving gateway is close, regardless of what the gateway FQDN's home-region
+// NAME (e.g. "EUS"/"East US") or a GeoIP/region-centroid lookup claims. Those
+// name/centroid-based distances are unreliable (the FQDN region label and the
+// anycast IP's registered location frequently disagree with the physical PoP
+// actually serving the connection), so when they say "far" but the measured
+// RTT says "near", the measurement wins. Only treat the gateway as genuinely
+// distant — a real, user-impacting problem — when the measured RTT is high.
+const GATEWAY_NEAR_MAX_MS = 120;
+function gatewayMeasuredRttMs(lookup) {
+    return extractMs(lookup['B-TCP-02']);
+}
+function gatewayIsMeasurablyNear(lookup) {
+    const clientMs = gatewayMeasuredRttMs(lookup);
+    return clientMs != null && clientMs <= GATEWAY_NEAR_MAX_MS;
+}
+
+// Synchronous great-circle distance (km) between the device GPS fix and its
+// network egress, mirroring the priority used by the ISP card (result 27 →
+// B-LE-02/C-LE-02 egress coords → already-rendered GPS→egress badge). Returns
+// null when no coordinates are available. Cards run after updateMapIspCard, so
+// the badge fallback is populated for the synchronous coordinate-less path.
+function computeEgressDistanceKm(lookup) {
+    if (typeof extractCoordinatesFromDetailedInfo !== 'function' ||
+        typeof haversineDistanceKm !== 'function') return null;
+    const userLoc = lookup['B-LE-01'];
+    const gpsCoords = userLoc ? extractCoordinatesFromDetailedInfo(userLoc.detailedInfo) : null;
+    if (gpsCoords) {
+        let egressCoords = null;
+        const egress27 = lookup['27'];
+        if (egress27) egressCoords = extractCoordinatesFromDetailedInfo(egress27.detailedInfo, ['Egress coordinates:']);
+        if (!egressCoords) {
+            const ispGeo = lookup['B-LE-02'] || lookup['C-LE-02'];
+            if (ispGeo) egressCoords = extractCoordinatesFromDetailedInfo(ispGeo.detailedInfo, ['Egress coordinates:']);
+        }
+        if (egressCoords) {
+            return haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon);
+        }
+    }
+    // Fallback: parse the rendered GPS→egress badge (set by updateMapIspCard).
+    if (typeof document !== 'undefined') {
+        const badge = document.getElementById('map-isp-distance-badge');
+        const m = badge && badge.textContent.match(/(\d[\d,]*)\s*km/i);
+        if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+    }
+    return null;
+}
+
+// True when the internet egress is GENUINELY far from the user — i.e. the
+// GeoIP distance is large AND the measured RTT corroborates it (the gateway is
+// NOT measurably near). This is the real, actionable problem: traffic breaks
+// out non-locally (typically a VPN/SWG/proxy hairpin), which forces AFD — and
+// therefore the AFD-selected RD gateway — to a region near the EGRESS rather
+// than near the user, yielding a suboptimal path. When the RTT is low instead,
+// the large GeoIP distance is unreliable (egress is actually local) and this
+// returns false so we don't raise a phantom warning.
+const EGRESS_FAR_MIN_KM = 500;
+function egressGenuinelyFar(lookup) {
+    const distKm = computeEgressDistanceKm(lookup);
+    if (distKm == null || distKm < EGRESS_FAR_MIN_KM) return false;
+    return !gatewayIsMeasurablyNear(lookup);
 }
 
 // RDP gateway FQDN short codes (UKW, EUS2, WEU) → full Azure region slugs
@@ -1120,10 +1215,23 @@ function updateMapRdGwCard(lookup) {
             rdgwLocationStr = locInfo.location;
         }
         if (locInfo.proximity) {
+            // The gateway is AFD-selected by the user's location, so it should be
+            // near the user. The measured client RTT is the authoritative signal;
+            // when a region-name/GeoIP lookup claims "far" but the RTT proves the
+            // serving gateway is near, trust the measurement and show Near.
+            const measurablyNear = gatewayIsMeasurablyNear(lookup);
+            const measuredMs = gatewayMeasuredRttMs(lookup);
+            const nearLabel = measuredMs != null ? `✔ Near (${measuredMs} ms)` : '✔ Near';
             if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near') || locInfo.proximity.includes('near')) {
                 setBadge('map-rdgw-prox-badge', '✔ Near', 'proximity-near');
             } else if (locInfo.proximity.includes('⚠') || locInfo.proximity.includes('Far') || locInfo.proximity.includes('far')) {
-                setBadge('map-rdgw-prox-badge', '⚠ Far', 'proximity-far');
+                if (measurablyNear) {
+                    setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
+                } else if (egressGenuinelyFar(lookup)) {
+                    setBadge('map-rdgw-prox-badge', '⚠ Suboptimal · follows distant egress', 'proximity-far');
+                } else {
+                    setBadge('map-rdgw-prox-badge', '⚠ Far', 'proximity-far');
+                }
             } else if (locInfo.proximity.includes('≈') || locInfo.proximity.includes('Moderate')) {
                 setBadge('map-rdgw-prox-badge', '≈ Moderate', 'proximity-moderate');
             } else {
@@ -1133,6 +1241,8 @@ function updateMapRdGwCard(lookup) {
                     const km = parseInt(kmMatch[1].replace(/,/g, ''), 10);
                     if (km < 2000) setBadge('map-rdgw-prox-badge', `✔ ${locInfo.proximity}`, 'proximity-near');
                     else if (km < 5000) setBadge('map-rdgw-prox-badge', `≈ ${locInfo.proximity}`, 'proximity-moderate');
+                    else if (measurablyNear) setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
+                    else if (egressGenuinelyFar(lookup)) setBadge('map-rdgw-prox-badge', '⚠ Suboptimal · follows distant egress', 'proximity-far');
                     else setBadge('map-rdgw-prox-badge', `⚠ ${locInfo.proximity}`, 'proximity-far');
                 }
             }
@@ -1142,7 +1252,17 @@ function updateMapRdGwCard(lookup) {
             const serviceCoords = getServiceCoords(rdgwLocationStr);
             const prox = checkServiceProximity(user.countryCode, rdgwLocationStr, user.coords, serviceCoords);
             if (prox && prox.level === 'far') {
-                setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
+                // A low measured RTT proves the AFD-selected gateway is actually
+                // near the user; trust it over a region-name/centroid "far".
+                if (gatewayIsMeasurablyNear(lookup)) {
+                    const measuredMs = gatewayMeasuredRttMs(lookup);
+                    const nearLabel = measuredMs != null ? `✔ Near (${measuredMs} ms)` : '✔ Near';
+                    setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
+                } else if (egressGenuinelyFar(lookup)) {
+                    setBadge('map-rdgw-prox-badge', '⚠ Suboptimal · follows distant egress', 'proximity-far');
+                } else {
+                    setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
+                }
             } else if (prox && prox.level === 'ok') {
                 setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
             }
@@ -1854,14 +1974,28 @@ function updateMapSecurityBar(lookup) {
     if (gwBadge && gwIcon && gwText) {
         if (gwUsed && gwUsed.status !== 'NotRun' && gwUsed.status !== 'Pending') {
             const info = extractRdGwLocationWithProximity(gwUsed.detailedInfo);
+            // The gateway is AFD-selected by the user's location, so it should be
+            // near the user. A low measured client RTT is the authoritative
+            // proximity proof; trust it over a region-name/GeoIP "far" verdict.
+            const measurablyNear = gatewayIsMeasurablyNear(lookup);
             if (info.proximity && (info.proximity.includes('✔') || info.proximity.includes('Near'))) {
                 gwIcon.textContent = '✓';
                 gwText.textContent = 'Gateway Near You';
                 gwBadge.className = 'security-badge';
             } else if (info.proximity && (info.proximity.includes('⚠') || info.proximity.includes('Far'))) {
-                gwIcon.textContent = '✗';
-                gwText.textContent = 'Gateway Far Away';
-                gwBadge.className = 'security-badge warn';
+                if (measurablyNear) {
+                    gwIcon.textContent = '✓';
+                    gwText.textContent = 'Gateway Near You';
+                    gwBadge.className = 'security-badge';
+                } else if (egressGenuinelyFar(lookup)) {
+                    gwIcon.textContent = '✗';
+                    gwText.textContent = 'Egress Far — Gateway Suboptimal';
+                    gwBadge.className = 'security-badge warn';
+                } else {
+                    gwIcon.textContent = '✗';
+                    gwText.textContent = 'Gateway Far Away';
+                    gwBadge.className = 'security-badge warn';
+                }
             } else if (info.proximity) {
                 // Parse km value from proximity string (e.g. "~59 km")
                 const kmMatch = info.proximity.match(/([\d,.]+)\s*km/);
@@ -1874,6 +2008,14 @@ function updateMapSecurityBar(lookup) {
                     } else if (km < 5000) {
                         gwIcon.textContent = '≈';
                         gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge warn';
+                    } else if (measurablyNear) {
+                        gwIcon.textContent = '✓';
+                        gwText.textContent = 'Gateway Near You';
+                        gwBadge.className = 'security-badge';
+                    } else if (egressGenuinelyFar(lookup)) {
+                        gwIcon.textContent = '✗';
+                        gwText.textContent = 'Egress Far — Gateway Suboptimal';
                         gwBadge.className = 'security-badge warn';
                     } else {
                         gwIcon.textContent = '✗';

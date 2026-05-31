@@ -492,7 +492,8 @@ function runAnalysisEngine(results) {
             : 'No local VPN adapter could be inspected (run the Local Scanner to confirm). If this device has no VPN client of its own, the tunnelling is happening on an upstream device.';
         findings.push(finding(SEV.WARNING, 'Upstream / router-level tunnel — remote egress detected',
             `Your traffic exits the internet ${distStr} from your physical location${ispStr}, but no VPN adapter is present on this PC. ${ambiguity} ` +
-            'This is the signature of a router-level VPN (for example a travel router running WireGuard) or ISP backhaul: Windows 365 / RDP traffic is hairpinned through that remote site, adding round-trip latency to every packet.',
+            'This is the signature of a router-level VPN (for example a travel router running WireGuard) or ISP backhaul: Windows 365 / RDP traffic is hairpinned through that remote site, adding round-trip latency to every packet. ' +
+            'Because Azure Front Door selects the edge nearest your EGRESS (not your physical location), this also steers the AFD edge — and the AFD-selected RD gateway region — to the remote egress, so both appear far from you and the overall path is suboptimal. Fixing the egress restores a local AFD edge and gateway.',
             'Split-tunnel Windows 365 at the upstream device so RDP egresses locally: exclude the W365 ranges (40.64.144.0/20 TCP/443 and 51.5.0.0/16 UDP/3478) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the router/VPN tunnel — or disable the tunnel for the Cloud PC session.'));
     }
 
