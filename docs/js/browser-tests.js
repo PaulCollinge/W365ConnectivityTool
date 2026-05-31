@@ -441,6 +441,13 @@ async function fetchUserLocation() {
             });
             const lat = pos.coords.latitude;
             const lon = pos.coords.longitude;
+            // Positional accuracy (metres). With enableHighAccuracy:false a
+            // laptop typically returns a coarse WiFi/IP-derived fix (often a
+            // vendor default such as the Redmond campus), which can be hundreds
+            // or thousands of km from the user's true position. Downstream
+            // detectors (e.g. upstream-tunnel) MUST NOT treat a coarse fix as
+            // ground truth, so we carry the accuracy through.
+            const acc = (typeof pos.coords.accuracy === 'number') ? pos.coords.accuracy : null;
             try {
                 const rgUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`;
                 const rgResp = await fetch(rgUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'W365ConnectivityTool/1.0' } });
@@ -451,7 +458,7 @@ async function fetchUserLocation() {
                         city: addr.city || addr.town || addr.village || addr.suburb || addr.county || 'Unknown',
                         region: addr.state || addr.county || 'Unknown',
                         country: addr.country_code ? addr.country_code.toUpperCase() : 'Unknown',
-                        lat, lon,
+                        lat, lon, accuracyM: acc,
                         source: 'browser'
                     };
                 }
@@ -464,7 +471,7 @@ async function fetchUserLocation() {
                     city: fallbackGeo ? fallbackGeo.city : 'Unknown',
                     region: fallbackGeo ? fallbackGeo.regionName : 'Unknown',
                     country: fallbackGeo ? fallbackGeo.country : 'Unknown',
-                    lat, lon,
+                    lat, lon, accuracyM: acc,
                     source: fallbackGeo ? 'browser-coords-ip-city' : 'browser'
                 };
             }
@@ -491,6 +498,7 @@ async function fetchUserLocation() {
         country: loc.country,
         lat: loc.lat,
         lon: loc.lon,
+        accuracyM: (typeof loc.accuracyM === 'number') ? loc.accuracyM : null,
         ip: geo ? geo.query : 'Unknown',
         source: loc.source
     };
@@ -744,6 +752,11 @@ async function testUserLocation(test) {
         `Coordinates: ${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`,
         `Source: ${sourceLabel}`
     ];
+    if (typeof loc.accuracyM === 'number' && loc.accuracyM > 0) {
+        const accKm = loc.accuracyM / 1000;
+        const accStr = accKm >= 1 ? `~${accKm.toFixed(0)} km` : `~${Math.round(loc.accuracyM)} m`;
+        lines.push(`Accuracy: ${accStr}${accKm > 50 ? ' (coarse WiFi/IP fix — physical position is approximate)' : ''}`);
+    }
     if (loc.source === 'ip') {
         lines.push('Note: City shown is your ISP\'s registered IP location which may not match your physical location. Allow browser location access for accurate city detection.');
     }

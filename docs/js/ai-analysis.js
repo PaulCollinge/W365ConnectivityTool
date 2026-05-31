@@ -266,6 +266,27 @@ function gpsEgressDistanceKm(results) {
 //  signal. Returns { distanceKm } when matched, else false.
 // ═══════════════════════════════════════════════════════════════════
 const UPSTREAM_TUNNEL_MIN_KM = 500;
+// Maximum positional uncertainty (km) of the device location fix for the
+// GPS→egress distance to be trustworthy. A browser geolocation obtained with
+// enableHighAccuracy:false is frequently a coarse WiFi/IP estimate (sometimes a
+// vendor default such as the Redmond campus) that can sit hundreds/thousands of
+// km from the user. Comparing such a fix to the egress IP's location is
+// circular and produces phantom "tunnel" verdicts (e.g. a hotel guest whose
+// laptop reports a stale office location while egressing via the hotel's real
+// local ISP). Only trust the distance when the fix is at least city-grade.
+const DEVICE_FIX_MAX_ACCURACY_KM = 50;
+
+// Parse the "Accuracy: ~N km" / "Accuracy: ~N m" line emitted into B-LE-01.
+// Returns accuracy in km, or null when not present (older runs / IP-only fix).
+function deviceFixAccuracyKm(results) {
+    const loc = results.find(x => x.id === 'B-LE-01');
+    if (!loc || !loc.detailedInfo) return null;
+    const m = loc.detailedInfo.match(/Accuracy:\s*~?\s*([\d.]+)\s*(km|m)\b/i);
+    if (!m) return null;
+    const val = parseFloat(m[1]);
+    if (isNaN(val)) return null;
+    return /km/i.test(m[2]) ? val : val / 1000;
+}
 
 function detectUpstreamTunnel(results) {
     // Cases already explained by dedicated detectors are not "upstream tunnel".
@@ -275,6 +296,16 @@ function detectUpstreamTunnel(results) {
     // Require a measurable, large GPS→egress separation.
     const distKm = gpsEgressDistanceKm(results);
     if (distKm == null || distKm < UPSTREAM_TUNNEL_MIN_KM) return false;
+
+    // The distance is only meaningful if the DEVICE location fix is trustworthy.
+    // A coarse WiFi/IP fix (or an IP-derived location, which equals the egress
+    // by construction) cannot establish that the device is physically far from
+    // its egress. If accuracy is unknown OR worse than city-grade, suppress —
+    // better to miss a real upstream tunnel than to tell a hotel/coffee-shop
+    // user they have a phantom one. A genuine GPS fix (accuracy ≤ tens of km)
+    // is required to assert the device is somewhere the egress is not.
+    const accKm = deviceFixAccuracyKm(results);
+    if (accKm == null || accKm > DEVICE_FIX_MAX_ACCURACY_KM) return false;
 
     // If the scanner ran and L-TCP-07 found a LOCAL VPN/SWG adapter capturing or
     // diverting traffic, that is the (already-reported) cause — not an
