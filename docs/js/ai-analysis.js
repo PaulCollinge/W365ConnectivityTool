@@ -93,6 +93,16 @@ const INFLIGHT_SSID_PATTERNS = [
     /^swa[_ -]wifi/i, /^jetblue/i, /^spirit.*wifi/i, /^_wifi.*airlines/i
 ];
 
+// SSID-independent confirmation distance for a satellite uplink. A satellite
+// link hands traffic to a teleport / ground station that is typically
+// hundreds–thousands of km from the user, whereas a satellite ISP's
+// ground-based ENTERPRISE service egresses locally. Combined with a satellite
+// ISP name, a GPS→egress separation beyond this threshold is the SSID-free
+// signature of an actual satellite/in-flight link — essential because travel
+// routers and MiFi devices present the user's OWN SSID (never an airline
+// SSID), which defeats INFLIGHT_SSID_PATTERNS matching.
+const SATELLITE_MIN_EGRESS_KM = 1000;
+
 // On-train Wi-Fi SSIDs across major European/UK/US passenger rail operators.
 // Used purely for the connectivity-map easter egg + an informational note —
 // nothing about test interpretation depends on it (cf. INFLIGHT_SSID_PATTERNS,
@@ -139,18 +149,30 @@ function detectSatelliteConnection(results) {
     const ispLower = (browserIsp.resultValue || '').toLowerCase();
     if (!SATELLITE_ISP_KEYWORDS.some(kw => ispLower.includes(kw))) return false;
 
-    // Condition 2: scanner WiFi result must be present and its SSID must match an aircraft pattern.
-    // If L-LE-04 is absent, Pending, or the SSID doesn't match — not airborne.
+    // Condition 2 (any ONE confirms a LIVE satellite/in-flight link, ruling out
+    // a satellite ISP's ground-based enterprise service):
+    //   (a) scanner WiFi SSID matches a known in-flight pattern, OR
+    //   (b) the network egress surfaces a long way from the device GPS fix
+    //       (>= SATELLITE_MIN_EGRESS_KM) — the SSID-independent satellite
+    //       signature. The large-distance gate is also what guards against a
+    //       false positive on a corporate ground station, which egresses
+    //       locally (small GPS→egress separation).
     const wifiResult = results.find(r => r.id === 'L-LE-04');
-    if (!wifiResult ||
-        wifiResult.status === 'NotRun' ||
-        wifiResult.status === 'Pending' ||
-        wifiResult.status === 'Skipped') {
-        return false; // No confirmed SSID — can't verify airborne
+    if (wifiResult &&
+        wifiResult.status !== 'NotRun' &&
+        wifiResult.status !== 'Pending' &&
+        wifiResult.status !== 'Skipped') {
+        const ssidMatch = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
+        const ssid = ssidMatch ? ssidMatch[1].trim() : '';
+        if (ssid && INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid))) return true; // path (a)
     }
-    const ssidMatch = (wifiResult.resultValue || '').match(/SSID:\s*([^,]+)/i);
-    const ssid = ssidMatch ? ssidMatch[1].trim() : '';
-    return !!ssid && INFLIGHT_SSID_PATTERNS.some(p => p.test(ssid));
+
+    // path (b): satellite ISP + large GPS→egress separation (works through
+    // travel routers / MiFi where the SSID is the user's own).
+    const distKm = typeof gpsEgressDistanceKm === 'function' ? gpsEgressDistanceKm(results) : null;
+    if (distKm != null && distKm >= SATELLITE_MIN_EGRESS_KM) return true;
+
+    return false;
 }
 
 // Rail Wi-Fi detection. Two paths:
@@ -285,9 +307,25 @@ function runAnalysisEngine(results) {
     if (isSatellite) {
         const ispResult = r('B-LE-02') || r('C-LE-02');
         const ispName = ispResult ? ispResult.resultValue.replace(/^AS\d+\s*/i, '') : 'Satellite provider';
+        // Teleport / ground-station distance — surfaced so the user understands a
+        // far egress on a satellite link is expected, NOT a VPN hairpin.
+        const satDistKm = typeof gpsEgressDistanceKm === 'function' ? gpsEgressDistanceKm(results) : null;
+        const distSentence = (satDistKm != null && satDistKm >= SATELLITE_MIN_EGRESS_KM)
+            ? ` Your traffic surfaces ~${Math.round(satDistKm).toLocaleString()} km from your physical location — that is the satellite teleport / ground station, which is normal for a satellite uplink and is NOT evidence of a VPN.`
+            : '';
+        // If the scanner inspected the routing table and the W365/AVD ranges
+        // egress directly (not via a local VPN/SWG tunnel), confirm the
+        // split-tunnel is correct. This is the key reassurance for travel-router
+        // / WireGuard setups: a tunnel may exist on an upstream device, but W365
+        // is correctly excluded so RDP egresses over the local/satellite path.
+        const satVpn = r('L-TCP-07');
+        const w365Direct = satVpn && /ENTIRE range routed direct|No W365\/AVD service traffic goes through the VPN tunnel/i.test(satVpn.detailedInfo || '');
+        const splitSentence = w365Direct
+            ? ' The local routing table shows the Windows 365 / AVD ranges (40.64.144.0/20, 51.5.0.0/16) egressing directly — so if an upstream travel router or VPN is in use, W365 is correctly split-tunnelled around it.'
+            : '';
         findings.push(finding(SEV.INFO, 'Satellite / in-flight internet detected',
-            `ISP identified as ${ispName}. Satellite and in-flight connections have inherent characteristics — high base latency (typically 500–700 ms RTT), symmetric NAT, and variable jitter — that are not network faults.`,
-            'For best Cloud PC experience on aircraft WiFi: ensure UDP 3478 is open for TURN relay fallback, avoid running bandwidth-heavy background apps, and expect occasional freezes during turbulence. TCP-based sessions (via RD Gateway) will be stable even when UDP/STUN fails.'));
+            `ISP identified as ${ispName}. Satellite and in-flight connections have inherent characteristics — high base latency (typically 500–700 ms RTT), symmetric NAT, and variable jitter — that are not network faults.${distSentence}${splitSentence}`,
+            'For best Cloud PC experience on satellite/aircraft WiFi: ensure UDP 3478 is open for TURN relay fallback, avoid bandwidth-heavy background apps, and expect occasional freezes during turbulence/handover. TCP-based sessions (via RD Gateway) stay connected even when UDP/STUN fails.'));
     }
 
     // ── 0b. Upstream / router-level tunnel (remote egress hairpin) ──
