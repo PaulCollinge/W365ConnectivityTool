@@ -307,6 +307,47 @@ function deviceFixIsRealGeolocation(results) {
     return /Browser Geolocation \(GPS\/WiFi\)|Browser coordinates/i.test(src);
 }
 
+// Speed of light in a VACUUM (~300 km/ms) — the absolute physical ceiling on
+// signal propagation. Real fibre runs ~200 km/ms and routed paths slower still,
+// so using the vacuum figure gives the SMALLEST latency a given distance could
+// conceivably add. That makes the gate below maximally conservative: it only
+// fires when a distance is impossible even at light-speed, so it can never
+// suppress a genuine remote tunnel (whose RTT is always high enough).
+const LIGHT_KM_PER_MS = 300;
+
+// Smallest credible SINGLE network round-trip time (ms) provable from results,
+// returned as an UPPER BOUND (we never under-estimate, so we never wrongly
+// suppress). Each source measures one or more round trips; we divide by the
+// minimum number of round trips it must contain to get a safe per-RTT ceiling.
+function minNetworkRttUpperBoundMs(results) {
+    const byId = id => results.find(x => x.id === id);
+    const cand = [];
+    // B-TCP-02: "HTTPS RTT (TCP + TLS handshake): avg N ms" — TCP(1)+TLS(>=1)
+    // is at least two round trips, so the per-RTT ceiling is N/2.
+    const tcp02 = byId('B-TCP-02');
+    if (tcp02 && tcp02.detailedInfo) {
+        const m = tcp02.detailedInfo.match(/HTTPS RTT[^:]*:\s*avg\s*(\d+(?:\.\d+)?)\s*ms/i);
+        if (m) cand.push(parseFloat(m[1]) / 2);
+    }
+    // B-EP-01 endpoint reachability "Reachable (N ms)" — a connect includes
+    // TCP(1)+TLS(1) >= two round trips → per-RTT ceiling N/2.
+    const ep01 = byId('B-EP-01');
+    if (ep01 && ep01.detailedInfo) {
+        let best = Infinity, mm; const re = /Reachable\s*\((\d+(?:\.\d+)?)\s*ms\)/gi;
+        while ((mm = re.exec(ep01.detailedInfo)) !== null) best = Math.min(best, parseFloat(mm[1]));
+        if (isFinite(best)) cand.push(best / 2);
+    }
+    // B-TCP-03 per-endpoint "host: N ms (OK)" — DNS+TCP+TLS >= two round trips.
+    const tcp03 = byId('B-TCP-03');
+    if (tcp03 && tcp03.detailedInfo) {
+        let best = Infinity, mm; const re = /:\s*(\d+(?:\.\d+)?)\s*ms\s*\(OK\)/gi;
+        while ((mm = re.exec(tcp03.detailedInfo)) !== null) best = Math.min(best, parseFloat(mm[1]));
+        if (isFinite(best)) cand.push(best / 2);
+    }
+    if (!cand.length) return null;
+    return Math.min(...cand);
+}
+
 function detectUpstreamTunnel(results) {
     // Cases already explained by dedicated detectors are not "upstream tunnel".
     if (typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results)) return false;
@@ -332,6 +373,28 @@ function detectUpstreamTunnel(results) {
     // to tell a hotel/coffee-shop user they have a phantom one.
     const accKm = deviceFixAccuracyKm(results);
     if (accKm == null || accKm > DEVICE_FIX_MAX_ACCURACY_KM) return false;
+
+    // ── Egress-side reality check (physics) ───────────────────────────────
+    // The accuracy gate above only validates the DEVICE position. The other half
+    // of the distance — the EGRESS location — is a GeoIP lookup of an ISP IP and
+    // is routinely wrong by hundreds/thousands of km: large carriers (Comcast,
+    // etc.) register IP blocks centrally, far from the physical PoP the user
+    // actually egresses through. That alone fabricates a phantom "tunnel" for a
+    // user whose device fix is perfectly accurate (e.g. a hotel guest in Redmond
+    // whose Comcast IP geolocates to Pennsylvania, ~3,800 km away).
+    //
+    // A genuine hairpin through a site `distKm` away MUST add at least
+    // 2·distKm/c to EVERY round trip. At the speed of light in vacuum that floor
+    // is 2·distKm/300 ms — a hard physical limit nothing can beat. If the latency
+    // we actually measured is below that floor, no packet could have reached an
+    // egress that far away and returned, so the distance is a GeoIP artefact, not
+    // a tunnel. This can only suppress impossible distances, never a real remote
+    // tunnel (whose RTT is always large enough to clear the floor).
+    const minRtt = minNetworkRttUpperBoundMs(results);
+    if (minRtt != null) {
+        const hairpinFloorMs = (2 * distKm) / LIGHT_KM_PER_MS;
+        if (minRtt < hairpinFloorMs) return false;
+    }
 
     // If the scanner ran and L-TCP-07 found a LOCAL VPN/SWG adapter capturing or
     // diverting traffic, that is the (already-reported) cause — not an
