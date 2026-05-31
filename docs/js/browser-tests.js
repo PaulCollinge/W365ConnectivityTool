@@ -754,8 +754,8 @@ async function testUserLocation(test) {
     ];
     if (typeof loc.accuracyM === 'number' && loc.accuracyM > 0) {
         const accKm = loc.accuracyM / 1000;
-        const accStr = accKm >= 1 ? `~${accKm.toFixed(0)} km` : `~${Math.round(loc.accuracyM)} m`;
-        lines.push(`Accuracy: ${accStr}${accKm > 50 ? ' (coarse WiFi/IP fix — physical position is approximate)' : ''}`);
+        const accStr = accKm >= 1 ? `~${accKm.toFixed(1)} km` : `~${Math.round(loc.accuracyM)} m`;
+        lines.push(`Accuracy: ${accStr}${accKm > 25 ? ' (coarse WiFi/IP fix — physical position is approximate)' : ''}`);
     }
     if (loc.source === 'ip') {
         lines.push('Note: City shown is your ISP\'s registered IP location which may not match your physical location. Allow browser location access for accurate city detection.');

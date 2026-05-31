@@ -288,18 +288,23 @@ function deviceFixAccuracyKm(results) {
     return /km/i.test(m[2]) ? val : val / 1000;
 }
 
-// True only when the DEVICE location came from a genuine on-device positioning
-// fix (real GPS or WiFi trilateration). An IP-derived position ("GeoIP" /
-// "Browser coordinates + GeoIP city") is computed FROM the egress IP, so
-// comparing it to the egress location is circular and can never prove a tunnel.
-// The user-location test records the source in B-LE-01 detailedInfo.
+// True only when the DEVICE coordinates came from a genuine on-device
+// positioning fix (real GPS or WiFi trilateration). The user-location test
+// records the source in B-LE-01 detailedInfo. Two sources carry real device
+// coordinates:
+//   • "Browser Geolocation (GPS/WiFi)"     — coords + city both from the device
+//   • "Browser coordinates + GeoIP city"   — REAL device coords, only the city
+//                                             label fell back to GeoIP
+// Reject the purely IP-derived source ("GeoIP (IP-based …)"), whose position is
+// computed FROM the egress IP, making a device-vs-egress comparison circular.
 function deviceFixIsRealGeolocation(results) {
     const loc = results.find(x => x.id === 'B-LE-01');
     if (!loc || !loc.detailedInfo) return false;
     const m = loc.detailedInfo.match(/Source:\s*(.+)/i);
     if (!m) return false;
-    // Accept only the genuine GPS/WiFi browser fix; reject any IP-based source.
-    return /Browser Geolocation \(GPS\/WiFi\)/i.test(m[1]);
+    const src = m[1];
+    if (/IP-based|GeoIP \(IP/i.test(src)) return false;
+    return /Browser Geolocation \(GPS\/WiFi\)|Browser coordinates/i.test(src);
 }
 
 function detectUpstreamTunnel(results) {
