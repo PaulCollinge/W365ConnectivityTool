@@ -326,6 +326,32 @@ function runAnalysisEngine(results) {
         findings.push(finding(SEV.INFO, 'Satellite / in-flight internet detected',
             `ISP identified as ${ispName}. Satellite and in-flight connections have inherent characteristics — high base latency (typically 500–700 ms RTT), symmetric NAT, and variable jitter — that are not network faults.${distSentence}${splitSentence}`,
             'For best Cloud PC experience on satellite/aircraft WiFi: ensure UDP 3478 is open for TURN relay fallback, avoid bandwidth-heavy background apps, and expect occasional freezes during turbulence/handover. TCP-based sessions (via RD Gateway) stay connected even when UDP/STUN fails.'));
+
+        // Satellite-aware metric context. On a satellite/in-flight uplink a high
+        // TURN RTT and a modest/variable throughput are EXPECTED — the dedicated
+        // tests rightly Pass on reachability, but the headline numbers can alarm
+        // a user who doesn't know the link is satellite. Surface them here as
+        // context, guarded by isSatellite so they can NEVER false-positive on a
+        // terrestrial link. Read only from results[] (no thresholds escalated).
+        const satTurn = r('L-UDP-03');
+        if (satTurn) {
+            const turnRtt = parseMs(satTurn.resultValue);
+            if (!isNaN(turnRtt) && turnRtt >= 400) {
+                findings.push(finding(SEV.INFO, 'TURN relay latency is high — expected on satellite',
+                    `The TURN relay (UDP 3478) responded in ${Math.round(turnRtt)} ms. On a satellite/in-flight link this is the inherent propagation delay (geostationary hops add ~500–600 ms round-trip), not a relay fault — UDP 3478 reachability itself passed. RDP Shortpath will still prefer this UDP path over TCP because it absorbs jitter better.`,
+                    'No action — this latency is a property of the satellite link, not your configuration. It will drop back to normal on a terrestrial connection.'));
+            }
+        }
+        const satBw = r('L-LE-07') || r('B-LE-03');
+        if (satBw) {
+            const bwMatch = (satBw.resultValue || '').match(/([\d.]+)\s*Mbps/i);
+            const bwMbps = bwMatch ? parseFloat(bwMatch[1]) : NaN;
+            if (!isNaN(bwMbps)) {
+                findings.push(finding(SEV.INFO, 'Throughput reflects a shared satellite uplink',
+                    `Measured throughput was ~${bwMbps.toFixed(1)} Mbps via a short burst download. Satellite/in-flight links are shared and bursty, so a single download test can over- or under-state what a sustained Cloud PC session gets — actual session bandwidth (and the relay path specifically) is usually lower and more variable than this figure suggests.`,
+                    'For a smoother session on satellite, close bandwidth-heavy background apps and prefer a lower display resolution / 30 fps to reduce the bitrate the link must sustain.'));
+            }
+        }
     }
 
     // ── 0b. Upstream / router-level tunnel (remote egress hairpin) ──
@@ -1215,14 +1241,22 @@ function runAnalysisEngine(results) {
 function computeQualityScore(results) {
     const r = id => results.find(x => x.id === id);
     let score = 100;
-    let hasData = false;
+    // A confident numeric score requires at least one SESSION-QUALITY signal
+    // that actually reflects the WAN/RDP path: round-trip latency (18), jitter
+    // (20), packet loss (21) or the negotiated transport (17b). Gateway latency
+    // (L-LE-05) is LAN-LOCAL only — on a browser-only run it measures the hop to
+    // the local router (e.g. 8 ms to a travel router) and says NOTHING about an
+    // 800 ms satellite WAN path. Scoring "Good / 100" off the LAN hop alone is
+    // misleading, so gateway latency may ADJUST the score but can never be the
+    // sole basis for asserting one.
+    let hasSessionData = false;
 
     // Latency (weight: 35 points)
     const session = r('18');
     if (session) {
         const avg = parseMs(session.resultValue);
         if (!isNaN(avg)) {
-            hasData = true;
+            hasSessionData = true;
             if (avg > 200) score -= 35;
             else if (avg > 150) score -= 25;
             else if (avg > 100) score -= 15;
@@ -1235,7 +1269,7 @@ function computeQualityScore(results) {
     if (jitter) {
         const j = parseMs(jitter.resultValue);
         if (!isNaN(j)) {
-            hasData = true;
+            hasSessionData = true;
             if (j > 60) score -= 20;
             else if (j > 30) score -= 12;
             else if (j > 15) score -= 5;
@@ -1247,7 +1281,7 @@ function computeQualityScore(results) {
     if (loss) {
         const pct = parsePct(loss.resultValue);
         if (!isNaN(pct)) {
-            hasData = true;
+            hasSessionData = true;
             if (pct > 15) score -= 25;
             else if (pct > 5) score -= 15;
             else if (pct > 1) score -= 5;
@@ -1257,23 +1291,23 @@ function computeQualityScore(results) {
     // Transport protocol (weight: 10 points)
     const transport = r('17b');
     if (transport) {
-        hasData = true;
+        hasSessionData = true;
         const val = (transport.resultValue || '').toLowerCase();
         if (val.includes('tcp')) score -= 10;
     }
 
-    // Gateway latency (weight: 10 points — local network health)
+    // Gateway latency (weight: 10 points — local network health).
+    // Adjusts the score but does NOT, on its own, qualify as session data.
     const gw = r('L-LE-05');
     if (gw) {
         const avg = parseMs(gw.resultValue);
         if (!isNaN(avg)) {
-            hasData = true;
             if (avg > 50) score -= 10;
             else if (avg > 20) score -= 5;
         }
     }
 
-    return { score: Math.max(0, score), hasData };
+    return { score: Math.max(0, score), hasData: hasSessionData };
 }
 
 // ═══════════════════════════════════════════════════════════════════
