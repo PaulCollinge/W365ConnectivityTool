@@ -274,7 +274,7 @@ const UPSTREAM_TUNNEL_MIN_KM = 500;
 // circular and produces phantom "tunnel" verdicts (e.g. a hotel guest whose
 // laptop reports a stale office location while egressing via the hotel's real
 // local ISP). Only trust the distance when the fix is at least city-grade.
-const DEVICE_FIX_MAX_ACCURACY_KM = 50;
+const DEVICE_FIX_MAX_ACCURACY_KM = 25;
 
 // Parse the "Accuracy: ~N km" / "Accuracy: ~N m" line emitted into B-LE-01.
 // Returns accuracy in km, or null when not present (older runs / IP-only fix).
@@ -288,6 +288,20 @@ function deviceFixAccuracyKm(results) {
     return /km/i.test(m[2]) ? val : val / 1000;
 }
 
+// True only when the DEVICE location came from a genuine on-device positioning
+// fix (real GPS or WiFi trilateration). An IP-derived position ("GeoIP" /
+// "Browser coordinates + GeoIP city") is computed FROM the egress IP, so
+// comparing it to the egress location is circular and can never prove a tunnel.
+// The user-location test records the source in B-LE-01 detailedInfo.
+function deviceFixIsRealGeolocation(results) {
+    const loc = results.find(x => x.id === 'B-LE-01');
+    if (!loc || !loc.detailedInfo) return false;
+    const m = loc.detailedInfo.match(/Source:\s*(.+)/i);
+    if (!m) return false;
+    // Accept only the genuine GPS/WiFi browser fix; reject any IP-based source.
+    return /Browser Geolocation \(GPS\/WiFi\)/i.test(m[1]);
+}
+
 function detectUpstreamTunnel(results) {
     // Cases already explained by dedicated detectors are not "upstream tunnel".
     if (typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results)) return false;
@@ -297,13 +311,20 @@ function detectUpstreamTunnel(results) {
     const distKm = gpsEgressDistanceKm(results);
     if (distKm == null || distKm < UPSTREAM_TUNNEL_MIN_KM) return false;
 
-    // The distance is only meaningful if the DEVICE location fix is trustworthy.
-    // A coarse WiFi/IP fix (or an IP-derived location, which equals the egress
-    // by construction) cannot establish that the device is physically far from
-    // its egress. If accuracy is unknown OR worse than city-grade, suppress —
-    // better to miss a real upstream tunnel than to tell a hotel/coffee-shop
-    // user they have a phantom one. A genuine GPS fix (accuracy ≤ tens of km)
-    // is required to assert the device is somewhere the egress is not.
+    // The distance is only meaningful if the DEVICE location is a genuine
+    // on-device fix (real GPS/WiFi). An IP-derived position is computed FROM the
+    // egress IP, so a "mismatch" against the egress is just two GeoIP providers
+    // disagreeing about the same IP (e.g. one places a Comcast IP in WA, another
+    // in PA) — NOT a tunnel. This is the exact hotel false-positive: the device
+    // showed Redmond (an IP centroid) while a different provider placed the
+    // egress IP elsewhere. Require a real geolocation source first.
+    if (!deviceFixIsRealGeolocation(results)) return false;
+
+    // Even a "browser" fix can be IP-assisted (coarse). Require a city-grade or
+    // better accuracy: a real GPS/WiFi fix is sub-kilometre to a few km, whereas
+    // an IP-assisted fix is reported at tens of km or worse. If accuracy is
+    // unknown OR coarse, suppress — better to miss a real upstream tunnel than
+    // to tell a hotel/coffee-shop user they have a phantom one.
     const accKm = deviceFixAccuracyKm(results);
     if (accKm == null || accKm > DEVICE_FIX_MAX_ACCURACY_KM) return false;
 
