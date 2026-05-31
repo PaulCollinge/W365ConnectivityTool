@@ -856,7 +856,7 @@ function setEgressDistanceBadge(distKm) {
     // forces AFD and the RD gateway to follow the egress (suboptimal path).
     const lookup = {};
     if (Array.isArray(_lastMapResults)) for (const r of _lastMapResults) lookup[r.id] = r;
-    const measuredNear = gatewayIsMeasurablyNear(lookup);
+    const measuredNear = gatewayLatencyProvesLocal(lookup);
     if (distKm >= EGRESS_FAR_MIN_KM && measuredNear) {
         el.textContent = `≈ GPS→egress ${label} (latency local)`;
         el.className = 'map-card-badge proximity-moderate';
@@ -921,7 +921,7 @@ function updateMapAfdCard(lookup) {
     // edge is suboptimal — and the cause is non-local egress, not AFD itself.
     if (egressGenuinelyFar(lookup)) {
         setBadge('map-afd-prox-badge', '⚠ Suboptimal · distant egress', 'proximity-far');
-    } else if (gatewayIsMeasurablyNear(lookup)) {
+    } else if (gatewayLatencyProvesLocal(lookup)) {
         const ms = gatewayMeasuredRttMs(lookup);
         setBadge('map-afd-prox-badge', ms != null ? `✔ Near (${ms} ms)` : '✔ Near', 'proximity-near');
     } else {
@@ -1028,14 +1028,30 @@ function extractGwFqdn(info) {
 // actually serving the connection), so when they say "far" but the measured
 // RTT says "near", the measurement wins. Only treat the gateway as genuinely
 // distant — a real, user-impacting problem — when the measured RTT is high.
-const GATEWAY_NEAR_MAX_MS = 120;
+// A flat millisecond cutoff cannot tell a local edge (~10-30 ms) from a
+// cross-continent hairpin (Redmond->East US is ~70-90 ms) — both are "low" in
+// absolute terms. The deterministic discriminator is PHYSICS: a round trip to a
+// point distKm away cannot be faster than 2*distKm/c, even at the speed of light
+// in vacuum (~300 km/ms). We compare the measured per-RTT against that floor for
+// the ACTUAL egress distance. This is the SAME gate the v58 upstream-tunnel
+// detector uses, so the map and the AI finding can never disagree.
+const LIGHT_KM_PER_MS_MAP = 300;
 function gatewayMeasuredRttMs(lookup) {
     return extractMs(lookup['B-TCP-02']);
 }
-function gatewayIsMeasurablyNear(lookup) {
-    const clientMs = gatewayMeasuredRttMs(lookup);
-    return clientMs != null && clientMs <= GATEWAY_NEAR_MAX_MS;
+// Tightest provable UPPER BOUND on a single network RTT (ms). Reuses the
+// ai-analysis helper (min across B-TCP-02 / B-EP-01 / B-TCP-03, each /2 for the
+// >=2 round trips a connect contains) so we never over-estimate and never
+// wrongly suppress. Falls back to B-TCP-02/2 if the helper isn't loaded.
+function gatewayPerRttUpperBoundMs(lookup) {
+    if (typeof minNetworkRttUpperBoundMs === 'function' && Array.isArray(_lastMapResults)) {
+        const v = minNetworkRttUpperBoundMs(_lastMapResults);
+        if (v != null) return v;
+    }
+    const httpsMs = extractMs(lookup['B-TCP-02']);
+    return httpsMs != null ? httpsMs / 2 : null;
 }
+function hairpinFloorMs(distKm) { return (2 * distKm) / LIGHT_KM_PER_MS_MAP; }
 
 // Synchronous great-circle distance (km) between the device GPS fix and its
 // network egress, mirroring the priority used by the ISP card (result 27 →
@@ -1068,19 +1084,36 @@ function computeEgressDistanceKm(lookup) {
     return null;
 }
 
-// True when the internet egress is GENUINELY far from the user — i.e. the
-// GeoIP distance is large AND the measured RTT corroborates it (the gateway is
-// NOT measurably near). This is the real, actionable problem: traffic breaks
-// out non-locally (typically a VPN/SWG/proxy hairpin), which forces AFD — and
-// therefore the AFD-selected RD gateway — to a region near the EGRESS rather
-// than near the user, yielding a suboptimal path. When the RTT is low instead,
-// the large GeoIP distance is unreliable (egress is actually local) and this
-// returns false so we don't raise a phantom warning.
+// The measured latency PROVES the path is local — i.e. the large GeoIP egress
+// distance is physically IMPOSSIBLE for the RTT we observed (a packet could not
+// reach an egress that far and return in time). Used to override a misleading
+// region-name / GeoIP "far" verdict on the AFD edge and RD gateway: a low RTT
+// means the AFD-selected gateway is genuinely near the user, whatever the
+// region NAME says. Needs both a distance and a measured RTT to decide.
+function gatewayLatencyProvesLocal(lookup) {
+    const distKm = computeEgressDistanceKm(lookup);
+    const perRtt = gatewayPerRttUpperBoundMs(lookup);
+    if (distKm == null || perRtt == null) return false;
+    return perRtt < hairpinFloorMs(distKm);
+}
+
+// True when the internet egress is GENUINELY far from the user — the GeoIP
+// distance is large AND the measured RTT is CONSISTENT with it (>= the physical
+// floor for that distance). This is the real, actionable problem: traffic
+// breaks out non-locally (VPN/SWG/proxy hairpin or ISP backhaul), which forces
+// AFD — and therefore the AFD-selected RD gateway — to a region near the
+// EGRESS rather than the user, yielding a suboptimal path. When the RTT is
+// below the physical floor the large distance is impossible (egress is actually
+// local), so this returns false and no phantom warning is raised. Covers BOTH
+// local-VPN and upstream-tunnel causes (unlike detectUpstreamTunnel, which
+// excludes local adapters).
 const EGRESS_FAR_MIN_KM = 500;
 function egressGenuinelyFar(lookup) {
     const distKm = computeEgressDistanceKm(lookup);
     if (distKm == null || distKm < EGRESS_FAR_MIN_KM) return false;
-    return !gatewayIsMeasurablyNear(lookup);
+    const perRtt = gatewayPerRttUpperBoundMs(lookup);
+    if (perRtt == null) return true; // no latency to contradict the distance
+    return perRtt >= hairpinFloorMs(distKm);
 }
 
 // RDP gateway FQDN short codes (UKW, EUS2, WEU) → full Azure region slugs
@@ -1219,7 +1252,7 @@ function updateMapRdGwCard(lookup) {
             // near the user. The measured client RTT is the authoritative signal;
             // when a region-name/GeoIP lookup claims "far" but the RTT proves the
             // serving gateway is near, trust the measurement and show Near.
-            const measurablyNear = gatewayIsMeasurablyNear(lookup);
+            const measurablyNear = gatewayLatencyProvesLocal(lookup);
             const measuredMs = gatewayMeasuredRttMs(lookup);
             const nearLabel = measuredMs != null ? `✔ Near (${measuredMs} ms)` : '✔ Near';
             if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near') || locInfo.proximity.includes('near')) {
@@ -1254,7 +1287,7 @@ function updateMapRdGwCard(lookup) {
             if (prox && prox.level === 'far') {
                 // A low measured RTT proves the AFD-selected gateway is actually
                 // near the user; trust it over a region-name/centroid "far".
-                if (gatewayIsMeasurablyNear(lookup)) {
+                if (gatewayLatencyProvesLocal(lookup)) {
                     const measuredMs = gatewayMeasuredRttMs(lookup);
                     const nearLabel = measuredMs != null ? `✔ Near (${measuredMs} ms)` : '✔ Near';
                     setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
@@ -1977,7 +2010,7 @@ function updateMapSecurityBar(lookup) {
             // The gateway is AFD-selected by the user's location, so it should be
             // near the user. A low measured client RTT is the authoritative
             // proximity proof; trust it over a region-name/GeoIP "far" verdict.
-            const measurablyNear = gatewayIsMeasurablyNear(lookup);
+            const measurablyNear = gatewayLatencyProvesLocal(lookup);
             if (info.proximity && (info.proximity.includes('✔') || info.proximity.includes('Near'))) {
                 gwIcon.textContent = '✓';
                 gwText.textContent = 'Gateway Near You';
