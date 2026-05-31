@@ -2062,6 +2062,14 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
     font-size: 10px;
 }
 
+/* Upstream / router-level tunnel indicator on the This Device card */
+.device-detail.map-client-tunnel {
+    color: var(--yellow);
+    font-weight: 600;
+    margin-top: 2px;
+}
+.device-detail.map-client-tunnel.hidden { display: none; }
+
 /* Protocol label (TCP RDP / UDP RDP) */
 .map-proto-label {
     display: inline-block;

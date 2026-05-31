@@ -182,6 +182,94 @@ function detectTrainConnection(results) {
     return false;
 }
 
+// Great-circle distance (km) between the device's GPS fix and its network
+// egress point. Reuses the global helpers defined in map.js / app.js at
+// runtime (all scripts are loaded before any analysis runs). Returns null
+// when either coordinate is unavailable.
+function gpsEgressDistanceKm(results) {
+    const byId = id => results.find(x => x.id === id);
+
+    // 1. Coordinate-based computation (most precise) — only works when the
+    //    stored detailedInfo carries both coordinate lines.
+    if (typeof extractCoordinatesFromDetailedInfo === 'function' &&
+        typeof haversineDistanceKm === 'function') {
+        const gpsSrc = byId('B-LE-01');
+        const gpsCoords = gpsSrc ? extractCoordinatesFromDetailedInfo(gpsSrc.detailedInfo) : null;
+        if (gpsCoords) {
+            let egressCoords = null;
+            const egress27 = byId('27');
+            if (egress27) egressCoords = extractCoordinatesFromDetailedInfo(egress27.detailedInfo, ['Egress coordinates:']);
+            if (!egressCoords) {
+                const ispGeo = byId('B-LE-02') || byId('C-LE-02');
+                if (ispGeo) egressCoords = extractCoordinatesFromDetailedInfo(ispGeo.detailedInfo, ['Egress coordinates:']);
+            }
+            if (egressCoords) {
+                return haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon);
+            }
+        }
+    }
+
+    // 2. Fallback: parse the pre-computed distance line that B-LE-02 writes
+    //    ("GPS to egress: ~5006 km") or the rendered map badge. This catches
+    //    browser-only / imported runs where the egress coordinates weren't
+    //    persisted but the distance string was — the same data the map's
+    //    GPS→egress banner is built from, so the detector fires whenever the
+    //    banner does.
+    const parseKm = (s) => {
+        if (!s) return null;
+        const m = s.match(/(?:GPS\s*(?:to|→|->)\s*egress|GPS→egress)[^\d]*?(\d[\d,]*)\s*km/i);
+        return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+    };
+    const ispGeo = byId('B-LE-02') || byId('C-LE-02');
+    const fromDetail = parseKm(ispGeo && ispGeo.detailedInfo);
+    if (fromDetail != null) return fromDetail;
+    // Rendered map badge (DOM) — authoritative when the map used its async
+    // GeoIP fallback to compute the distance.
+    if (typeof document !== 'undefined') {
+        const badge = document.getElementById('map-isp-distance-badge');
+        const fromBadge = parseKm(badge && badge.textContent);
+        if (fromBadge != null) return fromBadge;
+    }
+    return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Upstream / router-level tunnel detector
+//  Catches the case where traffic is hairpinned through a remote site by a
+//  tunnel that lives UPSTREAM of the PC (e.g. a travel router running
+//  WireGuard, or ISP backhaul). Such a tunnel is INVISIBLE to the OS network
+//  stack: the route-table check (L-TCP-07) sees clean direct routing because
+//  there is no local VPN adapter. The only device-observable evidence is a
+//  large GPS→egress separation with NO local tunnel and NO satellite/in-flight
+//  signal. Returns { distanceKm } when matched, else false.
+// ═══════════════════════════════════════════════════════════════════
+const UPSTREAM_TUNNEL_MIN_KM = 500;
+
+function detectUpstreamTunnel(results) {
+    // Cases already explained by dedicated detectors are not "upstream tunnel".
+    if (typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results)) return false;
+    if (typeof detectTrainConnection === 'function' && detectTrainConnection(results)) return false;
+
+    // Require a measurable, large GPS→egress separation.
+    const distKm = gpsEgressDistanceKm(results);
+    if (distKm == null || distKm < UPSTREAM_TUNNEL_MIN_KM) return false;
+
+    // If the scanner ran and L-TCP-07 found a LOCAL VPN/SWG adapter capturing or
+    // diverting traffic, that is the (already-reported) cause — not an
+    // upstream-only tunnel. When the scanner hasn't run, L-TCP-07 is absent and
+    // we cannot inspect local adapters; the distance signal still stands and the
+    // finding wording flags the ambiguity.
+    const vpn = results.find(x => x.id === 'L-TCP-07');
+    if (vpn) {
+        const detail = (vpn.detailedInfo || '');
+        const resVal = (vpn.resultValue || '');
+        const localTunnel = /VPN tunnel is carrying W365\/AVD traffic|routes via VPN interface|egresses via an UNRECOGNISED non-primary interface|VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
+        if (localTunnel) return false;
+    }
+
+    return { distanceKm: distKm, scannerRan: !!vpn };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Core analysis engine
 // ═══════════════════════════════════════════════════════════════════
@@ -200,6 +288,28 @@ function runAnalysisEngine(results) {
         findings.push(finding(SEV.INFO, 'Satellite / in-flight internet detected',
             `ISP identified as ${ispName}. Satellite and in-flight connections have inherent characteristics — high base latency (typically 500–700 ms RTT), symmetric NAT, and variable jitter — that are not network faults.`,
             'For best Cloud PC experience on aircraft WiFi: ensure UDP 3478 is open for TURN relay fallback, avoid running bandwidth-heavy background apps, and expect occasional freezes during turbulence. TCP-based sessions (via RD Gateway) will be stable even when UDP/STUN fails.'));
+    }
+
+    // ── 0b. Upstream / router-level tunnel (remote egress hairpin) ──
+    // Fires independently of the egress test status: the giveaway is a large
+    // GPS→egress distance with no LOCAL VPN adapter and no satellite signal —
+    // i.e. a tunnel that lives upstream of this device (travel router / ISP
+    // backhaul) and is therefore invisible to the OS routing table.
+    const upstreamTunnel = detectUpstreamTunnel(results);
+    if (upstreamTunnel) {
+        const egressIspResult = r('B-LE-02') || r('C-LE-02');
+        const egressIsp = egressIspResult ? egressIspResult.resultValue.replace(/^AS\d+\s*/i, '') : '';
+        const distStr = typeof formatDistanceKmMi === 'function'
+            ? formatDistanceKmMi(upstreamTunnel.distanceKm)
+            : `~${Math.round(upstreamTunnel.distanceKm)} km`;
+        const ispStr = egressIsp ? ` (egress ISP: ${egressIsp})` : '';
+        const ambiguity = upstreamTunnel.scannerRan
+            ? 'The local scanner confirmed no VPN adapter exists on this device, so the tunnelling is happening on an upstream device.'
+            : 'No local VPN adapter could be inspected (run the Local Scanner to confirm). If this device has no VPN client of its own, the tunnelling is happening on an upstream device.';
+        findings.push(finding(SEV.WARNING, 'Upstream / router-level tunnel — remote egress detected',
+            `Your traffic exits the internet ${distStr} from your physical location${ispStr}, but no VPN adapter is present on this PC. ${ambiguity} ` +
+            'This is the signature of a router-level VPN (for example a travel router running WireGuard) or ISP backhaul: Windows 365 / RDP traffic is hairpinned through that remote site, adding round-trip latency to every packet.',
+            'Split-tunnel Windows 365 at the upstream device so RDP egresses locally: exclude the W365 ranges (40.64.144.0/20 TCP/443 and 51.5.0.0/16 UDP/3478) and FQDNs (*.wvd.microsoft.com, *.infra.windows365.microsoft.com, turn.azure.com) from the router/VPN tunnel — or disable the tunnel for the Cloud PC session.'));
     }
 
     // ── 1. WiFi signal ──

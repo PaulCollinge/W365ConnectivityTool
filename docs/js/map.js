@@ -2,11 +2,16 @@
  * Connectivity Map — updates the network flow diagram cards from test results.
  */
 
+// Most recent results array, captured so the upstream-tunnel indicator can be
+// re-evaluated after the ISP card's async GeoIP fallback resolves the distance.
+let _lastMapResults = null;
+
 function updateConnectivityMap(results) {
     const lookup = {};
     for (const r of results) {
         lookup[r.id] = r;
     }
+    _lastMapResults = results;
 
     const isSatellite = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
     const isTrain     = typeof detectTrainConnection     === 'function' && detectTrainConnection(results);
@@ -534,6 +539,46 @@ function updateMapClientCard(lookup, isSatellite, isTrain) {
     // detection wins if both somehow fire (shouldn't happen — detector guards).
     if (card) card.classList.toggle('on-train', !!isTrain && !isSatellite);
     setText('map-client-title', isSatellite ? '✈ In Flight' : (isTrain ? '🚆 On Train' : 'This Device'));
+
+    // Upstream / router-level tunnel indicator. Evaluated here and also
+    // re-evaluated by updateMapIspCard once its async GeoIP fallback resolves
+    // the GPS→egress distance (which detectUpstreamTunnel depends on).
+    refreshUpstreamTunnelIndicator(isSatellite, isTrain);
+}
+
+// Show/hide the "via upstream tunnel" sub-line on the This Device card.
+// Safe to call repeatedly (e.g. after the async GeoIP distance lands).
+function refreshUpstreamTunnelIndicator(isSatellite, isTrain) {
+    const tunnelEl = document.getElementById('map-client-tunnel');
+    if (!tunnelEl) return;
+    const card = document.getElementById('map-client');
+
+    // Recompute satellite/train if not supplied, so async callers stay correct.
+    if (typeof isSatellite === 'undefined') {
+        isSatellite = _lastMapResults && typeof detectSatelliteConnection === 'function'
+            && detectSatelliteConnection(_lastMapResults);
+    }
+    if (typeof isTrain === 'undefined') {
+        isTrain = _lastMapResults && typeof detectTrainConnection === 'function'
+            && detectTrainConnection(_lastMapResults);
+    }
+
+    const upstreamTunnel = _lastMapResults && typeof detectUpstreamTunnel === 'function'
+        ? detectUpstreamTunnel(_lastMapResults)
+        : false;
+
+    if (upstreamTunnel && !isSatellite && !isTrain) {
+        const distStr = typeof formatDistanceKmMi === 'function'
+            ? formatDistanceKmMi(upstreamTunnel.distanceKm)
+            : `~${Math.round(upstreamTunnel.distanceKm)} km`;
+        tunnelEl.textContent = `🔒 via upstream tunnel · egress ${distStr} away`;
+        tunnelEl.classList.remove('hidden');
+        if (card) card.classList.add('upstream-tunnel');
+    } else {
+        tunnelEl.textContent = '';
+        tunnelEl.classList.add('hidden');
+        if (card) card.classList.remove('upstream-tunnel');
+    }
 }
 
 // ── WiFi / Wired badge on the Client→Gateway path ──
@@ -764,6 +809,9 @@ function updateMapIspCard(lookup) {
 
     // Distance badge with proximity colouring
     setEgressDistanceBadge(egressDistanceKm);
+    // Distance is now known synchronously (if at all) — refresh the upstream
+    // tunnel indicator, which depends on the rendered GPS→egress distance.
+    if (typeof refreshUpstreamTunnelIndicator === 'function') refreshUpstreamTunnelIndicator();
 
     // Final fallback: derive egress from live GeoIP when we still don't have a distance.
     // Covers browser-only runs and older imported scanner results.
@@ -779,6 +827,9 @@ function updateMapIspCard(lookup) {
                 const bestCity = egressCity || fallbackCity;
                 setFlaggedBadge('map-isp-egress-badge', `📍 ${bestCity}`, 'location-badge', bestCity);
                 setEgressDistanceBadge(distKm);
+                // The async distance just landed — re-evaluate the upstream
+                // tunnel indicator now that the GPS→egress badge is populated.
+                if (typeof refreshUpstreamTunnelIndicator === 'function') refreshUpstreamTunnelIndicator();
             })
             .catch(() => { /* best-effort */ });
     }
