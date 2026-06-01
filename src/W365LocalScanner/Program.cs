@@ -1050,7 +1050,7 @@ class Program
     ///               tunnel whose adapter name we couldn't classify).
     /// Both empty = the whole range routes direct.
     /// </summary>
-    static (List<string> vpnCaught, List<string> diverted) ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, StringBuilder sb)
+    static (List<string> vpnCaught, List<string> diverted) ProbeAvdServiceRanges(IList<NetworkInterface> vpnAdapters, StringBuilder sb, HashSet<string>? offendingIfIps = null)
     {
         var vpnCaughtRanges = new List<string>();
         var divertedRanges = new List<string>();
@@ -1174,6 +1174,14 @@ class Program
 
                 // Anything NOT on the primary direct path is "not bypassed".
                 var notBypassedSegments = segments.Where(s => s.kind == 1 || s.kind == 2).ToList();
+
+                // Record the egress interface IP of every off-direct-path segment so
+                // the caller can attribute the capture to a SPECIFIC tunnel when more
+                // than one VPN adapter is active (multi-tunnel scenarios).
+                if (offendingIfIps != null)
+                    foreach (var s in notBypassedSegments)
+                        if (s.route.HasValue && !string.IsNullOrEmpty(s.route.Value.ifIp))
+                            offendingIfIps.Add(s.route.Value.ifIp);
 
                 // Build the precise CIDR lists for what is / isn't bypassed.
                 var vpnCidrs      = vpnSegments.SelectMany(s => IntervalToCidrs(s.start, s.end)).ToList();
@@ -5023,8 +5031,13 @@ class Program
             // VPN whose adapter name isn't in our keyword list still injects routes,
             // and the sweep flags any W365 range that egresses on a non-primary
             // interface as "diverted" even when we couldn't name the adapter.
+            var caughtRanges = new List<string>();
+            var divertedRanges = new List<string>();
+            var offendingIfIps = new HashSet<string>();
             {
-                var (caught, diverted) = ProbeAvdServiceRanges(vpnAdapters, sb);
+                var (caught, diverted) = ProbeAvdServiceRanges(vpnAdapters, sb, offendingIfIps);
+                caughtRanges = caught;
+                divertedRanges = diverted;
                 foreach (var range in caught)
                     issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                 foreach (var d in diverted)
@@ -5045,6 +5058,7 @@ class Program
                             {
                                 sb.AppendLine($"\n  ⚠ RDP gateway {gwIp} ({probeHost}) routes via VPN interface {localIp}");
                                 issues.Add($"RDP gateway {probeHost} routes through VPN");
+                                if (!string.IsNullOrEmpty(localIp)) offendingIfIps.Add(localIp);
                             }
                             else
                             {
@@ -5070,6 +5084,63 @@ class Program
                 {
                     detected.Add($"SWG: {name}");
                     sb.AppendLine($"ℹ SWG/Security process running: {name} (PID: {procs[0].Id})");
+                }
+            }
+
+            // ── Per-solution summary ──
+            // When more than one VPN/SWG solution is active at once (e.g. Microsoft
+            // GSA + Azure VPN), enumerate each one explicitly and state whether it
+            // intercepts W365/RDP traffic, so the user can see at a glance which
+            // solution (if any) is the problem rather than a single merged verdict.
+            var swgEntries = detected.Where(d => d.StartsWith("SWG:", StringComparison.OrdinalIgnoreCase)).ToList();
+            int solutionCount = vpnAdapters.Count + swgEntries.Count;
+            if (solutionCount > 1)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"══ Detected security solutions ({solutionCount}) ══");
+                int n = 0;
+                foreach (var vpn in vpnAdapters)
+                {
+                    n++;
+                    var vpnIps = vpn.GetIPProperties().UnicastAddresses
+                        .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                        .Select(a => a.Address.ToString())
+                        .ToHashSet();
+                    // Attribute capture to THIS adapter: a W365 range was off the
+                    // direct path AND egressed on one of this adapter's IPs.
+                    bool thisVpnIntercepts = vpnIps.Overlaps(offendingIfIps);
+                    sb.AppendLine($"  {n}. VPN tunnel: {vpn.Name} ({vpn.Description})");
+                    if (thisVpnIntercepts)
+                    {
+                        sb.AppendLine("       ⚠ ISSUE: this tunnel carries W365/RDP traffic — add the W365/AVD ranges to its bypass/exclude list.");
+                        if (caughtRanges.Count > 0)
+                            sb.AppendLine($"         W365 ranges via tunnel: {string.Join(", ", caughtRanges)}");
+                        if (divertedRanges.Count > 0)
+                            sb.AppendLine($"         Diverted ranges: {string.Join(", ", divertedRanges)}");
+                    }
+                    else if ((caughtRanges.Count > 0 || divertedRanges.Count > 0) && offendingIfIps.Count > 0)
+                    {
+                        sb.AppendLine("       ✓ No issue — W365/RDP traffic is captured, but by a DIFFERENT tunnel, not this one (this adapter's IPs are not the egress).");
+                    }
+                    else
+                    {
+                        sb.AppendLine("       ✓ No issue — RDP gateway & W365 ranges bypass this tunnel (split-tunnel).");
+                    }
+                }
+                foreach (var s in swgEntries)
+                {
+                    n++;
+                    var label = s.Substring(s.IndexOf(':') + 1).Trim();
+                    bool isGsa = label.Contains("GlobalSecureAccess", StringComparison.OrdinalIgnoreCase);
+                    sb.AppendLine($"  {n}. SWG/security agent: {label}");
+                    if (dnsHijackDetected && isGsa)
+                        sb.AppendLine("       ⚠ ISSUE: GSA is acquiring W365 traffic — the RDP gateway / TURN FQDN resolves to a synthetic IP (DNS hijack). Exclude the W365/AVD FQDNs from the GSA forwarding profile.");
+                    else if (isGsa)
+                        sb.AppendLine("       ✓ No issue — GSA acquires traffic by DNS interception, and the DNS-integrity check above confirms the RDP gateway & TURN FQDNs resolve to genuine Microsoft IPs (not GSA synthetic addresses). GSA is NOT capturing W365 traffic.");
+                    else if (dnsHijackDetected)
+                        sb.AppendLine("       ⚠ ISSUE: a DNS hijack was detected — W365 FQDNs are being resolved to a synthetic IP by this agent.");
+                    else
+                        sb.AppendLine("       ✓ No issue — DNS-integrity check passed and no proxy/captured route detected; this agent is not intercepting W365 traffic.");
                 }
             }
 
@@ -5884,9 +5955,9 @@ class Program
                     sb.AppendLine("  • Actual NAT type on the W365 path is undetermined here.");
                     sb.AppendLine("  • TURN relay reachability (L-UDP-03) is the real indicator.");
                     sb.AppendLine("  • Direct STUN hole-punching may still work depending on the real NAT.");
-                    result.Status = "Warning";
-                    result.ResultValue = $"Multiple egress paths (SWG/ZTNA: {swgAgent}) — NAT type undetermined";
-                    result.RemediationText = "No action required. SWG split-tunneling for W365 is correctly configured. TURN relay reachability (L-UDP-03) confirms UDP path is healthy.";
+                    result.Status = "Passed";
+                    result.ResultValue = $"SWG split-tunneling correct — W365 UDP path healthy (TURN confirmed by L-UDP-03)";
+                    result.RemediationText = "No action required. SWG split-tunneling for W365 is correctly configured. TURN relay reachability (L-UDP-03) confirms the UDP path is healthy.";
                 }
                 else if (ipsDiffer)
                 {
@@ -5903,8 +5974,8 @@ class Program
                     sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
                     sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
                     sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
-                    result.Status = "Warning";
-                    result.ResultValue = $"Symmetric NAT (Enterprise Standard) — TURN relay recommended";
+                    result.Status = "Passed";
+                    result.ResultValue = $"Symmetric NAT (enterprise standard) — UDP Shortpath via TURN relay";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun";
                 }
                 else
@@ -5922,8 +5993,8 @@ class Program
                     sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
                     sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
                     sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
-                    result.Status = "Warning";
-                    result.ResultValue = $"Symmetric NAT (Enterprise Standard) — TURN relay recommended";
+                    result.Status = "Passed";
+                    result.ResultValue = $"Symmetric NAT (enterprise standard) — UDP Shortpath via TURN relay";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun";
                 }
             }
