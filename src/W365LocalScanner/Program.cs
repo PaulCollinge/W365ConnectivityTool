@@ -1101,6 +1101,24 @@ class Program
                 uint rangeStart = netAddr;
                 uint rangeEnd   = prefixLen == 0 ? 0xFFFFFFFF : netAddr | (0xFFFFFFFF >> prefixLen);
 
+                // Exclude the prefix's NETWORK and directed-BROADCAST addresses
+                // from the capture sweep — neither is a usable AVD unicast
+                // endpoint. The directed broadcast is the all-ones HOST address of
+                // the prefix (e.g. 40.64.159.255 for 40.64.144.0/20, NOT always
+                // x.x.255.255). Windows auto-creates an on-link /32 "Local" route
+                // for that broadcast on every subnet a VPN advertises; that /32
+                // wins LPM over the direct exclusion route,
+                // so counting it as "carried via VPN" is a false positive that
+                // flips the whole verdict to "Intercepting RDP traffic" even
+                // though no W365 session traffic ever targets the broadcast.
+                uint sweepStart = rangeStart;
+                uint sweepEnd   = rangeEnd;
+                if (prefixLen is > 0 and <= 30 && rangeEnd > rangeStart + 1)
+                {
+                    sweepStart = rangeStart + 1;
+                    sweepEnd   = rangeEnd - 1;
+                }
+
                 // Exact longest-prefix-match sweep across the WHOLE prefix so a
                 // partial tunnel capture (a VPN route that covers only part of the
                 // range, possibly excluding the network address) can never be
@@ -1108,18 +1126,18 @@ class Program
                 // start of a route that intersects the range (and just after one
                 // ends), so evaluating LPM at each such breakpoint classifies
                 // 100% of the range without enumerating every address.
-                var breakpoints = new SortedSet<uint> { rangeStart };
+                var breakpoints = new SortedSet<uint> { sweepStart };
                 foreach (var rt in routes)
                 {
                     uint rMask = rt.prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - rt.prefixLen);
                     uint rStart = rt.dest;
                     uint rEnd   = rt.prefixLen == 0 ? 0xFFFFFFFF : rt.dest | ~rMask;
-                    if (rEnd < rangeStart || rStart > rangeEnd) continue; // no overlap
-                    if (rStart > rangeStart) breakpoints.Add(rStart);
-                    if (rEnd < rangeEnd)     breakpoints.Add(rEnd + 1);
+                    if (rEnd < sweepStart || rStart > sweepEnd) continue; // no overlap
+                    if (rStart > sweepStart) breakpoints.Add(rStart);
+                    if (rEnd < sweepEnd)     breakpoints.Add(rEnd + 1);
                 }
 
-                var bpList = breakpoints.Where(b => b >= rangeStart && b <= rangeEnd)
+                var bpList = breakpoints.Where(b => b >= sweepStart && b <= sweepEnd)
                                         .OrderBy(b => b).ToList();
 
                 // Classify each contiguous segment by its winning route, merging
@@ -1132,7 +1150,7 @@ class Program
                 for (int i = 0; i < bpList.Count; i++)
                 {
                     uint segStart = bpList[i];
-                    uint segEnd   = (i + 1 < bpList.Count) ? bpList[i + 1] - 1 : rangeEnd;
+                    uint segEnd   = (i + 1 < bpList.Count) ? bpList[i + 1] - 1 : sweepEnd;
                     var win = FindBestRoute(routes, segStart);
                     int kind = ClassifyEgress(win, vpnIfIps, primaryEgressIps);
 
@@ -4103,7 +4121,10 @@ class Program
                 }
 
                 if (afdGsa != null)
+                {
                     sb.AppendLine($"\n⚠ Routing: {afdGsa}");
+                    issues.Add($"AFD CNAME chain routed via {afdGsa}");
+                }
 
                 bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
                 sb.AppendLine(isPrivateLink
@@ -4150,7 +4171,10 @@ class Program
                     }
 
                     if (gwGsa != null)
+                    {
                         sb.AppendLine($"\n⚠ Routing: {gwGsa}");
+                        issues.Add($"Gateway CNAME chain routed via {gwGsa}");
+                    }
 
                     // Extract region from FQDN
                     var regionCode = ExtractRegionFromGatewayFqdn(gwHost);
@@ -4893,6 +4917,84 @@ class Program
                 sb.AppendLine($"  Live proxy verification skipped: {ex.Message}");
             }
 
+            // ── DNS-layer interception check (SWG DNS hijack) ──
+            // The routing-table analysis below is structurally blind to SWGs
+            // (e.g. Global Secure Access, Zscaler, Netskope) that acquire traffic
+            // by hijacking DNS + capturing the flow with WFP filters BELOW the
+            // routing table, rather than by injecting routes. Such an SWG returns
+            // a synthetic/relay IP for the FQDN; that IP then follows the normal
+            // default route, so a route-only check reports "direct" — a false green.
+            //
+            // The deterministic, vendor-agnostic signal: the W365 RDP gateway and
+            // TURN relay have KNOWN published service ranges. We do NOT assume any
+            // particular SWG synthetic range (those vary by vendor/tenant/version).
+            // Instead we resolve the FQDN we KNOW must land in 40.64.144.0/20 (RDP
+            // gateway) or 51.5.0.0/16 (TURN relay); if it resolves OUTSIDE that
+            // range, DNS is being rewritten and the flow is captured at the
+            // DNS/WFP layer — which the route check cannot see.
+            bool dnsHijackDetected = false;
+            try
+            {
+                var dnsTargets = new List<(string fqdn, uint net, int prefix, string rangeText, string label)>();
+                if (gwHost != null)
+                    dnsTargets.Add((gwHost, IpToUint32(IPAddress.Parse("40.64.144.0")), 20, "40.64.144.0/20", "RDP gateway"));
+                dnsTargets.Add(("world.relay.avd.microsoft.com", IpToUint32(IPAddress.Parse("51.5.0.0")), 16, "51.5.0.0/16", "TURN relay"));
+
+                sb.AppendLine();
+                sb.AppendLine("DNS integrity (expected-range check — catches SWG DNS hijacking):");
+                foreach (var (fqdn, net, prefix, rangeText, label) in dnsTargets)
+                {
+                    try
+                    {
+                        var addrs = Dns.GetHostAddresses(fqdn);
+                        var v4 = addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                        if (v4 == null)
+                        {
+                            sb.AppendLine($"  {label} {fqdn}: no IPv4 answer — check skipped");
+                            continue;
+                        }
+                        uint expStart = net;
+                        uint expEnd = prefix == 0 ? 0xFFFFFFFF : net | (0xFFFFFFFF >> prefix);
+                        uint ipU = IpToUint32(v4);
+                        if (ipU >= expStart && ipU <= expEnd)
+                        {
+                            sb.AppendLine($"  ✓ {label} {fqdn} → {v4} is within its expected range {rangeText} (DNS not hijacked)");
+                        }
+                        else
+                        {
+                            // Outside this build's hard-coded range. Before crying
+                            // "hijack", corroborate against the authoritative,
+                            // self-updating Azure Service Tags WindowsVirtualDesktop
+                            // table (_wvdSubnets): AVD adds gateway/relay ranges over
+                            // time that the hard-coded CIDR doesn't know about. A
+                            // genuine SWG synthetic IP (private / CGNAT / vendor range)
+                            // is NEVER in that table, so a service-tag hit means a
+                            // legitimate (newer) Microsoft range — NOT a hijack. Only
+                            // flag when the IP is in NEITHER. If the table failed to
+                            // load (offline), LookupWvdRegionFromServiceTags returns
+                            // null and we fall back to the hard-coded-range verdict.
+                            var stRegion = LookupWvdRegionFromServiceTags(v4);
+                            if (stRegion != null)
+                            {
+                                sb.AppendLine($"  ✓ {label} {fqdn} → {v4} is outside the hard-coded {rangeText} but IS a published AVD service-tag range (region {stRegion}) — legitimate, not a hijack.");
+                            }
+                            else
+                            {
+                                dnsHijackDetected = true;
+                                issues.Add($"DNS hijack: {label} {fqdn} resolves to {v4} (outside {rangeText} and not in any AVD service tag)");
+                                sb.AppendLine($"  ⚠ {label} {fqdn} → {v4} is OUTSIDE its expected range {rangeText} AND not in any published AVD service-tag range.");
+                                sb.AppendLine($"      DNS is being rewritten — the FQDN is pointed at a synthetic/relay IP by an SWG (e.g. Global Secure Access, Zscaler). The traffic is captured at the DNS/WFP layer, BELOW the routing table, so the route-based bypass check cannot see it. RDP traffic for this endpoint is being intercepted regardless of what the routing table shows.");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"  {label} {fqdn}: resolution failed — {ex.Message}");
+                    }
+                }
+            }
+            catch { /* non-critical: route checks below still run */ }
+
             // VPN adapters — detect presence, then check if RDP traffic actually routes through them
             var vpnAdapters = FindVpnAdapters();
             // Hoisted so the post-detection summary block (below) can tell whether
@@ -4955,7 +5057,7 @@ class Program
                 }
 
                 // Summary: if VPN detected but all W365 ranges and RDP gateway route direct
-                if (vpnAdapters.Count > 0 && caught.Count == 0 && diverted.Count == 0 && rdpGwDirect)
+                if (vpnAdapters.Count > 0 && caught.Count == 0 && diverted.Count == 0 && rdpGwDirect && !dnsHijackDetected)
                     sb.AppendLine("\n  ✓ VPN is active but RDP traffic correctly bypasses it (split-tunnel)");
             }
 
@@ -5047,6 +5149,8 @@ class Program
                         interceptorNames.Add("Proxy env vars");
                     else if (issue.Contains("diverts via an unrecognised non-primary interface", StringComparison.OrdinalIgnoreCase))
                         interceptorNames.Add("Diverted route (unrecognised interface)");
+                    else if (issue.StartsWith("DNS hijack:", StringComparison.OrdinalIgnoreCase))
+                        interceptorNames.Add("SWG DNS hijack");
                 }
                 var uniqueInterceptors = interceptorNames.Distinct().ToList();
                 var interceptorLabel = uniqueInterceptors.Count > 0
@@ -6366,7 +6470,7 @@ class Program
                                 shortpathEndpoint = $"{spIp}:{spPort}";
                                 if (IsPrivateIp(spIp))
                                 {
-                                    shortpathType = spPort == 3390 ? "Managed (direct UDP 3390)" : $"Managed (ICE/STUN, port {spPort})";
+                                    shortpathType = spPort == 3390 ? "Managed (RDP Shortpath for managed networks, direct UDP 3390 — optional)" : $"Managed (ICE/STUN, port {spPort})";
                                     protocol = $"UDP Shortpath — {shortpathType}";
                                 }
                                 else
@@ -6460,7 +6564,7 @@ class Program
                 
                 if (udpListeners.Any(ep => ep.Port == 3390))
                 {
-                    sb.AppendLine($"\n  UDP listener on port 3390 detected (managed Shortpath legacy)");
+                    sb.AppendLine($"\n  UDP listener on port 3390 detected — RDP Shortpath for managed networks (optional; only used on managed/private networks, most W365 deployments do not require it)");
                 }
                 
                 // Check established TCP connections for TURN relay or gateway
@@ -6488,12 +6592,13 @@ class Program
                 var managedLegacyConns = tcpConns.Where(c => c.RemoteEndPoint.Port == 3390).ToList();
                 if (managedLegacyConns.Count > 0)
                 {
-                    sb.AppendLine($"\nActive connections to port 3390: {managedLegacyConns.Count}");
+                    sb.AppendLine($"\nActive connections to port 3390 (RDP Shortpath for managed networks — optional): {managedLegacyConns.Count}");
+                    sb.AppendLine($"  Note: port 3390 is RDP Shortpath for managed/private networks only. It is NOT essential — most W365 deployments use public Shortpath (UDP 3478) or TCP fallback.");
                     foreach (var mc in managedLegacyConns.Take(3))
                         sb.AppendLine($"  → {mc.RemoteEndPoint}");
                     shortpathConnected = true;
-                    shortpathType = "Managed (direct UDP 3390)";
-                    protocol = "UDP Shortpath — Managed (direct UDP 3390)";
+                    shortpathType = "Managed (RDP Shortpath for managed networks, direct UDP 3390 — optional)";
+                    protocol = "UDP Shortpath — Managed (RDP Shortpath for managed networks, direct UDP 3390 — optional)";
                 }
 
                 // Connections to RDP gateway on 443 with private remote IPs could indicate managed network
@@ -9916,7 +10021,7 @@ class Program
                     {
                         legacyListenerEnabled = true;
                         sb.AppendLine("  fUseUDPPortRedirector = 1 (legacy listener ENABLED)");
-                        info.Add("Legacy 3390 listener enabled");
+                        info.Add("RDP Shortpath for managed networks (legacy UDP 3390 listener) enabled — optional, only used on managed/private networks");
                     }
                     else
                     {
@@ -9933,7 +10038,7 @@ class Program
                     }
                     else if (legacyListenerEnabled)
                     {
-                        sb.AppendLine($"  UdpRedirectorPort = 3390 (default)");
+                        sb.AppendLine($"  UdpRedirectorPort = 3390 (default — RDP Shortpath for managed networks; optional, only used on managed/private networks)");
                     }
 
                     // ICE candidate disabling check

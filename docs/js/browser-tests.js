@@ -367,7 +367,7 @@ const ALL_TESTS = [
     },
     {
         id: 'C-LE-04', name: 'Shortpath Managed Config',
-        description: 'Checks RDP Shortpath for managed networks prerequisites: registry, UDP 3390 listener, firewall, and ICE/STUN OS support (requires Local Scanner on session host)',
+        description: 'Checks RDP Shortpath for managed networks prerequisites: registry, UDP 3390 listener, firewall, and ICE/STUN OS support (requires Local Scanner on session host). Note: UDP 3390 is RDP Shortpath for managed networks only \u2014 optional and not used by most W365 deployments, which rely on public Shortpath (UDP 3478) or TCP fallback.',
         category: 'cloudpc', source: 'cloudpc'
     },
 
