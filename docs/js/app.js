@@ -1547,6 +1547,41 @@ function extractVpnCapturedRanges(tests) {
     return out;
 }
 
+// Parse the scanner's per-solution "══ Detected security solutions (N) ══" block
+// (written by L-TCP-07 / RunProxyVpnDetection when more than one VPN/SWG is
+// present) into structured entries so the dashboard can render EACH VPN/SWG on
+// its own row with its own bypass verdict. Returns [{ kind, name, ok, detail[] }].
+function extractSecuritySolutions(tests) {
+    for (const t of tests) {
+        if (!t || !t.detailedInfo) continue;
+        const lines = t.detailedInfo.split('\n');
+        const start = lines.findIndex(l => /Detected security solutions/i.test(l));
+        if (start === -1) continue;
+        const solutions = [];
+        let cur = null;
+        for (let i = start + 1; i < lines.length; i++) {
+            const trimmed = lines[i].trim();
+            if (!trimmed) continue;            // skip blank lines inside the block
+            if (!/^\s/.test(lines[i])) break;  // an un-indented line ends the block
+            const hdr = trimmed.match(/^\d+\.\s*(VPN tunnel|SWG\/security agent):\s*(.+)$/i);
+            if (hdr) {
+                const kind = /VPN/i.test(hdr[1]) ? 'VPN' : 'SWG';
+                let name = hdr[2].trim();
+                if (kind === 'VPN') name = name.replace(/\s*\(.*$/, '').trim(); // drop "(Description)"
+                cur = { kind, name, ok: null, detail: [] };
+                solutions.push(cur);
+                continue;
+            }
+            if (!cur) continue;
+            if (/^⚠/.test(trimmed)) { cur.ok = false; cur.detail.push(trimmed.replace(/^⚠\s*(ISSUE:)?\s*/, '')); continue; }
+            if (/^✓/.test(trimmed)) { if (cur.ok === null) cur.ok = true; cur.detail.push(trimmed.replace(/^✓\s*/, '')); continue; }
+            cur.detail.push(trimmed); // continuation / range sub-line
+        }
+        if (solutions.length) return solutions;
+    }
+    return [];
+}
+
 // ── Export results as a text report ──
 // ═══════════════════════════════════════════════════════════════════
 //  Key-Findings Summary (used by text, JSON and CSV exports)
@@ -3415,6 +3450,24 @@ async function updateKeyFindings(results) {
     const vpnUdp = r('L-UDP-07') || r('C-UDP-07');
 
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
+        // When the scanner detected more than one VPN/SWG it emits a per-solution
+        // verdict block. Render each solution on its own row so the user can see,
+        // for every VPN/SWG independently, whether RDP is bypassing it correctly.
+        const solutions = extractSecuritySolutions([vpnTcp, vpnUdp]);
+        if (solutions.length > 0) {
+        for (const s of solutions) {
+            const detail = s.detail.map(d => esc(d)).join('<br>');
+            if (s.ok === false) {
+                add('kf-error', `${esc(s.kind)}: ${esc(s.name)}`,
+                    '🔺 Intercepting W365/RDP traffic — add the W365/AVD ranges to its bypass/exclude list',
+                    (detail ? detail + '<br>' : '') + `See ${rdpOptLink}`);
+            } else {
+                add('kf-pass', `${esc(s.kind)}: ${esc(s.name)}`,
+                    '✓ RDP correctly bypassed (split-tunnel)',
+                    (detail ? detail + '<br>' : '') + `See ${rdpOptLink}`);
+            }
+        }
+        } else {
         const tcpPass = vpnTcp.status === 'Passed';
         const udpPass = !vpnUdp || vpnUdp.status === 'Passed';
         const tcpTimedOut = !tcpPass && /timed out/i.test(vpnTcp.resultValue);
@@ -3483,6 +3536,7 @@ async function updateKeyFindings(results) {
                         (vpnDetail ? vpnDetail + '<br>' : '') + `See ${rdpOptLink}`);
                 }
             }
+        }
         }
     }
 
