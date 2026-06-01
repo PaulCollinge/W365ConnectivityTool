@@ -391,10 +391,15 @@ function detectUpstreamTunnel(results) {
     // a tunnel. This can only suppress impossible distances, never a real remote
     // tunnel (whose RTT is always large enough to clear the floor).
     const minRtt = minNetworkRttUpperBoundMs(results);
-    if (minRtt != null) {
-        const hairpinFloorMs = (2 * distKm) / LIGHT_KM_PER_MS;
-        if (minRtt < hairpinFloorMs) return false;
-    }
+    // The egress-side physics gate is the ONLY thing that catches a wrong egress
+    // GeoIP (the device-accuracy gate above validates only the DEVICE side). If
+    // we have no measured RTT to apply it, we cannot tell a genuine hairpin from
+    // a GeoIP artefact — so suppress rather than raise a phantom tunnel finding.
+    // Better to miss a real upstream tunnel than tell a hotel/coffee-shop user
+    // they have a phantom one (matches egressGenuinelyFar / gatewayLatencyProvesLocal).
+    if (minRtt == null) return false;
+    const hairpinFloorMs = (2 * distKm) / LIGHT_KM_PER_MS;
+    if (minRtt < hairpinFloorMs) return false;
 
     // If the scanner ran and L-TCP-07 found a LOCAL VPN/SWG adapter capturing or
     // diverting traffic, that is the (already-reported) cause — not an

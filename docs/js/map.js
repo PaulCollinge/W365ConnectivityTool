@@ -1112,7 +1112,14 @@ function egressGenuinelyFar(lookup) {
     const distKm = computeEgressDistanceKm(lookup);
     if (distKm == null || distKm < EGRESS_FAR_MIN_KM) return false;
     const perRtt = gatewayPerRttUpperBoundMs(lookup);
-    if (perRtt == null) return true; // no latency to contradict the distance
+    // A large GeoIP distance is NOT actionable on its own: a carrier IP can
+    // geolocate hundreds/thousands of km from where the user actually egresses
+    // (registration-address artefact). Only call the egress "genuinely far"
+    // when a measured RTT CORROBORATES the distance (>= the physical floor).
+    // Without any latency to corroborate, suppress rather than raise a phantom
+    // "suboptimal · distant egress" warning — same rule as
+    // gatewayLatencyProvesLocal(), which also requires BOTH signals.
+    if (perRtt == null) return false;
     return perRtt >= hairpinFloorMs(distKm);
 }
 
