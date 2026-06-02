@@ -3188,6 +3188,50 @@ async function updateKeyFindings(results) {
         add('kf-info', 'Host Type', label + (detail ? ` · ${detail}` : ''));
     }
 
+    // ── 1c. Host placement vs user location (latency optimisation advice) ──
+    // When the Cloud PC / session host sits in a region geographically distant
+    // from the user's PHYSICAL location, RDP round-trip latency is dominated by
+    // propagation delay that no network tuning can remove — only relocating the
+    // host closer can. We advise the appropriate remediation per host type.
+    if (cloudPcMode) {
+        const imds = r('C-NET-01');
+        const userLoc = r('B-LE-01');
+        // Must be the user's genuine on-device fix (GPS/WiFi), NOT an IP-derived
+        // centroid — otherwise on a VPN we'd measure to the egress, not the user,
+        // and could advise moving the host toward the wrong place.
+        const userSrc = userLoc ? extractLine(userLoc.detailedInfo, 'Source:') : '';
+        const genuineFix = /^Browser/i.test((userSrc || '').trim());
+        const userCoords = genuineFix ? extractCoordinatesFromDetailedInfo(userLoc?.detailedInfo) : null;
+        let regionCode = '';
+        if (imds && imds.detailedInfo) {
+            const m = (extractLine(imds.detailedInfo, 'Azure Region:') || '').match(/\(([a-z0-9-]+)\)/i);
+            if (m) regionCode = m[1].toLowerCase();
+        }
+        const cpcRegion = (typeof AZURE_REGIONS !== 'undefined' && regionCode)
+            ? AZURE_REGIONS.find(x => x.code === regionCode) : null;
+        if (userCoords && cpcRegion && typeof haversineDistanceKm === 'function'
+            && typeof inferAzureRegion === 'function') {
+            const distCpc = haversineDistanceKm(userCoords.lat, userCoords.lon, cpcRegion.lat, cpcRegion.lon);
+            const nearest = inferAzureRegion(userCoords.lat, userCoords.lon);
+            const distNear = nearest ? haversineDistanceKm(userCoords.lat, userCoords.lon, nearest.lat, nearest.lon) : distCpc;
+            // Conservative great-circle round-trip estimate: ~1 ms RTT per 100 km.
+            // Real-world routed latency is typically higher, so this is a floor.
+            const saveMs = Math.round((distCpc - distNear) / 100 / 5) * 5;
+            const meaningfullyCloser = nearest && nearest.code !== cpcRegion.code && (distCpc - distNear) > 1500;
+            if (meaningfullyCloser && saveMs >= 20) {
+                const isAvd = hostType === 'avd';
+                const advice = isAvd
+                    ? `Redeploy the session host pool closer to you (${nearest.name}) — est. ≥~${saveMs}ms lower RTT`
+                    : `Use Windows 365 Cloud PC region move to relocate it closer to you (${nearest.name}) — est. ≥~${saveMs}ms lower RTT`;
+                const cls = saveMs >= 40 ? 'kf-issue' : 'kf-info';
+                add(cls,
+                    isAvd ? 'Session Host Placement' : 'Cloud PC Placement',
+                    `${flagImg(cpcRegion.name)}${esc(cpcRegion.name)} · ~${formatDistanceKmMi(distCpc)} from you ` + tag('warn', `~${saveMs}ms over optimal`),
+                    advice);
+            }
+        }
+    }
+
     // ── 2. RDP Egress ──
     const egress27 = r('27');
     const gw09 = r('L-TCP-09') || r('C-TCP-09');
