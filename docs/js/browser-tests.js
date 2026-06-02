@@ -1402,14 +1402,15 @@ async function testNatType(test) {
             } else {
                 // Multiple reflexive IPs from different STUN servers in browser
                 // mode is ambiguous: it could be benign multi-egress (load-balanced
-                // ISP) or it could be Symmetric NAT, which BREAKS Shortpath. The
-                // browser cannot distinguish them — separate sockets per server,
-                // dual-stack, and per-flow ECMP all look the same. Don't claim
-                // "Passed" with confidence; mark Warning and point users at
-                // L-UDP-05 (single-socket two-server test) for the authoritative
-                // classification.
-                natType = 'STUN OK — multiple egress IPs (NAT type unconfirmed)';
-                status = 'Warning';
+                // ISP, dual-stack, SWG/ZTNA split-egress) or it could be Symmetric
+                // NAT. The browser cannot distinguish them. Crucially, NONE of these
+                // breaks the W365 UDP path: STUN succeeded (UDP confirmed) and even
+                // genuine Symmetric NAT just means W365 uses the TURN relay — the
+                // enterprise-standard Shortpath path, not a degradation. So this is
+                // a PASS, not a warning. Point users at L-UDP-05 (single-socket
+                // two-server test) for the authoritative NAT-type classification.
+                natType = 'STUN OK — UDP confirmed (multiple egress paths; exact NAT type via scanner L-UDP-05)';
+                status = 'Passed';
             }
 
             detail += 'Server-reflexive candidates:\n';
