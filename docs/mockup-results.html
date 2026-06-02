@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W365 Connectivity — Results Redesign (Mockup)</title>
+<style>
+/* ===== Theme tokens (mirrors docs/css/styles.css) ===== */
+:root{
+  --bg-app:#080c14; --bg-card:#0d1117; --bg-card-alt:#111820; --bg-surface:#161b22;
+  --bg-elevated:#1c2333; --bg-inset:#0a0e16; --bg-hover:#1a2030;
+  --border:rgba(240,246,252,0.06); --border-default:#21262d; --border-emphasis:#30363d;
+  --text-primary:#e6edf3; --text-secondary:#8b949e; --text-muted:#7d848c; --text-link:#58a6ff;
+  --accent:#58a6ff; --accent-bright:#79c0ff; --accent-bg:rgba(56,139,253,0.1); --accent-border:rgba(56,139,253,0.4);
+  --green:#3fb950; --green-bg:rgba(63,185,80,0.10); --green-border:rgba(63,185,80,0.30);
+  --yellow:#d29922; --yellow-bg:rgba(210,153,34,0.10); --yellow-border:rgba(210,153,34,0.30);
+  --red:#f85149; --red-bg:rgba(248,81,73,0.10); --red-border:rgba(248,81,73,0.30);
+  --purple:#bc8cff; --purple-bg:rgba(188,140,255,0.10);
+  --font:'Segoe UI Variable Text','Segoe UI','Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --mono:'Cascadia Code','Cascadia Mono','SF Mono','Consolas',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(56,139,253,0.08), transparent 60%),
+    radial-gradient(900px 500px at 0% 0%, rgba(188,140,255,0.05), transparent 55%),
+    var(--bg-app);
+  color:var(--text-primary); font-family:var(--font); line-height:1.5;
+  padding:28px 20px 80px; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto}
+.mock-flag{
+  display:inline-flex;align-items:center;gap:8px;background:var(--purple-bg);
+  border:1px solid rgba(188,140,255,0.3);color:var(--purple);
+  padding:5px 12px;border-radius:999px;font-size:12px;font-weight:600;margin-bottom:18px;
+}
+h1.page{font-size:20px;font-weight:700;letter-spacing:-0.01em}
+.sub{color:var(--text-secondary);font-size:13px;margin-bottom:22px}
+
+/* ===== Health hero ===== */
+.hero{
+  display:grid;grid-template-columns:auto 1fr auto;gap:26px;align-items:center;
+  background:linear-gradient(160deg,var(--bg-card-alt),var(--bg-card));
+  border:1px solid var(--border-default);border-radius:18px;padding:24px 28px;margin-bottom:20px;
+  position:relative;overflow:hidden;
+}
+.hero::before{content:"";position:absolute;inset:0;background:
+  radial-gradient(420px 200px at 18% -40%, rgba(63,185,80,0.10), transparent 70%);pointer-events:none}
+.ring{position:relative;width:118px;height:118px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .score{
+  position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+.ring .score b{font-size:30px;font-weight:800;letter-spacing:-0.02em}
+.ring .score span{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em}
+.hero-mid h2{font-size:17px;font-weight:700;margin-bottom:4px}
+.hero-mid .verdict{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:600;
+  padding:4px 11px;border-radius:999px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
+.hero-mid .verdict.warn{background:var(--yellow-bg);color:var(--yellow);border-color:var(--yellow-border)}
+.hero-meta{display:flex;gap:22px;margin-top:14px;flex-wrap:wrap}
+.hero-meta .m{display:flex;flex-direction:column;gap:2px}
+.hero-meta .m .lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted)}
+.hero-meta .m .val{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+.tally{display:flex;gap:10px}
+.tally .pill{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:62px;
+  padding:12px 10px;border-radius:12px;border:1px solid var(--border-default);background:var(--bg-inset)}
+.tally .pill b{font-size:22px;font-weight:800;line-height:1}
+.tally .pill span{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-top:4px}
+.tally .pill.ok b{color:var(--green)} .tally .pill.warn b{color:var(--yellow)} .tally .pill.fail b{color:var(--red)}
+
+/* ===== Filter chips ===== */
+.filters{display:flex;gap:8px;align-items:center;margin:22px 0 14px;flex-wrap:wrap}
+.filters .lbl{font-size:12px;color:var(--text-muted);margin-right:2px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;font-size:12.5px;
+  font-weight:600;cursor:pointer;border:1px solid var(--border-default);background:var(--bg-surface);
+  color:var(--text-secondary);transition:.15s}
+.chip:hover{border-color:var(--border-emphasis);color:var(--text-primary)}
+.chip.active{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent-bright)}
+.chip .n{font-size:11px;background:rgba(255,255,255,0.06);border-radius:999px;padding:1px 7px;font-weight:700}
+.chip.fail.active{background:var(--red-bg);border-color:var(--red-border);color:#ff9b95}
+.chip.warn.active{background:var(--yellow-bg);border-color:var(--yellow-border);color:#f1c150}
+
+/* ===== Category group ===== */
+.group{margin-bottom:18px;border:1px solid var(--border-default);border-radius:16px;overflow:hidden;background:var(--bg-card)}
+.group-head{display:flex;align-items:center;gap:14px;padding:15px 20px;cursor:pointer;
+  background:linear-gradient(180deg,var(--bg-card-alt),var(--bg-card))}
+.group-head:hover{background:var(--bg-hover)}
+.g-ico{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  background:var(--accent-bg);color:var(--accent-bright);flex:none}
+.g-ico svg{width:18px;height:18px}
+.g-title{font-size:15px;font-weight:700;flex:1}
+.g-title small{display:block;font-weight:500;font-size:11.5px;color:var(--text-muted);margin-top:1px}
+/* segmented health bar */
+.seg{display:flex;height:7px;width:150px;border-radius:999px;overflow:hidden;background:var(--bg-inset);flex:none}
+.seg i{display:block;height:100%}
+.seg i.ok{background:var(--green)} .seg i.warn{background:var(--yellow)} .seg i.fail{background:var(--red)}
+.g-count{font-size:12px;color:var(--text-secondary);font-variant-numeric:tabular-nums;min-width:96px;text-align:right}
+.g-count b{color:var(--text-primary)}
+.chev{color:var(--text-muted);transition:.2s;flex:none}
+.group.collapsed .chev{transform:rotate(-90deg)}
+.group.collapsed .group-body{display:none}
+.src-tag{font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--bg-elevated);
+  color:var(--text-secondary);border:1px solid var(--border-default)}
+
+/* ===== Result card ===== */
+.group-body{padding:10px 12px 14px}
+.rc{display:grid;grid-template-columns:4px 1fr auto;gap:0;align-items:stretch;
+  border:1px solid var(--border-default);border-radius:12px;margin-top:8px;overflow:hidden;
+  background:var(--bg-card-alt);transition:.15s}
+.rc:hover{border-color:var(--border-emphasis);transform:translateY(-1px)}
+.rc .accent{background:var(--green)}
+.rc.warn .accent{background:var(--yellow)} .rc.fail .accent{background:var(--red)}
+.rc.info .accent{background:var(--accent)}
+.rc-main{padding:13px 16px;min-width:0}
+.rc-top{display:flex;align-items:center;gap:10px;margin-bottom:3px}
+.rc-status{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;flex:none}
+.rc-status.ok{background:var(--green-bg);color:var(--green)}
+.rc.warn .rc-status{background:var(--yellow-bg);color:var(--yellow)}
+.rc.fail .rc-status{background:var(--red-bg);color:var(--red)}
+.rc.info .rc-status{background:var(--accent-bg);color:var(--accent-bright)}
+.rc-name{font-size:13.5px;font-weight:600}
+.rc-id{font-size:10px;font-family:var(--mono);color:var(--text-muted);background:var(--bg-inset);
+  padding:1px 6px;border-radius:5px}
+.rc-desc{font-size:12px;color:var(--text-secondary);margin-bottom:9px}
+/* the prominent value row */
+.rc-value{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.metric{font-size:13px;font-weight:700;color:var(--text-primary)}
+.metric.good{color:var(--green)} .metric.bad{color:var(--red)} .metric.mid{color:var(--yellow)}
+.kchip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:3px 9px;
+  border-radius:7px;background:var(--bg-inset);border:1px solid var(--border-default);color:var(--text-secondary)}
+.kchip.good{color:var(--green);border-color:var(--green-border);background:var(--green-bg)}
+.kchip.warn{color:var(--yellow);border-color:var(--yellow-border);background:var(--yellow-bg)}
+.kchip svg{width:12px;height:12px}
+.flag{width:18px;height:13px;border-radius:2px;object-fit:cover;vertical-align:middle}
+/* latency mini-bar */
+.lat{display:inline-flex;align-items:center;gap:6px}
+.lat .track{width:64px;height:6px;border-radius:999px;background:var(--bg-inset);overflow:hidden}
+.lat .track i{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--green))}
+.lat .track i.mid{background:linear-gradient(90deg,var(--green),var(--yellow))}
+.rc-side{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:8px;
+  padding:13px 16px;border-left:1px solid var(--border);min-width:120px}
+.dual{display:flex;gap:6px}
+.dual .d{display:flex;flex-direction:column;align-items:center;background:var(--bg-inset);border:1px solid var(--border-default);
+  border-radius:8px;padding:6px 9px;min-width:52px}
+.dual .d span{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}
+.dual .d b{font-size:13px;font-weight:700}
+.dual .d b.good{color:var(--green)}
+.exp{font-size:11.5px;color:var(--accent);cursor:pointer;display:inline-flex;align-items:center;gap:4px;font-weight:600}
+.exp:hover{color:var(--accent-bright)}
+/* expanded detail */
+.rc-detail{grid-column:2/4;border-top:1px dashed var(--border-default);padding:13px 16px;display:none;
+  background:var(--bg-inset)}
+.rc.open .rc-detail{display:block}
+.rc.open .chev2{transform:rotate(180deg)}
+.kv{display:grid;grid-template-columns:160px 1fr;gap:6px 16px;font-size:12px}
+.kv dt{color:var(--text-muted)} .kv dd{color:var(--text-primary);font-family:var(--mono);font-size:11.5px}
+.fix{margin-top:11px;padding:11px 13px;border-radius:9px;background:var(--accent-bg);border:1px solid var(--accent-border);
+  font-size:12px;display:flex;gap:9px}
+.fix .ico{color:var(--accent-bright);flex:none}
+.fix.warnfix{background:var(--yellow-bg);border-color:var(--yellow-border)}
+.fix.warnfix .ico{color:var(--yellow)}
+.fix a{color:var(--accent-bright)}
+.note{margin-top:26px;font-size:12px;color:var(--text-muted);text-align:center;line-height:1.7}
+.note code{font-family:var(--mono);color:var(--text-secondary)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <span class="mock-flag">● MOCKUP — proposed results redesign · not wired to live data</span>
+  <h1 class="page">Connectivity Results</h1>
+  <p class="sub">Redmond, WA → Cloud PC (Windows 365) in UK West · scanned just now</p>
+
+  <!-- ===== HEALTH HERO ===== -->
+  <div class="hero">
+    <div class="ring">
+      <svg width="118" height="118" viewBox="0 0 118 118">
+        <circle cx="59" cy="59" r="50" fill="none" stroke="#21262d" stroke-width="11"/>
+        <circle cx="59" cy="59" r="50" fill="none" stroke="#3fb950" stroke-width="11" stroke-linecap="round"
+          stroke-dasharray="314" stroke-dashoffset="47"/>
+      </svg>
+      <div class="score"><b>85</b><span>Health</span></div>
+    </div>
+    <div class="hero-mid">
+      <h2>Good — RDP experience should be smooth</h2>
+      <span class="verdict warn">⚠ 1 thing worth improving</span>
+      <div class="hero-meta">
+        <div class="m"><span class="lbl">Egress</span><span class="val"><img class="flag" src="https://flagcdn.com/20x15/us.png" alt="">Redmond, US</span></div>
+        <div class="m"><span class="lbl">RD Gateway</span><span class="val"><img class="flag" src="https://flagcdn.com/20x15/us.png" alt="">West US · 105 ms</span></div>
+        <div class="m"><span class="lbl">TURN relay</span><span class="val"><img class="flag" src="https://flagcdn.com/20x15/gb.png" alt="">UK West · 9 ms</span></div>
+        <div class="m"><span class="lbl">Shortpath</span><span class="val" style="color:var(--green)">✓ Ready</span></div>
+      </div>
+    </div>
+    <div class="tally">
+      <div class="pill ok"><b>20</b><span>Passed</span></div>
+      <div class="pill warn"><b>1</b><span>Warning</span></div>
+      <div class="pill fail"><b>0</b><span>Failed</span></div>
+    </div>
+  </div>
+
+  <!-- ===== FILTER CHIPS ===== -->
+  <div class="filters">
+    <span class="lbl">Show</span>
+    <span class="chip active">All <span class="n">21</span></span>
+    <span class="chip fail">Failed <span class="n">0</span></span>
+    <span class="chip warn">Warnings <span class="n">1</span></span>
+    <span class="chip">Passed <span class="n">20</span></span>
+    <span class="chip" style="margin-left:auto">↕ Sort: Severity</span>
+  </div>
+
+  <!-- ===== GROUP: UDP (contains the one warning, floated to top) ===== -->
+  <div class="group">
+    <div class="group-head" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="g-ico"><svg viewBox="0 0 18 18" fill="none"><path d="M10 1L3 10h5l-2 7 7-9h-5l2-7z" fill="currentColor"/></svg></div>
+      <div class="g-title">UDP / Shortpath Connectivity <small>RDP Shortpath, STUN, TURN, NAT</small></div>
+      <div class="seg" title="6 passed · 1 warning"><i class="ok" style="flex:6"></i><i class="warn" style="flex:1"></i></div>
+      <div class="g-count"><b>6</b> passed · <b style="color:var(--yellow)">1</b> warn</div>
+      <svg class="chev" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+    </div>
+    <div class="group-body">
+
+      <!-- WARNING card, expanded to show the new detail treatment -->
+      <div class="rc warn open">
+        <div class="accent"></div>
+        <div class="rc-main">
+          <div class="rc-top">
+            <div class="rc-status">!</div>
+            <div class="rc-name">NAT Type Detection</div>
+            <div class="rc-id">L-UDP-05</div>
+          </div>
+          <div class="rc-desc">Classifies your NAT so we can predict whether RDP Shortpath uses a direct path or the TURN relay.</div>
+          <div class="rc-value">
+            <span class="metric mid">Symmetric NAT</span>
+            <span class="kchip warn"><svg viewBox="0 0 16 16" fill="none"><path d="M8 1l7 13H1L8 1z" stroke="currentColor" stroke-width="1.4"/></svg>Relay-assisted</span>
+            <span class="kchip good">Shortpath still works via TURN</span>
+          </div>
+        </div>
+        <div class="rc-side">
+          <span class="exp" onclick="this.closest('.rc').classList.toggle('open')">Details
+            <svg class="chev2" width="12" height="12" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+          </span>
+        </div>
+        <div class="rc-detail">
+          <dl class="kv">
+            <dt>Mapping behaviour</dt><dd>Address + port dependent</dd>
+            <dt>External egress IP</dt><dd>131.107.1.183</dd>
+            <dt>STUN reflexive</dt><dd>2 candidates (dual-stack)</dd>
+            <dt>TURN relay reachable</dt><dd>Yes — UK West, 9 ms</dd>
+          </dl>
+          <div class="fix warnfix">
+            <span class="ico">💡</span>
+            <div><b>This is the enterprise standard, not a fault.</b> Corporate firewalls almost always present Symmetric NAT. Windows 365 uses the TURN relay for UDP in this case, which is the normal Shortpath path — your session is unaffected. No action required.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PASS card with dual latency -->
+      <div class="rc">
+        <div class="accent"></div>
+        <div class="rc-main">
+          <div class="rc-top">
+            <div class="rc-status ok">✓</div>
+            <div class="rc-name">TURN Relay Reachability</div>
+            <div class="rc-id">C-UDP-04</div>
+          </div>
+          <div class="rc-desc">UDP 3478 reachability and relay region for RDP Shortpath.</div>
+          <div class="rc-value">
+            <img class="flag" src="https://flagcdn.com/20x15/gb.png" alt="">
+            <span class="metric">UK West</span>
+            <span class="kchip good">✓ Co-located with Cloud PC</span>
+          </div>
+        </div>
+        <div class="rc-side">
+          <div class="dual">
+            <div class="d"><span>Client</span><b class="good">15ms</b></div>
+            <div class="d"><span>Cloud PC</span><b class="good">9ms</b></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PASS card with latency bar -->
+      <div class="rc">
+        <div class="accent"></div>
+        <div class="rc-main">
+          <div class="rc-top">
+            <div class="rc-status ok">✓</div>
+            <div class="rc-name">STUN Binding (WebRTC)</div>
+            <div class="rc-id">B-UDP-01</div>
+          </div>
+          <div class="rc-desc">Confirms outbound UDP works and gathers ICE candidates.</div>
+          <div class="rc-value">
+            <span class="metric good">UDP confirmed</span>
+            <span class="lat"><span class="track"><i style="width:22%"></i></span><span class="kchip">14 ms</span></span>
+          </div>
+        </div>
+        <div class="rc-side">
+          <span class="exp" onclick="this.closest('.rc').classList.toggle('open')">Details
+            <svg class="chev2" width="12" height="12" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+          </span>
+        </div>
+        <div class="rc-detail">
+          <dl class="kv">
+            <dt>STUN server</dt><dd>stun.l.google.com:19302</dd>
+            <dt>Candidate types</dt><dd>host, srflx</dd>
+            <dt>Round-trip</dt><dd>14 ms</dd>
+          </dl>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== GROUP: TCP ===== -->
+  <div class="group">
+    <div class="group-head" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="g-ico"><svg viewBox="0 0 18 18" fill="none"><path d="M7 11l-3 3a2.5 2.5 0 01-3.5-3.5l3-3M11 7l3-3a2.5 2.5 0 013.5 3.5l-3 3M6 12l6-6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></div>
+      <div class="g-title">TCP RDP Connectivity <small>Gateway, AFD edge, broker, TLS</small></div>
+      <div class="seg" title="11 passed"><i class="ok" style="flex:11"></i></div>
+      <div class="g-count"><b>11</b> passed</div>
+      <svg class="chev" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+    </div>
+    <div class="group-body">
+
+      <div class="rc">
+        <div class="accent"></div>
+        <div class="rc-main">
+          <div class="rc-top">
+            <div class="rc-status ok">✓</div>
+            <div class="rc-name">RD Gateway Connectivity</div>
+            <div class="rc-id">C-TCP-09</div>
+          </div>
+          <div class="rc-desc">TCP 443 to the AFD-selected RD Gateway nearest your egress.</div>
+          <div class="rc-value">
+            <img class="flag" src="https://flagcdn.com/20x15/us.png" alt="">
+            <span class="metric">West US</span>
+            <span class="kchip">rdgateway-c202-wus-r1.wvd.microsoft.com</span>
+            <span class="kchip good">✔ Follows your location</span>
+          </div>
+        </div>
+        <div class="rc-side">
+          <div class="dual">
+            <div class="d"><span>Client</span><b class="good">63ms</b></div>
+            <div class="d"><span>Cloud PC</span><b class="good">68ms</b></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rc">
+        <div class="accent"></div>
+        <div class="rc-main">
+          <div class="rc-top">
+            <div class="rc-status ok">✓</div>
+            <div class="rc-name">Azure Front Door Edge</div>
+            <div class="rc-id">C-TCP-04</div>
+          </div>
+          <div class="rc-desc">HTTPS reachability to the nearest AFD point-of-presence.</div>
+          <div class="rc-value">
+            <span class="metric good">Reachable</span>
+            <span class="lat"><span class="track"><i style="width:34%"></i></span><span class="kchip">63 ms</span></span>
+          </div>
+        </div>
+        <div class="rc-side"><span class="exp">Details ▾</span></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== GROUP: Local Environment ===== -->
+  <div class="group collapsed">
+    <div class="group-head" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="g-ico"><svg viewBox="0 0 18 18" fill="none"><rect x="2" y="3" width="14" height="10" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M6 16h6M9 13v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></div>
+      <div class="g-title">Local Environment <small>WiFi, proxy, routing, VPN/SWG</small></div>
+      <span class="src-tag">Local Scanner</span>
+      <div class="seg" title="3 passed"><i class="ok" style="flex:3"></i></div>
+      <div class="g-count"><b>3</b> passed</div>
+      <svg class="chev" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+    </div>
+    <div class="group-body"></div>
+  </div>
+
+  <!-- ===== GROUP: Endpoints ===== -->
+  <div class="group collapsed">
+    <div class="group-head" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="g-ico"><svg viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.4"/><path d="M2 9h14M9 2c2.5 2 2.5 12 0 14M9 2c-2.5 2-2.5 12 0 14" stroke="currentColor" stroke-width="1.4"/></svg></div>
+      <div class="g-title">Required Endpoint Access <small>Microsoft service FQDNs &amp; CIDRs</small></div>
+      <div class="seg" title="2 passed"><i class="ok" style="flex:2"></i></div>
+      <div class="g-count"><b>2</b> passed</div>
+      <svg class="chev" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+    </div>
+    <div class="group-body"></div>
+  </div>
+
+  <p class="note">
+    What changed vs. today: a <b>health-score hero</b> with the session verdict + key path at a glance ·
+    <b>severity sort</b> floats the one warning to the top · each result is a <b>card</b> with a coloured accent,
+    a <b>prominent metric</b> (not buried under the description), inline <b>latency bars / dual client·CPC pills</b>,
+    and <b>structured expandable details</b> with a plain-language fix box instead of a raw text dump ·
+    category headers gain a <b>segmented pass/warn/fail bar</b> and collapse when healthy.<br>
+    Open this file directly in your browser to click around. Nothing here touches live data.
+  </p>
+</div>
+</body>
+</html>
