@@ -200,6 +200,8 @@ function setTestRunning(testId) {
 function updateSummary(results) {
     const bar = document.getElementById('summary-bar');
     bar.classList.remove('hidden');
+    const overview = document.getElementById('results-overview');
+    if (overview) overview.classList.remove('hidden');
 
     const allResults = [...results];
     // Count pending (local-only tests not yet imported)
