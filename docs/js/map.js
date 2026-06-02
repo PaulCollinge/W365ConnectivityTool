@@ -1340,7 +1340,6 @@ function updateMapRdGwCard(lookup) {
 function updateMapTurnCard(lookup) {
     const stunTest = lookup['B-UDP-01'] || lookup['C-UDP-03'];
     const turnReach = lookup['L-UDP-03'];
-    const turnLoc = lookup['L-UDP-04'] || lookup['C-UDP-04'];
 
     let status = 'NotRun';
     let detail1 = 'Awaiting results...';
@@ -1357,24 +1356,38 @@ function updateMapTurnCard(lookup) {
         status = stunTest.status;
     }
 
-    // Location badge from L-UDP-04 (scanner)
-    let turnLocationStr = '';
-    let turnRegionSlug = '';
-    if (turnLoc && turnLoc.status !== 'NotRun' && turnLoc.status !== 'Pending') {
+    // TURN relay discovery — separate the CLIENT-side relay from the CPC-side
+    // relay. They are DIFFERENT relays: the client (laptop scanner, L-UDP-04)
+    // gets a relay near the USER's egress, while the Cloud PC (C-UDP-04) gets a
+    // relay near the CPC region. The W365 session's relay is the CPC-side one, so
+    // ONLY that one may be compared to the CPC region. Comparing the client-side
+    // relay to the CPC region produced false "Wrong region" alarms (e.g. a Redmond
+    // user correctly gets a West US relay while the CPC is in UK West).
+    const parseTurnLoc = (t) => {
+        if (!t || t.status === 'NotRun' || t.status === 'Pending') return null;
         // Match both "TURN relay: Region (ip)" and "TURN relay (DNS): Region (code) (ip)"
-        const locMatch = (turnLoc.resultValue || '').match(/TURN relay(?:\s*\([^)]*\))?:\s*(.+?)\s*\(/);
-        const city = locMatch ? locMatch[1] : '';
-        if (city) {
-            setFlaggedBadge('map-turn-loc-badge', `📍 ${city}`, 'location-badge', city);
-            turnLocationStr = city;
+        const lm = (t.resultValue || '').match(/TURN relay(?:\s*\([^)]*\))?:\s*(.+?)\s*\(/);
+        let slug = '';
+        if (t.detailedInfo) {
+            // Authoritative Azure region slug, e.g. "Azure Region: East US 2 (eastus2)".
+            const m = t.detailedInfo.match(/Azure Region:\s*[^(\n]*\(([a-z0-9-]+)\)/i);
+            if (m) slug = m[1].toLowerCase();
         }
-        // Pull authoritative Azure region slug from detailedInfo, e.g.
-        // "Azure Region: East US 2 (eastus2)".
-        if (turnLoc.detailedInfo) {
-            const m = turnLoc.detailedInfo.match(/Azure Region:\s*[^(\n]*\(([a-z0-9-]+)\)/i);
-            if (m) turnRegionSlug = m[1].toLowerCase();
+        return { city: lm ? lm[1] : '', slug, status: t.status };
+    };
+    const clientTurnLoc = parseTurnLoc(lookup['L-UDP-04']);
+    const cpcTurnLoc = parseTurnLoc(lookup['C-UDP-04']);
+    // The card represents the session's TURN relay. Prefer the CPC-side relay
+    // (the relay the W365 session actually uses); fall back to the client-side.
+    const sessionTurn = cpcTurnLoc || clientTurnLoc;
+
+    let turnLocationStr = '';
+    if (sessionTurn) {
+        turnLocationStr = sessionTurn.city;
+        if (turnLocationStr) {
+            setFlaggedBadge('map-turn-loc-badge', `📍 ${turnLocationStr}`, 'location-badge', turnLocationStr);
         }
-        status = worstStatus(status, turnLoc.status);
+        status = worstStatus(status, sessionTurn.status);
     } else if (stunTest && stunTest.status === 'Passed') {
         // No scanner data — do a browser-based relay geolocation via DoH + GeoIP
         geolocateTurnRelay();
@@ -1389,13 +1402,15 @@ function updateMapTurnCard(lookup) {
     // resolution through the VPN. Traffic Manager correctly returns the CPC's
     // own region — which is exactly what the session will use.
     //
-    // So the "correct" state here is TURN region == CPC region (green), and
-    // a mismatch is the warning condition, not the other way round.
+    // So the "correct" state here is the CPC-SIDE relay region == CPC region
+    // (green). We deliberately only run this check against the CPC-side relay
+    // (cpcTurnLoc); the client-side relay legitimately follows the user's egress
+    // and must never be flagged against the CPC region.
     const vpnCtxTurn = getVpnContext(lookup);
     const cpcSlug = (vpnCtxTurn.cpcRegionCode || '').toLowerCase();
     const stunHostOnly = stunTest && /host candidate/i.test(stunTest.resultValue || '');
-    if (turnRegionSlug && cpcSlug) {
-        const cmp = compareAzureRegions(turnRegionSlug, cpcSlug);
+    if (cpcTurnLoc && cpcTurnLoc.slug && cpcSlug) {
+        const cmp = compareAzureRegions(cpcTurnLoc.slug, cpcSlug);
         if (cmp.level === 'same') {
             setBadge('map-turn-prox-badge', `✓ Co-located with CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-near');
         } else if (cmp.level === 'intra') {
@@ -1404,7 +1419,7 @@ function updateMapTurnCard(lookup) {
         } else if (cmp.level === 'cross') {
             setBadge('map-turn-prox-badge', `⚠ Wrong region — CPC in ${vpnCtxTurn.cpcRegionName}`, 'proximity-far');
             status = worstStatus(status, 'Warning');
-            detail1 = `⚠ TURN in ${turnLocationStr}, CPC in ${vpnCtxTurn.cpcRegionName}`;
+            detail1 = `⚠ Session relay in ${cpcTurnLoc.city}, CPC in ${vpnCtxTurn.cpcRegionName}`;
         }
     } else if (vpnCtxTurn.vpnActive && stunHostOnly) {
         // VPN blocked STUN outright — we can't verify the session path at all
