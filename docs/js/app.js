@@ -1389,6 +1389,14 @@ function processImportedData(data) {
             continue;
         }
         if (test.source !== 'local') continue;
+        // A CPC scan is MERGED additively on top of the existing client/local
+        // results — it contains only C-* IDs, so `importedIds` never includes
+        // the laptop's own L-* tests. Hiding local-source cards here would wipe
+        // every previously-imported local-scanner result (Local Environment,
+        // local TCP/UDP probes, etc.) the moment the user merges the cloud side.
+        // Only prune stale local cards when THIS import is itself a local scan
+        // that legitimately supersedes the prior one.
+        if (isCloudPcImport) continue;
         if (importedIds.has(String(test.id))) continue;
         const el = document.getElementById(`test-${test.id}`);
         if (el) el.style.display = 'none';
