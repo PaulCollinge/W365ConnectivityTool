@@ -648,17 +648,25 @@ main {
     background: var(--bg-surface);
     border: 1px solid var(--border-emphasis);
     border-radius: var(--r-lg);
-    padding: 18px;
+    padding: 12px 14px;
     box-shadow: var(--shadow-card, 0 1px 2px rgba(0,0,0,0.25));
 }
 /* Stat boxes become the header row of the section */
 .results-overview .summary-bar {
     margin-bottom: 0;
+    gap: 10px;
 }
+/* Compact stat boxes inside the overview so the map fits on one screen */
+.results-overview .summary-item {
+    background: var(--bg-card);
+    padding: 12px 10px;
+    gap: 3px;
+}
+.results-overview .summary-item .summary-count { font-size: var(--text-xl); }
 /* Key Findings blends in as the lower content, divided by a hairline */
 .results-overview .key-findings {
     margin-bottom: 0;
-    margin-top: 18px;
+    margin-top: 12px;
     border: none;
     border-radius: 0;
     background: transparent;
@@ -667,15 +675,13 @@ main {
 /* When Key Findings is hidden, drop the divider gap so the box hugs the stats */
 .results-overview .key-findings.hidden + *,
 .results-overview .key-findings.hidden { margin-top: 0; border-top: none; }
-/* Stat boxes sit on the section surface — lighten their own chrome a touch */
-.results-overview .summary-item {
-    background: var(--bg-card);
-}
-/* Align Key Findings content edges with the stat boxes (strip inner side padding) */
-.results-overview .key-findings .kf-top { padding-left: 0; padding-right: 0; }
-.results-overview .key-findings .kf-band { padding-left: 0; padding-right: 0; }
-.results-overview .key-findings .kf-disclose { padding-left: 0; padding-right: 0; }
-.results-overview .key-findings .kf-rows { padding-left: 0; padding-right: 0; }
+/* Align Key Findings content edges with the stat boxes (strip inner side padding) + tighten vertical rhythm */
+.results-overview .key-findings .kf-top { padding: 12px 0; }
+.results-overview .key-findings .kf-band { padding: 0 0 8px; }
+.results-overview .key-findings .kf-band-title { padding: 10px 0 6px; }
+.results-overview .key-findings .kf-disclose { padding: 10px 0; }
+.results-overview .key-findings .kf-rows { padding: 0 0 8px; }
+.results-overview .key-findings .kf-badge { width: 36px; height: 36px; font-size: 19px; }
 
 .summary-item {
     background: var(--bg-card);
