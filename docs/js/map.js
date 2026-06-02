@@ -1409,17 +1409,26 @@ function updateMapTurnCard(lookup) {
     const vpnCtxTurn = getVpnContext(lookup);
     const cpcSlug = (vpnCtxTurn.cpcRegionCode || '').toLowerCase();
     const stunHostOnly = stunTest && /host candidate/i.test(stunTest.resultValue || '');
+    // Once the CPC co-location verdict sets the proximity badge, the user-vs-relay
+    // distance check below must NOT overwrite it. The session uses the CPC-side
+    // relay, so co-location with the CPC region is the authoritative verdict;
+    // distance from the user's egress is expected (and irrelevant) for a CPC in
+    // another region (e.g. Redmond user, UK West CPC → UK West relay).
+    let proxBadgeSet = false;
     if (cpcTurnLoc && cpcTurnLoc.slug && cpcSlug) {
         const cmp = compareAzureRegions(cpcTurnLoc.slug, cpcSlug);
         if (cmp.level === 'same') {
             setBadge('map-turn-prox-badge', `✓ Co-located with CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-near');
+            proxBadgeSet = true;
         } else if (cmp.level === 'intra') {
             setBadge('map-turn-prox-badge', `≈ Neighbouring region to CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-moderate');
             status = worstStatus(status, 'Warning');
+            proxBadgeSet = true;
         } else if (cmp.level === 'cross') {
             setBadge('map-turn-prox-badge', `⚠ Wrong region — CPC in ${vpnCtxTurn.cpcRegionName}`, 'proximity-far');
             status = worstStatus(status, 'Warning');
             detail1 = `⚠ Session relay in ${cpcTurnLoc.city}, CPC in ${vpnCtxTurn.cpcRegionName}`;
+            proxBadgeSet = true;
         }
     } else if (vpnCtxTurn.vpnActive && stunHostOnly) {
         // VPN blocked STUN outright — we can't verify the session path at all
@@ -1430,13 +1439,15 @@ function updateMapTurnCard(lookup) {
     }
 
     // Proximity badge — DNS-resolved TURN location vs user (informational only,
-    // actual session TURN relay is assigned by RDP gateway via CRLB anycast)
-    if (turnLocationStr) {
+    // actual session TURN relay is assigned by RDP gateway via CRLB anycast).
+    // Skip entirely when the CPC co-location verdict already owns this badge —
+    // distance from the user is expected and irrelevant for a CPC-side relay.
+    if (turnLocationStr && !proxBadgeSet) {
         const user = getUserLocationContext(lookup);
         const serviceCoords = getServiceCoords(turnLocationStr);
         const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
         if (prox && prox.level === 'far') {
-            setBadge('map-turn-prox-badge', 'ℹ DNS relay distant — session unaffected', 'status-info');
+            setBadge('map-turn-prox-badge', 'ℹ Relay follows CPC region — session unaffected', 'status-info');
         } else if (prox && prox.level === 'ok') {
             setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
         }
@@ -1528,7 +1539,7 @@ function checkTurnProximityAsync(turnLocationStr) {
         const serviceCoords = getServiceCoords(turnLocationStr);
         const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
         if (prox && prox.level === 'far') {
-            setBadge('map-turn-prox-badge', 'ℹ DNS relay distant — session unaffected', 'status-info');
+            setBadge('map-turn-prox-badge', 'ℹ Relay follows CPC region — session unaffected', 'status-info');
         } else if (prox && prox.level === 'ok') {
             setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
         }
