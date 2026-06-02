@@ -3296,7 +3296,18 @@ async function updateKeyFindings(results) {
             const label = val.includes('open internet') ? 'Open Internet (No NAT)' : 'Cone NAT';
             add('kf-pass', 'NAT Type', label + ' ' + tag('pass', 'Shortpath Ready'), `Source: ${src}`);
         } else if (val.includes('symmetric')) {
-            add('kf-issue', 'NAT Type', 'Symmetric NAT ' + tag('warn', 'TURN Fallback'), `STUN hole-punching unlikely · Source: ${src}`);
+            // Symmetric NAT is the enterprise standard and is NOT a fault: W365
+            // uses the TURN relay for UDP in this case. Only flag it when the TURN
+            // relay is ALSO unreachable (no UDP path at all) — otherwise it passes.
+            const turnRelay = r('L-UDP-03') || r('C-UDP-03');
+            const turnOk = turnRelay && turnRelay.status === 'Passed';
+            if (turnOk) {
+                add('kf-pass', 'NAT Type', 'Symmetric NAT ' + tag('pass', 'TURN Relay'),
+                    `Enterprise standard — UDP Shortpath via TURN relay (confirmed healthy) · Source: ${src}`);
+            } else {
+                add('kf-error', 'NAT Type', 'Symmetric NAT ' + tag('warn', 'No UDP path'),
+                    `STUN hole-punching unlikely and TURN relay is unreachable — UDP Shortpath unavailable · Source: ${src}`);
+            }
         } else if (val.includes('blocked') || val.includes('failed')) {
             add('kf-info', 'NAT Type', 'STUN unavailable ' + tag('info', 'TURN relay used'), `Source: ${src}`);
         } else if (val.includes('stun ok') || val.includes('partial')) {
