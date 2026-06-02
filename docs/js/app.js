@@ -3145,8 +3145,8 @@ function updateSatelliteBanner(results) {
 // ── Key Findings panel (prominent at-a-glance RDP optimization summary) ──
 async function updateKeyFindings(results) {
     const panel = document.getElementById('key-findings');
-    const grid = document.getElementById('kf-grid');
-    if (!panel || !grid) return;
+    const content = document.getElementById('kf-content');
+    if (!panel || !content) return;
 
     const r = id => results.find(x => x.id === id);
     const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
@@ -3760,31 +3760,102 @@ async function updateKeyFindings(results) {
             'This network is not suitable for interactive Cloud PC sessions');
     }
 
-    // ── Render ──
+    // ── Render (triage layout) ──
+    // Issues/warnings surface as prominent "needs attention" cards; everything
+    // confirmed correct collapses into an expandable evidence list.
     if (rows.length === 0) return;
 
-    grid.innerHTML = rows.map(it =>
-        `<div class="kf-row ${it.cls}">` +
-            `<span class="kf-dot"></span>` +
-            `<span class="kf-row-label">${it.label}</span>` +
-            `<span class="kf-row-val">${it.value}${it.sub ? `<br><span class="kf-sub">${it.sub}</span>` : ''}</span>` +
-        `</div>`
-    ).join('');
+    const attention = rows.filter(it => it.cls === 'kf-error' || it.cls === 'kf-issue');
+    const confirmed = rows.filter(it => it.cls === 'kf-pass' || it.cls === 'kf-info');
+    const okCount = confirmed.length;
 
-    // Overall verdict
-    const verdict = document.getElementById('kf-verdict');
-    if (verdict) {
-        if (issues > 0) {
-            verdict.textContent = `${issues} issue${issues > 1 ? 's' : ''} need attention`;
-            verdict.className = 'kf-verdict kf-fail';
-        } else if (warnings > 0) {
-            verdict.textContent = `${warnings} warning${warnings > 1 ? 's' : ''}`;
-            verdict.className = 'kf-verdict kf-warn';
-        } else {
-            verdict.textContent = 'Looking good';
-            verdict.className = 'kf-verdict kf-good';
-        }
+    // Header: badge, headline + sub-line, tally pills.
+    let badgeCls, badgeIcon, headline, subline;
+    if (issues > 0) {
+        badgeCls = 'fail'; badgeIcon = '⚠️';
+        headline = `Session quality at risk — ${issues} issue${issues > 1 ? 's' : ''} to fix`;
+        subline = warnings > 0
+            ? `Plus ${warnings} item${warnings > 1 ? 's' : ''} to keep an eye on. Everything else matches the expected Windows 365 pattern.`
+            : 'Everything else matches the expected Windows 365 pattern.';
+    } else if (warnings > 0) {
+        badgeCls = 'warn'; badgeIcon = '⚠️';
+        headline = `${warnings} item${warnings > 1 ? 's' : ''} to review`;
+        subline = 'No blocking issues — the points below may affect session quality.';
+    } else {
+        badgeCls = 'ok'; badgeIcon = '✓';
+        headline = 'Configuration is correct and expected';
+        subline = `All ${okCount} check${okCount > 1 ? 's' : ''} match the expected Windows 365 pattern. A smooth session is expected.`;
     }
 
+    const tally = [
+        issues > 0 ? `<span class="kf-pill fail"><span class="n">${issues}</span>issue${issues > 1 ? 's' : ''}</span>` : '',
+        warnings > 0 ? `<span class="kf-pill warn"><span class="n">${warnings}</span>watch</span>` : '',
+        okCount > 0 ? `<span class="kf-pill ok"><span class="n">${okCount}</span>ok</span>` : ''
+    ].filter(Boolean).join('');
+
+    const topHtml =
+        `<div class="kf-top">` +
+            `<div class="kf-badge ${badgeCls}">${badgeIcon}</div>` +
+            `<div class="kf-headline"><h2>${headline}</h2><p>${subline}</p></div>` +
+            `<div class="kf-tally">${tally}</div>` +
+        `</div>`;
+
+    // Attention band: either the issue/warn cards or an all-clear note.
+    let bandHtml;
+    if (attention.length > 0) {
+        const items = attention.map(it => {
+            const sev = it.cls === 'kf-error' ? 'fail' : 'warn';
+            const state = sev === 'fail' ? 'Issue' : 'Watch';
+            return `<div class="kf-item ${sev}">` +
+                `<div class="kf-bar"></div>` +
+                `<div class="kf-body">` +
+                    `<div class="kf-line1"><span class="kf-name">${it.label}</span>` +
+                    `<span class="kf-state">${state}</span></div>` +
+                    `<div class="kf-desc">${it.value}</div>` +
+                    (it.sub ? `<div class="kf-fix">${it.sub}</div>` : '') +
+                `</div>` +
+            `</div>`;
+        }).join('');
+        bandHtml =
+            `<div class="kf-band">` +
+                `<div class="kf-band-title"><span class="ico">🛠️</span>Needs attention</div>` +
+                items +
+            `</div>`;
+    } else {
+        bandHtml =
+            `<div class="kf-band"><div class="kf-allclear">` +
+                `<span class="big">✅</span>` +
+                `<span class="txt"><b>Nothing to fix.</b>` +
+                `<span>Every check matches the expected Windows 365 pattern. Expand the details below for the full evidence.</span></span>` +
+            `</div></div>`;
+    }
+
+    // Confirmed-correct disclosure (collapsed by default).
+    let confirmedHtml = '';
+    if (confirmed.length > 0) {
+        const metaPreview = confirmed.slice(0, 8).map(c => c.label).join(' · ');
+        const rowsHtml = confirmed.map(it =>
+            `<div class="kf-row ${it.cls}">` +
+                `<span class="kf-dot"></span>` +
+                `<span class="kf-row-label">${it.label}</span>` +
+                `<span class="kf-row-val">${it.value}${it.sub ? `<span class="kf-sub">${it.sub}</span>` : ''}</span>` +
+            `</div>`
+        ).join('');
+        // Auto-expand when there is nothing demanding attention, so the all-clear
+        // state still shows evidence without an extra click.
+        const startOpen = attention.length === 0;
+        confirmedHtml =
+            `<div class="kf-confirmed">` +
+                `<button class="kf-disclose" aria-expanded="${startOpen}" ` +
+                `onclick="this.setAttribute('aria-expanded', this.getAttribute('aria-expanded')==='true'?'false':'true'); this.parentElement.querySelector('.kf-rows').classList.toggle('open');">` +
+                    `<span class="chev">▶</span><span class="ddot"></span>` +
+                    `<span class="lbl">${okCount} check${okCount > 1 ? 's' : ''} confirmed correct &amp; expected</span>` +
+                    `<span class="meta">${metaPreview}${confirmed.length > 8 ? ' …' : ''}</span>` +
+                `</button>` +
+                `<div class="kf-rows${startOpen ? ' open' : ''}">${rowsHtml}</div>` +
+            `</div>`;
+    }
+
+    content.innerHTML = topHtml + bandHtml + confirmedHtml;
     panel.classList.remove('hidden');
 }
