@@ -3843,7 +3843,7 @@ async function updateKeyFindings(results) {
         ).join('');
         // Auto-expand when there is nothing demanding attention, so the all-clear
         // state still shows evidence without an extra click.
-        const startOpen = attention.length === 0;
+        const startOpen = false;
         confirmedHtml =
             `<div class="kf-confirmed">` +
                 `<button class="kf-disclose" aria-expanded="${startOpen}" ` +
