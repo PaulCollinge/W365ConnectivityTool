@@ -1321,40 +1321,16 @@ function updateMapRdGwCard(lookup) {
     });
     setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat), cpcRdgwMs, true);
 
-    // ── Region-steering diagnostic ──
-    // Compare CPC Azure region (from IMDS — authoritative) with the actual
-    // RD gateway's Azure region (from its FQDN — also authoritative) using
-    // exact slug equality. This detects VPN-induced or proxy-induced
-    // cross-region steering without relying on free-text location strings.
-    const vpnCtx = getVpnContext(lookup);
-    const gwRegion = getRdGatewayRegion(lookup);
-    if (vpnCtx.cpcRegionCode && gwRegion && gwRegion.code) {
-        const cmp = compareAzureRegions(vpnCtx.cpcRegionCode.toLowerCase(), gwRegion.code);
-        if (cmp.level === 'cross') {
-            // Hard fail — wrong continent
-            status = worstStatus(status, 'Warning');
-            const cause = vpnCtx.vpnActive
-                ? 'VPN-steered'
-                : 'geo-DNS / proxy mis-steering';
-            setBadge(
-                'map-rdgw-prox-badge',
-                `⚠ Wrong region (CPC in ${vpnCtx.cpcRegionName})`,
-                'proximity-far'
-            );
-            detail1 = `⚠ Gateway in ${gwRegion.name} but CPC is in ${vpnCtx.cpcRegionName} (${cause})`;
-        } else if (cmp.level === 'intra' && vpnCtx.vpnActive) {
-            // Same geography but different region — not ideal but not catastrophic.
-            // Only flag when VPN is active, since AFD may legitimately pick a
-            // neighbouring region for load-balancing or proximity reasons.
-            status = worstStatus(status, 'Warning');
-            setBadge(
-                'map-rdgw-prox-badge',
-                `⚠ Neighbouring region (CPC in ${vpnCtx.cpcRegionName})`,
-                'proximity-far'
-            );
-            detail1 = `⚠ Gateway in ${gwRegion.name}, CPC in ${vpnCtx.cpcRegionName} — VPN likely steered to closest AFD PoP`;
-        }
-    }
+    // ── RD Gateway proximity: follows the USER's EGRESS, NOT the CPC region ──
+    // The RD gateway is AFD-selected from the USER's internet egress, so a
+    // healthy session reaches a gateway near the USER — which may be a completely
+    // different Azure region from the Cloud PC (e.g. a Redmond user on a UK-West
+    // CPC correctly gets a West US gateway). Comparing the gateway region to the
+    // CPC region is therefore WRONG and produced false "Wrong region" alarms.
+    // Gateway proximity is judged against the user above (measured RTT is
+    // authoritative; egressGenuinelyFar handles a genuinely distant egress).
+    // Only the TURN relay (server-side) is compared to the CPC region — see
+    // updateMapTurnCard.
 
     setText('map-rdgw-detail', detail1);
     setAccentStatus('map-rdgw-accent', status);
@@ -2689,13 +2665,6 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
         }
     }
 
-    // Compare CPC region vs gateway region — exact slug equality
-    let regionMismatch = null; // 'cross' | 'intra' | 'same' | null
-    if (gwInfo && gwInfo.code && lookup['C-NET-01']) {
-        const cpcM = (lookup['C-NET-01'].detailedInfo || '').match(/Azure Region:\s*(\S+)/);
-        if (cpcM) regionMismatch = compareAzureRegions(cpcM[1].toLowerCase(), gwInfo.code).level;
-    }
-
     // ── Build the narrative line ──
     const productLabel = vpnLabel && vpnLabel !== 'VPN/SWG' ? vpnLabel : 'VPN/SWG';
     const parts = [];
@@ -2716,10 +2685,12 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
     // Consequence chip — which regional RDP infra the user is hitting as a result
     if (gwRegion) {
         parts.push(`<span class="vpn-sum-sep">→</span>`);
-        const chipTone = regionMismatch === 'cross'
-            ? 'vpn-sum-chip vpn-sum-chip-bad'
-            : (regionMismatch === 'intra' ? 'vpn-sum-chip vpn-sum-chip-warn' : 'vpn-sum-chip');
-        parts.push(`<span class="${chipTone}">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
+        // The RD gateway follows the user's EGRESS, not the CPC region, so a
+        // gateway region differing from the CPC region is NOT inherently wrong —
+        // it is the expected consequence of the egress location. Keep the chip
+        // neutral/informational; genuine "distant egress" is surfaced on the
+        // RD Gateway card via measured RTT, not by CPC-region mismatch.
+        parts.push(`<span class="vpn-sum-chip">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
     }
     if (ispText) {
         parts.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);
