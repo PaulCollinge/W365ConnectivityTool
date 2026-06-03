@@ -2879,6 +2879,12 @@ function microsoftHopKind(hop, target) {
     return null;
 }
 
+/** Format an RTT (ms) for display: "<1 ms" below 1ms, else rounded "N ms". */
+function formatHopRtt(ms) {
+    if (ms == null) return '—';
+    return ms < 1 ? '<1 ms' : `${Math.round(ms)} ms`;
+}
+
 /** Render one target trace block as HTML. */
 function renderTraceTarget(t) {
     const realHops = t.hops.filter(h => !h.timeout && h.rttMs != null);
@@ -2886,11 +2892,37 @@ function renderTraceTarget(t) {
     // Index of the first hop that enters Microsoft's network (entry point).
     const msftEntryIdx = t.hops.findIndex(h => microsoftHopKind(h, t) != null);
 
+    // End-to-end latency: inside Microsoft's network (AS8075) the intermediate
+    // routers commonly de-prioritise / drop ICMP TTL-expired replies, so the
+    // per-hop ladder goes dark and the ONLY latency you can actually observe is
+    // to the deepest hop that still answered — effectively the end-to-end RTT to
+    // (or near) the endpoint. Surface that number explicitly rather than letting
+    // it hide at the bottom of a list of timeouts.
+    const deepest = realHops.length ? realHops[realHops.length - 1] : null;
+    const endToEndMs = deepest ? deepest.rttMs : null;
+    const deepestIdx = deepest ? t.hops.lastIndexOf(deepest) : -1;
+    // The path "goes dark inside Microsoft" when we entered AS8075 and at least
+    // one hop at/after that entry stopped replying (the common case that leaves
+    // only an end-to-end number visible).
+    const darkInsideMsft = msftEntryIdx >= 0 &&
+        t.hops.slice(msftEntryIdx).some(h => h.timeout);
+    const deepestInMsft = deepest != null && microsoftHopKind(deepest, t) != null;
+    // Only surface an "end-to-end" figure when the deepest reply is meaningful —
+    // i.e. the endpoint was reached, or the deepest responding hop is inside
+    // Microsoft's network. Otherwise (e.g. a proxied path that dies at the local
+    // router) the deepest reply is just a near hop and "end-to-end" would mislead.
+    const showE2e = endToEndMs != null && (t.reached || deepestInMsft || darkInsideMsft);
+
     const statusChip = t.reached
         ? '<span class="trace-chip trace-chip-ok">✓ reached</span>'
         : (t.terminal && /blocked|not reached|Stopped|DNS failed|No IPv4/i.test(t.terminal)
             ? '<span class="trace-chip trace-chip-warn">⚠ incomplete</span>'
             : '');
+
+    // Prominent end-to-end latency pill (shown only when meaningful — see above).
+    const e2eChip = showE2e
+        ? `<span class="trace-chip trace-chip-e2e" title="Deepest hop that replied — effectively the end-to-end latency, since hops inside Microsoft's network stop answering traceroute">⇄ End-to-end ~${escapeHtml(formatHopRtt(endToEndMs))}</span>`
+        : '';
 
     const meta = [];
     if (t.resolvedIp) meta.push(`<span class="trace-meta-ip">${escapeHtml(t.resolvedIp)}</span>`);
@@ -2898,6 +2930,12 @@ function renderTraceTarget(t) {
 
     const routed = t.routedVia
         ? `<div class="trace-routed">⚠ Routed via ${escapeHtml(t.routedVia)} — not direct</div>`
+        : '';
+
+    // Explain the end-to-end figure when the path goes dark inside Microsoft's
+    // network — this is expected behaviour, not a fault.
+    const e2eNote = showE2e
+        ? `<div class="trace-e2e-note">⇄ <strong>End-to-end ~${escapeHtml(formatHopRtt(endToEndMs))}</strong> — inside Microsoft's network (AS8075) intermediate hops don't answer traceroute, so this is the latency to the deepest visible point rather than a per-hop breakdown.</div>`
         : '';
 
     let hopsHtml;
@@ -2910,6 +2948,7 @@ function renderTraceTarget(t) {
             const barPct = h.timeout || h.rttMs == null ? 0 : Math.max(6, Math.round((h.rttMs / maxRtt) * 100));
             const msftKind = microsoftHopKind(h, t);
             const isEntry = i === msftEntryIdx;
+            const isDeepest = i === deepestIdx;
             const msftTag = msftKind
                 ? `<span class="trace-hop-asn trace-hop-asn-${msftKind}" title="${msftKind === 'backbone'
                         ? 'Microsoft global network backbone (AS8075)'
@@ -2920,13 +2959,17 @@ function renderTraceTarget(t) {
                 : `<span class="trace-hop-ip">${escapeHtml(h.ip)}</span>` +
                   (h.hostname ? `<span class="trace-hop-host">${escapeHtml(h.hostname)}</span>` : '') +
                   msftTag;
-            const rowCls = `trace-hop ${cls}` + (msftKind ? ' trace-hop-msft' : '') + (isEntry ? ' trace-hop-msft-entry' : '');
+            const rowCls = `trace-hop ${cls}` + (msftKind ? ' trace-hop-msft' : '') +
+                (isEntry ? ' trace-hop-msft-entry' : '') + ((isDeepest && showE2e) ? ' trace-hop-e2e' : '');
             const entryMark = isEntry
                 ? '<span class="trace-hop-entry-flag" title="Traffic enters Microsoft\'s network here">↳ enters Microsoft network</span>'
                 : '';
+            const e2eMark = (isDeepest && showE2e)
+                ? '<span class="trace-hop-e2e-flag" title="Deepest hop that replied — beyond here Microsoft\'s network stops answering traceroute, so this is the end-to-end latency">⇄ end-to-end latency</span>'
+                : '';
             return `<div class="${rowCls}">` +
                 `<span class="trace-hop-ttl">${h.ttl}</span>` +
-                `<span class="trace-hop-body">${label}${entryMark}</span>` +
+                `<span class="trace-hop-body">${label}${entryMark}${e2eMark}</span>` +
                 `<span class="trace-hop-bar"><span class="trace-hop-bar-fill" style="width:${barPct}%"></span></span>` +
                 `<span class="trace-hop-rtt">${rttText}</span>` +
                 `</div>`;
@@ -2937,9 +2980,11 @@ function renderTraceTarget(t) {
         `<div class="trace-target-head">` +
             `<span class="trace-target-role">${escapeHtml(t.role || t.host || 'Target')}</span>` +
             statusChip +
+            e2eChip +
             `<span class="trace-target-meta">${meta.join(' · ')}</span>` +
         `</div>` +
         routed +
+        e2eNote +
         `<div class="trace-hops">${hopsHtml}</div>` +
     `</div>`;
 }

@@ -2560,13 +2560,24 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
     border-top: 1px solid var(--border-default);
     background: var(--bg-inset);
 }
-/* Standalone bottom-of-page section variant (collapsed deep-dive). */
+/* Standalone bottom-of-page section variant (collapsed deep-dive) — boxed to
+   match the other report sections (e.g. Live Connection Diagnostics). */
 .map-traceroute.trace-section {
-    border: 1px solid var(--border-default);
+    border: 1.5px solid var(--border-default);
     border-radius: 12px;
     overflow: hidden;
-    margin-top: 28px;
+    margin-top: 2rem;
+    background: var(--bg-inset);
 }
+/* The toggle doubles as the section header bar. */
+.map-traceroute.trace-section .map-trace-toggle {
+    padding: 16px 24px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+}
+.map-traceroute.trace-section .map-trace-toggle[aria-expanded="true"] {
+    border-bottom: 1px solid var(--border-default);
+}
+.map-traceroute.trace-section .map-trace-title { font-size: var(--text-md, 1rem); }
 .map-trace-toggle {
     display: flex;
     align-items: center;
@@ -2606,6 +2617,18 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .trace-chip { font-size: 10px; padding: 2px 8px; border-radius: 100px; font-weight: 600; }
 .trace-chip-ok   { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
 .trace-chip-warn { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+.trace-chip-e2e  { background: var(--accent-bg); color: var(--accent-bright); border: 1px solid var(--accent-border); font-family: var(--mono); }
+.trace-e2e-note {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    margin: 0 0 8px;
+    line-height: 1.45;
+}
+.trace-e2e-note strong { color: var(--accent-bright); font-family: var(--mono); }
 .trace-routed {
     font-size: var(--text-xs);
     color: var(--yellow);
@@ -2655,6 +2678,22 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
     font-size: 9px;
     color: var(--accent);
     font-style: italic;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+/* End-to-end latency marker — the deepest hop that still replied, beyond which
+   Microsoft's network stops answering traceroute. */
+.trace-hop-e2e {
+    border-left: 2px solid var(--accent-bright, var(--accent));
+    margin-left: -2px;
+    padding-left: 2px;
+    background: var(--accent-bg);
+}
+.trace-hop-e2e .trace-hop-rtt { color: var(--accent-bright); font-weight: 700; }
+.trace-hop-e2e-flag {
+    font-size: 9px;
+    color: var(--accent-bright);
+    font-weight: 600;
     white-space: nowrap;
     flex-shrink: 0;
 }
