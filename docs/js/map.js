@@ -3024,3 +3024,19 @@ function toggleMapTraceroute() {
     btn.setAttribute('aria-expanded', String(willOpen));
     if (chev) chev.textContent = willOpen ? '▾' : '▸';
 }
+
+// Generic collapse/expand for result sections (the four test categories plus
+// the Cloud PC / Live Connection diagnostics panels). Sections are collapsed
+// by default; the status badge stays in the header so pass/fail is readable
+// without expanding. Used by both click and keyboard (Enter/Space) handlers.
+function toggleSection(headerEl, ev) {
+    if (ev && ev.type === 'keydown') {
+        const k = ev.key;
+        if (k !== 'Enter' && k !== ' ' && k !== 'Spacebar') return;
+        ev.preventDefault();
+    }
+    const section = headerEl.closest('.category, .live-diagnostics-section');
+    if (!section) return;
+    const collapsed = section.classList.toggle('collapsed');
+    headerEl.setAttribute('aria-expanded', String(!collapsed));
+}

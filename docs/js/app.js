@@ -2813,6 +2813,17 @@ function setResultFilter(filter) {
 
     grid.dataset.filter = filter;
 
+    // When narrowing to a status filter, expand every collapsed section so the
+    // matching items are actually visible (collapsed sections hide their body).
+    if (filter && filter !== 'all') {
+        document.querySelectorAll('#test-results .category.collapsed, .live-diagnostics-section.collapsed')
+            .forEach(sec => {
+                sec.classList.remove('collapsed');
+                const hdr = sec.querySelector('.category-header, .live-header');
+                if (hdr) hdr.setAttribute('aria-expanded', 'true');
+            });
+    }
+
     // Update button active states
     document.querySelectorAll('.filter-btn').forEach(btn => {
         const isActive = btn.dataset.filter === filter;

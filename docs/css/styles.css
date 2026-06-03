@@ -1505,6 +1505,28 @@ main {
     user-select: none;
 }
 .category-header:hover { background: var(--bg-elevated); }
+
+/* ── Collapsible result sections (collapsed by default; badge stays in
+      the header so pass/fail is readable without expanding) ───────────── */
+.section-chevron {
+    color: var(--text-muted);
+    font-size: 11px;
+    width: 12px;
+    flex-shrink: 0;
+    display: inline-block;
+    transition: transform var(--transition);
+}
+.category.collapsed .section-chevron,
+.live-diagnostics-section.collapsed .section-chevron { transform: rotate(-90deg); }
+.category.collapsed .test-list { display: none; }
+.category.collapsed .category-header { border-bottom: none; }
+.live-diagnostics-section.collapsed .test-list,
+.live-diagnostics-section.collapsed .live-info-bar { display: none; }
+.live-diagnostics-section.collapsed .live-header { border-bottom: none; }
+.live-header { cursor: pointer; user-select: none; }
+.live-header:hover { filter: brightness(1.08); }
+.category-header:focus-visible,
+.live-header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .category-icon { font-size: 18px; }
 .category-header h2 {
     font-size: var(--text-base);
