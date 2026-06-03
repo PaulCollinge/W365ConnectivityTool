@@ -310,6 +310,17 @@ function updateCategoryBadges(results) {
 
         const skipped = catResults.filter(r => r.status === 'Skipped').length;
 
+        // Once the Local Scanner has actually run (any local test produced a
+        // real result rather than the "Pending / Requires Local Scanner"
+        // placeholder), the "Requires Local Scanner" header tag is redundant —
+        // hide it so it doesn't contradict the "N passed" badge next to it.
+        if (cat === 'local') {
+            const hasRun = catResults.some(r =>
+                r.status && r.status !== 'Pending' && r.status !== 'NotRun');
+            const tag = document.querySelector('#cat-local .source-tag.local-only');
+            if (tag) tag.classList.toggle('hidden', hasRun);
+        }
+
         if (failed > 0) {
             badge.textContent = `${failed} failed`;
             badge.style.background = 'var(--red-bg)';
