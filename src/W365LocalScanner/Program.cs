@@ -445,68 +445,33 @@ class Program
             Console.WriteLine();
         }
 
-        // Separate slow tests (traceroute) so we can push results to the browser early
-        var deferredIds = new HashSet<string> { "L-TCP-10" };
-        var fastTests = tests.Where(t => !deferredIds.Contains(t.Id)).ToList();
-        var deferredTests = tests.Where(t => deferredIds.Contains(t.Id)).ToList();
+        // The traceroute test (L-TCP-10) is slow (1-2 min) but its results are
+        // part of the report (the dashboard's Network Path panel). Run it inline
+        // with everything else and open the browser ONCE, after all tests finish,
+        // so the single tab that opens contains the complete results — including
+        // traceroute. (A previous two-phase design opened the tab early, before
+        // traceroute existed, then rewrote the JSON without refreshing the tab —
+        // results data is passed in the URL hash, which a process-launched tab
+        // can't receive after the fact — so the Network Path panel never showed.)
+        var slowIds = new HashSet<string> { "L-TCP-10" };
         var totalCount = tests.Count;
 
-        // ── Phase 1: Run fast tests (everything except traceroute) ──
-        for (int i = 0; i < fastTests.Count; i++)
+        for (int i = 0; i < tests.Count; i++)
         {
-            var test = fastTests[i];
+            var test = tests[i];
             Console.Write($"  [{i + 1}/{totalCount}] {test.Name}... ");
-            RunSingleTest(test, results).Wait();
-        }
-
-        // Push results to browser immediately so the user can review while traceroute runs
-        if (deferredTests.Count > 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine("  ────────────────────────────────────────────────────");
-            Console.WriteLine("  Opening results in browser while traceroute runs...");
-            Console.WriteLine("  ────────────────────────────────────────────────────");
-
-            await WriteResultsJson(outputPath, results);
-            await OpenBrowserWithResults(outputPath, results);
-
-            Console.WriteLine();
-
-            // ── Phase 2: Run deferred tests (traceroute) ──
-            for (int i = 0; i < deferredTests.Count; i++)
-            {
-                var test = deferredTests[i];
-                var num = fastTests.Count + i + 1;
-                Console.Write($"  [{num}/{totalCount}] {test.Name}... ");
+            if (slowIds.Contains(test.Id))
                 Console.Write("(traceroute — this may take 1-2 minutes) ");
-                await RunSingleTest(test, results);
-            }
-
-            Console.WriteLine();
-            Console.WriteLine("  Traceroute complete — updating results...");
-
-            // Rewrite JSON with complete results (including traceroute).
-            // Deliberately do NOT call OpenBrowserWithResults again here:
-            // Process.Start always spawns a new browser tab, and the previous
-            // comment ("BroadcastChannel merges updated results into the
-            // existing tab") was wrong — BroadcastChannel only carries
-            // messages between already-open tabs, it cannot post into a
-            // freshly-launched one. Re-opening therefore produced a 3rd tab
-            // (original dashboard + post-fast-tests tab + post-traceroute
-            // tab) on every scan that included traceroute. The first tab
-            // we opened (after fast tests) is already showing live results;
-            // the user can drag-and-drop the updated JSON if they want the
-            // traceroute findings merged in.
-            await WriteResultsJson(outputPath, results);
-            Console.WriteLine($"  Updated JSON written to: {Path.GetFullPath(outputPath)}");
-            Console.WriteLine("  Drag-and-drop this file onto the dashboard tab to see traceroute data.");
+            await RunSingleTest(test, results);
         }
-        else
-        {
-            // No deferred tests — write and open once
-            await WriteResultsJson(outputPath, results);
-            await OpenBrowserWithResults(outputPath, results);
-        }
+
+        Console.WriteLine();
+        Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.WriteLine("  All tests complete — opening results in browser...");
+        Console.WriteLine("  ────────────────────────────────────────────────────");
+
+        await WriteResultsJson(outputPath, results);
+        await OpenBrowserWithResults(outputPath, results);
 
         // Print executive summary report
         PrintSummaryReport(results, includeCloud);
