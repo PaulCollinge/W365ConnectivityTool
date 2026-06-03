@@ -507,13 +507,13 @@ function runAnalysisEngine(results) {
     if (wifi) {
         const sig = parseSignal(wifi.resultValue);
         if (!isNaN(sig)) {
-            if (sig < 40) {
+            if (sig < THRESHOLDS.wifiSignal.critical) {
                 findings.push(finding(SEV.CRITICAL, 'Poor WiFi signal',
-                    `Signal strength is ${sig}% — below the recommended 60% minimum. This will cause packet loss, retransmissions and intermittent disconnects.`,
+                    `Signal strength is ${sig}% — below the recommended ${THRESHOLDS.wifiSignal.warning}% minimum. This will cause packet loss, retransmissions and intermittent disconnects.`,
                     'Move closer to the access point, remove physical obstructions, or switch to a 5 GHz band. If possible, use a wired Ethernet connection for Cloud PC sessions.'));
-            } else if (sig < 60) {
+            } else if (sig < THRESHOLDS.wifiSignal.warning) {
                 findings.push(finding(SEV.WARNING, 'Marginal WiFi signal',
-                    `Signal strength is ${sig}% — below the recommended 60% minimum.`,
+                    `Signal strength is ${sig}% — below the recommended ${THRESHOLDS.wifiSignal.warning}% minimum.`,
                     'Consider moving closer to the access point or switching to 5 GHz. Wired Ethernet is always preferred for Cloud PC use.'));
             }
         }
@@ -524,11 +524,11 @@ function runAnalysisEngine(results) {
     if (gwLat) {
         const avg = parseMs(gwLat.resultValue);
         if (!isNaN(avg)) {
-            if (avg > 50) {
+            if (avg > THRESHOLDS.gatewayLatency.critical) {
                 findings.push(finding(SEV.CRITICAL, 'Very high gateway latency',
                     `Average latency to your local gateway is ${avg.toFixed(0)} ms — this should be < 5 ms on a healthy network. Every packet to Azure inherits this local delay.`,
                     'Check for WiFi interference, network congestion, or a malfunctioning router. Try rebooting the router, using a wired connection, or bypassing any consumer mesh/extender nodes.'));
-            } else if (avg > 20) {
+            } else if (avg > THRESHOLDS.gatewayLatency.warning) {
                 findings.push(finding(SEV.WARNING, 'Elevated gateway latency',
                     `Average latency to your gateway is ${avg.toFixed(0)} ms (ideal is < 5 ms). This adds delay to every Azure round-trip.`,
                     'A wired connection or 5 GHz WiFi band may help. If the issue persists, check the router and local network for congestion.'));
@@ -562,11 +562,11 @@ function runAnalysisEngine(results) {
     if (bw) {
         const mbps = parseMbps(bw.resultValue);
         if (!isNaN(mbps)) {
-            if (mbps < 5) {
+            if (mbps < THRESHOLDS.bandwidth.critical) {
                 findings.push(finding(SEV.CRITICAL, 'Very low bandwidth',
                     `Bandwidth is only ${mbps.toFixed(1)} Mbps (${bwSource}) — well below the 20 Mbps recommended for a good Cloud PC experience. Video, screen updates and file transfers will be severely impacted.`,
                     'Use a wired connection if on WiFi. Contact your ISP if bandwidth is consistently below plan speeds.'));
-            } else if (mbps < 10) {
+            } else if (mbps < THRESHOLDS.bandwidth.warning) {
                 findings.push(finding(SEV.WARNING, 'Low bandwidth',
                     `Bandwidth is ${mbps.toFixed(1)} Mbps (${bwSource}) — below the 20 Mbps recommended for optimal Cloud PC performance.`,
                     'Ensure other bandwidth-heavy activities are minimised during Cloud PC use. A wired Ethernet connection can improve throughput stability.'));
@@ -731,13 +731,13 @@ function runAnalysisEngine(results) {
     if (session) {
         const avg = parseMs(session.resultValue);
         if (!isNaN(avg)) {
-            if (avg > 200) {
+            if (avg > THRESHOLDS.sessionLatency.critical) {
                 findings.push(finding(SEV.CRITICAL, 'Very high session latency',
-                    `Average round-trip time is ${avg.toFixed(0)} ms — well above the 100 ms threshold for a good experience. Users will notice significant input lag and sluggish response.`,
+                    `Average round-trip time is ${avg.toFixed(0)} ms — well above the ${THRESHOLDS.sessionLatency.warning} ms threshold for a good experience. Users will notice significant input lag and sluggish response.`,
                     'Check if traffic is being routed through a VPN or proxy. Verify that the Cloud PC provisioning region is geographically close to the user. High gateway latency (L-LE-05) compounds this issue.'));
-            } else if (avg > 100) {
+            } else if (avg > THRESHOLDS.sessionLatency.warning) {
                 findings.push(finding(SEV.WARNING, 'Elevated session latency',
-                    `Average RTT is ${avg.toFixed(0)} ms. Latency above 100 ms becomes noticeable during interactive work (typing, mouse movement).`,
+                    `Average RTT is ${avg.toFixed(0)} ms. Latency above ${THRESHOLDS.sessionLatency.warning} ms becomes noticeable during interactive work (typing, mouse movement).`,
                     'Ensure traffic egresses locally (not hairpinned through a VPN or distant proxy). Check Cloud PC region alignment with the user\'s physical location.'));
             }
         }
@@ -766,20 +766,20 @@ function runAnalysisEngine(results) {
         if (!isNaN(j)) {
             if (isSatellite) {
                 // Satellite / in-flight links have inherently high jitter — contextualise rather than alarm
-                if (j > 60) {
+                if (j > THRESHOLDS.jitter.critical) {
                     findings.push(finding(SEV.WARNING, 'High jitter — expected on satellite/in-flight WiFi',
                         `Connection jitter is ${j.toFixed(1)} ms. Satellite and in-flight internet links have inherently variable latency due to the long propagation path and shared bandwidth. This is expected and is not a network fault.`,
                         'Jitter on satellite WiFi cannot be reduced at the endpoint. TURN relay fallback (UDP) will help absorb bursts. For critical sessions, connect via ground-based WiFi or cellular.'));
                 }
                 // Don't flag <60ms jitter at all on satellite — it would be noise
             } else {
-                if (j > 60) {
+                if (j > THRESHOLDS.jitter.critical) {
                     findings.push(finding(SEV.CRITICAL, 'Very high jitter',
-                        `Connection jitter is ${j.toFixed(1)} ms — far above the 30 ms warning threshold. This causes inconsistent frame delivery, visual stuttering, and audio glitches.`,
+                        `Connection jitter is ${j.toFixed(1)} ms — far above the ${THRESHOLDS.jitter.warning} ms warning threshold. This causes inconsistent frame delivery, visual stuttering, and audio glitches.`,
                         'High jitter is usually caused by WiFi instability, network congestion, or a saturated uplink. Use a wired connection, reduce competing traffic, and check for QoS issues on the local network.'));
-                } else if (j > 30) {
+                } else if (j > THRESHOLDS.jitter.warning) {
                     findings.push(finding(SEV.WARNING, 'Elevated jitter',
-                        `Connection jitter is ${j.toFixed(1)} ms — above the 30 ms threshold for smooth experience.`,
+                        `Connection jitter is ${j.toFixed(1)} ms — above the ${THRESHOLDS.jitter.warning} ms threshold for smooth experience.`,
                         'Check for WiFi interference or competing bandwidth-intensive activities on the same network.'));
                 }
             }
@@ -791,13 +791,13 @@ function runAnalysisEngine(results) {
     if (loss) {
         const pct = parsePct(loss.resultValue);
         if (!isNaN(pct)) {
-            if (pct > 15) {
+            if (pct > THRESHOLDS.packetLoss.critical) {
                 findings.push(finding(SEV.CRITICAL, 'Severe packet loss',
                     `Packet / frame loss is ${pct.toFixed(1)}% — this will cause visible screen corruption, freezing, and frequent disconnects.`,
                     'Check WiFi signal strength and network adapter drivers. On wired connections, try a different cable or switch port.'));
-            } else if (pct > 5) {
+            } else if (pct > THRESHOLDS.packetLoss.warning) {
                 findings.push(finding(SEV.WARNING, 'Packet loss detected',
-                    `${pct.toFixed(1)}% packet / frame loss — above the 5% threshold. Users may experience occasional freezes or visual artefacts.`,
+                    `${pct.toFixed(1)}% packet / frame loss — above the ${THRESHOLDS.packetLoss.warning}% threshold. Users may experience occasional freezes or visual artefacts.`,
                     'Monitor for WiFi interference or network congestion peaks. Ensure the network adapter driver is up to date.'));
             }
         }
@@ -1051,7 +1051,7 @@ function runAnalysisEngine(results) {
     // Correlation 1: Poor WiFi + high gateway latency = WiFi is the bottleneck
     const wifiSig = wifi ? parseSignal(wifi.resultValue) : NaN;
     const gwAvg = gwLat ? parseMs(gwLat.resultValue) : NaN;
-    if (!isNaN(wifiSig) && wifiSig < 60 && !isNaN(gwAvg) && gwAvg > 20) {
+    if (!isNaN(wifiSig) && wifiSig < THRESHOLDS.wifiSignal.warning && !isNaN(gwAvg) && gwAvg > THRESHOLDS.gatewayLatency.warning) {
         findings.push(finding(SEV.CRITICAL, 'WiFi is the network bottleneck',
             `WiFi signal is ${wifiSig}% and gateway latency is ${gwAvg.toFixed(0)} ms. The weak wireless link is adding measurable delay to every Azure round-trip.`,
             'Use a wired Ethernet connection, or move closer to the access point. This will reduce both gateway latency and jitter.'));
@@ -1085,7 +1085,7 @@ function runAnalysisEngine(results) {
     const egressIsGeoBackhaul = egress
         && (egress.status === 'Failed' || egress.status === 'Warning')
         && /⚠\s*Gateway is far/i.test(egressDetail);
-    if (!isNaN(sessionAvg) && sessionAvg > 100 && egressIsGeoBackhaul) {
+    if (!isNaN(sessionAvg) && sessionAvg > THRESHOLDS.sessionLatency.warning && egressIsGeoBackhaul) {
         findings.push(finding(SEV.CRITICAL, 'High latency due to non-local egress',
             `Session latency is ${sessionAvg.toFixed(0)} ms and RDP traffic is backhauling through a remote gateway. The indirect routing path is adding significant delay.`,
             'Configure split tunnelling so W365 traffic exits directly from the user\'s local internet connection.'));
@@ -1383,9 +1383,12 @@ function computeQualityScore(results) {
         const avg = parseMs(session.resultValue);
         if (!isNaN(avg)) {
             hasSessionData = true;
-            if (avg > 200) score -= 35;
+            // The outer (Critical/Warning) edges come from THRESHOLDS so the
+            // score steps move in lock-step with the Key Findings verdicts;
+            // the intermediate bands (150, 50) are score-shaping only.
+            if (avg > THRESHOLDS.sessionLatency.critical) score -= 35;
             else if (avg > 150) score -= 25;
-            else if (avg > 100) score -= 15;
+            else if (avg > THRESHOLDS.sessionLatency.warning) score -= 15;
             else if (avg > 50) score -= 5;
         }
     }
@@ -1396,8 +1399,8 @@ function computeQualityScore(results) {
         const j = parseMs(jitter.resultValue);
         if (!isNaN(j)) {
             hasSessionData = true;
-            if (j > 60) score -= 20;
-            else if (j > 30) score -= 12;
+            if (j > THRESHOLDS.jitter.critical) score -= 20;
+            else if (j > THRESHOLDS.jitter.warning) score -= 12;
             else if (j > 15) score -= 5;
         }
     }
@@ -1408,8 +1411,8 @@ function computeQualityScore(results) {
         const pct = parsePct(loss.resultValue);
         if (!isNaN(pct)) {
             hasSessionData = true;
-            if (pct > 15) score -= 25;
-            else if (pct > 5) score -= 15;
+            if (pct > THRESHOLDS.packetLoss.critical) score -= 25;
+            else if (pct > THRESHOLDS.packetLoss.warning) score -= 15;
             else if (pct > 1) score -= 5;
         }
     }
@@ -1428,8 +1431,8 @@ function computeQualityScore(results) {
     if (gw) {
         const avg = parseMs(gw.resultValue);
         if (!isNaN(avg)) {
-            if (avg > 50) score -= 10;
-            else if (avg > 20) score -= 5;
+            if (avg > THRESHOLDS.gatewayLatency.critical) score -= 10;
+            else if (avg > THRESHOLDS.gatewayLatency.warning) score -= 5;
         }
     }
 
@@ -1508,9 +1511,9 @@ function showAnalysisPanel(findings, qualityScore) {
         const hasCriticals = findings.some(f => f.severity === SEV.CRITICAL);
         const hasWarnings = findings.some(f => f.severity === SEV.WARNING);
         let label;
-        if (s >= 95 && !hasCriticals && !hasWarnings) label = 'Excellent';
-        else if (s >= 80 && !hasCriticals) label = 'Good';
-        else if (s >= 50 && !hasCriticals) label = 'Fair';
+        if (s >= THRESHOLDS.scoreLabels.excellent && !hasCriticals && !hasWarnings) label = 'Excellent';
+        else if (s >= THRESHOLDS.scoreLabels.good && !hasCriticals) label = 'Good';
+        else if (s >= THRESHOLDS.scoreLabels.fair && !hasCriticals) label = 'Fair';
         else label = 'Poor';
         const color = label === 'Excellent' ? '#10b981'
                     : label === 'Good'      ? '#22c55e'

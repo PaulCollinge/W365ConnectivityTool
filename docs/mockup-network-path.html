@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mockup — Network Path panel (L-TCP-10)</title>
+<link rel="stylesheet" href="css/styles.css?v=279">
+<style>
+  body { background: var(--bg-default, #0d1117); padding: 32px; }
+  .mock-wrap { max-width: 720px; margin: 0 auto; }
+  .mock-note { color: var(--text-muted); font-family: var(--font); font-size: var(--text-xs); margin: 0 0 16px; }
+  /* Reuse the real map container chrome so it looks in-context */
+  .map-shell { border: 1px solid var(--border-default); border-radius: 12px; overflow: hidden; background: var(--bg-inset, #161b22); }
+</style>
+</head>
+<body>
+<div class="mock-wrap">
+  <p class="mock-note">Mockup preview — Network Path panel as it appears under the Connectivity Path map. Click the header to collapse/expand.</p>
+  <div class="map-shell">
+    <!-- The exact panel markup from index.html -->
+    <div id="map-traceroute" class="map-traceroute">
+      <button type="button" class="map-trace-toggle" id="map-trace-toggle" aria-expanded="true" aria-controls="map-trace-body" onclick="toggleMapTraceroute()">
+        <span class="map-trace-chevron" id="map-trace-chevron" aria-hidden="true">▾</span>
+        <span class="map-trace-title">Network Path</span>
+        <span class="map-trace-sub" id="map-trace-summary"></span>
+      </button>
+      <div class="map-trace-body" id="map-trace-body" role="region" aria-label="Per-hop network path traces"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Minimal helpers (standalone copies for the mockup)
+function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function setText(id,t){var el=document.getElementById(id);if(el)el.textContent=t;}
+</script>
+<!-- Pull the REAL functions from map.js so the mockup uses production rendering -->
+<script src="js/map.js?v=279"></script>
+<script>
+// Sample L-TCP-10 detailedInfo in the scanner's exact box-drawing format
+var sampleDetailedInfo = [
+'╔══════════════════════════════════════════════════════════════',
+'║  Traceroute: RDP Gateway (AFD)',
+'║  Target:     afdfp-rdgateway-r1.wvd.microsoft.com',
+'║  Resolved:   20.198.59.110',
+'╠──────────────────────────────────────────────────────────────',
+'║  Hop  IP Address         RTT      Hostname',
+'║  ───  ──────────         ───      ────────',
+'║  1    192.168.1.1        0.8ms    router.local',
+'║  2    100.65.4.1         6ms      ',
+'║  3    96.120.14.1        9ms      po-301.ar01.comcast.net',
+'║  4    *                  *',
+'║  5    104.44.7.52        12ms     be-120-0.ibr01.was.ntwk.msft.net',
+'║  6    20.198.59.110      14ms     ae12.ier01.was.microsoft.com',
+'║  → Target reached at hop 6',
+'╚══════════════════════════════════════════════════════════════',
+'',
+'╔══════════════════════════════════════════════════════════════',
+'║  Traceroute: AVD Web Access',
+'║  Target:     rdweb.wvd.microsoft.com',
+'║  Resolved:   20.62.135.40',
+'╠──────────────────────────────────────────────────────────────',
+'║  Hop  IP Address         RTT      Hostname',
+'║  ───  ──────────         ───      ────────',
+'║  1    192.168.1.1        0.7ms    router.local',
+'║  2    100.65.4.1         7ms      ',
+'║  3    20.62.135.40       16ms     ',
+'║  → Target reached at hop 3',
+'╚══════════════════════════════════════════════════════════════',
+'',
+'╔══════════════════════════════════════════════════════════════',
+'║  Traceroute: Authentication',
+'║  Target:     login.microsoftonline.com',
+'║  Resolved:   40.126.32.74',
+'╠──────────────────────────────────────────────────────────────',
+'║  Hop  IP Address         RTT      Hostname',
+'║  ───  ──────────         ───      ────────',
+'║  1    192.168.1.1        0.6ms    router.local',
+'║  2    100.65.4.1         8ms      ',
+'║  3    68.86.90.5         22ms     be-12-ar01.atlanta.ga.comcast.net',
+'║  4    40.126.32.74       31ms     ',
+'║  → Target reached at hop 4',
+'╚══════════════════════════════════════════════════════════════',
+'',
+'╔══════════════════════════════════════════════════════════════',
+'║  Traceroute: TURN Relay',
+'║  Target:     world.relay.avd.microsoft.com',
+'║  ⚠ Routed via: Zscaler',
+'║  Resolved:   51.5.10.20',
+'╠──────────────────────────────────────────────────────────────',
+'║  Hop  IP Address         RTT      Hostname',
+'║  ───  ──────────         ───      ────────',
+'║  1    192.168.1.1        0.6ms    router.local',
+'║  2    *                  *',
+'║  3    *                  *',
+'║  → Stopped after 4 consecutive timeouts (ICMP likely blocked)',
+'╚══════════════════════════════════════════════════════════════',
+].join('\n');
+
+var lookup = { 'L-TCP-10': { id:'L-TCP-10', status:'Passed', detailedInfo: sampleDetailedInfo } };
+updateMapTraceroute(lookup);
+</script>
+</body>
+</html>

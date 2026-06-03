@@ -111,3 +111,56 @@ const EndpointConfig = {
         headlineSeparator: ' \u2022 '
     }
 };
+
+// ═══════════════════════════════════════════════════════════════════
+//  THRESHOLDS — single source of truth for the AI-analysis / Key
+//  Findings summary and the Session Quality Score.
+// ───────────────────────────────────────────────────────────────────
+//  WHY THIS EXISTS: the Key Findings panel, the AI-analysis correlation
+//  engine and the 0-100 Quality Score all judge the SAME metrics
+//  (latency, jitter, loss, gateway RTT, WiFi, bandwidth). Historically
+//  each carried its own inline magic numbers, so changing one boundary
+//  silently left the others on the old value — producing summaries that
+//  contradicted the score (and each other). Centralising the
+//  critical/warning boundaries here means every summary surface reads
+//  the same numbers and can never drift apart.
+//
+//  SCOPE — what belongs here vs. what does NOT:
+//    • Belongs here: the experience-quality boundaries the *summary*
+//      surfaces use (this file is consumed only by JS).
+//    • Does NOT belong here: per-test pass/fail verdicts set by the C#
+//      scanner or by browser-tests.js. Those measure the *connectivity*
+//      bar (does it work at all), which is deliberately more lenient
+//      than the *experience* bar the summary measures. Do not "align"
+//      them to these numbers — they answer a different question and the
+//      gap between the two bars is intentional.
+//
+//  Units are noted per field. All boundaries are "worse-than" edges
+//  (e.g. latency.critical = 200 means avg > 200 ms is Critical).
+// ═══════════════════════════════════════════════════════════════════
+const THRESHOLDS = {
+    // WiFi signal strength (%). LOWER is worse, so these are floors:
+    // sig < critical → Critical, sig < warning → Warning.
+    wifiSignal:     { critical: 40, warning: 60 },
+
+    // Local gateway / router round-trip (ms), test L-LE-05. HIGHER is worse.
+    gatewayLatency: { critical: 50, warning: 20 },
+
+    // Bandwidth (Mbps). LOWER is worse, so these are floors:
+    // mbps < critical → Critical, mbps < warning → Warning.
+    bandwidth:      { critical: 5, warning: 10 },
+
+    // Session round-trip latency (ms), test 18. HIGHER is worse.
+    sessionLatency: { critical: 200, warning: 100 },
+
+    // Connection jitter (ms), test 20. HIGHER is worse.
+    jitter:         { critical: 60, warning: 30 },
+
+    // Packet / frame loss (%), test 21. HIGHER is worse.
+    packetLoss:     { critical: 15, warning: 5 },
+
+    // Session Quality Score (0-100) label bands. A score at or above the
+    // band (with the finding gates applied in showAnalysisPanel) earns the
+    // label. These are the same numbers the ring colour keys off.
+    scoreLabels:    { excellent: 95, good: 80, fair: 50 }
+};

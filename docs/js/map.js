@@ -26,6 +26,7 @@ function updateConnectivityMap(results) {
     updateMapSecurityBar(lookup);
     updateMapLatencyLabels(lookup);
     updateMapTlsOverlay(lookup);  // always — TLS interception is client-side
+    updateMapTraceroute(lookup);  // per-hop path visualisation (L-TCP-10)
 
     // Cloud PC right-side cards — show when CPC mode active OR imported scanner data
     const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
@@ -2761,4 +2762,210 @@ function updateMapTlsOverlay(lookup) {
     } else {
         if (ispCard) ispCard.classList.remove('tls-intercepted');
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Network Path (traceroute) visualisation — L-TCP-10
+// ───────────────────────────────────────────────────────────
+//  L-TCP-10 collects per-hop ICMP traceroute data to the key
+//  W365/AVD endpoints but the dashboard previously only mined it
+//  for CGNAT hops (app.js findCgnHopsInTraceroute). This renders
+//  the same data as an expandable per-target hop list under the
+//  connectivity map so the path is actually visible.
+//
+//  The parser keys off the EXACT box-drawing format the scanner
+//  emits in RunNetworkPathTrace():
+//     ║  Traceroute: <role>
+//     ║  Target:     <host>
+//     ║  Resolved:   <ip>          (or "✗ DNS failed" / "✗ No IPv4")
+//     ║  ⚠ Routed via: <proxy>      (optional GSA/SASE indicator)
+//     ║  <ttl> <ip|*> <rtt|*> <hostname>
+//     ║  → Target reached at hop N  (or "→ Stopped…" / "→ … not reached")
+//  Blocks are delimited by ╔ (start) and ╚ (end).
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Parse an L-TCP-10 result's detailedInfo into an array of target traces:
+ *   [{ role, host, resolvedIp, routedVia, reached, terminal, hops:[
+ *       { ttl, ip, rttMs (number|null), hostname, timeout (bool) }, ... ] }]
+ * Returns [] when there's nothing parseable.
+ */
+function parseTracerouteHops(traceResult) {
+    if (!traceResult || !traceResult.detailedInfo) return [];
+    const lines = traceResult.detailedInfo.split('\n');
+    const targets = [];
+    let cur = null;
+
+    const pushCur = () => { if (cur) { targets.push(cur); cur = null; } };
+
+    for (const raw of lines) {
+        const line = raw.replace(/\r$/, '');
+        // Block boundaries
+        if (/^╔/.test(line)) { pushCur(); cur = { role: '', host: '', resolvedIp: '', routedVia: '', reached: false, terminal: '', hops: [] }; continue; }
+        if (/^╚/.test(line)) { pushCur(); continue; }
+        if (!cur) continue;
+
+        // Metadata lines (strip the leading "║" gutter first)
+        const body = line.replace(/^║\s?/, '');
+        let m;
+        if ((m = body.match(/^\s*Traceroute:\s*(.+)$/))) { cur.role = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*Target:\s*(.+)$/)))     { cur.host = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*Resolved:\s*(.+)$/)))   { cur.resolvedIp = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*✗\s*(DNS failed.*|No IPv4.*)$/))) { cur.terminal = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*⚠\s*Routed via:\s*(.+)$/)))      { cur.routedVia = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*→\s*(.+)$/))) {
+            cur.terminal = m[1].trim();
+            if (/reached/i.test(cur.terminal)) cur.reached = true;
+            continue;
+        }
+        // Hop rows: "<ttl> <ip|*> <rtt|*> [hostname]"
+        if ((m = body.match(/^\s*(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/))) {
+            const ttl = parseInt(m[1], 10);
+            const ip = m[2];
+            const rttRaw = m[3];
+            const hostname = (m[4] || '').trim();
+            const timeout = ip === '*' || rttRaw === '*';
+            let rttMs = null;
+            if (!timeout) {
+                const rm = rttRaw.match(/([\d.]+)\s*ms/i);
+                if (rm) rttMs = parseFloat(rm[1]);
+            }
+            cur.hops.push({ ttl, ip: timeout ? '*' : ip, rttMs, hostname, timeout });
+        }
+    }
+    pushCur();
+    // Drop any block that captured no usable info at all
+    return targets.filter(t => t.role || t.host || t.hops.length);
+}
+
+/** Colour class for a per-hop ICMP RTT (ms). */
+function traceHopClass(ms) {
+    if (ms == null) return 'trace-hop-timeout';
+    if (ms < 40) return 'trace-hop-good';
+    if (ms < 120) return 'trace-hop-warn';
+    return 'trace-hop-bad';
+}
+
+// Authoritative reverse-DNS suffixes for Microsoft's global network (AS8075)
+// and the Azure/M365 edge. msft.net is Microsoft's WAN/backbone router naming;
+// the rest are Microsoft-operated service domains. Matching one of these (or a
+// hop IP that equals the resolved Microsoft target) is a deterministic signal —
+// not a heuristic guess — so the tag is safe to assert.
+const MSFT_BACKBONE_RE = /(^|\.)msft\.net$/i;
+const MSFT_EDGE_RE = /(^|\.)(microsoft\.com|microsoftonline\.com|azure\.com|azure-dns\.(?:com|net|info|org)|cloudapp\.azure\.com|windows\.net|cloud\.microsoft|msedge\.net|msn\.com|trafficmanager\.net|office\.com|office\.net)$/i;
+
+/**
+ * Classify a hop's membership in Microsoft's network.
+ * Returns 'backbone' (msft.net / AS8075 WAN), 'edge' (Microsoft service domain
+ * or the resolved destination IP), or null. Deterministic — based on rDNS
+ * suffix or an exact match to the already-resolved Microsoft target IP.
+ */
+function microsoftHopKind(hop, target) {
+    if (!hop || hop.timeout) return null;
+    const host = (hop.hostname || '').trim();
+    if (host && MSFT_BACKBONE_RE.test(host)) return 'backbone';
+    if (host && MSFT_EDGE_RE.test(host)) return 'edge';
+    if (target && target.resolvedIp && hop.ip && hop.ip === target.resolvedIp) return 'edge';
+    return null;
+}
+
+/** Render one target trace block as HTML. */
+function renderTraceTarget(t) {
+    const realHops = t.hops.filter(h => !h.timeout && h.rttMs != null);
+    const maxRtt = realHops.reduce((mx, h) => Math.max(mx, h.rttMs), 0) || 1;
+    // Index of the first hop that enters Microsoft's network (entry point).
+    const msftEntryIdx = t.hops.findIndex(h => microsoftHopKind(h, t) != null);
+
+    const statusChip = t.reached
+        ? '<span class="trace-chip trace-chip-ok">✓ reached</span>'
+        : (t.terminal && /blocked|not reached|Stopped|DNS failed|No IPv4/i.test(t.terminal)
+            ? '<span class="trace-chip trace-chip-warn">⚠ incomplete</span>'
+            : '');
+
+    const meta = [];
+    if (t.resolvedIp) meta.push(`<span class="trace-meta-ip">${escapeHtml(t.resolvedIp)}</span>`);
+    if (t.host) meta.push(`<span class="trace-meta-host">${escapeHtml(t.host)}</span>`);
+
+    const routed = t.routedVia
+        ? `<div class="trace-routed">⚠ Routed via ${escapeHtml(t.routedVia)} — not direct</div>`
+        : '';
+
+    let hopsHtml;
+    if (!t.hops.length) {
+        hopsHtml = `<div class="trace-empty">${escapeHtml(t.terminal || 'No hops recorded (ICMP likely blocked)')}</div>`;
+    } else {
+        hopsHtml = t.hops.map((h, i) => {
+            const cls = traceHopClass(h.timeout ? null : h.rttMs);
+            const rttText = h.timeout ? '—' : (h.rttMs < 1 ? '<1 ms' : `${Math.round(h.rttMs)} ms`);
+            const barPct = h.timeout || h.rttMs == null ? 0 : Math.max(6, Math.round((h.rttMs / maxRtt) * 100));
+            const msftKind = microsoftHopKind(h, t);
+            const isEntry = i === msftEntryIdx;
+            const msftTag = msftKind
+                ? `<span class="trace-hop-asn trace-hop-asn-${msftKind}" title="${msftKind === 'backbone'
+                        ? 'Microsoft global network backbone (AS8075)'
+                        : 'Microsoft / Azure edge (AS8075)'}">${msftKind === 'backbone' ? 'AS8075 · msft.net' : 'Microsoft'}</span>`
+                : '';
+            const label = h.timeout
+                ? '<span class="trace-hop-star">* no reply</span>'
+                : `<span class="trace-hop-ip">${escapeHtml(h.ip)}</span>` +
+                  (h.hostname ? `<span class="trace-hop-host">${escapeHtml(h.hostname)}</span>` : '') +
+                  msftTag;
+            const rowCls = `trace-hop ${cls}` + (msftKind ? ' trace-hop-msft' : '') + (isEntry ? ' trace-hop-msft-entry' : '');
+            const entryMark = isEntry
+                ? '<span class="trace-hop-entry-flag" title="Traffic enters Microsoft\'s network here">↳ enters Microsoft network</span>'
+                : '';
+            return `<div class="${rowCls}">` +
+                `<span class="trace-hop-ttl">${h.ttl}</span>` +
+                `<span class="trace-hop-body">${label}${entryMark}</span>` +
+                `<span class="trace-hop-bar"><span class="trace-hop-bar-fill" style="width:${barPct}%"></span></span>` +
+                `<span class="trace-hop-rtt">${rttText}</span>` +
+                `</div>`;
+        }).join('');
+    }
+
+    return `<div class="trace-target">` +
+        `<div class="trace-target-head">` +
+            `<span class="trace-target-role">${escapeHtml(t.role || t.host || 'Target')}</span>` +
+            statusChip +
+            `<span class="trace-target-meta">${meta.join(' · ')}</span>` +
+        `</div>` +
+        routed +
+        `<div class="trace-hops">${hopsHtml}</div>` +
+    `</div>`;
+}
+
+/** Populate and show/hide the Network Path panel from L-TCP-10 data. */
+function updateMapTraceroute(lookup) {
+    const panel = document.getElementById('map-traceroute');
+    const body = document.getElementById('map-trace-body');
+    if (!panel || !body) return;
+
+    const trace = lookup['L-TCP-10'];
+    if (!trace || trace.status === 'NotRun' || trace.status === 'Pending' || !trace.detailedInfo) {
+        panel.classList.add('hidden');
+        return;
+    }
+
+    const targets = parseTracerouteHops(trace);
+    if (!targets.length) { panel.classList.add('hidden'); return; }
+
+    const totalHops = targets.reduce((n, t) => n + t.hops.filter(h => !h.timeout).length, 0);
+    const reachedCount = targets.filter(t => t.reached).length;
+    setText('map-trace-summary', `${reachedCount}/${targets.length} reached · ${totalHops} hops`);
+
+    // Re-render content without disturbing the user's expand/collapse choice.
+    body.innerHTML = targets.map(renderTraceTarget).join('');
+    panel.classList.remove('hidden');
+}
+
+/** Toggle the Network Path panel open/closed (wired from the header button). */
+function toggleMapTraceroute() {
+    const body = document.getElementById('map-trace-body');
+    const btn = document.getElementById('map-trace-toggle');
+    const chev = document.getElementById('map-trace-chevron');
+    if (!body || !btn) return;
+    const willOpen = body.classList.contains('hidden');
+    body.classList.toggle('hidden', !willOpen);
+    btn.setAttribute('aria-expanded', String(willOpen));
+    if (chev) chev.textContent = willOpen ? '▾' : '▸';
 }
