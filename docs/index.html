@@ -30,7 +30,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=282">
+    <link rel="stylesheet" href="css/styles.css?v=283">
     <link rel="icon" href="images/w365-logo.png" type="image/png">
     <!--
       Bootstrap: read URL ASAP (before <body> renders) to decide whether this
@@ -207,6 +207,12 @@
 
         <!-- Results Overview: stat boxes + key findings combined into one bounded section -->
         <section id="results-overview" class="results-overview hidden" aria-label="Results overview">
+        <div class="overview-title">
+            <span class="overview-title-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 3.5h12M2 8h12M2 12.5h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </span>
+            <h2>Summary</h2>
+        </div>
         <!-- Summary Bar -->
         <div id="summary-bar" class="summary-bar hidden">
             <button type="button" class="summary-item" onclick="filterAndScroll('all')" aria-label="Show all tests">
@@ -950,7 +956,7 @@
                 <span class="footer-sep">·</span>
                 <a href="https://forms.cloud.microsoft/Pages/ResponsePage.aspx?id=v4j5cvGGr0GRqy180BHbR_4Hfn4E7x5MrD4K8pxyk8ZUMjY4RkJBUVA2WFBYU0w5S1lOWUM1Mlc4Ui4u" target="_blank" rel="noopener">Send Feedback</a>
                 <span class="footer-sep">·</span>
-                <span class="footer-build" title="Static dashboard build">Build v79</span>
+                <span class="footer-build" title="Static dashboard build">Build v80</span>
             </div>
         </div>
     </footer>
@@ -1008,11 +1014,11 @@
         document.body.appendChild(toggleBtn);
     })();
     </script>
-    <script src="js/config.js?v=282"></script>
-    <script src="js/browser-tests.js?v=282"></script>
-    <script src="js/ui.js?v=282"></script>
-    <script src="js/map.js?v=282"></script>
-    <script src="js/ai-analysis.js?v=282"></script>
-    <script src="js/app.js?v=282"></script>
+    <script src="js/config.js?v=283"></script>
+    <script src="js/browser-tests.js?v=283"></script>
+    <script src="js/ui.js?v=283"></script>
+    <script src="js/map.js?v=283"></script>
+    <script src="js/ai-analysis.js?v=283"></script>
+    <script src="js/app.js?v=283"></script>
 </body>
 </html>
