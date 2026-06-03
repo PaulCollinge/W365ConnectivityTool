@@ -3794,7 +3794,7 @@ async function updateKeyFindings(results) {
         subline = 'No blocking issues — the points below may affect session quality.';
     } else {
         badgeCls = 'ok'; badgeIcon = '✓';
-        headline = 'Configuration is correct and expected';
+        headline = 'Configuration is as expected';
         subline = `All ${okCount} check${okCount > 1 ? 's' : ''} match the expected Windows 365 pattern. A smooth session is expected.`;
     }
 
