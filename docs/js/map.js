@@ -2813,9 +2813,18 @@ function parseTracerouteHops(traceResult) {
         if ((m = body.match(/^\s*Resolved:\s*(.+)$/)))   { cur.resolvedIp = m[1].trim(); continue; }
         if ((m = body.match(/^\s*✗\s*(DNS failed.*|No IPv4.*)$/))) { cur.terminal = m[1].trim(); continue; }
         if ((m = body.match(/^\s*⚠\s*Routed via:\s*(.+)$/)))      { cur.routedVia = m[1].trim(); continue; }
+        // Terminal status line. Only treat a "→" line as the terminal when it
+        // carries a real status phrase — the DNS Chain block also uses "→" for
+        // CNAME continuations (e.g. "→ a-0016.a-msedge.net") which must NOT be
+        // mistaken for the trace's outcome.
         if ((m = body.match(/^\s*→\s*(.+)$/))) {
-            cur.terminal = m[1].trim();
-            if (/reached/i.test(cur.terminal)) cur.reached = true;
+            const txt = m[1].trim();
+            if (/reached|stopped|not reached|hops|ICMP|blocked|timeout/i.test(txt)) {
+                cur.terminal = txt;
+                // "Target reached at hop N" → success. Must NOT match the
+                // failure phrase "Target not reached within N hops".
+                if (/reached/i.test(txt) && !/not\s+reached/i.test(txt)) cur.reached = true;
+            }
             continue;
         }
         // Hop rows: "<ttl> <ip|*> <rtt|*> [hostname]"
@@ -2847,12 +2856,13 @@ function traceHopClass(ms) {
 }
 
 // Authoritative reverse-DNS suffixes for Microsoft's global network (AS8075)
-// and the Azure/M365 edge. msft.net is Microsoft's WAN/backbone router naming;
-// the rest are Microsoft-operated service domains. Matching one of these (or a
-// hop IP that equals the resolved Microsoft target) is a deterministic signal —
-// not a heuristic guess — so the tag is safe to assert.
-const MSFT_BACKBONE_RE = /(^|\.)msft\.net$/i;
-const MSFT_EDGE_RE = /(^|\.)(microsoft\.com|microsoftonline\.com|azure\.com|azure-dns\.(?:com|net|info|org)|cloudapp\.azure\.com|windows\.net|cloud\.microsoft|msedge\.net|msn\.com|trafficmanager\.net|office\.com|office\.net)$/i;
+// and the Azure/M365 edge. msft.net and msn.net (e.g. *.ntwk.msn.net) are both
+// Microsoft's WAN/backbone router naming; the rest are Microsoft-operated
+// service domains. Matching one of these (or a hop IP that equals the resolved
+// Microsoft target) is a deterministic signal — not a heuristic guess — so the
+// tag is safe to assert.
+const MSFT_BACKBONE_RE = /(^|\.)(msft\.net|msn\.net)$/i;
+const MSFT_EDGE_RE = /(^|\.)(microsoft\.com|microsoftonline\.com|azure\.com|azure-dns\.(?:com|net|info|org)|cloudapp\.azure\.com|windows\.net|cloud\.microsoft|msedge\.net|a-msedge\.net|trafficmanager\.net|office\.com|office\.net)$/i;
 
 /**
  * Classify a hop's membership in Microsoft's network.
