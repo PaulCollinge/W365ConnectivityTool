@@ -643,6 +643,32 @@ main {
 }
 
 /* ── Results Overview: stat boxes + Key Findings in one bounded section ── */
+.results-group {
+    margin-bottom: var(--space-section);
+}
+/* Defining box appears only once there is something to show (both inner
+   panels start hidden, so :has keeps the box from rendering empty). */
+.results-group:has(> :not(.hidden)) {
+    border: 1px solid var(--border-emphasis);
+    border-radius: var(--r-xl);
+    background: var(--bg-surface);
+    box-shadow: var(--shadow-glow);
+    padding: 14px;
+}
+/* Inner panels nest flush inside the group — drop their own outer chrome
+   so we don't get a heavy box-in-box look. */
+.results-group .results-overview {
+    margin-bottom: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+}
+.results-group .connectivity-map {
+    margin: 14px 0 0;
+    box-shadow: none;
+}
+
 .results-overview {
     margin-bottom: var(--space-section);
     background: var(--bg-surface);
