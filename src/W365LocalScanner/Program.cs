@@ -373,6 +373,7 @@ class Program
         if (_isCloudPcMode)
         {
             var hostLabel = _hostType == "avd" ? "AVD Session Host" : "Cloud PC";
+            Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("╔══════════════════════════════════════════════════════╗");
             Console.WriteLine($"║   {hostLabel,-18} Connectivity Scanner           ║");
             Console.WriteLine("╠══════════════════════════════════════════════════════╣");
@@ -381,11 +382,13 @@ class Program
             Console.WriteLine("║   and TURN relay. Import results into the web       ║");
             Console.WriteLine("║   dashboard alongside client-side results.          ║");
             Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+            Console.ResetColor();
             if (_azureVmRegion != null)
                 Console.WriteLine($"  Azure region: {_azureVmRegion}  VM: {_azureVmName ?? "unknown"}  Type: {hostLabel}");
         }
         else
         {
+            Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("╔══════════════════════════════════════════════════════╗");
             Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
             Console.WriteLine($"║   Version {typeof(Program).Assembly.GetName().Version?.ToString() ?? "?"}{"".PadRight(42 - (typeof(Program).Assembly.GetName().Version?.ToString()?.Length ?? 1))}║");
@@ -393,6 +396,7 @@ class Program
             Console.WriteLine("║   Runs tests requiring local OS access.             ║");
             Console.WriteLine("║   Import results into the web diagnostics page.     ║");
             Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+            Console.ResetColor();
         }
         Console.WriteLine();
 
@@ -464,7 +468,9 @@ class Program
         if (traceTest != null)
         {
             _traceConsoleSilent = true;
+            Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.WriteLine($"  [bg] {traceTest.Name} started in background (traceroute runs while the other tests execute)");
+            Console.ResetColor();
             Console.WriteLine();
             traceTask = RunSingleTestToResult(traceTest);
         }
@@ -477,7 +483,7 @@ class Program
             if (traceTest != null && test.Id == traceTest.Id)
                 continue; // running in the background
             shown++;
-            Console.Write($"  [{shown}/{foregroundCount}] {test.Name}... ");
+            WriteTestLabel(shown, foregroundCount, test.Name);
             await RunSingleTest(test, results);
         }
 
@@ -485,24 +491,18 @@ class Program
         // with the foreground tests, so this rarely blocks for long).
         if (traceTask != null)
         {
-            Console.Write("  [bg] Finalising Network Path Trace... ");
+            WriteTestLabel("bg", "Finalising Network Path Trace");
             var traceResult = await traceTask;
             results.Add(traceResult);
-            var traceIcon = traceResult.Status switch
-            {
-                "Passed" => "\u2714",
-                "Warning" => "\u26A0",
-                "Failed" => "\u2718",
-                "Error" => "\u2718",
-                _ => "\u2022"
-            };
-            Console.WriteLine($"{traceIcon} {traceResult.Status} ({traceResult.Duration}ms)");
+            WriteStatusLine(traceResult.Status, traceResult.Duration);
         }
 
         Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("  ────────────────────────────────────────────────────");
         Console.WriteLine("  All tests complete — opening results in browser...");
         Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.ResetColor();
 
         await WriteResultsJson(outputPath, results);
         await OpenBrowserWithResults(outputPath, results);
@@ -521,16 +521,49 @@ class Program
     {
         var result = await RunSingleTestToResult(test);
         results.Add(result);
+        WriteStatusLine(result.Status, result.Duration);
+    }
 
-        var icon = result.Status switch
+    // ── Helper: Write a left-aligned "[ n/N] Test name ......" progress label
+    //    with a dot leader so the status verdicts that follow line up neatly. ──
+    static void WriteTestLabel(int index, int total, string name)
+        => WriteTestLabel($"{index,2}/{total}", name);
+
+    static void WriteTestLabel(string counter, string name)
+    {
+        const int targetWidth = 62;
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write($"  [{counter}] ");
+        Console.ResetColor();
+        Console.Write(name + " ");
+        int used = 2 + 1 + counter.Length + 2 + name.Length + 1; // "  [" + counter + "] " + name + " "
+        if (used < targetWidth)
         {
-            "Passed" => "\u2714",
-            "Warning" => "\u26A0",
-            "Failed" => "\u2718",
-            "Error" => "\u2718",
-            _ => "\u2022"
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write(new string('.', targetWidth - used) + " ");
+            Console.ResetColor();
+        }
+    }
+
+    // ── Helper: Write a colored status verdict + dimmed duration on the current
+    //    line (green Passed / yellow Warning / red Failed / gray Skipped). ──
+    static void WriteStatusLine(string status, int durationMs)
+    {
+        var (icon, color) = status switch
+        {
+            "Passed" => ("\u2714", ConsoleColor.Green),
+            "Warning" => ("\u26A0", ConsoleColor.Yellow),
+            "Failed" => ("\u2718", ConsoleColor.Red),
+            "Error" => ("\u2718", ConsoleColor.Red),
+            "Skipped" => ("\u2022", ConsoleColor.DarkGray),
+            _ => ("\u2022", ConsoleColor.Gray)
         };
-        Console.WriteLine($"{icon} {result.Status} ({result.Duration}ms)");
+        Console.ForegroundColor = color;
+        Console.Write($"{icon} {status}");
+        Console.ResetColor();
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine($"  ({durationMs}ms)");
+        Console.ResetColor();
     }
 
     // ── Helper: Run a test, applying the per-test timeout, and RETURN its result
@@ -718,16 +751,30 @@ class Program
     static void PrintSummaryReport(List<TestResult> results, bool includeCloud)
     {
         Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("  ╔══════════════════════════════════════════════════════╗");
         Console.WriteLine("  ║                   SCAN SUMMARY                      ║");
         Console.WriteLine("  ╚══════════════════════════════════════════════════════╝");
+        Console.ResetColor();
         Console.WriteLine();
 
         // ── Test counts ──
         var passed = results.Count(r => r.Status == "Passed");
         var warned = results.Count(r => r.Status == "Warning");
         var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
-        Console.WriteLine($"  Tests run: {results.Count}   \u2714 {passed} passed   \u26A0 {warned} warnings   \u2718 {failed} failed");
+        Console.Write($"  Tests run: {results.Count}   ");
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.Write($"\u2714 {passed} passed");
+        Console.ResetColor();
+        Console.Write("   ");
+        Console.ForegroundColor = warned > 0 ? ConsoleColor.Yellow : ConsoleColor.DarkGray;
+        Console.Write($"\u26A0 {warned} warnings");
+        Console.ResetColor();
+        Console.Write("   ");
+        Console.ForegroundColor = failed > 0 ? ConsoleColor.Red : ConsoleColor.DarkGray;
+        Console.Write($"\u2718 {failed} failed");
+        Console.ResetColor();
+        Console.WriteLine();
         Console.WriteLine();
 
         // ── Key Findings ──
