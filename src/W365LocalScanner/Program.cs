@@ -35,6 +35,12 @@ class Program
     static string? _cachedGatewayHost = null;
     static string? _cachedGatewayDetail = null;
 
+    // ── When the slow traceroute (L-TCP-10) runs concurrently in the background,
+    //    suppress its inline per-hop console output so it doesn't tangle with the
+    //    [i/N] progress lines of the foreground tests. Its detailed report is still
+    //    captured in the TestResult. ──
+    static bool _traceConsoleSilent = false;
+
     // ── Dynamic Service Tags WVD subnet → region lookup ──
     static List<(uint network, uint mask, string region)>? _wvdSubnets = null;
 
