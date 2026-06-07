@@ -451,24 +451,52 @@ class Program
             Console.WriteLine();
         }
 
-        // The traceroute test (L-TCP-10) is slow (1-2 min) but its results are
-        // part of the report (the dashboard's Network Path panel). Run it inline
-        // with everything else and open the browser ONCE, after all tests finish,
-        // so the single tab that opens contains the complete results — including
-        // traceroute. (A previous two-phase design opened the tab early, before
-        // traceroute existed, then rewrote the JSON without refreshing the tab —
-        // results data is passed in the URL hash, which a process-launched tab
-        // can't receive after the fact — so the Network Path panel never showed.)
-        var slowIds = new HashSet<string> { "L-TCP-10" };
-        var totalCount = tests.Count;
+        // The traceroute test (L-TCP-10) is slow (1-2 min). Kick it off FIRST as a
+        // background task so its runtime overlaps every other test instead of adding
+        // to the total. Its inline per-hop console output is suppressed while
+        // backgrounded; we await it after the foreground tests finish, then add its
+        // result before writing the JSON and opening the browser ONCE (results data
+        // is passed in the URL hash, which a process-launched tab can't receive after
+        // the fact — so the tab must open only after every result, traceroute
+        // included, is present).
+        var traceTest = tests.FirstOrDefault(t => t.Id == "L-TCP-10");
+        Task<TestResult>? traceTask = null;
+        if (traceTest != null)
+        {
+            _traceConsoleSilent = true;
+            Console.WriteLine($"  [bg] {traceTest.Name} started in background (traceroute runs while the other tests execute)");
+            Console.WriteLine();
+            traceTask = RunSingleTestToResult(traceTest);
+        }
 
+        var foregroundCount = tests.Count - (traceTest != null ? 1 : 0);
+        int shown = 0;
         for (int i = 0; i < tests.Count; i++)
         {
             var test = tests[i];
-            Console.Write($"  [{i + 1}/{totalCount}] {test.Name}... ");
-            if (slowIds.Contains(test.Id))
-                Console.Write("(traceroute — this may take 1-2 minutes) ");
+            if (traceTest != null && test.Id == traceTest.Id)
+                continue; // running in the background
+            shown++;
+            Console.Write($"  [{shown}/{foregroundCount}] {test.Name}... ");
             await RunSingleTest(test, results);
+        }
+
+        // Wait for the background traceroute to finish (it usually overlaps fully
+        // with the foreground tests, so this rarely blocks for long).
+        if (traceTask != null)
+        {
+            Console.Write("  [bg] Finalising Network Path Trace... ");
+            var traceResult = await traceTask;
+            results.Add(traceResult);
+            var traceIcon = traceResult.Status switch
+            {
+                "Passed" => "\u2714",
+                "Warning" => "\u26A0",
+                "Failed" => "\u2718",
+                "Error" => "\u2718",
+                _ => "\u2022"
+            };
+            Console.WriteLine($"{traceIcon} {traceResult.Status} ({traceResult.Duration}ms)");
         }
 
         Console.WriteLine();
@@ -491,6 +519,25 @@ class Program
     // ── Helper: Run a single test with timeout and logging ──
     static async Task RunSingleTest(TestDefinition test, List<TestResult> results)
     {
+        var result = await RunSingleTestToResult(test);
+        results.Add(result);
+
+        var icon = result.Status switch
+        {
+            "Passed" => "\u2714",
+            "Warning" => "\u26A0",
+            "Failed" => "\u2718",
+            "Error" => "\u2718",
+            _ => "\u2022"
+        };
+        Console.WriteLine($"{icon} {result.Status} ({result.Duration}ms)");
+    }
+
+    // ── Helper: Run a test, applying the per-test timeout, and RETURN its result
+    //    without printing or appending. Used directly for the backgrounded
+    //    traceroute and via RunSingleTest for the foreground tests. ──
+    static async Task<TestResult> RunSingleTestToResult(TestDefinition test)
+    {
         try
         {
             var sw = Stopwatch.StartNew();
@@ -501,7 +548,7 @@ class Program
             if (await Task.WhenAny(testTask, timeoutTask) == timeoutTask)
             {
                 sw.Stop();
-                results.Add(new TestResult
+                return new TestResult
                 {
                     Id = test.Id,
                     Name = test.Name,
@@ -511,31 +558,17 @@ class Program
                     ResultValue = $"Timed out after {testTimeout}s",
                     DetailedInfo = $"The test did not complete within {testTimeout} seconds. This may indicate a network issue (hanging TLS handshake, unresponsive proxy, etc.).",
                     Duration = (int)sw.ElapsedMilliseconds
-                });
-                Console.WriteLine($"\u26A0 Timed out ({testTimeout}s)");
-                return;
+                };
             }
 
             var result = await testTask;
             sw.Stop();
             result.Duration = (int)sw.ElapsedMilliseconds;
-            results.Add(result);
-
-            var icon = result.Status switch
-            {
-                "Passed" => "\u2714",
-                "Warning" => "\u26A0",
-                "Failed" => "\u2718",
-                _ => "\u2022"
-            };
-            // Traceroute prints sub-progress on separate lines
-            if (test.Id == "L-TCP-10")
-                Console.Write("\n        ");
-            Console.WriteLine($"{icon} {result.Status} ({sw.ElapsedMilliseconds}ms)");
+            return result;
         }
         catch (Exception ex)
         {
-            results.Add(new TestResult
+            return new TestResult
             {
                 Id = test.Id,
                 Name = test.Name,
@@ -545,8 +578,7 @@ class Program
                 ResultValue = $"Error: {ex.Message}",
                 DetailedInfo = ex.ToString(),
                 Duration = 0
-            });
-            Console.WriteLine($"\u2718 Error: {ex.Message}");
+            };
         }
     }
 
@@ -4469,7 +4501,7 @@ class Program
 
             foreach (var (host, role) in targets)
             {
-                Console.Write($"\n        Tracing {role}... ");
+                if (!_traceConsoleSilent) Console.Write($"\n        Tracing {role}... ");
                 sb.AppendLine($"╔══════════════════════════════════════════════════════════════");
                 sb.AppendLine($"║  Traceroute: {role}");
                 sb.AppendLine($"║  Target:     {host}");
@@ -4498,7 +4530,7 @@ class Program
                         sb.AppendLine($"║  ✗ No IPv4 address resolved");
                         sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                         sb.AppendLine();
-                        Console.Write("✗");
+                        if (!_traceConsoleSilent) Console.Write("✗");
                         continue;
                     }
                     sb.AppendLine($"║  Resolved:   {targetIp}");
@@ -4508,7 +4540,7 @@ class Program
                     sb.AppendLine($"║  ✗ DNS failed: {ex.Message}");
                     sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                     sb.AppendLine();
-                    Console.Write("✗");
+                    if (!_traceConsoleSilent) Console.Write("✗");
                     continue;
                 }
 
@@ -4600,7 +4632,7 @@ class Program
 
                 sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
                 sb.AppendLine();
-                Console.Write(reached ? "✓" : "✗");
+                if (!_traceConsoleSilent) Console.Write(reached ? "✓" : "✗");
             }
 
             if (completed == 0)
