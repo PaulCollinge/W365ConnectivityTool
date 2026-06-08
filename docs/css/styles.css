@@ -3616,7 +3616,15 @@ html.watch-mode #watch-view { display: block; }
     background: var(--bg-elevated); border: 1px solid var(--border-default);
 }
 .wfind .h .kindtag.anomaly { color: var(--yellow); border-color: var(--yellow-border); }
+.wfind .h .freqtag {
+    font-size: .6rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+    padding: 1px 7px; border-radius: 999px;
+}
+.wfind .h .freqtag.warn { color: var(--yellow); background: var(--yellow-bg); border: 1px solid var(--yellow-border); }
+.wfind .h .freqtag.bad  { color: var(--red);    background: var(--red-bg);    border: 1px solid var(--red-border); }
 .wfind .d { font-size: .8rem; color: var(--text-secondary); }
+.wfind .meta { margin-top: 5px; font-size: .72rem; color: var(--text-muted); font-family: var(--mono); }
+.wfind .meta b { color: var(--text-secondary); font-weight: 700; }
 .wfind .time { font-family: var(--mono); font-size: .7rem; color: var(--text-muted); white-space: nowrap; }
 .watch-empty { color: var(--text-muted); font-size: .82rem; text-align: center; padding: 24px; font-style: italic; }
 

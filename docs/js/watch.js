@@ -165,7 +165,7 @@
 
         renderVerdict(output);
         renderTracks(samples, events);
-        renderFindings(events);
+        renderFindings(events, samples);
 
         _rendered = true;
     }
@@ -303,33 +303,158 @@
         }).join(' ');
     }
 
-    function renderFindings(events) {
+    // Metric key + formatter per anomaly track (route/egress have no scalar).
+    const METRIC_KEY = { gatewayRtt: 'gatewayRttMs', jitter: 'jitterMs', loss: 'lossPct', dns: 'dnsMs' };
+    function fmtMetric(track, v) {
+        if (v == null) return '—';
+        return track === 'loss' ? (v.toFixed(1) + '%') : (Math.round(v) + 'ms');
+    }
+
+    // Derive occurrence statistics for one anomaly track from the scanner's OWN
+    // per-sample `anomalies[]` tags (authoritative — no re-thresholding here).
+    // Returns counts, episode (contiguous-burst) grouping, peak and baseline.
+    function trackStats(track, samples) {
+        const key = METRIC_KEY[track];
+        const idxs = [];
+        samples.forEach((s, i) => {
+            const a = Array.isArray(s.anomalies) ? s.anomalies : [];
+            if (a.indexOf(track) >= 0) idxs.push(i);
+        });
+        // Group into episodes; a gap of a single clean sample still counts as one
+        // burst (a brief flicker mid-event), a longer gap starts a new burst.
+        const eps = [];
+        let cur = null;
+        idxs.forEach(i => {
+            if (cur && i - cur.end <= 2) cur.end = i;
+            else { cur = { start: i, end: i }; eps.push(cur); }
+        });
+        let peak = null, peakIdx = -1;
+        if (key) idxs.forEach(i => { const v = samples[i][key]; if (v != null && (peak == null || v > peak)) { peak = v; peakIdx = i; } });
+        let baseline = null;
+        if (key) {
+            const vals = samples.map(s => s[key]).filter(v => v != null).sort((a, b) => a - b);
+            if (vals.length) baseline = vals[Math.floor(vals.length / 2)];
+        }
+        return { key, count: idxs.length, episodes: eps.length, idxs, eps, peak, peakIdx, baseline };
+    }
+
+    // Pick the most representative message for a track: the event nearest the peak
+    // sample (or the worst-severity event when no peak), so the card text matches
+    // the headline number we show.
+    function repEvent(trackEvents, peakElapsed) {
+        if (!trackEvents.length) return null;
+        if (peakElapsed != null) {
+            let best = trackEvents[0], bd = Infinity;
+            trackEvents.forEach(e => { const d = Math.abs((e.elapsedSeconds || 0) - peakElapsed); if (d < bd) { bd = d; best = e; } });
+            return best;
+        }
+        const order = { critical: 0, warning: 1, info: 2 };
+        return trackEvents.slice().sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3))[0];
+    }
+
+    function frequencyBadge(count, episodes) {
+        if (count <= 1) return { txt: 'one-off spike', cls: 'warn' };
+        if (episodes <= 1) return { txt: 'sustained · ' + count + '×', cls: 'bad' };
+        return { txt: 'recurring · ' + episodes + ' bursts', cls: 'bad' };
+    }
+
+    function renderFindings(events, samples) {
         const wrap = document.getElementById('w-findings');
         const countEl = document.getElementById('w-findcount');
         if (!wrap) return;
+        samples = Array.isArray(samples) ? samples : [];
+        const N = samples.length;
         const anomalies = events.filter(e => e.kind === 'anomaly');
-        if (countEl) {
-            if (anomalies.length) { countEl.textContent = String(anomalies.length); countEl.style.display = ''; }
-            else countEl.style.display = 'none';
-        }
+        const contexts  = events.filter(e => e.kind !== 'anomaly');
         if (!events.length) {
+            if (countEl) countEl.style.display = 'none';
             wrap.innerHTML = '<div class="watch-empty">No anomalies or context changes were recorded during the capture — the connection stayed stable throughout.</div>';
             return;
         }
+
+        const cards = [];
+        let anomalyCardCount = 0;
+
+        // One card per anomaly TRACK, summarising how many of the N samples it hit
+        // (so the user can tell a one-off blip from a sustained or recurring fault).
+        const tracks = [];
+        anomalies.forEach(e => { if (tracks.indexOf(e.track) < 0) tracks.push(e.track); });
+        tracks.forEach(track => {
+            const trackEvents = anomalies.filter(e => e.track === track);
+            const st = trackStats(track, samples);
+
+            // Backward-compat: older captures may not carry per-sample anomaly tags.
+            // Fall back to rendering each event individually (legacy behaviour).
+            if (st.count === 0) {
+                trackEvents.forEach(e => { cards.push(simpleCard(e, e.elapsedSeconds || 0)); anomalyCardCount++; });
+                return;
+            }
+            anomalyCardCount++;
+
+            const peakElapsed = st.peakIdx >= 0 ? (samples[st.peakIdx].elapsedSeconds || 0) : null;
+            const rep = repEvent(trackEvents, peakElapsed);
+            const firstEl = samples[st.idxs[0]].elapsedSeconds || 0;
+            const lastEl  = samples[st.idxs[st.idxs.length - 1]].elapsedSeconds || 0;
+            const span = lastEl - firstEl;
+            const worst = (trackEvents.some(e => e.severity === 'critical')) ? 'bad' : 'warn';
+            const badge = frequencyBadge(st.count, st.episodes);
+
+            const bits = [];
+            bits.push(`<b>${st.count}</b> of ${N} samples`);
+            if (N) bits.push(Math.round((st.count / N) * 100) + '% of capture');
+            if (span > 0) bits.push('over ' + fmtDur(span));
+            else bits.push('single sample at +' + fmtDur(firstEl));
+            if (st.peak != null && st.baseline != null)
+                bits.push('peak ' + fmtMetric(track, st.peak) + ' vs baseline ' + fmtMetric(track, st.baseline));
+
+            const timeLabel = span > 0
+                ? ('+' + fmtDur(firstEl) + ' → +' + fmtDur(lastEl))
+                : ('+' + fmtDur(firstEl));
+
+            cards.push({
+                sortEl: peakElapsed != null ? peakElapsed : firstEl,
+                html: `<div class="wfind ${worst}">
+                    <span class="dot"></span>
+                    <div class="body">
+                      <div class="h">${escapeHtml(trackLabel(track))}
+                        <span class="kindtag anomaly">anomaly</span>
+                        <span class="freqtag ${badge.cls}">${escapeHtml(badge.txt)}</span></div>
+                      <div class="d">${escapeHtml(rep ? (rep.message || '') : '')}</div>
+                      <div class="meta">${bits.join(' &middot; ')}</div>
+                    </div>
+                    <div class="time">${escapeHtml(timeLabel)}</div>
+                  </div>`
+            });
+        });
+
+        // Context changes (VPN/gateway/DNS/adapter) stay as individual cards.
+        contexts.forEach(e => cards.push(simpleCard(e, e.elapsedSeconds || 0)));
+
         // Newest first.
-        const ordered = events.slice().sort((a, b) => (b.elapsedSeconds || 0) - (a.elapsedSeconds || 0));
-        wrap.innerHTML = ordered.map(e => {
-            const sev = SEV_CLASS[e.severity] || 'info';
-            const kind = e.kind === 'context' ? 'context' : 'anomaly';
-            return `<div class="wfind ${sev}">
+        cards.sort((a, b) => (b.sortEl || 0) - (a.sortEl || 0));
+        wrap.innerHTML = cards.map(c => c.html).join('');
+        if (countEl) {
+            if (anomalyCardCount) { countEl.textContent = String(anomalyCardCount); countEl.style.display = ''; }
+            else countEl.style.display = 'none';
+        }
+    }
+
+    // A plain single-event card (context events, or legacy anomalies with no
+    // per-sample tags). Mirrors the original findings markup.
+    function simpleCard(e, sortEl) {
+        const sev = SEV_CLASS[e.severity] || 'info';
+        const kind = e.kind === 'context' ? 'context' : 'anomaly';
+        return {
+            sortEl,
+            html: `<div class="wfind ${sev}">
                 <span class="dot"></span>
                 <div class="body">
                   <div class="h">${escapeHtml(trackLabel(e.track))} <span class="kindtag ${kind}">${kind}</span></div>
                   <div class="d">${escapeHtml(e.message || '')}</div>
                 </div>
                 <div class="time">+${fmtDur(e.elapsedSeconds || 0)}</div>
-              </div>`;
-        }).join('');
+              </div>`
+        };
     }
 
     function trackLabel(track) {
