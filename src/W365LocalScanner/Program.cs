@@ -9756,6 +9756,20 @@ class Program
             endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", requiredGroup));
             endpoints.Add(("login.windows.net", 443, "Sign-in to Microsoft Online Services", optionalGroup));
 
+            // Wildcard service-traffic endpoints from the AVD/W365 required-FQDN
+            // list. Each wildcard below has no canonical apex, so we probe a
+            // known-good real exemplar hostname under it to verify the firewall
+            // rule for the wildcard is open. Reachability of the exemplar proves
+            // the *.<domain> rule resolves and connects; a failure means the
+            // wildcard is being blocked.
+            // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
+            endpoints.Add(("prod-r1.windows.cloud.microsoft", 443,
+                "Service traffic (*.windows.cloud.microsoft)", requiredGroup));
+            endpoints.Add(("shprf.sh.service.windows.cloud.microsoft", 443,
+                "Service traffic (*.service.windows.cloud.microsoft)", requiredGroup));
+            endpoints.Add(("sash.cloudpc.windows.static.microsoft", 443,
+                "Service traffic (*.windows.static.microsoft)", requiredGroup));
+
             // *.prod.warm.ingest.monitor.core.windows.net — Log Analytics / Azure Monitor
             // ingestion wildcard. The real hostnames follow the pattern
             // "{region}-{n}.prod.warm.ingest.monitor.core.windows.net" where {n} is
@@ -10066,9 +10080,9 @@ class Program
             sb.AppendLine();
             sb.AppendLine("\u2550\u2550 Wildcard Firewall Rules (cannot test directly) \u2550\u2550");
             sb.AppendLine("  \u2139 *.wvd.microsoft.com:443 \u2014 Service traffic (exemplar rdweb.wvd.microsoft.com tested above)");
-            sb.AppendLine("  \u2139 *.windows.cloud.microsoft:443 \u2014 Service traffic (no known testable exemplar)");
-            sb.AppendLine("  \u2139 *.service.windows.cloud.microsoft:443 \u2014 Service traffic");
-            sb.AppendLine("  \u2139 *.windows.static.microsoft:443 \u2014 Static assets");
+            sb.AppendLine("  \u2139 *.windows.cloud.microsoft:443 \u2014 Service traffic (exemplar prod-r1.windows.cloud.microsoft tested above)");
+            sb.AppendLine("  \u2139 *.service.windows.cloud.microsoft:443 \u2014 Service traffic (exemplar shprf.sh.service.windows.cloud.microsoft tested above)");
+            sb.AppendLine("  \u2139 *.windows.static.microsoft:443 \u2014 Static assets (exemplar sash.cloudpc.windows.static.microsoft tested above)");
             sb.AppendLine("  \u2139 *.events.data.microsoft.com:443 \u2014 Telemetry (optional)");
             sb.AppendLine("  \u2139 *.prod.do.dsp.mp.microsoft.com:443 \u2014 Windows Update (optional)");
             sb.AppendLine("  \u2139 *.sfx.ms:443 \u2014 OneDrive client updates (optional)");
