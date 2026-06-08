@@ -38,6 +38,14 @@ class Program
     static int _watchDurationSeconds = 300; // 0 = until stopped (Ctrl+C)
     static int _watchIntervalSeconds = 3;   // seconds between samples
 
+    // ── Compressed, base64url-encoded run-once snapshot payload (the same
+    //    #zresults= blob OpenBrowserWithResults embeds in the snapshot tab).
+    //    Cached here so that when Session Watch completes and opens its own
+    //    browser tab, that tab can ALSO carry the full snapshot — otherwise the
+    //    watch tab's "Snapshot" sub-tab would be blank (no results were ever
+    //    loaded into that page). Set once in OpenBrowserWithResults. ──
+    static string? _snapshotResultsB64 = null;
+
     // ── Cached AFD-discovered RDP gateway (set once, reused by all tests) ──
     static string? _cachedGatewayHost = null;
     static string? _cachedGatewayDetail = null;
@@ -741,6 +749,10 @@ class Program
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
+
+            // Cache the snapshot payload so a subsequent Session Watch tab can
+            // carry it too (keeps the watch tab's Snapshot sub-tab populated).
+            _snapshotResultsB64 = compressedBase64;
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var modeParam = _isCloudPcMode ? $"&mode={(_hostType ?? "cloudpc")}" : "";
@@ -11177,6 +11189,11 @@ class Program
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&view=watch";
+            // Carry the run-once snapshot (if one was produced) as a query param so
+            // the watch tab's "Snapshot" sub-tab shows the full results instead of
+            // being blank. The watch timeline itself stays in the #zwatch= hash.
+            if (!string.IsNullOrEmpty(_snapshotResultsB64))
+                baseUrl += $"&zresults={_snapshotResultsB64}";
             var hashUrl = $"{baseUrl}#zwatch={b64}";
 
             Console.WriteLine($"  Opening Watch timeline in browser...");
