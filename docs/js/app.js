@@ -570,7 +570,7 @@ function updateHostTypeLabels() {
     if (cpcSectionSub) cpcSectionSub.textContent = `Connectivity tests run from within the ${label} (Azure VM)`;
     // CPC diagnostics info bar
     const cpcInfoBar = document.querySelector('#cloudpc-info-bar span:last-child');
-    if (cpcInfoBar) cpcInfoBar.innerHTML = `Run the scanner inside the ${label} with <code>--cloudpc</code> or it will auto-detect Azure VMs. Import the results to see the server-side view.`;
+    if (cpcInfoBar) cpcInfoBar.innerHTML = `Run this tool on your ${label}, then drag the <code>W365ScanResults.json</code> file here to see end-to-end results, or&nbsp;<button class="info-bar-link" onclick="document.getElementById('file-import').click()">browse to import it</button>.`;
     // Live Connection subtitle
     const liveSub = document.querySelector('#live-diagnostics-section .live-subtitle');
     if (liveSub) liveSub.textContent = `Real-time analysis of your active ${label} session`;
