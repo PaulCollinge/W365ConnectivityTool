@@ -38,12 +38,15 @@
 
     // ── Entry points ──────────────────────────────────────────────────────────
 
+    // True only when an actual watch PAYLOAD is in the URL. A bare ?view=watch
+    // (e.g. a refreshed/bookmarked link after the payload was stripped) is NOT a
+    // watch URL — it must fall through to the snapshot so the default view is
+    // never locked out.
     function isWatchUrl() {
         try {
             const params = new URLSearchParams(window.location.search);
             const hash = window.location.hash || '';
-            return params.get('view') === 'watch'
-                || params.has('zwatch')
+            return params.has('zwatch')
                 || hash.indexOf('#zwatch=') === 0;
         } catch { return false; }
     }
@@ -66,8 +69,11 @@
         try {
             // Reuse app.js's hardened decoder (deflate-raw + zip-bomb guards).
             const output = await decodeCompressedHash(raw);
-            // Strip the payload from the URL so a refresh/bookmark doesn't re-decode.
-            history.replaceState(null, '', window.location.pathname + '?view=watch');
+            // Strip the payload AND the view=watch param from the URL. Leaving
+            // view=watch behind would mean a refresh/bookmark lands on a watch URL
+            // with no data and shows an error instead of the snapshot. A clean URL
+            // means a refresh returns to the default snapshot view.
+            history.replaceState(null, '', window.location.pathname);
             renderWatchTimeline(output);
         } catch (e) {
             renderWatchError('Could not read the watch link: ' + (e && e.message ? e.message : e)
