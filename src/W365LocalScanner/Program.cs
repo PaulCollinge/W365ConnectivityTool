@@ -1680,17 +1680,17 @@ class Program
                     if (await Task.WhenAny(connectTask, Task.Delay(5000)) == connectTask)
                     {
                         sw.Stop();
-                        sb.AppendLine($"\u2714 {wildcard} ({host}:80) \u2014 Connected in {sw.ElapsedMilliseconds}ms");
+                        sb.AppendLine($"\u2714 {wildcard}:80 \u2014 Connected in {sw.ElapsedMilliseconds}ms");
                         passed++;
                     }
                     else
                     {
-                        sb.AppendLine($"\u2718 {wildcard} ({host}:80) \u2014 Timeout (5s)");
+                        sb.AppendLine($"\u2718 {wildcard}:80 \u2014 Timeout (5s)");
                     }
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"\u2718 {wildcard} ({host}:80) \u2014 {ex.Message}");
+                    sb.AppendLine($"\u2718 {wildcard}:80 \u2014 {ex.Message}");
                 }
             }
 
@@ -1736,16 +1736,16 @@ class Program
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                     await tcp.ConnectAsync(host, port, cts.Token);
                     sw.Stop();
-                    sb.AppendLine($"\u2714 {wildcard} ({host}:{port}) \u2014 {purpose} \u2014 Connected in {sw.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"\u2714 {wildcard}:{port} \u2014 {purpose} \u2014 Connected in {sw.ElapsedMilliseconds}ms");
                     passed++;
                 }
                 catch (OperationCanceledException)
                 {
-                    sb.AppendLine($"\u2718 {wildcard} ({host}:{port}) \u2014 {purpose} \u2014 Timeout (5s)");
+                    sb.AppendLine($"\u2718 {wildcard}:{port} \u2014 {purpose} \u2014 Timeout (5s)");
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"\u2718 {wildcard} ({host}:{port}) \u2014 {purpose} \u2014 {ex.InnerException?.Message ?? ex.Message}");
+                    sb.AppendLine($"\u2718 {wildcard}:{port} \u2014 {purpose} \u2014 {ex.InnerException?.Message ?? ex.Message}");
                 }
             }
             sb.AppendLine();
@@ -9748,7 +9748,7 @@ class Program
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
             // TCP 443 — Core service traffic
             endpoints.Add(("login.microsoftonline.com", 443, "Authentication to Microsoft Online Services", requiredGroup));
-            endpoints.Add(("rdweb.wvd.microsoft.com", 443, "Service traffic / TCP RDP (*.wvd.microsoft.com)", requiredGroup));
+            endpoints.Add(("rdweb.wvd.microsoft.com", 443, "Service traffic / TCP RDP", requiredGroup));
             endpoints.Add(("catalogartifact.azureedge.net", 443, "Azure Marketplace", requiredGroup));
             endpoints.Add(("gcs.prod.monitoring.core.windows.net", 443, "Agent monitoring", requiredGroup));
             endpoints.Add(("mrsglobalsteus2prod.blob.core.windows.net", 443, "Agent/SXS stack updates", requiredGroup));
@@ -9764,11 +9764,11 @@ class Program
             // wildcard is being blocked.
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
             endpoints.Add(("prod-r1.windows.cloud.microsoft", 443,
-                "Service traffic (*.windows.cloud.microsoft)", requiredGroup));
+                "Service traffic", requiredGroup));
             endpoints.Add(("shprf.sh.service.windows.cloud.microsoft", 443,
-                "Service traffic (*.service.windows.cloud.microsoft)", requiredGroup));
+                "Service traffic", requiredGroup));
             endpoints.Add(("sash.cloudpc.windows.static.microsoft", 443,
-                "Service traffic (*.windows.static.microsoft)", requiredGroup));
+                "Service traffic", requiredGroup));
 
             // *.prod.warm.ingest.monitor.core.windows.net — Log Analytics / Azure Monitor
             // ingestion wildcard. The real hostnames follow the pattern
@@ -9805,7 +9805,7 @@ class Program
             }
             monitorExemplar ??= "eastus-0.prod.warm.ingest.monitor.core.windows.net";
             endpoints.Add((monitorExemplar, 443,
-                "Agent diagnostics (*.prod.warm.ingest.monitor.core.windows.net)", requiredGroup));
+                "Agent diagnostics", requiredGroup));
 
             // TCP 80 — Health monitoring and certificates
             endpoints.Add(("168.63.129.16", 80, healthPurpose, requiredGroup));
@@ -9820,8 +9820,8 @@ class Program
             // L-* client tests) still verifies them.
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
             endpoints.Add(("www.microsoft.com", 80, "Certificates", requiredGroup));
-            endpoints.Add(("eusaikpublish.microsoftaik.azure.net", 80, "Certificates (*.microsoftaik.azure.net)", requiredGroup));
-            endpoints.Add(("eus.aikcertaia.microsoft.com", 80, "Certificates (*.aikcertaia.microsoft.com)", requiredGroup));
+            endpoints.Add(("eusaikpublish.microsoftaik.azure.net", 80, "Certificates", requiredGroup));
+            endpoints.Add(("eus.aikcertaia.microsoft.com", 80, "Certificates", requiredGroup));
             endpoints.Add(("azcsprodeusaikpublish.blob.core.windows.net", 80, "Certificates", requiredGroup));
 
             // TCP 1688
@@ -10041,6 +10041,23 @@ class Program
             int passed = 0, total = 0;
             string? currentGroup = null;
 
+            // Map wildcard-exemplar hosts to the wildcard FQDN they represent so
+            // the detail mirrors the official required-FQDN table. The exemplar
+            // host used to probe each wildcard rule is an implementation detail
+            // and is hidden; real (non-wildcard) FQDNs are shown as-is.
+            static string Display(string host) => host switch
+            {
+                "rdweb.wvd.microsoft.com" => "*.wvd.microsoft.com",
+                "prod-r1.windows.cloud.microsoft" => "*.windows.cloud.microsoft",
+                "shprf.sh.service.windows.cloud.microsoft" => "*.service.windows.cloud.microsoft",
+                "sash.cloudpc.windows.static.microsoft" => "*.windows.static.microsoft",
+                "eusaikpublish.microsoftaik.azure.net" => "*.microsoftaik.azure.net",
+                "eus.aikcertaia.microsoft.com" => "*.aikcertaia.microsoft.com",
+                _ when host.EndsWith(".prod.warm.ingest.monitor.core.windows.net", StringComparison.OrdinalIgnoreCase)
+                    => "*.prod.warm.ingest.monitor.core.windows.net",
+                _ => host
+            };
+
             foreach (var r in results.OrderBy(x => x.ep.group).ThenBy(x => x.ep.host).ThenBy(x => x.ep.port))
             {
                 if (r.ep.group != currentGroup)
@@ -10049,21 +10066,22 @@ class Program
                     sb.AppendLine($"\u2550\u2550 {r.ep.group} \u2550\u2550");
                     currentGroup = r.ep.group;
                 }
+                var disp = Display(r.ep.host);
                 var soft = IsSoft(r.ep);
                 if (r.ok)
                 {
                     if (soft && r.err != null && r.err.StartsWith("via-agent:"))
                     {
                         var detail = r.err.Substring("via-agent:".Length);
-                        sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} (verified via guest-agent heartbeat: {detail})");
+                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} (verified via guest-agent heartbeat: {detail})");
                     }
                     else if (r.err != null && r.err.StartsWith("via-canary:"))
                     {
-                        sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} (wildcard verified {r.err.Substring("via-canary:".Length)})");
+                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} (wildcard verified {r.err.Substring("via-canary:".Length)})");
                     }
                     else
                     {
-                        sb.AppendLine($"  \u2714 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
+                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
                     }
                     if (!soft) passed++;
                 }
@@ -10076,13 +10094,13 @@ class Program
                     bool expected = lower.Contains("forbidden") || lower.Contains("access permissions") || lower.Contains("10013");
                     var glyph = expected ? "\u2714" : "\u2139";
                     var tail  = expected ? " (expected: Guest Agent lockdown)" : $" \u2014 {r.err}";
-                    sb.AppendLine($"  {glyph} {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose}{tail}");
+                    sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose}{tail}");
                     var note = SoftNote(r.ep, r.err);
                     if (!string.IsNullOrEmpty(note)) sb.AppendLine($"      note: {note}");
                 }
                 else
                 {
-                    sb.AppendLine($"  \u2718 {r.ep.host}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
+                    sb.AppendLine($"  \u2718 {disp}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
                 }
                 if (!soft) total++;
             }
