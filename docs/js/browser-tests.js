@@ -667,17 +667,17 @@ async function testEndpointReachability(test) {
                 redirect: 'follow',
             });
             const elapsed = Math.round(performance.now() - start);
-            results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed });
+            results.push({ endpoint: ep.url, display: ep.display || ep.url, purpose: ep.purpose, status: 'Reachable', time: elapsed });
         } catch (e) {
             const elapsed = Math.round(performance.now() - start);
             if (e.name === 'AbortError' || e.name === 'TimeoutError') {
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
+                results.push({ endpoint: ep.url, display: ep.display || ep.url, purpose: ep.purpose, status: 'Timeout', time: elapsed });
             } else {
                 // With CSP correctly allowing the host and favicon being
                 // ORB-safe, a TypeError here indicates a real network
                 // problem: DNS NXDOMAIN, TCP RST, TLS handshake failure,
                 // or a local firewall/SWG blocking the host.
-                results.push({ endpoint: ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed, note: e.name || 'fetch failed' });
+                results.push({ endpoint: ep.url, display: ep.display || ep.url, purpose: ep.purpose, status: 'Unreachable', time: elapsed, note: e.name || 'fetch failed' });
             }
         }
     });
@@ -685,14 +685,34 @@ async function testEndpointReachability(test) {
     await Promise.all(checks);
     const duration = Math.round(performance.now() - t0);
 
-    const reachable   = results.filter(r => r.status === 'Reachable').length;
-    const unreachable = results.filter(r => r.status === 'Unreachable' || r.status === 'Timeout').length;
+    // Collapse exemplar probes onto their displayed (wildcard) name so the
+    // list mirrors the official required-FQDN table. Several exemplars can map
+    // to a single wildcard (e.g. rdweb/client/rdbroker → *.wvd.microsoft.com);
+    // a wildcard counts as reachable only when every exemplar under it is.
+    const groups = [];
+    const byName = new Map();
+    for (const r of results) {
+        let g = byName.get(r.display);
+        if (!g) {
+            g = { display: r.display, purpose: r.purpose, status: 'Reachable', time: 0, note: undefined };
+            byName.set(r.display, g);
+            groups.push(g);
+        }
+        if (r.status !== 'Reachable' && g.status === 'Reachable') {
+            g.status = r.status;
+            g.note = r.note;
+        }
+        if (r.time > g.time) g.time = r.time;
+    }
 
-    const detail = results.map(r => {
-        const icon = r.status === 'Reachable' ? '\u2714' : '\u2716';
-        const timing = r.time > 0 ? ` (${r.time}ms)` : '';
-        const note = r.note ? ` [${r.note}]` : '';
-        return `${icon} ${r.endpoint} (${r.purpose}) - ${r.status}${timing}${note}`;
+    const reachable   = groups.filter(g => g.status === 'Reachable').length;
+    const unreachable = groups.filter(g => g.status === 'Unreachable' || g.status === 'Timeout').length;
+
+    const detail = groups.map(g => {
+        const icon = g.status === 'Reachable' ? '\u2714' : '\u2716';
+        const timing = g.time > 0 ? ` (${g.time}ms)` : '';
+        const note = g.note ? ` [${g.note}]` : '';
+        return `${icon} ${g.display} (${g.purpose}) - ${g.status}${timing}${note}`;
     }).join('\n')
       + '\n'
       + '\n' + EndpointConfig.browserBlocked.detailMarker
@@ -705,10 +725,10 @@ async function testEndpointReachability(test) {
 
     let status;
     if (unreachable === 0) status = 'Passed';
-    else if (unreachable === results.length) status = 'Failed';
+    else if (unreachable === groups.length) status = 'Failed';
     else status = 'Warning';
 
-    const parts = [`${reachable}/${results.length} reachable`];
+    const parts = [`${reachable}/${groups.length} reachable`];
     if (unreachable) parts.push(`${unreachable} unreachable`);
     // Pending segment: app.js mergeBrowserBlockedEndpointResult identifies
     // and replaces this segment by matching on browserBlocked.headlineMarker.

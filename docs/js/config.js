@@ -37,12 +37,15 @@ const EndpointConfig = {
     // Required FQDNs for end-user devices (Azure cloud)
     // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint?tabs=azure#end-user-devices
     // Only includes HTTPS (port 443) endpoints testable from a browser.
-    // Wildcard entries (*.wvd.microsoft.com etc.) tested via known subdomains.
+    // Wildcard entries (*.wvd.microsoft.com etc.) are probed via a known-good
+    // exemplar subdomain (`url`); `display` is the name shown to the user so the
+    // list mirrors the official table (the exemplar host is an implementation
+    // detail and is hidden). Omit `display` when it equals `url`.
     requiredEndpoints: [
         { url: 'login.microsoftonline.com', purpose: 'Authentication', port: 443 },
-        { url: 'rdweb.wvd.microsoft.com', purpose: 'Service traffic (*.wvd.microsoft.com)', port: 443 },
-        { url: 'client.wvd.microsoft.com', purpose: 'Service traffic (*.wvd.microsoft.com)', port: 443 },
-        { url: 'rdbroker.wvd.microsoft.com', purpose: 'Service traffic (*.wvd.microsoft.com)', port: 443 },
+        { url: 'rdweb.wvd.microsoft.com', display: '*.wvd.microsoft.com', purpose: 'Service traffic', port: 443 },
+        { url: 'client.wvd.microsoft.com', display: '*.wvd.microsoft.com', purpose: 'Service traffic', port: 443 },
+        { url: 'rdbroker.wvd.microsoft.com', display: '*.wvd.microsoft.com', purpose: 'Service traffic', port: 443 },
         { url: 'go.microsoft.com', purpose: 'Microsoft FWLinks', port: 443 },
         { url: 'aka.ms', purpose: 'Microsoft URL shortener', port: 443 },
         { url: 'learn.microsoft.com', purpose: 'Documentation', port: 443 },
@@ -52,8 +55,8 @@ const EndpointConfig = {
         { url: 'windows365.microsoft.com', purpose: 'Service traffic', port: 443 },
         { url: 'ecs.office.com', purpose: 'Connection center', port: 443 },
         // Wildcard exemplars (specific hosts representing *.wildcard patterns)
-        { url: 'microsoft.servicebus.windows.net', purpose: 'Troubleshooting data (*.servicebus.windows.net)', port: 443 },
-        { url: 'statics.teams.cdn.office.net', purpose: 'Automatic updates (*.cdn.office.net)', port: 443 }
+        { url: 'microsoft.servicebus.windows.net', display: '*.servicebus.windows.net', purpose: 'Troubleshooting data', port: 443 },
+        { url: 'statics.teams.cdn.office.net', display: '*.cdn.office.net', purpose: 'Automatic updates', port: 443 }
         // *.events.data.microsoft.com — cannot be tested from the browser.
         // Every mainstream browser (Edge, Chrome, Firefox) bundles a built-in
         // tracking-prevention blocklist that includes Microsoft's OneDS
