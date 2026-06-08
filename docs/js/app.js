@@ -415,11 +415,24 @@ function setupDragDrop() {
         try {
             const text = await file.text();
             const data = JSON.parse(text);
+            if (routeWatchTimeline(data)) return;
             processImportedData(data);
         } catch (err) {
             console.error('Drag-drop import failed:', err);
         }
     });
+}
+
+// Route a dropped/imported Session Watch timeline (scanner --watch output) to the
+// isolated Watch view instead of the snapshot pipeline. Returns true if handled.
+// Defined here so both import entry points (file picker + drag-drop) share it; the
+// renderer itself lives in watch.js (loaded after app.js).
+function routeWatchTimeline(data) {
+    if (data && data.type === 'watch-timeline' && typeof window.renderWatchTimeline === 'function') {
+        window.renderWatchTimeline(data);
+        return true;
+    }
+    return false;
 }
 
 
@@ -831,6 +844,7 @@ async function importLocalResults(event) {
     try {
         const text = await file.text();
         const data = JSON.parse(text);
+        if (routeWatchTimeline(data)) return;
         processImportedData(data);
     } catch (e) {
         alert(`Error reading file: ${e.message}`);

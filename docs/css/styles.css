@@ -3491,3 +3491,129 @@ details.privacy-notice-compact:not([open]) .privacy-toggle-hint::before { conten
         scroll-behavior: auto !important;
     }
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   SESSION WATCH VIEW  (isolated — all selectors scoped to #watch-view /
+   #view-tabs so they can never affect the snapshot dashboard).
+   `html.watch-mode` toggles visibility of <main> vs the watch island, set
+   pre-paint by the inline bootstrap and by the Snapshot/Watch tab buttons.
+   ════════════════════════════════════════ */
+html.watch-mode main { display: none !important; }
+#watch-view { display: none; }
+html.watch-mode #watch-view { display: block; }
+
+.view-tabs {
+    display: flex; gap: 4px; justify-content: center;
+    max-width: 1080px; margin: 18px auto 0; padding: 5px;
+    background: var(--bg-inset); border: 1px solid var(--border-default);
+    border-radius: 11px; width: fit-content;
+}
+.view-tabs[hidden] { display: none; }
+.view-tab {
+    background: transparent; border: 0; color: var(--text-secondary);
+    padding: 8px 18px; border-radius: 8px; font-size: .85rem; font-weight: 600;
+    cursor: pointer; font-family: var(--sans); transition: background .15s, color .15s;
+}
+.view-tab:hover { color: var(--text-primary); }
+.view-tab.is-active {
+    background: var(--accent-bg); color: var(--accent-bright);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+.watch-wrap { max-width: 1080px; margin: 0 auto; padding: 22px 20px 40px; }
+.watch-head { margin-bottom: 18px; }
+.watch-head h2 {
+    font-size: 1.5rem; color: var(--text-primary); font-weight: 650;
+    letter-spacing: -.02em; display: flex; align-items: center; gap: 11px;
+}
+.watch-ico {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent-dim), #1f6feb);
+    display: grid; place-items: center; color: #fff; font-size: 16px;
+    box-shadow: 0 4px 14px rgba(56,139,253,.35);
+}
+.watch-sub { color: var(--text-muted); font-size: .82rem; margin-top: 8px; max-width: 720px; }
+
+.watch-panel {
+    background: linear-gradient(180deg, var(--bg-card), var(--bg-card-alt));
+    border: 1px solid var(--border-default); border-radius: 13px;
+    box-shadow: var(--shadow-card); padding: 18px 20px; margin-bottom: 18px;
+}
+.watch-sec { color: var(--text-primary); font-size: 1.05rem; margin: 0 0 14px; font-weight: 620; }
+
+.watch-meta { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 14px; }
+.watch-meta .wm { display: flex; flex-direction: column; gap: 3px; }
+.watch-meta .k { font-size: .64rem; text-transform: uppercase; letter-spacing: .07em; color: var(--text-muted); }
+.watch-meta .v { font-size: .84rem; color: var(--text-primary); font-family: var(--mono); }
+
+.watch-status { display: flex; gap: 13px; flex-wrap: wrap; }
+.watch-status .wstat {
+    flex: 1; min-width: 120px; background: var(--bg-inset);
+    border: 1px solid var(--border-default); border-radius: 10px; padding: 11px 13px;
+}
+.watch-status .k { font-size: .64rem; text-transform: uppercase; letter-spacing: .07em; color: var(--text-muted); }
+.watch-status .v { font-size: 1.2rem; color: var(--text-primary); font-family: var(--mono); margin-top: 3px; font-weight: 600; }
+
+.watch-verdict {
+    display: flex; align-items: center; gap: 13px; border-radius: 11px;
+    padding: 14px 16px; margin-bottom: 18px; font-size: .9rem;
+}
+.watch-verdict.ok   { background: var(--green-bg);  border: 1px solid var(--green-border);  color: var(--green); }
+.watch-verdict.warn { background: var(--yellow-bg); border: 1px solid var(--yellow-border); color: var(--yellow); }
+.watch-verdict.bad  { background: var(--red-bg);    border: 1px solid var(--red-border);    color: var(--red); }
+.watch-verdict .big { font-size: 1.2rem; }
+.watch-verdict b { color: var(--text-primary); }
+
+.wtrack {
+    display: grid; grid-template-columns: 170px 1fr 96px; align-items: center;
+    gap: 14px; padding: 11px 0; border-top: 1px solid var(--border);
+}
+.wtrack:first-child { border-top: 0; }
+.wt-name .t { color: var(--text-primary); font-weight: 600; display: block; font-size: .8rem; }
+.wt-name .s { color: var(--text-muted); font-size: .7rem; }
+.wt-spark {
+    position: relative; height: 46px; background: var(--bg-inset);
+    border-radius: 8px; border: 1px solid var(--border-default); overflow: hidden;
+}
+.wt-spark svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.wt-thr { stroke: rgba(248,81,73,.35); stroke-width: .6; stroke-dasharray: 2 2; }
+.wt-band {
+    position: absolute; top: 0; bottom: 0; width: 3px;
+    background: var(--red-bg); border-left: 1px solid var(--red-border); border-right: 1px solid var(--red-border);
+}
+.wt-band.warn { background: var(--yellow-bg); border-color: var(--yellow-border); }
+.wt-band.info { background: var(--accent-bg); border-color: var(--accent-border); }
+.wt-now { text-align: right; font-family: var(--mono); font-size: .92rem; color: var(--text-primary); }
+.wt-now small { display: block; font-size: .64rem; color: var(--text-muted); }
+
+.watch-legend { display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; margin-top: 12px; font-size: .72rem; color: var(--text-muted); }
+.watch-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.watch-legend i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+.watch-legend i.thr { border-top: 1px dashed var(--red); height: 0; background: none; }
+
+.watch-pill {
+    font-size: .66rem; border-radius: 999px; padding: 2px 9px; font-weight: 600;
+    background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border);
+}
+.wfind {
+    display: flex; gap: 12px; padding: 13px; border-radius: 10px;
+    background: var(--bg-inset); border: 1px solid var(--border-default); margin-bottom: 10px;
+}
+.wfind .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: none; }
+.wfind.bad .dot { background: var(--red); }
+.wfind.warn .dot { background: var(--yellow); }
+.wfind.info .dot { background: var(--accent); }
+.wfind .body { flex: 1; }
+.wfind .h { color: var(--text-primary); font-weight: 600; font-size: .86rem; margin-bottom: 3px; display: flex; align-items: center; gap: 8px; }
+.wfind .h .kindtag {
+    font-size: .6rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+    padding: 1px 7px; border-radius: 999px; color: var(--text-muted);
+    background: var(--bg-elevated); border: 1px solid var(--border-default);
+}
+.wfind .h .kindtag.anomaly { color: var(--yellow); border-color: var(--yellow-border); }
+.wfind .d { font-size: .8rem; color: var(--text-secondary); }
+.wfind .time { font-family: var(--mono); font-size: .7rem; color: var(--text-muted); white-space: nowrap; }
+.watch-empty { color: var(--text-muted); font-size: .82rem; text-align: center; padding: 24px; font-style: italic; }
+
+.watch-foot { margin-top: 20px; text-align: center; color: var(--text-muted); font-size: .74rem; line-height: 1.7; }
+.watch-foot code { font-family: var(--mono); background: var(--bg-elevated); padding: 1px 6px; border-radius: 5px; color: var(--accent-bright); font-size: .72rem; }

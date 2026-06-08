@@ -31,6 +31,13 @@ class Program
     // "cloudpc", "avd", or null (unknown / client mode)
     static string? _hostType = null;
 
+    // ── Session Watch (continuous monitoring) — strictly opt-in, default OFF.
+    //    When enabled, a full run-once snapshot runs FIRST (unchanged), then a
+    //    separate lightweight sampler loop monitors the live path. ──
+    static bool _watchEnabled = false;
+    static int _watchDurationSeconds = 300; // 0 = until stopped (Ctrl+C)
+    static int _watchIntervalSeconds = 3;   // seconds between samples
+
     // ── Cached AFD-discovered RDP gateway (set once, reused by all tests) ──
     static string? _cachedGatewayHost = null;
     static string? _cachedGatewayDetail = null;
@@ -127,6 +134,30 @@ class Program
             else
             {
                 outputPath = candidate;
+            }
+        }
+
+        // ── Session Watch flags (strictly opt-in) ──
+        //   --watch [5m|300s|until-stopped]   bare --watch defaults to 5 minutes
+        //   --interval [Ns]                   default 3s, clamped 2–60s
+        // No flag = today's run-once behaviour, byte-for-byte unchanged.
+        for (int i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.Equals("--watch", StringComparison.OrdinalIgnoreCase) || a.StartsWith("--watch=", StringComparison.OrdinalIgnoreCase))
+            {
+                _watchEnabled = true;
+                string? val = a.Contains('=')
+                    ? a.Split('=', 2)[1]
+                    : (i + 1 < args.Length && !args[i + 1].StartsWith("-") ? args[i + 1] : null);
+                _watchDurationSeconds = ParseWatchDuration(val);
+            }
+            else if (a.Equals("--interval", StringComparison.OrdinalIgnoreCase) || a.StartsWith("--interval=", StringComparison.OrdinalIgnoreCase))
+            {
+                string? val = a.Contains('=')
+                    ? a.Split('=', 2)[1]
+                    : (i + 1 < args.Length && !args[i + 1].StartsWith("-") ? args[i + 1] : null);
+                _watchIntervalSeconds = ParseWatchInterval(val);
             }
         }
 
@@ -509,6 +540,39 @@ class Program
 
         // Print executive summary report
         PrintSummaryReport(results, includeCloud);
+
+        // ── Optional continuous monitoring (Session Watch) ──
+        // Strictly opt-in via --watch. Runs AFTER the full run-once snapshot so
+        // the default path is byte-for-byte unchanged. Never alters the run-once
+        // JSON, browser tab, or the process exit code.
+        if (_watchEnabled)
+        {
+            try { await RunWatchMode(); }
+            catch (Exception ex) { Console.WriteLine($"  [watch] aborted: {ex.Message}"); }
+        }
+        // ── Post-scan pivot (interactive only) ──
+        // --watch wasn't requested, but if the snapshot flagged a VPN/SWG that is
+        // intercepting or ambiguously routing W365/RDP traffic, a single point-in-time
+        // read can't distinguish a stable split-tunnel from one that flaps between
+        // runs (e.g. an always-on tunnel that reprograms its route set on each
+        // reconnect, so longest-prefix-match flips W365 between direct and tunnelled).
+        // Offer a short watch so the user can see whether it actually flaps. Opt-in
+        // (default N) and only when an interactive console exists.
+        else if (!Console.IsInputRedirected && ConnectionLooksVolatile(results, out var volatileReason))
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  {volatileReason}");
+            Console.WriteLine("  A single scan can't tell a stable setup from one that flaps between runs.");
+            Console.ResetColor();
+            Console.Write("  Watch this connection for 5 minutes to check for instability? [y/N] ");
+            var answer = Console.ReadLine();
+            if (answer != null && answer.Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase))
+            {
+                try { await RunWatchMode(); }
+                catch (Exception ex) { Console.WriteLine($"  [watch] aborted: {ex.Message}"); }
+            }
+        }
 
         Console.WriteLine();
 
@@ -10107,11 +10171,7 @@ class Program
 
             // Note untestable wildcard entries
             sb.AppendLine();
-            sb.AppendLine("\u2550\u2550 Wildcard Firewall Rules (cannot test directly) \u2550\u2550");
-            sb.AppendLine("  \u2139 *.wvd.microsoft.com:443 \u2014 Service traffic (exemplar rdweb.wvd.microsoft.com tested above)");
-            sb.AppendLine("  \u2139 *.windows.cloud.microsoft:443 \u2014 Service traffic (exemplar prod-r1.windows.cloud.microsoft tested above)");
-            sb.AppendLine("  \u2139 *.service.windows.cloud.microsoft:443 \u2014 Service traffic (exemplar shprf.sh.service.windows.cloud.microsoft tested above)");
-            sb.AppendLine("  \u2139 *.windows.static.microsoft:443 \u2014 Static assets (exemplar sash.cloudpc.windows.static.microsoft tested above)");
+            sb.AppendLine("\u2550\u2550 Other Wildcard Rules (optional, not probed) \u2550\u2550");
             sb.AppendLine("  \u2139 *.events.data.microsoft.com:443 \u2014 Telemetry (optional)");
             sb.AppendLine("  \u2139 *.prod.do.dsp.mp.microsoft.com:443 \u2014 Windows Update (optional)");
             sb.AppendLine("  \u2139 *.sfx.ms:443 \u2014 OneDrive client updates (optional)");
@@ -10401,6 +10461,745 @@ class Program
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
     }
+
+    // ════════════════════════════════════════════════════════════════
+    //  SESSION WATCH — continuous lightweight monitoring (opt-in)
+    //  Run-once snapshot is NEVER altered by anything in this region.
+    // ════════════════════════════════════════════════════════════════
+
+    /// <summary>Parses the --watch duration token. Returns seconds, or 0 for "until stopped".</summary>
+    static int ParseWatchDuration(string? val)
+    {
+        if (string.IsNullOrWhiteSpace(val)) return 300; // bare --watch = 5 minutes
+        val = val.Trim().ToLowerInvariant();
+        if (val is "until-stopped" or "until" or "forever" or "0" or "inf" or "infinite") return 0;
+        int mult = 1;
+        if (val.EndsWith("h")) { mult = 3600; val = val[..^1]; }
+        else if (val.EndsWith("m")) { mult = 60; val = val[..^1]; }
+        else if (val.EndsWith("s")) { val = val[..^1]; }
+        if (int.TryParse(val, out var n) && n > 0)
+            return Math.Clamp(n * mult, 30, 8 * 3600); // 30s floor, 8h ceiling
+        return 300;
+    }
+
+    /// <summary>Parses the --interval token (seconds). Clamped to 2–60s.</summary>
+    static int ParseWatchInterval(string? val)
+    {
+        if (string.IsNullOrWhiteSpace(val)) return 3;
+        val = val.Trim().ToLowerInvariant();
+        if (val.EndsWith("s")) val = val[..^1];
+        if (int.TryParse(val, out var n) && n > 0) return Math.Clamp(n, 2, 60);
+        return 3;
+    }
+
+    /// <summary>
+    /// Continuous monitoring loop. Runs ONLY the lightweight transport probes
+    /// (gateway TCP RTT, STUN UDP RTT/jitter/loss/egress, DNS resolve, W365 route
+    /// fingerprint) on an interval into a bounded ring buffer, detects anomalies,
+    /// writes W365WatchTimeline.json, and opens the dashboard Watch view.
+    /// </summary>
+    // Detects whether the run-once snapshot is the kind of result a single
+    // point-in-time read can't be trusted to represent — specifically a VPN/SWG
+    // that is intercepting or ambiguously routing W365/RDP traffic. Used to offer
+    // the optional post-scan Session Watch. Deterministic; reads only the
+    // L-TCP-07 / L-UDP-07 verdicts the snapshot already produced (no re-thresholding,
+    // and a clean Passed split-tunnel never triggers it — avoids crying wolf).
+    static bool ConnectionLooksVolatile(List<TestResult> results, out string reason)
+    {
+        reason = "";
+        foreach (var id in new[] { "L-TCP-07", "L-UDP-07" })
+        {
+            var r = results.FirstOrDefault(x => x.Id == id);
+            if (r == null) continue;
+            if (r.Status == "Warning" || r.Status == "Failed")
+            {
+                var what = string.IsNullOrWhiteSpace(r.ResultValue) ? r.Name : r.ResultValue;
+                reason = $"\u26A0 The snapshot flagged routing/tunnel interference: {what}";
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static async Task RunWatchMode()
+    {
+        int duration = _watchDurationSeconds;
+        int interval = _watchIntervalSeconds;
+
+        // Non-interactive guard: an unbounded watch needs an interactive console
+        // to be stopped (Ctrl+C). If stdin is redirected (headless / piped), bound
+        // it so the process can never hang forever waiting for a stop that can't come.
+        if (duration == 0 && Console.IsInputRedirected)
+        {
+            duration = 300;
+            Console.WriteLine("  [watch] No interactive console (stdin redirected) — bounding watch to 5 minutes.");
+        }
+
+        // Reuse the gateway discovered during the run-once snapshot.
+        var gatewayHost = _cachedGatewayHost;
+        if (string.IsNullOrEmpty(gatewayHost))
+        {
+            try { var (gw, _) = await DiscoverRdpGatewayFromAfd(); gatewayHost = gw; } catch { }
+        }
+        if (string.IsNullOrEmpty(gatewayHost)) gatewayHost = "rdweb.wvd.microsoft.com";
+
+        IPAddress? gatewayIp = null;
+        try { gatewayIp = (await Dns.GetHostAddressesAsync(gatewayHost)).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork); } catch { }
+
+        const string stunHost = "world.relay.avd.microsoft.com";
+        IPEndPoint? stunEp = null;
+        try
+        {
+            var sip = (await Dns.GetHostAddressesAsync(stunHost)).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+            if (sip != null) stunEp = new IPEndPoint(sip, 3478);
+        }
+        catch { }
+
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("  ╔══════════════════════════════════════════════════════╗");
+        Console.WriteLine("  ║                  SESSION WATCH                       ║");
+        Console.WriteLine("  ╚══════════════════════════════════════════════════════╝");
+        Console.ResetColor();
+        Console.WriteLine($"  Monitoring gateway : {gatewayHost}{(gatewayIp != null ? $" ({gatewayIp})" : "")}");
+        Console.WriteLine($"  TURN/STUN relay    : {stunHost}:3478");
+        Console.WriteLine($"  Interval           : {interval}s");
+        Console.WriteLine($"  Duration           : {(duration == 0 ? "until stopped (Ctrl+C)" : FormatDuration(TimeSpan.FromSeconds(duration)))}");
+        Console.WriteLine($"  Tier 1 (verdict)   : W365 route fingerprint");
+        Console.WriteLine($"  Tier 2 (context)   : gateway RTT, UDP RTT/jitter/loss, DNS, egress IP, adapter/gateway/DNS changes");
+        Console.WriteLine();
+        if (duration == 0) Console.WriteLine("  Press Ctrl+C to stop and write the timeline.");
+        Console.WriteLine();
+
+        var samples = new List<WatchSample>();
+        var events = new List<WatchEvent>();
+        const int maxSamples = 5000; // ring-buffer cap (memory bound for long/unbounded runs)
+
+        var start = DateTime.UtcNow;
+        var startSw = Stopwatch.StartNew();
+
+        // Graceful Ctrl+C stop (interactive only).
+        bool stop = false;
+        ConsoleCancelEventHandler? handler = null;
+        if (!Console.IsInputRedirected)
+        {
+            handler = (_, e) => { e.Cancel = true; stop = true; };
+            Console.CancelKeyPress += handler;
+        }
+
+        string? prevRouteHash = null;
+        string? prevEgress = null;
+        EnvFingerprint? prevEnv = null;
+        int routeChangeCount = 0;
+        var gatewayBaseline = new List<double>();
+        int sampleNum = 0;
+
+        try
+        {
+            while (!stop)
+            {
+                double elapsed = startSw.Elapsed.TotalSeconds;
+                if (duration > 0 && elapsed >= duration) break;
+                sampleNum++;
+                var ts = DateTime.UtcNow;
+
+                // Lightweight probes (sequential to keep system load minimal).
+                double? gwRtt = gatewayIp != null ? await SampleTcpConnectRtt(gatewayIp, 443) : null;
+                var (sRtt, jitter, loss, egress) = stunEp != null
+                    ? await SampleStunBurst(stunEp)
+                    : ((double?)null, (double?)null, (double?)null, (string?)null);
+                double? dns = await SampleDnsResolve(gatewayHost);
+                string routeHash = SampleRelevantRouteFingerprint(gatewayIp != null ? IpToUint32(gatewayIp) : null);
+                var env = CaptureEnvFingerprint();
+
+                var anomalies = new List<string>();
+
+                // ── Tier 1: W365 route change (verdict-driving) ──
+                bool routeChanged = false;
+                if (prevRouteHash != null && routeHash != "unknown" && routeHash != prevRouteHash)
+                {
+                    routeChanged = true;
+                    routeChangeCount++;
+                    anomalies.Add("route");
+                    var sev = routeChangeCount >= 2 ? "critical" : "warning";
+                    events.Add(new WatchEvent
+                    {
+                        ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = sev, Track = "route",
+                        Message = $"W365-relevant route set changed (change #{routeChangeCount}) — the gateway/exclusion routing shifted (direct ⇄ tunnel)."
+                    });
+                }
+                if (routeHash != "unknown") prevRouteHash = routeHash;
+
+                // ── Tier 2: transport quality (context, non-verdict) ──
+                if (gwRtt.HasValue)
+                {
+                    if (gatewayBaseline.Count >= 3)
+                    {
+                        var baseMed = Median(gatewayBaseline);
+                        if (gwRtt.Value > Math.Max(baseMed * 1.8, baseMed + 40) && gwRtt.Value > 60)
+                        {
+                            anomalies.Add("gatewayRtt");
+                            events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = "warning", Track = "gatewayRtt",
+                                Message = $"Gateway RTT spiked to {gwRtt.Value:F0}ms (baseline ~{baseMed:F0}ms)." });
+                        }
+                    }
+                    if (gatewayBaseline.Count < 20) gatewayBaseline.Add(gwRtt.Value);
+                }
+                else
+                {
+                    anomalies.Add("gatewayRtt");
+                    events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = "warning", Track = "gatewayRtt",
+                        Message = "Gateway TCP 443 connect failed/timed out." });
+                }
+
+                if (jitter.HasValue && jitter.Value > 30)
+                {
+                    anomalies.Add("jitter");
+                    events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = jitter.Value > 50 ? "critical" : "warning", Track = "jitter",
+                        Message = $"UDP jitter {jitter.Value:F0}ms to TURN relay — RDP Shortpath quality degraded." });
+                }
+
+                if (loss.HasValue && loss.Value > 2)
+                {
+                    anomalies.Add("loss");
+                    events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = loss.Value > 5 ? "critical" : "warning", Track = "loss",
+                        Message = $"UDP packet loss {loss.Value:F0}% to TURN relay (UDP 3478)." });
+                }
+
+                if (dns.HasValue && dns.Value > 300)
+                {
+                    anomalies.Add("dns");
+                    events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = dns.Value > 800 ? "critical" : "warning", Track = "dns",
+                        Message = $"DNS resolution slow ({dns.Value:F0}ms) for {gatewayHost}." });
+                }
+
+                if (egress != null && prevEgress != null && egress != prevEgress)
+                {
+                    anomalies.Add("egress");
+                    events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = "warning", Track = "egress",
+                        Message = $"Egress IP changed: {prevEgress} → {egress} (re-NAT / VPN reconnect / PoP change)." });
+                }
+                if (egress != null) prevEgress = egress;
+
+                // ── Tier 2 context: environment changes (explain the Tier 1 flip) ──
+                if (prevEnv.HasValue)
+                {
+                    var p = prevEnv.Value;
+                    if (p.VpnAdapters != env.VpnAdapters)
+                        events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "context", Severity = "info", Track = "vpnAdapter",
+                            Message = DescribeChange("VPN/tunnel adapter", p.VpnAdapters, env.VpnAdapters) });
+                    if (p.DefaultGateways != env.DefaultGateways)
+                        events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "context", Severity = "info", Track = "defaultGateway",
+                            Message = DescribeChange("Default gateway", p.DefaultGateways, env.DefaultGateways) });
+                    if (p.DnsServers != env.DnsServers)
+                        events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "context", Severity = "info", Track = "dnsServer",
+                            Message = DescribeChange("DNS servers", p.DnsServers, env.DnsServers) });
+                    if (p.Adapters != env.Adapters)
+                        events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "context", Severity = "info", Track = "adapters",
+                            Message = DescribeChange("Active adapters", p.Adapters, env.Adapters) });
+                }
+                prevEnv = env;
+
+                var sample = new WatchSample
+                {
+                    Timestamp = ts,
+                    ElapsedSeconds = Math.Round(elapsed, 1),
+                    GatewayRttMs = gwRtt.HasValue ? Math.Round(gwRtt.Value, 1) : null,
+                    StunRttMs = sRtt.HasValue ? Math.Round(sRtt.Value, 1) : null,
+                    JitterMs = jitter.HasValue ? Math.Round(jitter.Value, 1) : null,
+                    LossPct = loss.HasValue ? Math.Round(loss.Value, 1) : null,
+                    DnsMs = dns.HasValue ? Math.Round(dns.Value, 1) : null,
+                    RouteHash = routeHash,
+                    EgressIp = egress,
+                    RouteChanged = routeChanged,
+                    Anomalies = anomalies
+                };
+                samples.Add(sample);
+                if (samples.Count > maxSamples) samples.RemoveAt(0);
+
+                PrintWatchSampleLine(sampleNum, sample);
+
+                // Wait the interval, but break promptly on stop / duration end.
+                for (int w = 0; w < interval * 10 && !stop; w++)
+                {
+                    if (duration > 0 && startSw.Elapsed.TotalSeconds >= duration) break;
+                    await Task.Delay(100);
+                }
+            }
+        }
+        finally
+        {
+            if (handler != null) Console.CancelKeyPress -= handler;
+        }
+
+        // ── Verdict ──
+        int critEvents = events.Count(e => e.Severity == "critical");
+        int warnEvents = events.Count(e => e.Severity == "warning");
+        string verdict, summary;
+        if (routeChangeCount >= 2)
+        {
+            verdict = "intermittent-fault";
+            summary = $"Intermittent fault confirmed: the W365-relevant routing changed {routeChangeCount} times during the watch — the session path is flapping (typically a VPN/SWG reconnecting and reprogramming routes).";
+        }
+        else if (routeChangeCount == 1)
+        {
+            verdict = "changed";
+            summary = "The W365 routing path changed once during the watch — a single transition (e.g. a VPN connecting or disconnecting). Review the timeline for the correlated context event.";
+        }
+        else if (critEvents > 0)
+        {
+            verdict = "degraded";
+            summary = $"Transport quality degraded during the watch ({critEvents} critical, {warnEvents} warning events) although the W365 route stayed stable.";
+        }
+        else if (warnEvents > 0)
+        {
+            verdict = "warning";
+            summary = $"Minor variability observed ({warnEvents} warning events); the W365 route stayed stable throughout.";
+        }
+        else
+        {
+            verdict = "stable";
+            summary = $"Stable for the full watch ({samples.Count} samples over {FormatDuration(startSw.Elapsed)}). No route changes or quality anomalies.";
+        }
+
+        var output = new WatchOutput
+        {
+            Timestamp = start,
+            EndTimestamp = DateTime.UtcNow,
+            ScannerVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
+            MachineName = Environment.MachineName,
+            OsVersion = Environment.OSVersion.ToString(),
+            ScanMode = _isCloudPcMode ? "cloudpc" : "client",
+            HostType = _isCloudPcMode ? (_hostType ?? "cloudpc") : null,
+            AzureRegion = _isCloudPcMode ? _azureVmRegion : null,
+            GatewayHost = gatewayHost,
+            StunHost = stunHost,
+            IntervalSeconds = interval,
+            RequestedDurationSeconds = _watchDurationSeconds,
+            RouteChangeCount = routeChangeCount,
+            Verdict = verdict,
+            Summary = summary,
+            Samples = samples,
+            Events = events
+        };
+
+        await WriteWatchTimeline(output);
+        PrintWatchSummary(output);
+        await OpenBrowserWithWatch(output);
+    }
+
+    /// <summary>Per-sample environment fingerprint used to detect context changes.</summary>
+    readonly record struct EnvFingerprint(string VpnAdapters, string DefaultGateways, string DnsServers, string Adapters);
+
+    static EnvFingerprint CaptureEnvFingerprint()
+    {
+        var vpn = new List<string>();
+        var gws = new SortedSet<string>(StringComparer.Ordinal);
+        var dns = new SortedSet<string>(StringComparer.Ordinal);
+        var adapters = new SortedSet<string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                var props = ni.GetIPProperties();
+                var v4 = props.UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.Address.ToString()).ToList();
+                if (v4.Count == 0) continue;
+                adapters.Add(ni.Name);
+                bool isVpn = ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel
+                    || ni.NetworkInterfaceType == NetworkInterfaceType.Ppp
+                    || Regex.IsMatch(ni.Name + " " + ni.Description,
+                        "vpn|azvpn|tunnel|wireguard|zscaler|globalprotect|anyconnect|tailscale|gsa|private access|forticlient|openvpn",
+                        RegexOptions.IgnoreCase);
+                if (isVpn) vpn.Add($"{ni.Name}[{string.Join(",", v4)}]");
+                foreach (var g in props.GatewayAddresses.Where(g => g.Address.AddressFamily == AddressFamily.InterNetwork))
+                    gws.Add(g.Address.ToString());
+                foreach (var d in props.DnsAddresses.Where(d => d.AddressFamily == AddressFamily.InterNetwork))
+                    dns.Add(d.ToString());
+            }
+        }
+        catch { }
+        vpn.Sort(StringComparer.Ordinal);
+        return new EnvFingerprint(
+            string.Join(",", vpn),
+            string.Join(",", gws),
+            string.Join(",", dns),
+            string.Join(",", adapters));
+    }
+
+    static async Task<double?> SampleTcpConnectRtt(IPAddress ip, int port)
+    {
+        try
+        {
+            using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            var sw = Stopwatch.StartNew();
+            var connectTask = sock.ConnectAsync(ip, port);
+            if (await Task.WhenAny(connectTask, Task.Delay(3000)) == connectTask && sock.Connected)
+            {
+                sw.Stop();
+                return sw.Elapsed.TotalMilliseconds;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Sends a short burst of STUN binding requests to measure UDP RTT, jitter,
+    /// loss, and the reflexive egress IP in a single cheap sample.
+    /// </summary>
+    static async Task<(double? rttMs, double? jitterMs, double? lossPct, string? egress)> SampleStunBurst(IPEndPoint stunEp, int count = 5)
+    {
+        var rtts = new List<double>();
+        string? egress = null;
+        int sent = 0, recv = 0;
+        try
+        {
+            using var udp = new UdpClient();
+            for (int i = 0; i < count; i++)
+            {
+                sent++;
+                var req = BuildStunRequest();
+                var sw = Stopwatch.StartNew();
+                try
+                {
+                    await udp.SendAsync(req, req.Length, stunEp);
+                    using var cts = new CancellationTokenSource(600);
+                    var res = await udp.ReceiveAsync(cts.Token);
+                    sw.Stop();
+                    recv++;
+                    rtts.Add(sw.Elapsed.TotalMilliseconds);
+                    var mapped = ParseStunMappedAddress(res.Buffer);
+                    if (mapped != null) egress = mapped.Split(':')[0];
+                }
+                catch { /* lost / timed out */ }
+                await Task.Delay(15);
+            }
+        }
+        catch { }
+        if (sent == 0) return (null, null, null, null);
+        double loss = 100.0 * (sent - recv) / sent;
+        double? mean = rtts.Count > 0 ? rtts.Average() : null;
+        double? jitter = null;
+        if (rtts.Count >= 2)
+        {
+            double s = 0;
+            for (int i = 1; i < rtts.Count; i++) s += Math.Abs(rtts[i] - rtts[i - 1]);
+            jitter = s / (rtts.Count - 1);
+        }
+        return (mean, jitter, loss, egress);
+    }
+
+    static async Task<double?> SampleDnsResolve(string host)
+    {
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            var addrs = await Dns.GetHostAddressesAsync(host);
+            sw.Stop();
+            return addrs.Length > 0 ? sw.Elapsed.TotalMilliseconds : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Hashes ONLY the W365-relevant routes (default route, the 40.64.0.0/13
+    /// supernet, the 40.64.144.0/20 and 51.5.0.0/16 exclusions, and the resolved
+    /// gateway /32). This isolates the signal that actually affects the session
+    /// from unrelated route-table churn.
+    /// </summary>
+    static string SampleRelevantRouteFingerprint(uint? gatewayIp)
+    {
+        try
+        {
+            // Read the IPv4 forwarding table via the in-process Win32 API rather than
+            // spawning `route print -4`. On some machines `route.exe` blocks for ~25s,
+            // which would consume the entire sample interval; GetIpForwardTable returns
+            // in well under a millisecond and never spawns a process.
+            var routes = EnumerateForwardRoutesFast();
+            if (routes.Count == 0) return "unknown";
+
+            var targets = new (uint net, int len)[]
+            {
+                (IpToUint32(IPAddress.Parse("40.64.0.0")), 13),
+                (IpToUint32(IPAddress.Parse("40.64.144.0")), 20),
+                (IpToUint32(IPAddress.Parse("51.5.0.0")), 16),
+            };
+
+            var relevant = new List<string>();
+            foreach (var r in routes)
+            {
+                bool keep = r.prefixLen == 0; // default route
+                if (!keep)
+                    foreach (var (net, len) in targets)
+                        if (CidrsOverlap(r.dest, r.prefixLen, net, len)) { keep = true; break; }
+                if (!keep && gatewayIp.HasValue)
+                {
+                    uint mask = r.prefixLen == 0 ? 0 : 0xFFFFFFFF << (32 - r.prefixLen);
+                    if ((gatewayIp.Value & mask) == r.dest) keep = true;
+                }
+                if (keep)
+                    relevant.Add($"{r.destStr}/{r.prefixLen} via {r.gateway} dev {r.ifIp} m{r.metric}");
+            }
+            relevant.Sort(StringComparer.Ordinal);
+            var canonical = string.Join("\n", relevant);
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+            return hash[..12];
+        }
+        catch { return "unknown"; }
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MIB_IPFORWARDROW
+    {
+        public uint dwForwardDest;
+        public uint dwForwardMask;
+        public uint dwForwardPolicy;
+        public uint dwForwardNextHop;
+        public uint dwForwardIfIndex;
+        public uint dwForwardType;
+        public uint dwForwardProto;
+        public uint dwForwardAge;
+        public uint dwForwardNextHopAS;
+        public uint dwForwardMetric1;
+        public uint dwForwardMetric2;
+        public uint dwForwardMetric3;
+        public uint dwForwardMetric4;
+        public uint dwForwardMetric5;
+    }
+
+    [System.Runtime.InteropServices.DllImport("iphlpapi.dll", SetLastError = true)]
+    private static extern int GetIpForwardTable(IntPtr pIpForwardTable, ref int pdwSize, bool bOrder);
+
+    /// <summary>
+    /// Reads the IPv4 forwarding table directly via the Win32 IP Helper API.
+    /// Returns the same <see cref="RouteEntry"/> shape as <c>ParseRouteTable</c> so it
+    /// can be a drop-in source, but with no process spawn (sub-millisecond) — used by
+    /// the Session Watch sampler where <c>route.exe</c>'s occasional ~25s stalls would
+    /// otherwise dominate the sample interval.
+    /// </summary>
+    static List<RouteEntry> EnumerateForwardRoutesFast()
+    {
+        var result = new List<RouteEntry>();
+        int size = 0;
+        // First call sizes the buffer (returns ERROR_INSUFFICIENT_BUFFER).
+        GetIpForwardTable(IntPtr.Zero, ref size, true);
+        if (size == 0) return result;
+        IntPtr buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(size);
+        try
+        {
+            if (GetIpForwardTable(buffer, ref size, true) != 0) return result; // 0 == NO_ERROR
+            int numEntries = System.Runtime.InteropServices.Marshal.ReadInt32(buffer);
+
+            // Map interface index -> primary IPv4 address so the canonical route string
+            // matches the "dev <ifIp>" form used by the route-print parser.
+            var ifMap = new Dictionary<uint, string>();
+            try
+            {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    try
+                    {
+                        var props = ni.GetIPProperties();
+                        var v4p = props.GetIPv4Properties();
+                        if (v4p == null) continue;
+                        var addr = props.UnicastAddresses
+                            .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+                        if (addr != null) ifMap[(uint)v4p.Index] = addr.Address.ToString();
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            int rowSize = System.Runtime.InteropServices.Marshal.SizeOf<MIB_IPFORWARDROW>();
+            IntPtr rowPtr = buffer + 4; // skip the leading dwNumEntries field
+            for (int i = 0; i < numEntries; i++)
+            {
+                var row = System.Runtime.InteropServices.Marshal.PtrToStructure<MIB_IPFORWARDROW>(rowPtr + i * rowSize);
+                uint dest = IpToUint32(new IPAddress(row.dwForwardDest));
+                uint mask = IpToUint32(new IPAddress(row.dwForwardMask));
+                int prefixLen = MaskToPrefixLen(mask);
+                string gateway = Uint32ToIp(IpToUint32(new IPAddress(row.dwForwardNextHop)));
+                ifMap.TryGetValue(row.dwForwardIfIndex, out var ifIp);
+                result.Add(new RouteEntry(dest, prefixLen, gateway, ifIp ?? "", (int)row.dwForwardMetric1, Uint32ToIp(dest)));
+            }
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer);
+        }
+        return result;
+    }
+
+    static bool CidrsOverlap(uint a, int aLen, uint b, int bLen)
+    {
+        int minLen = Math.Min(aLen, bLen);
+        uint mask = minLen == 0 ? 0 : 0xFFFFFFFF << (32 - minLen);
+        return (a & mask) == (b & mask);
+    }
+
+    static double Median(List<double> xs)
+    {
+        if (xs.Count == 0) return 0;
+        var s = xs.OrderBy(x => x).ToList();
+        int n = s.Count;
+        return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2.0;
+    }
+
+    static string FormatDuration(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours}h{t.Minutes}m"
+        : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes}m{t.Seconds}s"
+        : $"{t.Seconds}s";
+
+    static string DescribeChange(string what, string before, string after)
+    {
+        if (string.IsNullOrEmpty(before) && !string.IsNullOrEmpty(after)) return $"{what} appeared: {after}";
+        if (!string.IsNullOrEmpty(before) && string.IsNullOrEmpty(after)) return $"{what} disappeared: {before}";
+        return $"{what} changed: '{before}' → '{after}'";
+    }
+
+    static void PrintWatchSampleLine(int n, WatchSample s)
+    {
+        var parts = new List<string>
+        {
+            $"#{n,-4}{s.ElapsedSeconds,6:F0}s",
+            s.GatewayRttMs.HasValue ? $"gw {s.GatewayRttMs.Value,5:F0}ms" : "gw   --  ",
+            s.StunRttMs.HasValue   ? $"udp {s.StunRttMs.Value,4:F0}ms" : "udp  -- ",
+            s.JitterMs.HasValue    ? $"jit {s.JitterMs.Value,3:F0}ms" : "jit -- ",
+            s.LossPct.HasValue     ? $"loss {s.LossPct.Value,3:F0}%" : "loss --",
+            s.DnsMs.HasValue       ? $"dns {s.DnsMs.Value,4:F0}ms" : "dns  -- ",
+        };
+        var line = "  " + string.Join("  ", parts);
+        if (s.RouteChanged)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            line += "  ⚠ ROUTE CHANGED";
+        }
+        else if (s.Anomalies.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            line += "  ⚠ " + string.Join(",", s.Anomalies);
+        }
+        Console.WriteLine(line);
+        Console.ResetColor();
+    }
+
+    static void PrintWatchSummary(WatchOutput o)
+    {
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.WriteLine("  SESSION WATCH SUMMARY");
+        Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.ResetColor();
+        Console.WriteLine($"  Samples:        {o.Samples.Count}  (every {o.IntervalSeconds}s)");
+        Console.WriteLine($"  Route changes:  {o.RouteChangeCount}");
+        Console.WriteLine($"  Events:         {o.Events.Count}");
+        var color = o.Verdict switch
+        {
+            "intermittent-fault" => ConsoleColor.Red,
+            "degraded" => ConsoleColor.Red,
+            "changed" => ConsoleColor.Yellow,
+            "warning" => ConsoleColor.Yellow,
+            _ => ConsoleColor.Green
+        };
+        Console.ForegroundColor = color;
+        Console.WriteLine($"  Verdict:        {o.Verdict.ToUpperInvariant()}");
+        Console.ResetColor();
+        Console.WriteLine($"  {o.Summary}");
+        Console.WriteLine();
+    }
+
+    static async Task WriteWatchTimeline(WatchOutput output)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(output, ScanJsonContext.Default.WatchOutput);
+            const string path = "W365WatchTimeline.json";
+            await File.WriteAllTextAsync(path, json, Encoding.UTF8);
+            Console.WriteLine($"  Watch timeline saved to: {Path.GetFullPath(path)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Could not write watch timeline: {ex.Message}");
+        }
+    }
+
+    static async Task OpenBrowserWithWatch(WatchOutput output)
+    {
+        var json = JsonSerializer.Serialize(output, ScanJsonContext.Default.WatchOutput);
+        try
+        {
+            byte[] compressed;
+            using (var ms = new MemoryStream())
+            {
+                using (var deflate = new DeflateStream(ms, CompressionLevel.SmallestSize))
+                {
+                    deflate.Write(Encoding.UTF8.GetBytes(json));
+                }
+                compressed = ms.ToArray();
+            }
+            var b64 = Convert.ToBase64String(compressed)
+                .Replace('+', '-')
+                .Replace('/', '_')
+                .TrimEnd('=');
+
+            var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&view=watch";
+            var hashUrl = $"{baseUrl}#zwatch={b64}";
+
+            Console.WriteLine($"  Opening Watch timeline in browser...");
+
+            bool opened = false;
+            try
+            {
+                var browserPath = GetDefaultBrowserPath();
+                if (!string.IsNullOrEmpty(browserPath) && File.Exists(browserPath))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = browserPath,
+                        Arguments = hashUrl,
+                        UseShellExecute = false
+                    });
+                    opened = true;
+                }
+            }
+            catch { }
+
+            if (!opened)
+            {
+                try
+                {
+                    var redirectHtml = $@"<!DOCTYPE html>
+<html><head><title>Opening W365 Watch...</title></head>
+<body><p>Redirecting to Watch timeline...</p>
+<script>window.location.replace({EscapeJsString(hashUrl)});</script>
+<p><a href=""{System.Security.SecurityElement.Escape(hashUrl)}"">Click here if not redirected automatically</a></p>
+</body></html>";
+                    var redirectPath = Path.Combine(Path.GetTempPath(), "W365WatchRedirect.html");
+                    await File.WriteAllTextAsync(redirectPath, redirectHtml, Encoding.UTF8);
+                    Process.Start(new ProcessStartInfo { FileName = redirectPath, UseShellExecute = true });
+                    opened = true;
+                }
+                catch { }
+            }
+
+            if (!opened)
+            {
+                Console.WriteLine("  Could not auto-open the browser. Drag W365WatchTimeline.json onto the dashboard.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Could not open Watch view: {ex.Message}");
+            Console.WriteLine("  Drag W365WatchTimeline.json onto https://paulcollinge.github.io/W365ConnectivityTool/");
+        }
+    }
 }
 
 // ═══════════════════════════════════════════
@@ -10470,6 +11269,122 @@ class ScanOutput
     public List<TestResult> Results { get; set; } = [];
 }
 
+// ── Session Watch timeline models ──────────────────────────────────
+
+class WatchOutput
+{
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = "watch-timeline";
+
+    [JsonPropertyName("timestamp")]
+    public DateTime Timestamp { get; set; }
+
+    [JsonPropertyName("endTimestamp")]
+    public DateTime EndTimestamp { get; set; }
+
+    [JsonPropertyName("scannerVersion")]
+    public string ScannerVersion { get; set; } = string.Empty;
+
+    [JsonPropertyName("machineName")]
+    public string MachineName { get; set; } = string.Empty;
+
+    [JsonPropertyName("osVersion")]
+    public string OsVersion { get; set; } = string.Empty;
+
+    [JsonPropertyName("scanMode")]
+    public string ScanMode { get; set; } = "client";
+
+    [JsonPropertyName("hostType")]
+    public string? HostType { get; set; }
+
+    [JsonPropertyName("azureRegion")]
+    public string? AzureRegion { get; set; }
+
+    [JsonPropertyName("gatewayHost")]
+    public string GatewayHost { get; set; } = string.Empty;
+
+    [JsonPropertyName("stunHost")]
+    public string StunHost { get; set; } = string.Empty;
+
+    [JsonPropertyName("intervalSeconds")]
+    public int IntervalSeconds { get; set; }
+
+    [JsonPropertyName("requestedDurationSeconds")]
+    public int RequestedDurationSeconds { get; set; }
+
+    [JsonPropertyName("routeChangeCount")]
+    public int RouteChangeCount { get; set; }
+
+    [JsonPropertyName("verdict")]
+    public string Verdict { get; set; } = "stable";
+
+    [JsonPropertyName("summary")]
+    public string Summary { get; set; } = string.Empty;
+
+    [JsonPropertyName("samples")]
+    public List<WatchSample> Samples { get; set; } = [];
+
+    [JsonPropertyName("events")]
+    public List<WatchEvent> Events { get; set; } = [];
+}
+
+class WatchSample
+{
+    [JsonPropertyName("timestamp")]
+    public DateTime Timestamp { get; set; }
+
+    [JsonPropertyName("elapsedSeconds")]
+    public double ElapsedSeconds { get; set; }
+
+    [JsonPropertyName("gatewayRttMs")]
+    public double? GatewayRttMs { get; set; }
+
+    [JsonPropertyName("stunRttMs")]
+    public double? StunRttMs { get; set; }
+
+    [JsonPropertyName("jitterMs")]
+    public double? JitterMs { get; set; }
+
+    [JsonPropertyName("lossPct")]
+    public double? LossPct { get; set; }
+
+    [JsonPropertyName("dnsMs")]
+    public double? DnsMs { get; set; }
+
+    [JsonPropertyName("routeHash")]
+    public string RouteHash { get; set; } = string.Empty;
+
+    [JsonPropertyName("egressIp")]
+    public string? EgressIp { get; set; }
+
+    [JsonPropertyName("routeChanged")]
+    public bool RouteChanged { get; set; }
+
+    [JsonPropertyName("anomalies")]
+    public List<string> Anomalies { get; set; } = [];
+}
+
+class WatchEvent
+{
+    [JsonPropertyName("elapsedSeconds")]
+    public double ElapsedSeconds { get; set; }
+
+    [JsonPropertyName("timestamp")]
+    public DateTime Timestamp { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "info";
+
+    [JsonPropertyName("severity")]
+    public string Severity { get; set; } = "info";
+
+    [JsonPropertyName("track")]
+    public string Track { get; set; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+}
+
 class TestDefinition
 {
     public string Id { get; }
@@ -10496,6 +11411,11 @@ class TestDefinition
 [JsonSerializable(typeof(TestResult))]
 [JsonSerializable(typeof(List<TestResult>))]
 [JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(WatchOutput))]
+[JsonSerializable(typeof(WatchSample))]
+[JsonSerializable(typeof(WatchEvent))]
+[JsonSerializable(typeof(List<WatchSample>))]
+[JsonSerializable(typeof(List<WatchEvent>))]
 internal partial class ScanJsonContext : JsonSerializerContext
 {
 }

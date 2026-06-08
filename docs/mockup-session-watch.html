@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W365 Scanner — Session Watch (Concept Mockup)</title>
+<style>
+  /* ── Theme tokens lifted from docs/css/styles.css so the prototype matches the real dashboard ── */
+  :root{
+    --bg-app:#080c14; --bg-card:#0d1117; --bg-card-alt:#111820; --bg-surface:#161b22;
+    --bg-elevated:#1c2333; --bg-inset:#0a0e16; --bg-hover:#1a2030;
+    --border:rgba(240,246,252,0.06); --border-default:#21262d; --border-emphasis:#30363d;
+    --border-glow:rgba(88,166,255,0.25);
+    --text-primary:#e6edf3; --text-secondary:#8b949e; --text-muted:#7d848c; --text-link:#58a6ff;
+    --accent:#58a6ff; --accent-bright:#79c0ff; --accent-dim:#388bfd;
+    --accent-glow:rgba(56,139,253,0.15); --accent-border:rgba(56,139,253,0.4); --accent-bg:rgba(56,139,253,0.1);
+    --green:#3fb950; --green-bg:rgba(63,185,80,0.10); --green-border:rgba(63,185,80,0.30);
+    --yellow:#d29922; --yellow-bg:rgba(210,153,34,0.10); --yellow-border:rgba(210,153,34,0.30);
+    --red:#f85149; --red-bg:rgba(248,81,73,0.10); --red-border:rgba(248,81,73,0.30);
+    --shadow-card:0 2px 8px rgba(0,0,0,0.3),0 0 0 1px var(--border-default);
+    --shadow-elevated:0 8px 24px rgba(0,0,0,0.4),0 0 0 1px var(--border-emphasis);
+    --mono:"Cascadia Code",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:radial-gradient(1200px 600px at 70% -10%,rgba(56,139,253,0.08),transparent 60%),var(--bg-app);
+    color:var(--text-secondary); font-family:var(--sans); font-size:14px; line-height:1.5;
+    padding:28px 20px; min-height:100vh;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+
+  /* ── Header ── */
+  .head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
+  .head h1{font-size:1.6rem;color:var(--text-primary);font-weight:650;letter-spacing:-.02em;display:flex;align-items:center;gap:11px}
+  .head .ico{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent-dim),#1f6feb);
+    display:grid;place-items:center;color:#fff;font-size:16px;box-shadow:0 4px 14px rgba(56,139,253,.35)}
+  .head p{color:var(--text-muted);font-size:.82rem;margin-top:6px;max-width:620px}
+  .concept{font-size:.66rem;text-transform:uppercase;letter-spacing:.09em;color:var(--yellow);
+    border:1px solid var(--yellow-border);background:var(--yellow-bg);border-radius:999px;padding:4px 11px;white-space:nowrap;font-weight:600}
+
+  /* ── Control bar ── */
+  .panel{background:linear-gradient(180deg,var(--bg-card),var(--bg-card-alt));border:1px solid var(--border-default);
+    border-radius:13px;box-shadow:var(--shadow-card);padding:18px 20px;margin-bottom:18px}
+  .controls{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .ctl{display:flex;flex-direction:column;gap:5px}
+  .ctl label{font-size:.68rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted)}
+  .ctl select,.ctl .seg{background:var(--bg-inset);border:1px solid var(--border-emphasis);color:var(--text-primary);
+    border-radius:8px;padding:7px 10px;font-size:.8rem;font-family:var(--mono)}
+  .seg{display:flex;gap:2px;padding:3px}
+  .seg button{background:transparent;border:0;color:var(--text-secondary);padding:5px 11px;border-radius:6px;
+    font-size:.78rem;cursor:pointer;font-family:var(--mono)}
+  .seg button.on{background:var(--accent-bg);color:var(--accent-bright);box-shadow:inset 0 0 0 1px var(--accent-border)}
+  .spacer{flex:1}
+  .btn{border:0;border-radius:9px;padding:10px 18px;font-size:.85rem;font-weight:600;cursor:pointer;font-family:var(--sans);
+    display:inline-flex;align-items:center;gap:8px;transition:filter .15s}
+  .btn:hover{filter:brightness(1.1)}
+  .btn-primary{background:linear-gradient(180deg,var(--accent),var(--accent-dim));color:#fff;box-shadow:0 4px 16px rgba(56,139,253,.35)}
+  .btn-ghost{background:var(--bg-surface);color:var(--text-secondary);box-shadow:inset 0 0 0 1px var(--border-default)}
+
+  /* ── Live status strip ── */
+  .status{display:flex;gap:14px;flex-wrap:wrap;margin-top:16px}
+  .stat{flex:1;min-width:130px;background:var(--bg-inset);border:1px solid var(--border-default);border-radius:10px;padding:11px 13px}
+  .stat .k{font-size:.66rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted)}
+  .stat .v{font-size:1.25rem;color:var(--text-primary);font-family:var(--mono);margin-top:3px;font-weight:600}
+  .stat .v small{font-size:.7rem;color:var(--text-muted);font-weight:400}
+  .pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:7px;
+    box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:pulse 1.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)}70%{box-shadow:0 0 0 7px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+
+  /* ── Verdict banner ── */
+  .verdict{display:flex;align-items:center;gap:13px;border-radius:11px;padding:13px 16px;margin-bottom:18px;font-size:.9rem}
+  .verdict.ok{background:var(--green-bg);border:1px solid var(--green-border);color:var(--green)}
+  .verdict.warn{background:var(--yellow-bg);border:1px solid var(--yellow-border);color:var(--yellow)}
+  .verdict.bad{background:var(--red-bg);border:1px solid var(--red-border);color:var(--red)}
+  .verdict .big{font-size:1.2rem}
+  .verdict b{color:var(--text-primary)}
+
+  /* ── Timeline tracks ── */
+  .track{display:grid;grid-template-columns:160px 1fr 86px;align-items:center;gap:14px;padding:11px 0;border-top:1px solid var(--border)}
+  .track:first-child{border-top:0}
+  .track .name{font-size:.8rem}
+  .track .name .t{color:var(--text-primary);font-weight:600;display:block}
+  .track .name .s{color:var(--text-muted);font-size:.7rem}
+  .track .now{text-align:right;font-family:var(--mono);font-size:.92rem;color:var(--text-primary)}
+  .track .now small{display:block;font-size:.64rem;color:var(--text-muted)}
+  .spark{position:relative;height:46px;background:var(--bg-inset);border-radius:8px;border:1px solid var(--border-default);overflow:hidden}
+  .spark svg{position:absolute;inset:0;width:100%;height:100%}
+  .band{position:absolute;top:0;bottom:0;background:var(--red-bg);border-left:1px solid var(--red-border);border-right:1px solid var(--red-border)}
+  .band.warn{background:var(--yellow-bg);border-color:var(--yellow-border)}
+  .threshold{position:absolute;left:0;right:0;border-top:1px dashed rgba(248,81,73,.35)}
+
+  /* ── Findings / anomaly log ── */
+  h2.sec{color:var(--text-primary);font-size:1.05rem;margin:6px 0 12px;font-weight:620;display:flex;align-items:center;gap:9px}
+  .pill{font-size:.66rem;border-radius:999px;padding:2px 9px;font-weight:600}
+  .pill.bad{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+  .find{display:flex;gap:12px;padding:13px;border-radius:10px;background:var(--bg-inset);border:1px solid var(--border-default);margin-bottom:10px}
+  .find .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none}
+  .find.bad .dot{background:var(--red)} .find.warn .dot{background:var(--yellow)} .find.info .dot{background:var(--accent)}
+  .find .body{flex:1}
+  .find .h{color:var(--text-primary);font-weight:600;font-size:.86rem;margin-bottom:3px}
+  .find .d{font-size:.8rem;color:var(--text-secondary)}
+  .find .d code{font-family:var(--mono);background:var(--bg-elevated);padding:1px 6px;border-radius:5px;color:var(--accent-bright);font-size:.76rem}
+  .find .time{font-family:var(--mono);font-size:.7rem;color:var(--text-muted);white-space:nowrap}
+  .empty{color:var(--text-muted);font-size:.82rem;text-align:center;padding:26px;font-style:italic}
+
+  .foot{margin-top:22px;text-align:center;color:var(--text-muted);font-size:.74rem;line-height:1.7}
+  .legend{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-top:8px;font-size:.72rem}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:18px;height:3px;border-radius:2px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <div>
+      <h1><span class="ico">◷</span> Session Watch</h1>
+      <p>Continuous capture of the transport-sensitive probes over a time window — catches the <b>intermittent</b> faults a single scan can't: VPN route flapping, AFD gateway re-steering, jitter bursts, DNS drift and egress changes. This is the proposed flagship feature.</p>
+    </div>
+    <span class="concept">Concept mockup · not implemented</span>
+  </div>
+
+  <!-- Control bar -->
+  <div class="panel">
+    <div class="controls">
+      <div class="ctl">
+        <label>Capture window</label>
+        <select id="window">
+          <option>2 minutes</option>
+          <option selected>5 minutes</option>
+          <option>15 minutes</option>
+          <option>Until stopped</option>
+        </select>
+      </div>
+      <div class="ctl">
+        <label>Sample every</label>
+        <div class="seg" id="interval">
+          <button>2s</button><button class="on">3s</button><button>5s</button><button>10s</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Scenario (demo)</label>
+        <select id="scenario">
+          <option value="vpn" selected>Flapping VPN (intermittent)</option>
+          <option value="clean">Healthy / stable</option>
+          <option value="afd">AFD gateway re-steering</option>
+        </select>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" id="startBtn">▶ Start capture</button>
+      <button class="btn btn-ghost" id="resetBtn">Reset</button>
+    </div>
+
+    <div class="status">
+      <div class="stat"><div class="k">State</div><div class="v" id="stState"><span style="color:var(--text-muted)">idle</span></div></div>
+      <div class="stat"><div class="k">Elapsed</div><div class="v" id="stElapsed">0:00 <small>/ 5:00</small></div></div>
+      <div class="stat"><div class="k">Samples</div><div class="v" id="stSamples">0</div></div>
+      <div class="stat"><div class="k">Anomalies</div><div class="v" id="stAnoms" style="color:var(--text-primary)">0</div></div>
+      <div class="stat"><div class="k">Route changes</div><div class="v" id="stRoutes">0</div></div>
+    </div>
+  </div>
+
+  <!-- Verdict -->
+  <div class="verdict ok" id="verdict">
+    <span class="big">◷</span>
+    <div>Press <b>Start capture</b> to begin watching. The demo replays a real-world pattern so you can see what the timeline surfaces.</div>
+  </div>
+
+  <!-- Timeline -->
+  <div class="panel">
+    <h2 class="sec">Live timeline</h2>
+    <div id="tracks"></div>
+    <div class="legend">
+      <span><i style="background:var(--accent)"></i> metric</span>
+      <span><i style="background:var(--red-border)"></i> anomaly window</span>
+      <span><i style="border-top:1px dashed var(--red);width:18px"></i> threshold</span>
+    </div>
+  </div>
+
+  <!-- Findings -->
+  <div class="panel">
+    <h2 class="sec">Detected over time <span class="pill bad" id="findCount" style="display:none">0</span></h2>
+    <div id="findings"><div class="empty">No anomalies yet — findings appear here as the capture runs.</div></div>
+  </div>
+
+  <div class="foot">
+    Visual concept only — nothing here is wired to the scanner engine. It illustrates a proposed <code>--watch</code> CLI mode plus this dashboard view,
+    reusing the existing gateway-RTT, jitter, UDP-loss, DNS and route-table probes on a sampling loop with a small ring buffer.<br>
+    <b>Demo data is synthetic</b> and replays a representative flapping-VPN scenario for illustration.
+  </div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────────────────────────────
+//  Prototype logic — synthetic time-series that demonstrates the value.
+//  Pure illustration; no network calls, no real probes.
+// ──────────────────────────────────────────────────────────────────────
+const TRACKS = [
+  { id:'rtt',   t:'Gateway RTT',      s:'rdgateway · TCP 443', unit:'ms',  base:34,  warn:120, bad:250, fmt:v=>Math.round(v) },
+  { id:'jit',   t:'Jitter',           s:'inter-sample variance', unit:'ms', base:6,  warn:30,  bad:60,  fmt:v=>Math.round(v) },
+  { id:'loss',  t:'UDP loss',         s:'TURN relay · 3478',  unit:'%',   base:0,   warn:2,   bad:5,   fmt:v=>v.toFixed(1) },
+  { id:'dns',   t:'DNS resolve',      s:'OS resolver',        unit:'ms',  base:28,  warn:90,  bad:160, fmt:v=>Math.round(v) },
+  { id:'route', t:'Route-table hash', s:'W365 prefixes · LPM',unit:'',    base:0,   warn:1,   bad:1,   fmt:v=>v? '⚠ changed':'stable', isRoute:true },
+  { id:'egr',   t:'Egress IP',        s:'public reflexive',   unit:'',    base:0,   isEgress:true },
+];
+const MAXPTS = 80;
+let timer=null, t=0, samples=0, anoms=0, routeChanges=0, intervalS=3, windowS=300, scenario='vpn';
+const series={}; TRACKS.forEach(k=>series[k.id]=[]);
+const bands={}; TRACKS.forEach(k=>bands[k.id]=[]);
+const findings=[];
+let routeState=0, egrState=0, lastRouteFlip=-999;
+const EGRESS=['203.0.113.40','203.0.113.40','100.66.96.75 (tunnel)','100.80.96.254 (tunnel)'];
+
+// Build track DOM
+const tracksEl=document.getElementById('tracks');
+TRACKS.forEach(k=>{
+  const row=document.createElement('div'); row.className='track'; row.dataset.id=k.id;
+  row.innerHTML=`<div class="name"><span class="t">${k.t}</span><span class="s">${k.s}</span></div>
+    <div class="spark" id="sp-${k.id}"><svg viewBox="0 0 100 46" preserveAspectRatio="none"><path id="ln-${k.id}" fill="none" stroke="var(--accent)" stroke-width="1.4"/></svg></div>
+    <div class="now"><span id="nv-${k.id}">—</span><small>${k.unit||''}</small></div>`;
+  tracksEl.appendChild(row);
+});
+
+// Scenario sample generator
+function nextSample(){
+  const time=t;
+  // ── route flap schedule (VPN reconnect ~ every 28s in demo) ──
+  let routeFlipNow=false;
+  if(scenario==='vpn'){
+    if(time>0 && time%28<intervalS && time-lastRouteFlip>10){ routeState^=1; routeFlipNow=true; lastRouteFlip=time; egrState=routeState?2+(routeChanges%2):0; }
+  } else if(scenario==='afd'){
+    if(time>0 && time%40<intervalS && time-lastRouteFlip>10){ routeState=0; routeFlipNow=true; lastRouteFlip=time; }
+  }
+  const inTunnel = scenario==='vpn' && routeState===1;
+  const afdFar   = scenario==='afd' && (Math.floor(time/40)%2===1);
+
+  const jitterBurst = (scenario!=='clean') && (Math.random()<(inTunnel?0.5:0.06));
+  const v={};
+  v.rtt = TRACKS[0].base + (inTunnel?180:afdFar?160:0) + (Math.random()*14-7) + (jitterBurst?Math.random()*120:0);
+  v.jit = TRACKS[1].base + (inTunnel?34:0) + (jitterBurst?Math.random()*55:0) + Math.random()*5;
+  v.loss= Math.max(0, TRACKS[2].base + (inTunnel?3.2:0) + (jitterBurst?Math.random()*4:0) - (scenario==='clean'?0:0));
+  v.dns = TRACKS[3].base + (scenario==='vpn'&&inTunnel?70:0) + (Math.random()*16-8);
+  v.route = routeState;
+  v.egr = egrState;
+
+  // store + bands
+  TRACKS.forEach(k=>{
+    const val = v[k.id];
+    series[k.id].push({x:time,y:k.isEgress?egrState:(k.isRoute?routeState:val)});
+    if(series[k.id].length>MAXPTS) series[k.id].shift();
+  });
+
+  // anomaly detection
+  let anomThis=[];
+  if(v.rtt>TRACKS[0].bad) anomThis.push(['rtt','bad']);
+  else if(v.rtt>TRACKS[0].warn) anomThis.push(['rtt','warn']);
+  if(v.loss>TRACKS[2].bad) anomThis.push(['loss','bad']);
+  else if(v.loss>TRACKS[2].warn) anomThis.push(['loss','warn']);
+  if(v.jit>TRACKS[1].bad) anomThis.push(['jit','bad']);
+  if(routeFlipNow) anomThis.push(['route','bad']);
+
+  anomThis.forEach(([id,sev])=>{
+    bands[id].push({x:time,sev});
+    if(bands[id].length>MAXPTS) bands[id].shift();
+  });
+  if(anomThis.length) anoms++;
+  if(routeFlipNow){
+    routeChanges++;
+    const dest = inTunnel ? 'VPN tunnel (100.64.0.0/10)' : 'direct (ISP)';
+    addFinding('bad','Route change detected — W365 prefixes re-pathed',
+      `40.64.144.0/20 / 51.5.0.0/16 now resolve via <code>${dest}</code>. ${inTunnel?'W365 RDP is traversing the VPN tunnel — Shortpath/UDP will degrade.':'Exclusion routes restored; W365 back on the direct path.'}`, time);
+  }
+  return {v,anomThis,inTunnel};
+}
+
+function addFinding(sev,h,d,time){
+  findings.unshift({sev,h,d,time:fmt(time)});
+  if(findings.length>14) findings.pop();
+  renderFindings();
+}
+
+function pathFor(id){
+  const pts=series[id]; if(!pts.length) return '';
+  const k=TRACKS.find(x=>x.id===id);
+  let lo,hi;
+  if(k.isRoute||k.isEgress){ lo=0; hi=1; }
+  else { const ys=pts.map(p=>p.y); lo=Math.min(...ys, k.base*0.6); hi=Math.max(...ys, k.warn||k.base*1.6); }
+  const span=Math.max(1,hi-lo);
+  const n=pts.length;
+  return pts.map((p,i)=>{
+    const x=(i/(MAXPTS-1))*100;
+    const y= k.isRoute||k.isEgress ? (p.y? 8 : 38) : 44-((p.y-lo)/span)*40;
+    return `${i?'L':'M'}${x.toFixed(2)},${Math.max(2,Math.min(44,y)).toFixed(2)}`;
+  }).join(' ');
+}
+
+function renderBands(id){
+  const sp=document.getElementById('sp-'+id);
+  sp.querySelectorAll('.band').forEach(b=>b.remove());
+  const list=bands[id]; if(!list.length) return;
+  const x0=series[id].length?series[id][0].x:0;
+  const x1=series[id].length?series[id][series[id].length-1].x:1;
+  const span=Math.max(1,x1-x0);
+  list.forEach(b=>{
+    const el=document.createElement('div'); el.className='band'+(b.sev==='warn'?' warn':'');
+    const left=((b.x-x0)/span)*100;
+    el.style.left=Math.max(0,left)+'%'; el.style.width=(100/MAXPTS*1.2)+'%';
+    sp.appendChild(el);
+  });
+}
+
+function render(s){
+  TRACKS.forEach(k=>{
+    document.getElementById('ln-'+k.id).setAttribute('d',pathFor(k.id));
+    renderBands(k.id);
+    const nv=document.getElementById('nv-'+k.id);
+    if(k.isEgress){ nv.textContent=EGRESS[s.v.egr]; nv.style.color=s.v.egr? 'var(--red)':'var(--text-primary)'; nv.parentElement.querySelector('small').textContent=''; }
+    else if(k.isRoute){ nv.textContent=s.v.route?'changed':'stable'; nv.style.color=s.v.route?'var(--red)':'var(--green)'; nv.parentElement.querySelector('small').textContent=''; }
+    else { const val=s.v[k.id]; nv.textContent=k.fmt(val); nv.style.color= val>k.bad?'var(--red)': val>k.warn?'var(--yellow)':'var(--text-primary)'; }
+  });
+  // status
+  document.getElementById('stElapsed').innerHTML=`${fmt(t)} <small>/ ${windowS>=99999?'∞':fmt(windowS)}</small>`;
+  document.getElementById('stSamples').textContent=samples;
+  document.getElementById('stAnoms').textContent=anoms; document.getElementById('stAnoms').style.color=anoms?'var(--red)':'var(--text-primary)';
+  document.getElementById('stRoutes').textContent=routeChanges; document.getElementById('stRoutes').style.color=routeChanges?'var(--red)':'var(--text-primary)';
+  updateVerdict();
+}
+
+function updateVerdict(){
+  const v=document.getElementById('verdict');
+  if(routeChanges>=2){
+    v.className='verdict bad';
+    v.innerHTML=`<span class="big">●</span><div><b>Intermittent fault confirmed.</b> W365 traffic flipped between the direct path and the VPN tunnel <b>${routeChanges}×</b> during this capture — a single scan would have caught only one state. Pattern matches a reconnecting VPN reprogramming its route set. <b>This is exactly what a point-in-time scan misses.</b></div>`;
+  } else if(anoms>0){
+    v.className='verdict warn';
+    v.innerHTML=`<span class="big">▲</span><div><b>${anoms} anomalies</b> observed so far — watching for a recurring pattern…</div>`;
+  } else {
+    v.className='verdict ok';
+    v.innerHTML=`<span class="big">✔</span><div>Stable so far — gateway RTT, jitter, UDP loss, DNS and routing all within thresholds across <b>${samples}</b> samples.</div>`;
+  }
+}
+
+function renderFindings(){
+  const el=document.getElementById('findings');
+  const c=document.getElementById('findCount');
+  if(!findings.length){ el.innerHTML='<div class="empty">No anomalies yet — findings appear here as the capture runs.</div>'; c.style.display='none'; return; }
+  c.style.display='inline-block'; c.textContent=findings.length;
+  el.innerHTML=findings.map(f=>`<div class="find ${f.sev}"><div class="dot"></div><div class="body"><div class="h">${f.h}</div><div class="d">${f.d}</div></div><div class="time">+${f.time}</div></div>`).join('');
+}
+
+function fmt(sec){ const m=Math.floor(sec/60), s=sec%60; return m+':'+String(s).padStart(2,'0'); }
+
+function tick(){
+  t+=intervalS; samples++;
+  const s=nextSample();
+  render(s);
+  if(windowS<99999 && t>=windowS){ stop(true); }
+}
+
+function start(){
+  reset(true);
+  const st=document.getElementById('stState'); st.innerHTML='<span class="pulse"></span>capturing'; st.style.color='var(--green)';
+  document.getElementById('startBtn').textContent='⏸ Stop'; document.getElementById('startBtn').dataset.on='1';
+  // accelerated demo clock: 1 real sec ≈ 1 sample so it's watchable
+  timer=setInterval(tick,650);
+}
+function stop(done){
+  clearInterval(timer); timer=null;
+  const st=document.getElementById('stState');
+  st.innerHTML= done? '<span style="color:var(--accent)">complete</span>' : '<span style="color:var(--text-muted)">stopped</span>';
+  document.getElementById('startBtn').textContent='▶ Start capture'; document.getElementById('startBtn').dataset.on='';
+}
+function reset(keepRun){
+  if(!keepRun){ stop(false); }
+  t=0;samples=0;anoms=0;routeChanges=0;routeState=0;egrState=0;lastRouteFlip=-999;
+  TRACKS.forEach(k=>{series[k.id]=[];bands[k.id]=[];});
+  findings.length=0; renderFindings();
+  intervalS=[2,3,5,10][[...document.querySelectorAll('#interval button')].findIndex(b=>b.classList.contains('on'))];
+  const wsel=document.getElementById('window').value;
+  windowS = wsel.startsWith('2')?120 : wsel.startsWith('5')?300 : wsel.startsWith('15')?900 : 99999;
+  scenario=document.getElementById('scenario').value;
+  document.getElementById('stElapsed').innerHTML=`0:00 <small>/ ${windowS>=99999?'∞':fmt(windowS)}</small>`;
+  document.getElementById('stSamples').textContent=0;
+  document.getElementById('stAnoms').textContent=0; document.getElementById('stAnoms').style.color='var(--text-primary)';
+  document.getElementById('stRoutes').textContent=0; document.getElementById('stRoutes').style.color='var(--text-primary)';
+  TRACKS.forEach(k=>{document.getElementById('ln-'+k.id).setAttribute('d','');document.getElementById('nv-'+k.id).textContent='—';
+    document.getElementById('sp-'+k.id).querySelectorAll('.band').forEach(b=>b.remove());});
+  if(!keepRun) updateVerdict();
+}
+
+// wiring
+document.getElementById('interval').addEventListener('click',e=>{ if(e.target.tagName==='BUTTON'){ document.querySelectorAll('#interval button').forEach(b=>b.classList.remove('on')); e.target.classList.add('on'); }});
+document.getElementById('startBtn').addEventListener('click',e=>{ if(e.currentTarget.dataset.on) stop(false); else start(); });
+document.getElementById('resetBtn').addEventListener('click',()=>reset(false));
+reset(false);
+</script>
+</body>
+</html>
