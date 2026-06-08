@@ -821,7 +821,11 @@ async function runAllBrowserTests() {
 
     // Only show download banner if no scanner results have been imported
     const hasLocalResults = allResults.some(r => r.source === 'local');
-    if (!hasLocalResults) showDownloadBanner();
+    if (!hasLocalResults) {
+        const importedIds = allResults.map(r => r.id);
+        const pendingLocal = ALL_TESTS.filter(t => t.source === 'local' && !importedIds.includes(t.id)).length;
+        showDownloadBanner(pendingLocal);
+    }
 
     btn.disabled = false;
     if (cloudPcMode) {

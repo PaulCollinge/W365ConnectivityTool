@@ -275,8 +275,15 @@ function hideProgress() {
 
 /**
  * Show or hide the download banner.
+ * @param {number} [pendingCount] number of local-only tests still awaiting the scanner
  */
-function showDownloadBanner() {
+function showDownloadBanner(pendingCount) {
+    const countEl = document.getElementById('download-banner-count');
+    if (countEl && typeof pendingCount === 'number' && pendingCount > 0) {
+        countEl.textContent = pendingCount === 1
+            ? '1 more check'
+            : `${pendingCount} more checks`;
+    }
     document.getElementById('download-banner').classList.remove('hidden');
 }
 

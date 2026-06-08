@@ -1421,20 +1421,21 @@ main {
    ════════════════════════════════════════ */
 .download-banner {
     background: var(--bg-card);
-    border: 1px solid var(--green-border);
+    border: 1px solid var(--accent-border);
     border-radius: var(--r-lg);
     padding: 28px 32px;
     margin-bottom: var(--space-section);
     position: relative;
     overflow: hidden;
+    box-shadow: 0 0 0 1px var(--accent-bg), 0 8px 28px rgba(56,139,253,0.12);
 }
 .download-banner::before {
     content: '';
     position: absolute;
     top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--green), #58d472);
-    box-shadow: 0 0 16px var(--green-border);
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-bright));
+    box-shadow: 0 0 18px var(--accent-border);
 }
 
 .download-content { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
