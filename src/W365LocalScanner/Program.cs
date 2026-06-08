@@ -9812,6 +9812,17 @@ class Program
             endpoints.Add(("168.63.129.16", 32526, healthPurpose, requiredGroup));
             endpoints.Add(("oneocsp.microsoft.com", 80, "CRL/OCSP certificate revocation", requiredGroup));
             endpoints.Add(("ctldl.windowsupdate.com", 80, "Certificate trust list updates", requiredGroup));
+            // AIK / device-attestation certificate endpoints (TCP 80). These are
+            // on the session-host required table but each is a wildcard with no
+            // canonical apex, so probe a known-good exemplar under each. Same
+            // exemplars used by the client-mode L-EP-01 check; included here so a
+            // Cloud PC / session-host scan (which runs GetCloudPcTests, not the
+            // L-* client tests) still verifies them.
+            // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
+            endpoints.Add(("www.microsoft.com", 80, "Certificates", requiredGroup));
+            endpoints.Add(("eusaikpublish.microsoftaik.azure.net", 80, "Certificates (*.microsoftaik.azure.net)", requiredGroup));
+            endpoints.Add(("eus.aikcertaia.microsoft.com", 80, "Certificates (*.aikcertaia.microsoft.com)", requiredGroup));
+            endpoints.Add(("azcsprodeusaikpublish.blob.core.windows.net", 80, "Certificates", requiredGroup));
 
             // TCP 1688
             endpoints.Add(("azkms.core.windows.net", 1688, "Windows KMS activation", requiredGroup));
