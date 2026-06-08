@@ -542,33 +542,41 @@ class Program
         PrintSummaryReport(results, includeCloud);
 
         // ── Optional continuous monitoring (Session Watch) ──
-        // Strictly opt-in via --watch. Runs AFTER the full run-once snapshot so
-        // the default path is byte-for-byte unchanged. Never alters the run-once
-        // JSON, browser tab, or the process exit code.
+        // Strictly opt-in. Runs AFTER the full run-once snapshot so the default
+        // run-once path (JSON, browser tab, exit code) is byte-for-byte unchanged.
         if (_watchEnabled)
         {
+            // Explicit --watch on the command line: honour it verbatim, no prompt.
             try { await RunWatchMode(); }
             catch (Exception ex) { Console.WriteLine($"  [watch] aborted: {ex.Message}"); }
         }
-        // ── Post-scan pivot (interactive only) ──
-        // --watch wasn't requested, but if the snapshot flagged a VPN/SWG that is
-        // intercepting or ambiguously routing W365/RDP traffic, a single point-in-time
-        // read can't distinguish a stable split-tunnel from one that flaps between
-        // runs (e.g. an always-on tunnel that reprograms its route set on each
-        // reconnect, so longest-prefix-match flips W365 between direct and tunnelled).
-        // Offer a short watch so the user can see whether it actually flaps. Opt-in
-        // (default N) and only when an interactive console exists.
-        else if (!Console.IsInputRedirected && ConnectionLooksVolatile(results, out var volatileReason))
+        else if (!Console.IsInputRedirected)
         {
-            Console.WriteLine();
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"  {volatileReason}");
-            Console.WriteLine("  A single scan can't tell a stable setup from one that flaps between runs.");
-            Console.ResetColor();
-            Console.Write("  Watch this connection for 5 minutes to check for instability? [y/N] ");
+            // Interactive console and --watch wasn't passed: offer a continuous
+            // Session Watch. Default is N, so just pressing Enter keeps today's
+            // behaviour (scan once and finish). When stdin is redirected
+            // (headless / piped / CI) this whole block is skipped, so the
+            // automated exit path is unchanged.
+            if (ConnectionLooksVolatile(results, out var volatileReason))
+            {
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  {volatileReason}");
+                Console.WriteLine("  A single scan can't tell a stable setup from one that flaps between runs.");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.WriteLine();
+                Console.WriteLine("  Session Watch can monitor this connection over time to catch");
+                Console.WriteLine("  intermittent issues a single scan misses (VPN route flapping,");
+                Console.WriteLine("  gateway re-steering, jitter/loss bursts, DNS drift, egress changes).");
+            }
+            Console.Write("  Run a continuous Session Watch now? [y/N] ");
             var answer = Console.ReadLine();
             if (answer != null && answer.Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase))
             {
+                _watchDurationSeconds = PromptWatchDuration();
                 try { await RunWatchMode(); }
                 catch (Exception ex) { Console.WriteLine($"  [watch] aborted: {ex.Message}"); }
             }
@@ -10493,11 +10501,30 @@ class Program
     }
 
     /// <summary>
-    /// Continuous monitoring loop. Runs ONLY the lightweight transport probes
-    /// (gateway TCP RTT, STUN UDP RTT/jitter/loss/egress, DNS resolve, W365 route
-    /// fingerprint) on an interval into a bounded ring buffer, detects anomalies,
-    /// writes W365WatchTimeline.json, and opens the dashboard Watch view.
+    /// Interactive prompt asking how long the continuous Session Watch should run.
+    /// Returns a duration in seconds (0 = until Ctrl+C). Reuses ParseWatchDuration
+    /// for free-form input (e.g. "10m", "90s", "until") and clamping; empty input
+    /// accepts the default (5 minutes).
     /// </summary>
+    static int PromptWatchDuration()
+    {
+        Console.WriteLine();
+        Console.WriteLine("  How long should it run?");
+        Console.WriteLine("    [1] 5 minutes   (default)");
+        Console.WriteLine("    [2] 30 minutes");
+        Console.WriteLine("    [3] Until I press Ctrl+C");
+        Console.WriteLine("    or type a duration like 10m / 90s / 2h");
+        Console.Write("  Choice [1]: ");
+        var raw = Console.ReadLine();
+        if (raw == null) return 300;
+        raw = raw.Trim();
+        if (raw.Length == 0 || raw == "1") return 300;
+        if (raw == "2") return 1800;
+        if (raw == "3") return 0;
+        // Anything else: treat as a free-form duration token (clamped 30s–8h).
+        return ParseWatchDuration(raw);
+    }
+
     // Detects whether the run-once snapshot is the kind of result a single
     // point-in-time read can't be trusted to represent — specifically a VPN/SWG
     // that is intercepting or ambiguously routing W365/RDP traffic. Used to offer
