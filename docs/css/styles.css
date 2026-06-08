@@ -1545,6 +1545,10 @@ main {
 .category.collapsed .category-header { border-bottom: none; }
 .live-diagnostics-section.collapsed .test-list,
 .live-diagnostics-section.collapsed .live-info-bar { display: none; }
+/* Keep the Cloud PC Diagnostics guidance visible even when collapsed, so the
+   "run on your Cloud PC / Session host" call-to-action is always seen.
+   (Hidden on the CPC side via inline display:none set in cloudPcMode.) */
+#cloudpc-diagnostics-section.collapsed .live-info-bar { display: flex; }
 .live-diagnostics-section.collapsed .live-header { border-bottom: none; }
 .live-header { cursor: pointer; user-select: none; }
 .live-header:hover { filter: brightness(1.08); }
