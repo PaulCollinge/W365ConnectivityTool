@@ -38,6 +38,13 @@ class Program
     static int _watchDurationSeconds = 300; // 0 = until stopped (Ctrl+C)
     static int _watchIntervalSeconds = 3;   // seconds between samples
 
+    // ── Headless mode (--no-browser): strictly opt-in, default OFF.
+    //    Runs every test and writes W365ScanResults.json exactly as normal, but
+    //    suppresses the automatic browser tab. Intended for unattended/agent
+    //    invocations (RDAgent on Cloud PC / Session Host) that consume the JSON
+    //    directly. The default interactive behaviour is unchanged. ──
+    static bool _noBrowser = false;
+
     // ── Compressed, base64url-encoded run-once snapshot payload (the same
     //    #zresults= blob OpenBrowserWithResults embeds in the snapshot tab).
     //    Cached here so that when Session Watch completes and opens its own
@@ -166,6 +173,11 @@ class Program
                     ? a.Split('=', 2)[1]
                     : (i + 1 < args.Length && !args[i + 1].StartsWith("-") ? args[i + 1] : null);
                 _watchIntervalSeconds = ParseWatchInterval(val);
+            }
+            else if (a.Equals("--no-browser", StringComparison.OrdinalIgnoreCase)
+                  || a.Equals("--headless", StringComparison.OrdinalIgnoreCase))
+            {
+                _noBrowser = true;
             }
         }
 
@@ -539,12 +551,15 @@ class Program
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("  ────────────────────────────────────────────────────");
-        Console.WriteLine("  All tests complete — opening results in browser...");
+        Console.WriteLine(_noBrowser
+            ? "  All tests complete — results written (headless mode, browser suppressed)"
+            : "  All tests complete — opening results in browser...");
         Console.WriteLine("  ────────────────────────────────────────────────────");
         Console.ResetColor();
 
         await WriteResultsJson(outputPath, results);
-        await OpenBrowserWithResults(outputPath, results);
+        if (!_noBrowser)
+            await OpenBrowserWithResults(outputPath, results);
 
         // Print executive summary report
         PrintSummaryReport(results, includeCloud);

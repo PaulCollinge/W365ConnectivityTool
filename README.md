@@ -26,6 +26,16 @@ Run it — results automatically open in your browser.
 
 The dashboard is at [**paulcollinge.github.io/W365ConnectivityTool**](https://paulcollinge.github.io/W365ConnectivityTool/). The scanner opens this automatically, but you can also visit it directly to run browser-side tests.
 
+## Command-line options
+
+| Flag | Effect |
+|------|--------|
+| `<path>` | Write results to a custom JSON path (default `W365ScanResults.json`). Local paths only — no UNC or `..`. |
+| `--no-browser` (`--headless`) | Run all tests and write the JSON, but do **not** open the browser. For unattended / agent (RDAgent) use on Cloud PC / Session Host. |
+| `--cloudpc` / `--avd` | Force host mode when Azure IMDS auto-detection is blocked. |
+| `--watch [5m\|300s\|until-stopped]` | Continuous Session Watch monitoring after the one-shot snapshot (opt-in). |
+| `--interval [Ns]` | Sampling interval for `--watch` (default 3s, clamped 2–60s). |
+
 ## Verify the download
 
 Every release includes a **SHA256 checksum** in the [release notes](https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest) and is built with [GitHub artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) (SLSA provenance).
