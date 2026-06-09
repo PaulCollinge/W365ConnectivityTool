@@ -925,7 +925,7 @@ class Program
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine("  \u26A0 Location pairing may not be optimal:");
                 if (gwConcern)
-                    Console.WriteLine($"    Gateway in {gwLocation} — consider checking VPN/proxy routing");
+                    Console.WriteLine($"    Gateway in {gwLocation} — AFD steered you to a non-local gateway (nearest region(s) likely at capacity at connect time; service-side, usually transient)");
                 if (turnConcern)
                     Console.WriteLine($"    TURN relay (DNS) in {turnLocation} — indicates non-local DNS resolvers (does not affect session — TURN is assigned by gateway via CRLB)");
                 Console.ResetColor();
