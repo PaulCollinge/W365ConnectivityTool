@@ -57,6 +57,8 @@ gh attestation verify W365LocalScanner.exe --repo PaulCollinge/W365ConnectivityT
 - No telemetry, no tracking, no external servers
 - Dashboard runs entirely client-side on GitHub Pages
 - Full source code is in this repo
+- Your public IP address is sent to third-party GeoIP providers (ipinfo.io, ipapi.co, ipwho.is, geojs.io, freeipapi.com) and a reverse-geocoder (Nominatim) to estimate approximate location for network-path analysis — see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)
+- Microsoft [Privacy Statement](https://privacy.microsoft.com/privacystatement)
 
 ## Project Structure
 
