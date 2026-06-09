@@ -6450,13 +6450,17 @@ class Program
 
     /// <summary>
     /// Extracts the Azure region code from an RDP gateway FQDN.
-    /// e.g. "rdgateway-c221-UKS-r1.wvd.microsoft.com" → "UKS"
+    /// The region code is the short alpha token immediately before the "-rN" role
+    /// suffix. Handles BOTH the classic format and the newer host-pool format:
+    ///   rdgateway-c221-UKS-r1.wvd.microsoft.com           → UKS
+    ///   rdgateway-host-green-c220-weu-r1.wvd...           → WEU  (verified live)
+    /// The cluster token (c220) can't match (no 2+ leading letters) and the longer
+    /// middle tokens (host, green) aren't immediately followed by "-rN".
     /// </summary>
     static string? ExtractRegionFromGatewayFqdn(string fqdn)
     {
-        // Pattern: rdgateway-XXXX-REGION-rN.wvd.microsoft.com
         var m = System.Text.RegularExpressions.Regex.Match(
-            fqdn, @"rdgateway-[^-]+-([A-Za-z]+\d*)-r\d+",
+            fqdn, @"rdgateway[\w-]*?-([A-Za-z]{2,4}\d?)-r\d+(?:\.|$)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         return m.Success ? m.Groups[1].Value.ToUpperInvariant() : null;
     }
@@ -8141,14 +8145,26 @@ class Program
                             sb.AppendLine($"Gateway coordinates: {gwLat:F4}, {gwLon:F4}");
                             sb.AppendLine($"Distance from egress: {FormatDistance(distKm)}");
 
-                            if (distKm > 1500)
+                            // The RD gateway is chosen by Azure Front Door from live GLOBAL
+                            // gateway load/latency, keyed off the client's egress — it is NOT
+                            // a function of the user's VPN/routing (that shows up as egress far
+                            // from the device) nor the Cloud PC region. A non-local gateway
+                            // therefore points at the service side: the nearest region(s) were
+                            // most likely at capacity / shedding load at connect time.
+                            bool gwCrossCountry = !string.IsNullOrWhiteSpace(gwCountry)
+                                && !string.IsNullOrWhiteSpace(userCountry)
+                                && !gwCountry.Equals(userCountry, StringComparison.OrdinalIgnoreCase);
+                            if (distKm > 1500 || (gwCrossCountry && distKm > 1000))
                             {
-                                sb.AppendLine("⚠ Gateway is far from your egress location — possible traffic backhauling.");
-                                sb.AppendLine("  RDP traffic may be exiting through a remote corporate network or VPN.");
+                                sb.AppendLine($"⚠ AFD selected a gateway {FormatDistance(distKm)} from your egress" +
+                                    (gwCrossCountry ? $" (gateway in {gwCountry}, egress in {userCountry})." : "."));
+                                sb.AppendLine("  AFD picks the optimal gateway from live global load/latency; a non-local");
+                                sb.AppendLine("  choice usually means your nearest region(s) were at capacity at connect time.");
+                                sb.AppendLine("  Service-side and typically transient — re-running later may pick a closer gateway.");
                             }
                             else
                             {
-                                sb.AppendLine("✓ Gateway is near your egress location — traffic appears to egress locally.");
+                                sb.AppendLine("✓ AFD selected a gateway near your egress location.");
                             }
                         }
                     }
@@ -8785,10 +8801,21 @@ class Program
                                         var distKm = HaversineDistanceKm(userLat, userLon, gwLat, gwLon);
                                         sb.AppendLine($"    Gateway coordinates: {gwLat:F4}, {gwLon:F4}");
                                         sb.AppendLine($"    Distance from egress: {FormatDistance(distKm)}");
-                                        if (distKm > 1500)
+                                        // The gateway is AFD-selected from live GLOBAL gateway load/latency,
+                                        // keyed off the egress — NOT the user's VPN/routing or the CPC region.
+                                        // A non-local choice means the nearest region(s) were most likely at
+                                        // capacity / shedding load at connect time (service-side, transient).
+                                        bool gwCrossCountry = !string.IsNullOrWhiteSpace(gwCountry)
+                                            && !string.IsNullOrWhiteSpace(userCountry)
+                                            && !gwCountry.Equals(userCountry, StringComparison.OrdinalIgnoreCase);
+                                        if (distKm > 1500 || (gwCrossCountry && distKm > 1000))
                                         {
-                                            sb.AppendLine($"    ⚠ Gateway is far from your egress location — possible suboptimal routing");
-                                            issues.Add($"Gateway is {FormatDistance(distKm)} from your egress location");
+                                            sb.AppendLine($"    ⚠ AFD selected a gateway {FormatDistance(distKm)} from your egress" +
+                                                (gwCrossCountry ? $" (gateway in {gwCountry}, egress in {userCountry})." : "."));
+                                            sb.AppendLine($"      AFD picks the optimal gateway from live global load/latency; a non-local");
+                                            sb.AppendLine($"      choice usually means your nearest region(s) were at capacity at connect time.");
+                                            sb.AppendLine($"      Service-side and typically transient — re-running later may pick a closer gateway.");
+                                            issues.Add($"AFD selected a non-local gateway ({FormatDistance(distKm)} from egress{(gwCrossCountry ? $", in {gwCountry}" : "")}) — likely transient load-based steering");
                                         }
                                     }
                                 }

@@ -1934,10 +1934,15 @@ function extractRdGwLocationWithProximity(detailedInfo) {
         if (stMatch && !stMatch[0].includes('GeoIP')) {
             const full = stMatch[1].trim();
             const proximity = extractLine(gwBlock[0], 'Distance from egress:') || extractLine(gwBlock[0], 'Distance from you:');
+            // New AFD load-steering framing (scanner v1.13.4+): a non-local gateway
+            // is AFD's live load-based choice, not the user's VPN/routing.
+            if (/⚠\s*AFD selected a gateway/i.test(gwBlock[0])) {
+                return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+            }
             if (/far from your (egress )?location/i.test(gwBlock[0])) {
                 return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
             }
-            if (/near your (egress )?location/i.test(gwBlock[0])) {
+            if (/AFD selected a gateway near your egress|near your (egress )?location/i.test(gwBlock[0])) {
                 return { location: full, proximity: `✔ Near · ${proximity}`.trim() };
             }
             return { location: full, proximity };
@@ -1951,10 +1956,13 @@ function extractRdGwLocationWithProximity(detailedInfo) {
     if (!locMatch) return { location: '', proximity: '' };
     const full = locMatch[1].trim();
     const proximity = extractLine(detailedInfo, 'Distance from egress:') || extractLine(detailedInfo, 'Distance from you:');
+    if (/⚠\s*AFD selected a gateway/i.test(detailedInfo)) {
+        return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+    }
     if (/far from your (egress )?location/i.test(detailedInfo)) {
         return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
     }
-    if (/near your (egress )?location/i.test(detailedInfo)) {
+    if (/AFD selected a gateway near your egress|near your (egress )?location/i.test(detailedInfo)) {
         return { location: full, proximity: `✔ Near · ${proximity}`.trim() };
     }
     return { location: full, proximity };
