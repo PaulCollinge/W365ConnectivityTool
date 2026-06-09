@@ -11189,12 +11189,16 @@ class Program
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&view=watch";
-            // Carry the run-once snapshot (if one was produced) as a query param so
-            // the watch tab's "Snapshot" sub-tab shows the full results instead of
-            // being blank. The watch timeline itself stays in the #zwatch= hash.
-            if (!string.IsNullOrEmpty(_snapshotResultsB64))
-                baseUrl += $"&zresults={_snapshotResultsB64}";
+            // BOTH payloads live in the URL HASH (the fragment after '#'), which is
+            // NEVER sent to the server — so GitHub Pages can't reject the request
+            // with HTTP 414 "URI Too Long" no matter how large the snapshot is.
+            // zwatch MUST come first so the dashboard's position-0 watch detectors
+            // (`hash.indexOf('#zwatch=')===0`) fire; the run-once snapshot is then
+            // appended as an &zresults= sub-param so the watch tab's "Snapshot"
+            // sub-tab shows the full results instead of being blank.
             var hashUrl = $"{baseUrl}#zwatch={b64}";
+            if (!string.IsNullOrEmpty(_snapshotResultsB64))
+                hashUrl += $"&zresults={_snapshotResultsB64}";
 
             Console.WriteLine($"  Opening Watch timeline in browser...");
 

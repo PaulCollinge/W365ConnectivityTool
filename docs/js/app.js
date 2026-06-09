@@ -872,11 +872,23 @@ async function checkForAutoImport() {
     const hasZResults = params.has('zresults');
     const hasHashZ = hash.startsWith('#zresults=');
     const hasHashR = hash.startsWith('#results=');
+    // The scanner's watch tab packs BOTH payloads into the hash as
+    //   #zwatch=<watch>&zresults=<snapshot>
+    // (the hash is never sent to the server, so it can't trip HTTP 414).
+    // Detect a zresults SUB-param embedded after #zwatch= so the Snapshot
+    // sub-tab is populated even though the hash doesn't START with #zresults=.
+    let hashCombinedZ = null;
+    if (!hasHashZ && !hasHashR && hash.length > 1) {
+        try {
+            const hp = new URLSearchParams(hash.substring(1));
+            if (hp.has('zresults')) hashCombinedZ = hp.get('zresults');
+        } catch { /* ignore */ }
+    }
 
-    ilog('checkForAutoImport: zresults=' + hasZResults + ' hashZ=' + hasHashZ + ' hashR=' + hasHashR);
+    ilog('checkForAutoImport: zresults=' + hasZResults + ' hashZ=' + hasHashZ + ' hashR=' + hasHashR + ' combinedZ=' + (hashCombinedZ ? 'yes' : 'no'));
     ilog('  search.length=' + window.location.search.length + ' hash.length=' + hash.length);
 
-    if (!hasZResults && !hasHashZ && !hasHashR) {
+    if (!hasZResults && !hasHashZ && !hasHashR && !hashCombinedZ) {
         ilog('No import data found in URL, skipping auto-import');
         return;
     }
@@ -908,6 +920,10 @@ async function checkForAutoImport() {
                     throw compressErr; // No fallback available, re-throw
                 }
             }
+        } else if (hashCombinedZ) {
+            ilog('combined-hash zresults: ' + hashCombinedZ.length + ' chars');
+            data = await decodeCompressedHash(hashCombinedZ);
+            source = 'hash-combined-compressed';
         } else if (hasHashZ) {
             const raw = hash.substring('#zresults='.length);
             data = await decodeCompressedHash(raw);

@@ -36,6 +36,29 @@
 
     let _rendered = false;
 
+    // ── Parse-time URL capture (race-proof) ───────────────────────────────────
+    // app.js's auto-import runs on DOMContentLoaded, decodes the appended
+    // `&zresults=` snapshot, then calls history.replaceState(pathname) which
+    // WIPES the entire hash — including our `#zwatch=` payload — before this
+    // module's own DOMContentLoaded handler can read it. Decode ordering between
+    // the two modules is async and not guaranteed, so we DON'T rely on the URL
+    // still being intact at handler time: we snapshot the watch payload NOW,
+    // synchronously, while the script is first parsed (which happens during body
+    // parse, before any DOMContentLoaded handler or async strip can fire).
+    const _bootWatchRaw = (function () {
+        try {
+            const params = new URLSearchParams(window.location.search || '');
+            if (params.has('zwatch')) return params.get('zwatch');
+            const hash = window.location.hash || '';
+            if (hash.indexOf('#zwatch=') === 0) {
+                // Hash may pack more than the watch payload (#zwatch=<w>&zresults=<s>);
+                // parse the fragment as a query string and take only our key.
+                return new URLSearchParams(hash.substring(1)).get('zwatch');
+            }
+        } catch { /* ignore */ }
+        return null;
+    })();
+
     // ── Entry points ──────────────────────────────────────────────────────────
 
     // True only when an actual watch PAYLOAD is in the URL. A bare ?view=watch
@@ -43,6 +66,9 @@
     // watch URL — it must fall through to the snapshot so the default view is
     // never locked out.
     function isWatchUrl() {
+        // Boot-time capture is authoritative: even after app.js strips the URL,
+        // a watch payload we captured at parse time means this WAS a watch URL.
+        if (_bootWatchRaw) return true;
         try {
             const params = new URLSearchParams(window.location.search);
             const hash = window.location.hash || '';
@@ -52,19 +78,12 @@
     }
 
     async function initWatchFromUrl() {
-        if (!isWatchUrl()) return;
+        // Use the payload captured at script-parse time — the live URL may already
+        // have been stripped by app.js's auto-import by the time we run here.
+        const raw = _bootWatchRaw;
+        if (!raw) return;
         // Make sure the snapshot UI is hidden even if the early class wasn't set.
         document.documentElement.classList.add('watch-mode');
-
-        let raw = null;
-        try {
-            const params = new URLSearchParams(window.location.search);
-            const hash = window.location.hash || '';
-            if (params.has('zwatch')) raw = params.get('zwatch');
-            else if (hash.indexOf('#zwatch=') === 0) raw = hash.substring('#zwatch='.length);
-        } catch { /* ignore */ }
-
-        if (!raw) { renderWatchError('No watch data found in the link. Drag W365WatchTimeline.json onto this page.'); return; }
 
         try {
             // Reuse app.js's hardened decoder (deflate-raw + zip-bomb guards).
