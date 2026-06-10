@@ -160,6 +160,78 @@ function mergeBrowserBlockedEndpointResult() {
     }
 }
 
+// Sentinel marking a B-LE-02 detail block that has already had its egress
+// GeoIP reconciled against the AFD PoP — keeps this merge idempotent across
+// the multiple render passes that call it.
+const EGRESS_GEOIP_RECONCILED_MARK = '\u24d8 Egress IP-geolocation is unreliable for this network';
+
+// Reconcile the browser ISP test's (B-LE-02 / C-LE-02) egress GeoIP against
+// the AFD PoP. The browser test geolocates the egress IP via a public GeoIP
+// provider; for enterprise/corporate ASes (whose blocks are registered to a
+// central HQ) that lookup returns the registration address, not the physical
+// breakout — e.g. a London egress on UBS AG's AS17071 resolves to Switzerland,
+// fabricating a ~769 km "GPS to egress" distance. The AFD PoP (from the
+// X-MSEdge-Ref header, NOT GeoIP) is ground truth for where traffic actually
+// breaks out. When it proves the egress is local, annotate the misleading
+// location/coordinate/distance lines as unreliable rather than presenting them
+// as fact — the ISP/Org/AS detection (the test's real job) is left intact.
+function reconcileEgressGeoIpAgainstAfdPop() {
+    try {
+        if (typeof afdPopProvesLocalEgress !== 'function') return;
+        const isp = allResults.find(r => String(r.id) === 'B-LE-02')
+            || allResults.find(r => String(r.id) === 'C-LE-02');
+        if (!isp || !isp.detailedInfo) return;
+        if (isp.detailedInfo.includes(EGRESS_GEOIP_RECONCILED_MARK)) return; // already done
+
+        const lookup = {};
+        for (const r of allResults) lookup[String(r.id)] = r;
+        if (!afdPopProvesLocalEgress(lookup)) return;
+
+        // Pull the true local breakout city from the AFD PoP line
+        // ("AFD PoP: LTS — London, UK" → "London, UK").
+        const gw = lookup['L-TCP-09'] || lookup['C-TCP-09'] || lookup['L-TCP-04'];
+        const popLine = (typeof extractLine === 'function' && gw)
+            ? extractLine(gw.detailedInfo, 'AFD PoP:') : '';
+        const popCity = (popLine.split('\u2014')[1] || popLine.split('-').slice(1).join('-') || '').trim()
+            || 'your region';
+
+        const lines = isp.detailedInfo.split('\n');
+        const out = [];
+        let annotated = false;
+        for (const line of lines) {
+            const t = line.trim();
+            if (/^Egress location:/i.test(t)) {
+                out.push(line.replace(/^(\s*)Egress location:/i, '$1Egress location (IP registry):') + ' \u2014 \u26a0 unreliable here');
+                if (!annotated) {
+                    out.push(`${EGRESS_GEOIP_RECONCILED_MARK}. This egress IP belongs to an enterprise AS whose address blocks are registered centrally, so IP-geolocation reports the registration HQ, not the physical breakout. Your traffic actually egresses via the Microsoft AFD edge in ${popCity} (see Gateway Used) — that is your true local breakout.`);
+                    annotated = true;
+                }
+            } else if (/^Egress coordinates:/i.test(t)) {
+                out.push(line.replace(/^(\s*)Egress coordinates:/i, '$1Egress coordinates (IP registry, unreliable):'));
+            } else if (/^GPS to egress:/i.test(t)) {
+                // Drop the misleading derived distance; replaced by the note above.
+                continue;
+            } else {
+                out.push(line);
+            }
+        }
+        if (!annotated) return; // nothing matched — leave untouched
+        isp.detailedInfo = out.join('\n');
+
+        // Headline: the ISP test appends a " · {city}, {country}" egress suffix
+        // (e.g. "AS17071 UBS AG · Unknown, CH"). That location is the same
+        // unreliable IP-registry value, so replace the suffix with the true
+        // AFD-edge breakout rather than leaving the wrong country in the title.
+        if (typeof isp.resultValue === 'string' && / \u00b7 /.test(isp.resultValue)) {
+            isp.resultValue = isp.resultValue.replace(/ \u00b7 .*$/, ` \u00b7 egress ${popCity} (IP-geo unreliable)`);
+        }
+
+        if (typeof updateTestUI === 'function') updateTestUI(String(isp.id), isp);
+    } catch (err) {
+        console.warn('reconcileEgressGeoIpAgainstAfdPop failed:', err);
+    }
+}
+
 // ── Environment snapshot for exported reports ──
 // Captures client context that support engineers need to interpret shared
 // results: timezone (explains timestamp skew), locale (explains UI-language
@@ -283,6 +355,8 @@ scannerChannel.onmessage = (event) => {
                 updateTestUI(br.id, br);
             }
         }
+        mergeBrowserBlockedEndpointResult();
+        reconcileEgressGeoIpAgainstAfdPop();
         updateSummary(allResults);
         updateCategoryBadges(allResults);
         updateConnectivityMap(allResults);
@@ -811,6 +885,7 @@ async function runAllBrowserTests() {
     // merge it into the freshly-created B-EP-01 card so the "run Local
     // Scanner to verify" note is replaced with the actual scanner result.
     mergeBrowserBlockedEndpointResult();
+    reconcileEgressGeoIpAgainstAfdPop();
 
     updateSummary(allResults);
     updateCategoryBadges(allResults);
@@ -1365,6 +1440,7 @@ function processImportedData(data) {
     // B-EP-01 card so users don't see the "run Local Scanner to verify" note
     // after they've already done exactly that.
     mergeBrowserBlockedEndpointResult();
+    reconcileEgressGeoIpAgainstAfdPop();
 
     // Update summary and badges
     updateSummary(allResults);
