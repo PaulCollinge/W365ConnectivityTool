@@ -857,9 +857,16 @@ function setEgressDistanceBadge(distKm) {
     // forces AFD and the RD gateway to follow the egress (suboptimal path).
     const lookup = {};
     if (Array.isArray(_lastMapResults)) for (const r of _lastMapResults) lookup[r.id] = r;
-    const measuredNear = gatewayLatencyProvesLocal(lookup);
+    const afdLocal = afdPopProvesLocalEgress(lookup);
+    const measuredNear = afdLocal || gatewayLatencyProvesLocal(lookup);
     if (distKm >= EGRESS_FAR_MIN_KM && measuredNear) {
-        el.textContent = `≈ GPS→egress ${label} (latency local)`;
+        // The egress IP geolocates far, but stronger evidence (AFD edge in the
+        // user's region, or a measured RTT below the physical floor) proves the
+        // breakout is actually local. Surface it neutrally and name the reason
+        // rather than raising a phantom "non-local breakout" alarm.
+        el.textContent = afdLocal
+            ? `≈ GPS→egress ${label} · AFD edge local (egress IP geo unreliable)`
+            : `≈ GPS→egress ${label} (latency local)`;
         el.className = 'map-card-badge proximity-moderate';
         el.classList.remove('hidden');
         return;
@@ -1092,6 +1099,10 @@ function computeEgressDistanceKm(lookup) {
 // means the AFD-selected gateway is genuinely near the user, whatever the
 // region NAME says. Needs both a distance and a measured RTT to decide.
 function gatewayLatencyProvesLocal(lookup) {
+    // GeoIP-independent proof beats physics: if the AFD edge (routing ground
+    // truth) sits in the user's region, the breakout is local whatever the
+    // egress IP geolocates to.
+    if (afdPopProvesLocalEgress(lookup)) return true;
     const distKm = computeEgressDistanceKm(lookup);
     const perRtt = gatewayPerRttUpperBoundMs(lookup);
     if (distKm == null || perRtt == null) return false;
@@ -1110,6 +1121,10 @@ function gatewayLatencyProvesLocal(lookup) {
 // excludes local adapters).
 const EGRESS_FAR_MIN_KM = 500;
 function egressGenuinelyFar(lookup) {
+    // The AFD edge is selected by Microsoft anycast to be nearest the EGRESS,
+    // so when it lands in the user's own region the breakout is provably local
+    // and any large GeoIP distance is an artefact — suppress before physics.
+    if (afdPopProvesLocalEgress(lookup)) return false;
     const distKm = computeEgressDistanceKm(lookup);
     if (distKm == null || distKm < EGRESS_FAR_MIN_KM) return false;
     const perRtt = gatewayPerRttUpperBoundMs(lookup);
@@ -1122,6 +1137,31 @@ function egressGenuinelyFar(lookup) {
     // gatewayLatencyProvesLocal(), which also requires BOTH signals.
     if (perRtt == null) return false;
     return perRtt >= hairpinFloorMs(distKm);
+}
+
+// GeoIP-INDEPENDENT proof that the internet breakout is LOCAL. Azure Front Door
+// anycast always routes to the edge nearest the EGRESS, so the AFD PoP location
+// (parsed from the X-MSEdge-Ref header, NOT from any IP-geolocation) is ground
+// truth for where traffic physically breaks out. When that PoP is in the same
+// region as the device's genuine GPS fix, the egress is provably local — even
+// if a weak GeoIP provider mislocates the egress IP. This is the classic
+// corporate-AS artefact: a bank/enterprise whose IP blocks register to a
+// foreign HQ address (e.g. AS17071 UBS AG → Switzerland) geolocates the London
+// egress 769 km away, while the AFD edge, RDP gateway region, traceroute exit
+// hop and device GPS all agree it is London. RTT physics cannot catch this
+// below ~2000 km (the light-speed floor for 769 km is only ~5 ms, well under a
+// normal 20-50 ms RTT), so the PoP-vs-device comparison is the right gate.
+function afdPopProvesLocalEgress(lookup) {
+    const user = getUserLocationContext(lookup);
+    if (!user.coords) return false;
+    const gw = lookup['L-TCP-09'] || lookup['C-TCP-09'] || lookup['L-TCP-04'];
+    if (!gw || !gw.detailedInfo) return false;
+    const popLine = extractLine(gw.detailedInfo, 'AFD PoP:');
+    if (!popLine) return false;
+    const popCoords = getServiceCoords(popLine);
+    if (!popCoords) return false;
+    const distKm = haversineDistanceKm(user.coords.lat, user.coords.lon, popCoords.lat, popCoords.lon);
+    return distKm < EGRESS_FAR_MIN_KM;
 }
 
 // RDP gateway FQDN short codes (UKW, EUS2, WEU) → full Azure region slugs
