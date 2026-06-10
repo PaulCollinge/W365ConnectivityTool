@@ -357,6 +357,21 @@ function detectUpstreamTunnel(results) {
     const distKm = gpsEgressDistanceKm(results);
     if (distKm == null || distKm < UPSTREAM_TUNNEL_MIN_KM) return false;
 
+    // GeoIP-independent proof beats the GPS→egress distance. The AFD PoP code
+    // (from the X-MSEdge-Ref header, NOT GeoIP) is ground truth for where the
+    // traffic physically breaks out, because AFD anycast always routes to the
+    // edge nearest the egress. If that PoP is local to the genuine device GPS
+    // fix, the egress IS local and the large GPS→egress distance is a
+    // corporate-AS GeoIP registration artefact (e.g. UBS AS17071 registers its
+    // London IPs to its Swiss HQ → phantom ~769 km), not a tunnel. The
+    // RTT-physics gate below cannot catch this: the light-speed floor for
+    // 769 km is only ~5 ms, trivially cleared by a normal RTT.
+    if (typeof afdPopProvesLocalEgress === 'function') {
+        const popLookup = {};
+        for (const x of results) popLookup[x.id] = x;
+        if (afdPopProvesLocalEgress(popLookup)) return false;
+    }
+
     // The distance is only meaningful if the DEVICE location is a genuine
     // on-device fix (real GPS/WiFi). An IP-derived position is computed FROM the
     // egress IP, so a "mismatch" against the egress is just two GeoIP providers
