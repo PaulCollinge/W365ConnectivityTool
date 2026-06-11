@@ -475,11 +475,13 @@ class Program
         {
             includeCloud = false;
         }
-        else if (_noBrowser || Console.IsInputRedirected)
+        else if (Console.IsInputRedirected)
         {
-            // Headless / unattended (--no-browser, or stdin redirected/piped/CI):
-            // never block on an interactive prompt. Default to running every test
-            // ("exactly as normal"); callers can still opt out with --skip-cloud.
+            // Unattended (stdin redirected / piped / CI): never block on an
+            // interactive prompt. Default to running every test ("exactly as
+            // normal"); callers can still opt out with --skip-cloud.
+            // NOTE: --no-browser does NOT skip this prompt — it only suppresses
+            // the auto-opened browser tab, so an interactive user is still asked.
             includeCloud = true;
         }
         else
@@ -587,13 +589,15 @@ class Program
             try { await RunWatchMode(); }
             catch (Exception ex) { Console.WriteLine($"  [watch] aborted: {ex.Message}"); }
         }
-        else if (!Console.IsInputRedirected && !_noBrowser)
+        else if (!Console.IsInputRedirected)
         {
             // Interactive console and --watch wasn't passed: offer a continuous
             // Session Watch. Default is N, so just pressing Enter keeps today's
             // behaviour (scan once and finish). When stdin is redirected
-            // (headless / piped / CI) or --no-browser was passed, this whole
-            // block is skipped, so the automated exit path is unchanged.
+            // (headless / piped / CI) this whole block is skipped, so the
+            // automated exit path is unchanged. --no-browser does NOT skip this
+            // offer — it only suppresses the auto-opened browser tab, so an
+            // interactive user gets the choice on every run.
             if (ConnectionLooksVolatile(results, out var volatileReason))
             {
                 Console.WriteLine();
