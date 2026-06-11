@@ -4,7 +4,18 @@ Operational handoff for the team taking this tool to official Microsoft distribu
 This page is a **pointer to facts**, not a duplicate of them — it links to the
 authoritative docs and lists the open items a new owner must action.
 
-Current scanner version: **v1.13.6** (`src/W365LocalScanner/W365LocalScanner.csproj`).
+Current scanner version: **v1.13.9** (`src/W365LocalScanner/W365LocalScanner.csproj`).
+
+## Current state (last verified 2026-06-11)
+
+- **v1.13.9** is the current correct release — build green, GitHub Release asset
+  published, `HEAD == origin/main`, working tree clean, **0 tracked build artifacts**.
+- Pre-handoff pass re-run on this version: clean Release build (0 errors), no
+  secrets, no injection surface, headless run completes ~53s with 0 stderr, and
+  the emitted `W365ScanResults.json` is valid (28 results, no duplicate/empty IDs).
+- **Identity flag:** the csproj carries `Company=Microsoft` / `Authors=Paul Collinge`
+  on a currently **unsigned** build — reconcile with the official signing identity
+  when wiring Trusted Signing (see Open items #3).
 
 ## What this is
 
