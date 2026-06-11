@@ -45,6 +45,13 @@ class Program
     //    directly. The default interactive behaviour is unchanged. ──
     static bool _noBrowser = false;
 
+    // ── Dashboard location. The ONLY runtime coupling between the scanner and
+    //    the web dashboard: the scanner opens this URL (with the results encoded
+    //    in the URL hash) after a scan. To rehost the dashboard (e.g. to an
+    //    MS-owned site), change this single value and ship a new signed release.
+    //    Trailing slash is required. ──
+    const string DashboardBaseUrl = "https://paulcollinge.github.io/W365ConnectivityTool/";
+
     // ── Compressed, base64url-encoded run-once snapshot payload (the same
     //    #zresults= blob OpenBrowserWithResults embeds in the snapshot tab).
     //    Cached here so that when Session Watch completes and opens its own
@@ -468,6 +475,13 @@ class Program
         {
             includeCloud = false;
         }
+        else if (_noBrowser || Console.IsInputRedirected)
+        {
+            // Headless / unattended (--no-browser, or stdin redirected/piped/CI):
+            // never block on an interactive prompt. Default to running every test
+            // ("exactly as normal"); callers can still opt out with --skip-cloud.
+            includeCloud = true;
+        }
         else
         {
             Console.WriteLine("  Live Connection Diagnostics (latency, jitter, frame rate, packet loss,");
@@ -573,13 +587,13 @@ class Program
             try { await RunWatchMode(); }
             catch (Exception ex) { Console.WriteLine($"  [watch] aborted: {ex.Message}"); }
         }
-        else if (!Console.IsInputRedirected)
+        else if (!Console.IsInputRedirected && !_noBrowser)
         {
             // Interactive console and --watch wasn't passed: offer a continuous
             // Session Watch. Default is N, so just pressing Enter keeps today's
             // behaviour (scan once and finish). When stdin is redirected
-            // (headless / piped / CI) this whole block is skipped, so the
-            // automated exit path is unchanged.
+            // (headless / piped / CI) or --no-browser was passed, this whole
+            // block is skipped, so the automated exit path is unchanged.
             if (ConnectionLooksVolatile(results, out var volatileReason))
             {
                 Console.WriteLine();
@@ -771,7 +785,7 @@ class Program
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var modeParam = _isCloudPcMode ? $"&mode={(_hostType ?? "cloudpc")}" : "";
-            var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}{modeParam}";
+            var baseUrl = $"{DashboardBaseUrl}?_cb={cb}{modeParam}";
             var hashUrl = $"{baseUrl}#zresults={compressedBase64}";
 
             Console.WriteLine($"  Compressed: {json.Length} \u2192 {compressed.Length} bytes (base64: {compressedBase64.Length} chars)");
@@ -836,7 +850,7 @@ class Program
         {
             Console.WriteLine($"  Error: {ex.GetType().Name}: {ex.Message}");
             Console.WriteLine($"  Could not open browser. Import the JSON file manually:");
-            Console.WriteLine($"    1. Open https://paulcollinge.github.io/W365ConnectivityTool/");
+            Console.WriteLine($"    1. Open {DashboardBaseUrl}");
             Console.WriteLine($"    2. Drag and drop {Path.GetFullPath(outputPath)} onto the page");
         }
     }
@@ -10866,7 +10880,8 @@ class Program
 
         await WriteWatchTimeline(output);
         PrintWatchSummary(output);
-        await OpenBrowserWithWatch(output);
+        if (!_noBrowser)
+            await OpenBrowserWithWatch(output);
     }
 
     /// <summary>Per-sample environment fingerprint used to detect context changes.</summary>
@@ -11230,7 +11245,7 @@ class Program
                 .TrimEnd('=');
 
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var baseUrl = $"https://paulcollinge.github.io/W365ConnectivityTool/?_cb={cb}&view=watch";
+            var baseUrl = $"{DashboardBaseUrl}?_cb={cb}&view=watch";
             // BOTH payloads live in the URL HASH (the fragment after '#'), which is
             // NEVER sent to the server — so GitHub Pages can't reject the request
             // with HTTP 414 "URI Too Long" no matter how large the snapshot is.
@@ -11287,7 +11302,7 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"  Could not open Watch view: {ex.Message}");
-            Console.WriteLine("  Drag W365WatchTimeline.json onto https://paulcollinge.github.io/W365ConnectivityTool/");
+            Console.WriteLine($"  Drag W365WatchTimeline.json onto {DashboardBaseUrl}");
         }
     }
 }
