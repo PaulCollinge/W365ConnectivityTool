@@ -36,3 +36,7 @@ W365_LatestScan.json
 
 # Build artifacts that should ship via GitHub Releases, not git
 /W365LocalScanner.exe
+
+# Internal operational handoff notes — keep private, deliver out-of-band
+HANDOFF.md
+HANDOFF.local.md
