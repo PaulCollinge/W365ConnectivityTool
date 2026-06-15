@@ -1955,6 +1955,38 @@ function extractRdGwLocationWithProximity(detailedInfo) {
     return { location: full, proximity };
 }
 
+// Detect a Secure Web Gateway / ZTNA split-egress signal from the STUN tests.
+// The route-table proxy check (L-TCP-07) is structurally BLIND to WFP/DNS-based
+// SWGs such as Microsoft Global Secure Access: GSA intercepts below the routing
+// table, so a route-only check sees W365 going "direct" and reports Passed,
+// producing a false-green "No VPN / SWG / Proxy". The authoritative tell that a
+// SWG IS present (while correctly bypassing the W365 ranges) is the STUN
+// split-egress signal that the scanner (L-UDP-05) and browser (B-UDP-02) already
+// surface. Returns { present, provider, label, title }.
+function detectSwgSplitEgress(lookup) {
+    const nat = (lookup && (lookup['L-UDP-05'] || lookup['B-UDP-02'])) || null;
+    if (!nat || nat.status === 'NotRun' || nat.status === 'Pending') return { present: false };
+    const hay = ((nat.resultValue || '') + ' ' + (nat.detailedInfo || '')).toLowerCase();
+    // Mirror the exact phrases the producers emit: scanner L-UDP-05 split-egress
+    // detail ("SWG/ZTNA agent running", "SPLIT EGRESS PATHS") and browser B-UDP-02
+    // resultValue ("multiple egress paths").
+    const SPLIT_RE = /split[\s-]egress|multiple egress paths|swg split-tunnel|swg\/ztna agent/;
+    if (!SPLIT_RE.test(hay)) return { present: false };
+    let provider = '';
+    if (/globalsecureaccess|global secure access/.test(hay)) provider = 'GSA';
+    else if (/zscaler/.test(hay)) provider = 'Zscaler';
+    else if (/netskope/.test(hay)) provider = 'Netskope';
+    else if (/forcepoint/.test(hay)) provider = 'Forcepoint';
+    else if (/iboss/.test(hay)) provider = 'iboss';
+    const name = provider || 'SWG/ZTNA';
+    return {
+        present: true,
+        provider: name,
+        label: `${name} · W365 bypasses`,
+        title: `A Secure Web Gateway / ZTNA agent (${name}) is forwarding some traffic, but the Windows 365 RDP/TURN ranges are correctly excluded — so W365 egresses directly. The route-table proxy check (L-TCP-07) cannot see WFP/DNS-based SWGs, which is why this would otherwise show "No VPN / SWG / Proxy".`
+    };
+}
+
 // ── Security Status Bar ──
 function updateMapSecurityBar(lookup) {
     const tls = lookup['L-TCP-06'];
@@ -2004,6 +2036,24 @@ function updateMapSecurityBar(lookup) {
         fail: proxy ? (proxy.resultValue || 'VPN/SWG/Proxy Detected') : '',
         pending: 'VPN / SWG / Proxy'
     });
+
+    // ── Override: GSA / SWG split-egress is invisible to the route-table check ──
+    // When the STUN split-egress signal shows a SWG IS present (correctly
+    // bypassing W365) AND the route check found nothing, relabel the chip
+    // honestly instead of asserting absence. Only overrides a clean/absent route
+    // verdict — a real route-level VPN (Failed/Warning) keeps its stronger badge.
+    const swg = detectSwgSplitEgress(lookup);
+    if (swg.present && (!proxy || proxy.status === 'Passed' || proxy.status === 'NotRun')) {
+        const pBadge = document.getElementById('sec-proxy-badge');
+        const pIcon = document.getElementById('sec-proxy-badge-icon');
+        const pText = document.getElementById('sec-proxy-badge-text');
+        if (pBadge && pIcon && pText) {
+            pIcon.textContent = 'ℹ';
+            pText.textContent = swg.label;
+            pBadge.className = 'security-badge info';
+            pBadge.title = swg.title;
+        }
+    }
 
     // Gateway proximity badge
     const gwBadge = document.getElementById('sec-gw-badge');

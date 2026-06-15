@@ -2579,6 +2579,7 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 }
 .security-badge.warn    { background: var(--yellow-bg); border-color: var(--yellow-border); color: var(--yellow); }
 .security-badge.fail    { background: var(--red-bg); border-color: var(--red-border); color: var(--red); }
+.security-badge.info    { background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent-bright); }
 .security-badge.pending { background: var(--bg-elevated); border-color: var(--border-default); color: var(--text-muted); }
 
 /* ── Legend ── */
