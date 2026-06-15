@@ -4,57 +4,17 @@
  */
 
 // ═════════════════════════════════════════════════════
-//  DoH resolver with fallback
+//  DNS-over-HTTPS resolver — DISABLED for production
 // ═════════════════════════════════════════════════════
-// Tries dns.google first, falls back to cloudflare-dns.com. Enterprise SSE
-// products (Zscaler, Netskope, iboss, Forcepoint) routinely block one or the
-// other under the "public DNS resolver" content category, so trying both
-// ASNs/vendors meaningfully improves the chance of recovering the CNAME chain
-// in locked-down networks. Returns a parsed DoH JSON object ({ Answer: [...] })
-// or null when both providers fail. Schema is identical across providers when
-// Cloudflare is called with Accept: application/dns-json.
-// Once DoH has failed outright (network/timeout, not an HTTP error) this many
-// times in a row, assume the resolvers are systematically blocked (e.g. behind
-// the Great Firewall, where both dns.google and cloudflare-dns.com are
-// unreachable) and short-circuit the remaining DoH calls for this page load.
-// Without this, every target burns the full per-provider timeout — ~10s each,
-// which turned a 6-target analysis into a ~98s hang on China hotel WiFi.
-const DOH_FAILURE_LIMIT = 2;
-let _dohConsecutiveFailures = 0;
-let _dohDisabledForRun = false;
-
-async function dohResolve(name, type = 'A', timeoutMs = 5000) {
-    // Systematically blocked earlier this run — don't keep paying the timeout.
-    if (_dohDisabledForRun) return null;
-    const providers = [
-        { url: `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`, headers: {} },
-        { url: `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`, headers: { 'Accept': 'application/dns-json' } },
-    ];
-    let anyReached = false;
-    for (const p of providers) {
-        try {
-            const resp = await fetch(p.url, {
-                headers: p.headers,
-                signal: AbortSignal.timeout(timeoutMs),
-                cache: 'no-store',
-            });
-            anyReached = true; // got an HTTP response, so the network reached the resolver
-            if (resp.ok) {
-                const data = await resp.json();
-                _dohConsecutiveFailures = 0; // success resets the blocked-network counter
-                if (data && Array.isArray(data.Answer)) return data;
-                // No Answer field but response was valid — return as-is so
-                // callers can still check Status / Authority records.
-                return data || null;
-            }
-        } catch (e) { /* network/timeout — try next provider */ }
-    }
-    // Both providers failed. Only count it as a "blocked network" signal when we
-    // never got an HTTP response at all (an HTTP error is not a block).
-    if (!anyReached) {
-        _dohConsecutiveFailures++;
-        if (_dohConsecutiveFailures >= DOH_FAILURE_LIMIT) _dohDisabledForRun = true;
-    }
+// This previously called third-party public DoH resolvers (dns.google,
+// cloudflare-dns.com) to introspect CNAME chains from the browser. A
+// Microsoft-signed production build must not send DNS lookups to non-Microsoft
+// endpoints, so DoH is disabled here and the helper is a no-op that returns
+// null. Authoritative DNS / routing analysis is performed by the Local Scanner
+// (L-TCP-05 CNAME chain, L-TCP-10 traceroute) using the OS resolver. The
+// null-guarded CNAME-parsing branches in the tests below remain dormant and can
+// be re-enabled if/when a Microsoft-hosted DoH resolver becomes available.
+async function dohResolve(/* name, type, timeoutMs */) {
     return null;
 }
 
@@ -1761,13 +1721,11 @@ async function testNetworkPathTrace(test) {
                 if (chainStr.includes('azurefd') || chainStr.includes('afd') || chainStr.includes('edgekey')) {
                     lines.push(`║  ℹ Azure Front Door / CDN routing detected`);
                 }
-            } else if (_dohDisabledForRun) {
-                lines.push(`║  DNS: DoH resolvers unreachable (blocked on this network — e.g. GFW); skipping further DoH lookups`);
             } else {
-                lines.push(`║  DNS: DoH query returned no records`);
+                lines.push(`║  DNS: run Local Scanner for CNAME chain & routing (SWG/GSA/Private Link) detection`);
             }
         } catch (e) {
-            lines.push(`║  DNS: DoH unavailable (${e.message})`);
+            lines.push(`║  DNS: routing detection unavailable (${e.message})`);
         }
 
         // Step 2: HTTPS timing (skip for UDP-only endpoints like TURN relay)

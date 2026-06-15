@@ -1430,7 +1430,9 @@ function updateMapTurnCard(lookup) {
         }
         status = worstStatus(status, sessionTurn.status);
     } else if (stunTest && stunTest.status === 'Passed') {
-        // No scanner data — do a browser-based relay geolocation via DoH + GeoIP
+        // No scanner data — browser-side relay geolocation is disabled in the
+        // production build (it required a third-party DoH resolver). Run the
+        // Local Scanner (L-UDP-04) for authoritative TURN relay location.
         geolocateTurnRelay();
     }
 
@@ -1520,71 +1522,16 @@ function updateMapTurnCard(lookup) {
 }
 
 /**
- * Browser-based TURN relay geolocation: resolves world.relay.avd.microsoft.com
- * via DoH, then uses Azure Service Tags subnet mapping for region (authoritative),
- * falling back to ipinfo.io geolocation.
- * Only called when scanner L-UDP-04 data is not available.
+ * Browser-based TURN relay geolocation — DISABLED for production.
+ *
+ * This previously resolved world.relay.avd.microsoft.com via a third-party DoH
+ * resolver (dns.google) and geolocated the relay IP via a third-party GeoIP
+ * service. A Microsoft-signed production build must not call non-Microsoft
+ * endpoints, so this fallback is now a no-op. Authoritative TURN relay location
+ * is provided by the Local Scanner (L-UDP-04 / C-UDP-04).
  */
-let _turnGeoRunning = false;
 async function geolocateTurnRelay() {
-    if (_turnGeoRunning) return;
-    _turnGeoRunning = true;
-    try {
-        // Step 1: Resolve TURN relay IP via Google DoH
-        const dnsResp = await fetch(
-            'https://dns.google/resolve?name=world.relay.avd.microsoft.com&type=A',
-            { signal: AbortSignal.timeout(5000), cache: 'no-store' }
-        );
-        if (!dnsResp.ok) return;
-        const dnsData = await dnsResp.json();
-        const aRecord = dnsData.Answer?.find(r => r.type === 1);
-        if (!aRecord) return;
-        const relayIp = aRecord.data;
-
-        // Step 2a: Try Azure Service Tags lookup (authoritative, no external call needed)
-        const azureRegion = (typeof lookupTurnRelayRegion === 'function') ? lookupTurnRelayRegion(relayIp) : null;
-        if (azureRegion) {
-            const friendly = (typeof getAzureRegionFriendlyName === 'function') ? getAzureRegionFriendlyName(azureRegion) : null;
-            const label = friendly ? `${friendly} (${azureRegion})` : azureRegion;
-            setFlaggedBadge('map-turn-loc-badge', `📍 ${label}`, 'location-badge', label);
-            checkTurnProximityAsync(label);
-            return;
-        }
-
-        // Step 2b: Fallback to GeoIP for IPs outside known Service Tags subnets
-        const geoResp = await fetch(
-            `https://ipinfo.io/${relayIp}/json`,
-            { signal: AbortSignal.timeout(5000), cache: 'no-store' }
-        );
-        if (!geoResp.ok) return;
-        const geo = await geoResp.json();
-        if (!geo.city) return;
-
-        const locStr = `${geo.city}, ${geo.region || ''}, ${geo.country || ''}`.replace(/, ,/g, ',');
-        setFlaggedBadge('map-turn-loc-badge', `📍 ${locStr}`, 'location-badge', locStr);
-        checkTurnProximityAsync(locStr);
-    } catch { /* best-effort */ }
-}
-
-/**
- * Checks TURN relay proximity after async geolocation and sets the prox badge.
- * Uses allResults global to get user location context.
- */
-function checkTurnProximityAsync(turnLocationStr) {
-    try {
-        const lookup = {};
-        if (typeof allResults !== 'undefined') {
-            for (const r of allResults) lookup[r.id] = r;
-        }
-        const user = getUserLocationContext(lookup);
-        const serviceCoords = getServiceCoords(turnLocationStr);
-        const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
-        if (prox && prox.level === 'far') {
-            setBadge('map-turn-prox-badge', 'ℹ Relay follows CPC region — session unaffected', 'status-info');
-        } else if (prox && prox.level === 'ok') {
-            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
-        }
-    } catch { /* best-effort */ }
+    return; // no-op: third-party DoH/GeoIP fallback removed for production
 }
 
 // ── DNS Card ──
