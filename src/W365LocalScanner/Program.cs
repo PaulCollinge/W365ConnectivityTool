@@ -5429,38 +5429,58 @@ class Program
 
             var ip = ips.First(i => i.AddressFamily == AddressFamily.InterNetwork);
             using var udp = new UdpClient();
-            udp.Client.ReceiveTimeout = 3000;
 
-            // Send a STUN binding request
+            // Send a STUN binding request. UDP has no transport-layer retransmission, so a single
+            // unACKed datagram lost on a lossy path would falsely read as "UDP 3478 blocked" — a
+            // CRITICAL "Shortpath dead" verdict off one dropped packet. Retry up to 3× and validate
+            // the STUN Binding Success (0x0101) response, mirroring L-UDP-05, so transient loss can't
+            // produce a phantom block. A genuine block still gets no valid response on all attempts.
             var stunRequest = BuildStunRequest();
             var endpoint = new IPEndPoint(ip, port);
-            var sw = Stopwatch.StartNew();
-            await udp.SendAsync(stunRequest, stunRequest.Length, endpoint);
+            const int maxAttempts = 3;
+            long rttMs = 0;
+            int responseBytes = 0;
+            bool reachable = false;
 
-            try
+            for (int attempt = 1; attempt <= maxAttempts && !reachable; attempt++)
             {
-                var receiveTask = udp.ReceiveAsync();
-                if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
+                try
                 {
-                    sw.Stop();
-                    var rttMs = sw.ElapsedMilliseconds;
-                    var response = receiveTask.Result;
-                    result.Status = "Passed";
-                    result.ResultValue = $"TURN relay reachable at {ip}:{port} — {rttMs}ms RTT";
-                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {response.Buffer.Length} bytes\nLatency: {rttMs}ms\n\nNote: This tests UDP 3478 reachability via DNS-resolved IP. The actual session TURN relay is assigned by the RDP gateway (via CRLB anycast), not by client DNS.";
+                    var sw = Stopwatch.StartNew();
+                    await udp.SendAsync(stunRequest, stunRequest.Length, endpoint);
+                    var receiveTask = udp.ReceiveAsync();
+                    if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
+                    {
+                        var response = await receiveTask;
+                        // Validate it is a STUN Binding Success Response (0x0101), not a stray datagram.
+                        if (response.Buffer.Length >= 20 && ((response.Buffer[0] << 8) | response.Buffer[1]) == 0x0101)
+                        {
+                            sw.Stop();
+                            rttMs = sw.ElapsedMilliseconds;
+                            responseBytes = response.Buffer.Length;
+                            reachable = true;
+                        }
+                    }
+                    // else: timeout — retry
                 }
-                else
+                catch
                 {
-                    result.Status = "Failed";
-                    result.ResultValue = $"TURN relay {ip}:{port} — UDP 3478 blocked (RDP Shortpath will not work)";
-                    result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent a STUN binding request but received no response, so outbound UDP 3478 is blocked by a firewall or network policy.\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded — higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
-                    result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                    // Send/receive error — retry
                 }
             }
-            catch
+
+            if (reachable)
             {
-                result.Status = "Warning";
-                result.ResultValue = $"TURN relay {ip}:{port} \u2014 UDP response timeout";
+                result.Status = "Passed";
+                result.ResultValue = $"TURN relay reachable at {ip}:{port} — {rttMs}ms RTT";
+                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {responseBytes} bytes\nLatency: {rttMs}ms\n\nNote: This tests UDP 3478 reachability via DNS-resolved IP. The actual session TURN relay is assigned by the RDP gateway (via CRLB anycast), not by client DNS.";
+            }
+            else
+            {
+                result.Status = "Failed";
+                result.ResultValue = $"TURN relay {ip}:{port} — UDP 3478 blocked (RDP Shortpath will not work)";
+                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent {maxAttempts} STUN binding requests but received no valid response, so outbound UDP 3478 is blocked by a firewall or network policy.\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded — higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
@@ -7036,18 +7056,39 @@ class Program
             var ep = new IPEndPoint(ip, port);
             var stunReq = BuildStunRequest();
 
-            var sw = Stopwatch.StartNew();
-            await udp.SendAsync(stunReq, stunReq.Length, ep);
-            var recvTask = udp.ReceiveAsync();
-            var completed = await Task.WhenAny(recvTask, Task.Delay(3000));
+            // Retry up to 3× and validate the STUN Binding Success (0x0101) response. UDP has no
+            // retransmission, so a single lost datagram on a lossy path would otherwise read as
+            // "UDP blocked / Shortpath unavailable". A genuine block still gets no valid response
+            // across all attempts. Mirrors L-UDP-03 / L-UDP-05.
+            const int maxAttempts = 3;
+            bool reachable = false;
+            bool validStun = false;
+            double rttMs = 0;
 
-            if (completed == recvTask)
+            for (int attempt = 1; attempt <= maxAttempts && !reachable; attempt++)
             {
-                sw.Stop();
-                var resp = await recvTask;
-                bool validStun = resp.Buffer.Length >= 20 && ((resp.Buffer[0] << 8) | resp.Buffer[1]) == 0x0101;
+                var sw = Stopwatch.StartNew();
+                await udp.SendAsync(stunReq, stunReq.Length, ep);
+                var recvTask = udp.ReceiveAsync();
+                var completed = await Task.WhenAny(recvTask, Task.Delay(3000));
+                if (completed == recvTask)
+                {
+                    sw.Stop();
+                    var resp = await recvTask;
+                    validStun = resp.Buffer.Length >= 20 && ((resp.Buffer[0] << 8) | resp.Buffer[1]) == 0x0101;
+                    if (validStun)
+                    {
+                        rttMs = sw.Elapsed.TotalMilliseconds;
+                        reachable = true;
+                    }
+                    // non-STUN datagram — treat as not-yet-confirmed, retry
+                }
+                // else: timeout — retry
+            }
 
-                sb.AppendLine($"✓ {(validStun ? "STUN response" : "UDP response")} in {sw.Elapsed.TotalMilliseconds:F0}ms");
+            if (reachable)
+            {
+                sb.AppendLine($"✓ STUN response in {rttMs:F0}ms");
                 sb.AppendLine();
                 sb.AppendLine("✓ UDP connectivity confirmed. RDP Shortpath should be available.");
                 sb.AppendLine();
@@ -7056,11 +7097,11 @@ class Program
                 sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC");
 
                 result.Status = "Passed";
-                result.ResultValue = $"UDP ready ({sw.Elapsed.TotalMilliseconds:F0}ms)";
+                result.ResultValue = $"UDP ready ({rttMs:F0}ms)";
             }
             else
             {
-                sb.AppendLine("✗ UDP connectivity to STUN server timed out (3s).");
+                sb.AppendLine($"✗ UDP connectivity to STUN server timed out after {maxAttempts} attempts (3s each).");
                 sb.AppendLine("  RDP Shortpath will NOT be available — connections will use TCP.");
                 sb.AppendLine();
                 sb.AppendLine("Common causes:");
