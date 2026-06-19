@@ -45,6 +45,13 @@ class Program
     //    directly. The default interactive behaviour is unchanged. ──
     static bool _noBrowser = false;
 
+    // ── Self-host (Microsoft-internal) endpoint check: strictly opt-in, default OFF.
+    //    When enabled via --selfhost/--internal AND the device proves it is a
+    //    Microsoft-internal machine, an extra test (L-TCP-11) probes the internal
+    //    self-host/dogfood AVD endpoints (deschutes-sh, *.wvdselfhost.microsoft.com).
+    //    External customers can never see or run it. ──
+    static bool _selfHostEnabled = false;
+
     // ── Dashboard location. The ONLY runtime coupling between the scanner and
     //    the web dashboard: the scanner opens this URL (with the results encoded
     //    in the URL hash) after a scan. To rehost the dashboard (e.g. to an
@@ -185,6 +192,11 @@ class Program
                   || a.Equals("--headless", StringComparison.OrdinalIgnoreCase))
             {
                 _noBrowser = true;
+            }
+            else if (a.Equals("--selfhost", StringComparison.OrdinalIgnoreCase)
+                  || a.Equals("--internal", StringComparison.OrdinalIgnoreCase))
+            {
+                _selfHostEnabled = true;
             }
         }
 
@@ -1665,8 +1677,8 @@ class Program
 
     static List<TestDefinition> GetAllTests()
     {
-        return
-        [
+        var tests = new List<TestDefinition>
+        {
             // ── Local Environment ──
             new("L-LE-04", "WiFi Signal Strength", "Measures wireless signal strength", "local", RunWifiStrength),
             new("L-LE-05", "Router/Gateway Latency", "Pings default gateway", "local", RunRouterLatency),
@@ -1716,14 +1728,23 @@ class Program
             new("25", "RDP TLS Inspection", "Checks for TLS interception on RDP gateway", "cloud", RunCloudTlsInspection),
             new("26", "RDP Traffic Routing", "Validates VPN/SWG bypass for RDP endpoints", "cloud", RunCloudTrafficRouting),
             new("27", "RDP Local Egress", "Checks traffic egresses locally to nearest gateway", "cloud", RunCloudLocalEgress),
-        ];
+        };
+
+        // Microsoft-internal self-host endpoint probe. Double-gated: only added when
+        // the --selfhost/--internal flag is set AND this device proves it is a
+        // Microsoft-internal machine, so external customers never see or run it.
+        if (_selfHostEnabled && IsMicrosoftInternalDevice())
+            tests.Add(new("L-TCP-11", "Self-Host Endpoint Connectivity (Internal)",
+                "Tests Microsoft-internal self-host AVD/Cloud PC endpoints (deschutes-sh, wvdselfhost AFD gateways) — internal testers only", "tcp", RunSelfHostConnectivity));
+
+        return tests;
     }
 
     // ── Cloud PC test suite (runs on the Cloud PC itself) ──
     static List<TestDefinition> GetCloudPcTests()
     {
-        return
-        [
+        var tests = new List<TestDefinition>
+        {
             // ── Cloud PC Environment ──
             new("C-LE-01", "Cloud PC Location", "Identifies Azure region and public IP of the Cloud PC", "cloudpc-env", RunCpcLocation),
             new("C-LE-02", "Cloud PC Network Info", "Shows network adapters and ISP on the Cloud PC", "cloudpc-env", RunCpcNetworkInfo),
@@ -1763,7 +1784,16 @@ class Program
             // (Session Host Required Endpoints), which is the authoritative list.
             new("C-EP-02", "Session Host Required Endpoints", "Tests all required FQDNs for AVD/W365 session hosts", "cloudpc-env", RunCpcRequiredEndpoints),
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
-        ];
+        };
+
+        // Microsoft-internal self-host probe (Cloud PC side). Same double gate as the
+        // client test: only added when --selfhost/--internal is set AND this Cloud PC
+        // proves it is Microsoft-internal, so normal customer Cloud PCs are unaffected.
+        if (_selfHostEnabled && IsMicrosoftInternalDevice())
+            tests.Add(new("C-TCP-10", "Self-Host Endpoint Connectivity (Cloud PC, Internal)",
+                "Tests Microsoft-internal self-host endpoints (deschutes-sh, wvdselfhost AFD gateways) from the Cloud PC — internal testers only", "cloudpc-tcp", RunCpcSelfHostConnectivity));
+
+        return tests;
     }
 
     // ═══════════════════════════════════════════
@@ -4186,6 +4216,263 @@ class Program
                           : "Failed";
             if (result.Status != "Passed")
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── Microsoft-internal device gate ───────────────────────────────────────
+    //  Decides whether THIS device is a Microsoft-internal machine so the
+    //  self-host endpoint probe (L-TCP-11) can never run for an external
+    //  customer, even if the --selfhost flag somehow leaks. Two independent
+    //  corroborating signals (either suffices):
+    //    (a) the device is joined to a Microsoft corporate AD domain, OR
+    //    (b) the device is Entra-joined to the Microsoft corporate tenant.
+    static bool? _isMicrosoftInternalCache = null;
+    static bool IsMicrosoftInternalDevice()
+    {
+        if (_isMicrosoftInternalCache.HasValue) return _isMicrosoftInternalCache.Value;
+        bool internalDevice = false;
+
+        // (a) Corporate AD domain join — e.g. redmond.corp.microsoft.com
+        try
+        {
+            var domain = System.Net.NetworkInformation.IPGlobalProperties
+                .GetIPGlobalProperties().DomainName ?? "";
+            if (domain.EndsWith("corp.microsoft.com", StringComparison.OrdinalIgnoreCase)
+                || domain.Equals("microsoft.com", StringComparison.OrdinalIgnoreCase))
+                internalDevice = true;
+        }
+        catch { }
+
+        // (b) Entra (AAD) join to the Microsoft corporate tenant
+        if (!internalDevice)
+        {
+            try
+            {
+                const string MicrosoftTenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+                using var joinInfo = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo");
+                if (joinInfo != null)
+                {
+                    foreach (var subName in joinInfo.GetSubKeyNames())
+                    {
+                        using var sub = joinInfo.OpenSubKey(subName);
+                        if (sub?.GetValue("TenantId") is string tid
+                            && string.Equals(tid, MicrosoftTenantId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            internalDevice = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        _isMicrosoftInternalCache = internalDevice;
+        return internalDevice;
+    }
+
+    // Extracts the CN from an X.509 distinguished name for readable output.
+    static string ExtractCertCn(string dn)
+    {
+        if (string.IsNullOrEmpty(dn)) return "(unknown)";
+        var m = System.Text.RegularExpressions.Regex.Match(dn, @"CN=([^,]+)");
+        return m.Success ? m.Groups[1].Value.Trim() : dn;
+    }
+
+    // Heuristic TLS-inspection signal for self-host endpoints. Legitimate Microsoft
+    // endpoint certificates are issued by Microsoft's own public CAs or well-known
+    // public CAs. An issuer outside that set — or a chain the OS won't validate — is
+    // the signature of an inline TLS-inspecting proxy/SWG (this catches an inspection
+    // CA even when it has been installed into the machine trust store).
+    static bool IsLikelyTlsInterception(string issuer, bool chainValid)
+    {
+        string[] trusted = { "Microsoft", "DigiCert", "Baltimore", "GlobalSign", "Entrust", "Amazon" };
+        bool issuerTrusted = trusted.Any(t => (issuer ?? "").IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0);
+        return !issuerTrusted || !chainValid;
+    }
+
+    // ── L-TCP-11: Self-host (Microsoft-internal) endpoint connectivity ───────
+    //  Probes the internal self-host/dogfood AVD/Cloud PC control-plane and
+    //  gateway endpoints (the *.wvdselfhost.microsoft.com / deschutes-sh set
+    //  the Windows App checks), which differ from the public *.wvd.microsoft.com
+    //  endpoints. Only ever registered for Microsoft-internal devices that opt
+    //  in with --selfhost (see GetAllTests + IsMicrosoftInternalDevice).
+    static async Task<TestResult> RunSelfHostConnectivity()
+    {
+        var result = new TestResult { Id = "L-TCP-11", Name = "Self-Host Endpoint Connectivity (Internal)", Category = "tcp" };
+        try
+        {
+            var endpoints = new (string host, int port, string role)[]
+            {
+                ("deschutes-sh.microsoft.com", 443, "Cloud PC control plane (Deschutes self-host)"),
+                ("afdfp-rdgateway-r0.wvdselfhost.microsoft.com", 443, "RDP Gateway AFD (self-host r0)"),
+                ("afdfp-rdgateway-r1.wvdselfhost.microsoft.com", 443, "RDP Gateway AFD (self-host r1)"),
+            };
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Microsoft-internal self-host (dogfood) endpoints — internal testers only.");
+            sb.AppendLine("These are the self-host equivalents of the public *.wvd.microsoft.com control plane.");
+            sb.AppendLine();
+
+            int passed = 0;
+            var issues = new List<string>();
+            var intercepted = new List<string>();
+
+            var capturedCerts = new System.Collections.Concurrent.ConcurrentDictionary<string, (string issuer, bool chainValid)>();
+            using var httpHandler = new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                ServerCertificateCustomValidationCallback = (req, cert, _, errors) =>
+                {
+                    if (cert != null && req?.RequestUri != null)
+                        capturedCerts[req.RequestUri.Host] = (cert.Issuer, errors == System.Net.Security.SslPolicyErrors.None);
+                    return true; // measure reachability regardless of trust
+                }
+            };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
+
+            foreach (var (host, port, role) in endpoints)
+            {
+                sb.AppendLine($"  {host}:{port}  [{role}]");
+                try
+                {
+                    var addrs = await Dns.GetHostAddressesAsync(host);
+                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addrs.Select(a => a.ToString()))}");
+
+                    var sw = Stopwatch.StartNew();
+                    var resp = await http.GetAsync($"https://{host}/");
+                    sw.Stop();
+                    sb.AppendLine($"    ✓ HTTPS {(int)resp.StatusCode} in {sw.ElapsedMilliseconds}ms");
+                    passed++;
+
+                    if (capturedCerts.TryGetValue(host, out var ci))
+                    {
+                        sb.AppendLine($"    → Cert issuer: {ExtractCertCn(ci.issuer)}");
+                        if (IsLikelyTlsInterception(ci.issuer, ci.chainValid))
+                        {
+                            sb.AppendLine("    ⚠ Issuer is not a recognized Microsoft/public CA — possible TLS inspection");
+                            intercepted.Add(host);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"    ✗ {ex.GetType().Name}: {ex.Message}");
+                    issues.Add($"{host}: {ex.Message}");
+                }
+                sb.AppendLine();
+            }
+
+            if (intercepted.Count > 0)
+            {
+                sb.AppendLine($"⚠ Possible TLS inspection on: {string.Join(", ", intercepted)}");
+                sb.AppendLine("  An inline proxy/SWG presenting its own certificate can break self-host RDP.");
+            }
+            if (issues.Count > 0)
+            {
+                sb.AppendLine("Note: self-host endpoints typically only resolve/connect on the Microsoft");
+                sb.AppendLine("corporate network or VPN. Failures here usually mean you are off-corpnet.");
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            result.ResultValue = intercepted.Count > 0
+                ? $"{passed}/{endpoints.Length} reachable — possible TLS inspection on {intercepted.Count}"
+                : $"{passed}/{endpoints.Length} self-host endpoints reachable";
+            result.Status = passed < endpoints.Length ? (passed > 0 ? "Warning" : "Failed")
+                          : intercepted.Count > 0 ? "Warning"
+                          : "Passed";
+        }
+        catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
+        return result;
+    }
+
+    // ── C-TCP-10: Self-host (Microsoft-internal) endpoint connectivity, Cloud PC side ──
+    //  Same confirmed self-host endpoint set as the client test (L-TCP-11), but
+    //  measured FROM the Cloud PC / session host. Surfaces a self-host control-plane
+    //  or gateway block that the public *.wvd.microsoft.com tests cannot see. Only
+    //  ever registered for opted-in Microsoft-internal Cloud PCs (see GetCloudPcTests).
+    static async Task<TestResult> RunCpcSelfHostConnectivity()
+    {
+        var result = new TestResult { Id = "C-TCP-10", Name = "Self-Host Endpoint Connectivity (Cloud PC, Internal)", Category = "cloudpc-tcp" };
+        try
+        {
+            var endpoints = new (string host, int port, string role)[]
+            {
+                ("deschutes-sh.microsoft.com", 443, "Cloud PC control plane (Deschutes self-host)"),
+                ("afdfp-rdgateway-r0.wvdselfhost.microsoft.com", 443, "RDP Gateway AFD (self-host r0)"),
+                ("afdfp-rdgateway-r1.wvdselfhost.microsoft.com", 443, "RDP Gateway AFD (self-host r1)"),
+            };
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Microsoft-internal self-host (dogfood) endpoints, probed from the Cloud PC.");
+            sb.AppendLine("Surfaces a self-host control-plane/gateway block invisible to the public endpoint tests.");
+            sb.AppendLine();
+
+            int passed = 0;
+            var issues = new List<string>();
+            var intercepted = new List<string>();
+
+            var capturedCerts = new System.Collections.Concurrent.ConcurrentDictionary<string, (string issuer, bool chainValid)>();
+            using var httpHandler = new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                ServerCertificateCustomValidationCallback = (req, cert, _, errors) =>
+                {
+                    if (cert != null && req?.RequestUri != null)
+                        capturedCerts[req.RequestUri.Host] = (cert.Issuer, errors == System.Net.Security.SslPolicyErrors.None);
+                    return true; // measure reachability regardless of trust
+                }
+            };
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
+
+            foreach (var (host, port, role) in endpoints)
+            {
+                sb.AppendLine($"  {host}:{port}  [{role}]");
+                try
+                {
+                    var addrs = await Dns.GetHostAddressesAsync(host);
+                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addrs.Select(a => a.ToString()))}");
+
+                    var sw = Stopwatch.StartNew();
+                    var resp = await http.GetAsync($"https://{host}/");
+                    sw.Stop();
+                    sb.AppendLine($"    ✓ HTTPS {(int)resp.StatusCode} in {sw.ElapsedMilliseconds}ms");
+                    passed++;
+
+                    if (capturedCerts.TryGetValue(host, out var ci))
+                    {
+                        sb.AppendLine($"    → Cert issuer: {ExtractCertCn(ci.issuer)}");
+                        if (IsLikelyTlsInterception(ci.issuer, ci.chainValid))
+                        {
+                            sb.AppendLine("    ⚠ Issuer is not a recognized Microsoft/public CA — possible TLS inspection");
+                            intercepted.Add(host);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"    ✗ {ex.GetType().Name}: {ex.Message}");
+                    issues.Add($"{host}: {ex.Message}");
+                }
+                sb.AppendLine();
+            }
+
+            if (intercepted.Count > 0)
+            {
+                sb.AppendLine($"⚠ Possible TLS inspection on: {string.Join(", ", intercepted)}");
+                sb.AppendLine("  An inline proxy/SWG presenting its own certificate can break self-host RDP.");
+            }
+
+            result.DetailedInfo = sb.ToString().Trim();
+            result.ResultValue = intercepted.Count > 0
+                ? $"{passed}/{endpoints.Length} reachable — possible TLS inspection on {intercepted.Count}"
+                : $"{passed}/{endpoints.Length} self-host endpoints reachable from Cloud PC";
+            result.Status = passed < endpoints.Length ? (passed > 0 ? "Warning" : "Failed")
+                          : intercepted.Count > 0 ? "Warning"
+                          : "Passed";
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;

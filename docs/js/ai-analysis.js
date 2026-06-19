@@ -618,6 +618,19 @@ function runAnalysisEngine(results) {
             'This will cause disconnects and session instability. Exempt all Windows 365 FQDNs from SSL inspection immediately.'));
     }
 
+    // ── Self-host endpoints (Microsoft-internal testers only) ──
+    // L-TCP-11 / C-TCP-10 are only present when the scanner is run with --selfhost on
+    // a Microsoft-internal device, so this finding never fires for normal customers.
+    ['L-TCP-11', 'C-TCP-10'].forEach(id => {
+        const sh = r(id);
+        if (sh && sh.status !== 'Passed' && sh.status !== 'Skipped') {
+            const sev = sh.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING;
+            findings.push(finding(sev, 'Self-host endpoint connectivity issue',
+                `A Microsoft-internal self-host endpoint (deschutes-sh / *.wvdselfhost.microsoft.com) is unreachable or showing certificate interception. ${sh.resultValue}`,
+                'Confirm the self-host endpoints resolve and connect on corpnet/VPN and are excluded from TLS inspection. This path is invisible to the public *.wvd.microsoft.com tests.'));
+        }
+    });
+
     // ── 6. DNS hijacking ──
     const dnsHijack = r('L-TCP-08');
     if (dnsHijack && dnsHijack.status !== 'Passed' && dnsHijack.status !== 'Skipped') {
