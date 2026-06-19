@@ -619,8 +619,9 @@ function runAnalysisEngine(results) {
     }
 
     // ── Self-host endpoints (Microsoft-internal testers only) ──
-    // L-TCP-11 / C-TCP-10 are only present when the scanner is run with --selfhost on
-    // a Microsoft-internal device, so this finding never fires for normal customers.
+    // L-TCP-11 / C-TCP-10 are registered automatically only on Microsoft-internal
+    // devices (corp-AD / MS-tenant Entra join), so this finding never fires for
+    // normal customers — their results never contain these IDs.
     ['L-TCP-11', 'C-TCP-10'].forEach(id => {
         const sh = r(id);
         if (sh && sh.status !== 'Passed' && sh.status !== 'Skipped') {
