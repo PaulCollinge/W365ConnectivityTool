@@ -628,7 +628,7 @@ function runAnalysisEngine(results) {
             const sev = sh.status === 'Failed' ? SEV.CRITICAL : SEV.WARNING;
             findings.push(finding(sev, 'Self-host endpoint connectivity issue',
                 `A Microsoft-internal self-host endpoint (deschutes-sh / *.wvdselfhost.microsoft.com) is unreachable or showing certificate interception. ${sh.resultValue}`,
-                'Confirm the self-host endpoints resolve and connect on corpnet/VPN and are excluded from TLS inspection. This path is invisible to the public *.wvd.microsoft.com tests.'));
+                'These endpoints are publicly resolvable and reachable from the open internet (not corpnet-only), so a failure points to a real block on this network — DNS filtering, firewall, or a proxy/SWG (which may also be intercepting TLS) — or the endpoint being temporarily down. This path is invisible to the public *.wvd.microsoft.com tests.'));
         }
     });
 

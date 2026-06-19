@@ -4378,8 +4378,12 @@ class Program
             }
             if (issues.Count > 0)
             {
-                sb.AppendLine("Note: self-host endpoints typically only resolve/connect on the Microsoft");
-                sb.AppendLine("corporate network or VPN. Failures here usually mean you are off-corpnet.");
+                sb.AppendLine("Note: these self-host endpoints are publicly resolvable (deschutes-sh →");
+                sb.AppendLine("public Microsoft IPs, the wvdselfhost AFD gateways → the same public anycast");
+                sb.AppendLine("edge as production), so they are reachable from the open internet — not");
+                sb.AppendLine("corpnet-only. A failure here points to a real block on this network (DNS");
+                sb.AppendLine("filtering, firewall, or proxy/SWG) or the endpoint being temporarily down,");
+                sb.AppendLine("not simply being off-corpnet.");
             }
 
             result.DetailedInfo = sb.ToString().Trim();
