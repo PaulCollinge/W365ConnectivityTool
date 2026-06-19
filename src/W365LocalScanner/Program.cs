@@ -45,12 +45,12 @@ class Program
     //    directly. The default interactive behaviour is unchanged. ──
     static bool _noBrowser = false;
 
-    // ── Self-host (Microsoft-internal) endpoint check: strictly opt-in, default OFF.
-    //    When enabled via --selfhost/--internal AND the device proves it is a
-    //    Microsoft-internal machine, an extra test (L-TCP-11) probes the internal
-    //    self-host/dogfood AVD endpoints (deschutes-sh, *.wvdselfhost.microsoft.com).
-    //    External customers can never see or run it. ──
-    static bool _selfHostEnabled = false;
+    // ── Self-host (Microsoft-internal) endpoint check: runs AUTOMATICALLY, but ONLY
+    //    when the device proves it is a Microsoft-internal machine (corp-AD domain
+    //    join or Entra join to the Microsoft tenant — see IsMicrosoftInternalDevice).
+    //    An extra test (L-TCP-11 / C-TCP-10) probes the internal self-host/dogfood
+    //    AVD endpoints (deschutes-sh, *.wvdselfhost.microsoft.com). External
+    //    customers can never see or run it. ──
 
     // ── Dashboard location. The ONLY runtime coupling between the scanner and
     //    the web dashboard: the scanner opens this URL (with the results encoded
@@ -192,11 +192,6 @@ class Program
                   || a.Equals("--headless", StringComparison.OrdinalIgnoreCase))
             {
                 _noBrowser = true;
-            }
-            else if (a.Equals("--selfhost", StringComparison.OrdinalIgnoreCase)
-                  || a.Equals("--internal", StringComparison.OrdinalIgnoreCase))
-            {
-                _selfHostEnabled = true;
             }
         }
 
@@ -516,16 +511,13 @@ class Program
         var allTests = _isCloudPcMode ? GetCloudPcTests() : GetAllTests();
         var tests = includeCloud ? allTests : allTests.Where(t => t.Category != "cloud").ToList();
 
-        // Explicit feedback for the internal --selfhost probe so a tester always
-        // knows whether it engaged. Only prints when --selfhost was passed, so
-        // normal customer runs are unaffected.
-        if (_selfHostEnabled)
+        // Microsoft-internal devices automatically include the self-host endpoint
+        // checks (L-TCP-11 / C-TCP-10). Print a one-line confirmation so an internal
+        // tester knows they engaged; customers never register these tests, so they
+        // see nothing here.
+        if (allTests.Any(t => t.Id == "L-TCP-11" || t.Id == "C-TCP-10"))
         {
-            bool shRegistered = allTests.Any(t => t.Id == "L-TCP-11" || t.Id == "C-TCP-10");
-            if (shRegistered)
-                Console.WriteLine("  Self-host internal probe ENABLED — self-host endpoint checks (L-TCP-11/C-TCP-10) will run.");
-            else
-                Console.WriteLine("  --selfhost ignored: this device is not a recognised Microsoft-internal machine — self-host checks skipped.");
+            Console.WriteLine("  Microsoft-internal device detected — self-host endpoint checks (L-TCP-11/C-TCP-10) included.");
             Console.WriteLine();
         }
 
@@ -1743,10 +1735,10 @@ class Program
             new("27", "RDP Local Egress", "Checks traffic egresses locally to nearest gateway", "cloud", RunCloudLocalEgress),
         };
 
-        // Microsoft-internal self-host endpoint probe. Double-gated: only added when
-        // the --selfhost/--internal flag is set AND this device proves it is a
-        // Microsoft-internal machine, so external customers never see or run it.
-        if (_selfHostEnabled && IsMicrosoftInternalDevice())
+        // Microsoft-internal self-host endpoint probe. Added AUTOMATICALLY only when
+        // this device proves it is a Microsoft-internal machine, so external
+        // customers never see or run it.
+        if (IsMicrosoftInternalDevice())
             tests.Add(new("L-TCP-11", "Self-Host Endpoint Connectivity (Internal)",
                 "Tests Microsoft-internal self-host AVD/Cloud PC endpoints (deschutes-sh, wvdselfhost AFD gateways) — internal testers only", "tcp", RunSelfHostConnectivity));
 
@@ -1799,10 +1791,10 @@ class Program
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
         };
 
-        // Microsoft-internal self-host probe (Cloud PC side). Same double gate as the
-        // client test: only added when --selfhost/--internal is set AND this Cloud PC
-        // proves it is Microsoft-internal, so normal customer Cloud PCs are unaffected.
-        if (_selfHostEnabled && IsMicrosoftInternalDevice())
+        // Microsoft-internal self-host probe (Cloud PC side). Added AUTOMATICALLY only
+        // when this Cloud PC proves it is Microsoft-internal, so normal customer
+        // Cloud PCs are unaffected.
+        if (IsMicrosoftInternalDevice())
             tests.Add(new("C-TCP-10", "Self-Host Endpoint Connectivity (Cloud PC, Internal)",
                 "Tests Microsoft-internal self-host endpoints (deschutes-sh, wvdselfhost AFD gateways) from the Cloud PC — internal testers only", "cloudpc-tcp", RunCpcSelfHostConnectivity));
 
@@ -4236,9 +4228,9 @@ class Program
 
     // ── Microsoft-internal device gate ───────────────────────────────────────
     //  Decides whether THIS device is a Microsoft-internal machine so the
-    //  self-host endpoint probe (L-TCP-11) can never run for an external
-    //  customer, even if the --selfhost flag somehow leaks. Two independent
-    //  corroborating signals (either suffices):
+    //  self-host endpoint probe (L-TCP-11 / C-TCP-10) can never run for an
+    //  external customer. This is the SOLE gate — the checks run automatically
+    //  on internal devices. Two independent corroborating signals (either suffices):
     //    (a) the device is joined to a Microsoft corporate AD domain, OR
     //    (b) the device is Entra-joined to the Microsoft corporate tenant.
     static bool? _isMicrosoftInternalCache = null;
@@ -4311,8 +4303,8 @@ class Program
     //  Probes the internal self-host/dogfood AVD/Cloud PC control-plane and
     //  gateway endpoints (the *.wvdselfhost.microsoft.com / deschutes-sh set
     //  the Windows App checks), which differ from the public *.wvd.microsoft.com
-    //  endpoints. Only ever registered for Microsoft-internal devices that opt
-    //  in with --selfhost (see GetAllTests + IsMicrosoftInternalDevice).
+    //  endpoints. Only ever registered for Microsoft-internal devices, where it
+    //  runs automatically (see GetAllTests + IsMicrosoftInternalDevice).
     static async Task<TestResult> RunSelfHostConnectivity()
     {
         var result = new TestResult { Id = "L-TCP-11", Name = "Self-Host Endpoint Connectivity (Internal)", Category = "tcp" };
