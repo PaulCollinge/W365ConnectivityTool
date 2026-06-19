@@ -516,6 +516,19 @@ class Program
         var allTests = _isCloudPcMode ? GetCloudPcTests() : GetAllTests();
         var tests = includeCloud ? allTests : allTests.Where(t => t.Category != "cloud").ToList();
 
+        // Explicit feedback for the internal --selfhost probe so a tester always
+        // knows whether it engaged. Only prints when --selfhost was passed, so
+        // normal customer runs are unaffected.
+        if (_selfHostEnabled)
+        {
+            bool shRegistered = allTests.Any(t => t.Id == "L-TCP-11" || t.Id == "C-TCP-10");
+            if (shRegistered)
+                Console.WriteLine("  Self-host internal probe ENABLED — self-host endpoint checks (L-TCP-11/C-TCP-10) will run.");
+            else
+                Console.WriteLine("  --selfhost ignored: this device is not a recognised Microsoft-internal machine — self-host checks skipped.");
+            Console.WriteLine();
+        }
+
         if (_isCloudPcMode)
         {
             var testLabel = _hostType == "avd" ? "AVD session host" : "Cloud PC";
