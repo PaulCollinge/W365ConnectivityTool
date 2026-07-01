@@ -5283,29 +5283,32 @@ class Program
     // yet the live session quietly falls back to TCP. If a user has Shortpath/UDP
     // problems, these are the first components to update with the vendor or rule
     // out. (Process names are best-effort; an unmatched name simply isn't listed.)
-    static readonly (string proc, string label)[] _networkStackAgents =
+    // proc = process image name; label = display label; uninstall = a substring that
+    // matches the product's Uninstall-key DisplayName, used to recover a version when
+    // the running binary's file version is unreadable (SYSTEM/session-0 services).
+    static readonly (string proc, string label, string uninstall)[] _networkStackAgents =
     {
         // VPN clients
-        ("PanGPS",                    "Palo Alto GlobalProtect"),
-        ("vpnagent",                  "Cisco AnyConnect / Secure Client"),
-        ("acwebsecagent",             "Cisco AnyConnect Web Security"),
-        ("FortiSSLVPNdaemon",         "FortiClient SSL VPN"),
-        ("FortiClient",               "FortiClient"),
-        ("openvpn",                   "OpenVPN"),
-        ("wireguard",                 "WireGuard"),
-        ("tailscaled",                "Tailscale"),
+        ("PanGPS",                    "Palo Alto GlobalProtect",           "GlobalProtect"),
+        ("vpnagent",                  "Cisco AnyConnect / Secure Client",  "AnyConnect"),
+        ("acwebsecagent",             "Cisco AnyConnect Web Security",     "Web Security"),
+        ("FortiSSLVPNdaemon",         "FortiClient SSL VPN",               "FortiClient"),
+        ("FortiClient",               "FortiClient",                       "FortiClient"),
+        ("openvpn",                   "OpenVPN",                           "OpenVPN"),
+        ("wireguard",                 "WireGuard",                         "WireGuard"),
+        ("tailscaled",                "Tailscale",                         "Tailscale"),
         // SWG / proxy / secure-access agents
-        ("ZscalerService",            "Zscaler"),
-        ("ZSATunnel",                 "Zscaler Tunnel"),
-        ("stAgentSvc",                "Netskope"),
-        ("warp-svc",                  "Cloudflare WARP"),
-        ("acumbrellaagent",           "Cisco Umbrella"),
-        ("iboss",                     "iboss"),
-        ("FA_Scheduler",              "Forcepoint"),
-        ("GlobalSecureAccessClient",  "Microsoft Global Secure Access"),
+        ("ZscalerService",            "Zscaler",                           "Zscaler"),
+        ("ZSATunnel",                 "Zscaler Tunnel",                    "Zscaler"),
+        ("stAgentSvc",                "Netskope",                          "Netskope"),
+        ("warp-svc",                  "Cloudflare WARP",                   "Cloudflare WARP"),
+        ("acumbrellaagent",           "Cisco Umbrella",                    "Umbrella"),
+        ("iboss",                     "iboss",                             "iboss"),
+        ("FA_Scheduler",              "Forcepoint",                        "Forcepoint"),
+        ("GlobalSecureAccessClient",  "Microsoft Global Secure Access",    "Global Secure Access"),
         // Endpoint security with network filtering
-        ("CSFalconService",           "CrowdStrike Falcon"),
-        ("SentinelAgent",             "SentinelOne"),
+        ("CSFalconService",           "CrowdStrike Falcon",                "CrowdStrike"),
+        ("SentinelAgent",             "SentinelOne",                       "Sentinel"),
     };
 
     /// <summary>Best-effort version of a running agent: the running binary's file
@@ -5383,7 +5386,7 @@ class Program
                 catch { continue; }
                 if (procs.Length == 0) continue;
 
-                var verStr = TryGetAgentVersion(procs[0], "");
+                var verStr = TryGetAgentVersion(procs[0], agent.uninstall);
                 var label = verStr != null ? $"{agent.label} (v{verStr})" : agent.label;
                 found.Add(label);
                 sb.AppendLine($"  • {label}  [process {agent.proc}, PID {procs[0].Id}]");
