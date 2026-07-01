@@ -182,6 +182,11 @@ const ALL_TESTS = [
         category: 'udp', source: 'browser', run: testWebRtcStun
     },
     {
+        id: 'B-UDP-03', name: 'TURN Relay Reachability',
+        description: 'Confirms the UDP 3478 path to the Windows 365 TURN relay is open via a WebRTC STUN binding to the relay host',
+        category: 'udp', source: 'browser', run: testTurnReachability
+    },
+    {
         id: 'L-UDP-03', name: 'TURN Relay Reachability (UDP 3478)',
         description: 'Tests raw UDP socket to TURN relay on port 3478 (requires Local Scanner)',
         category: 'udp', source: 'local'
@@ -1329,6 +1334,90 @@ async function testWebRtcStun(test) {
         }
     } catch (e) {
         return makeResult(test, 'Error', `WebRTC error: ${e.message}`,
+            e.stack || e.message, Math.round(performance.now() - t0));
+    }
+}
+
+// ── TURN Relay Reachability ──
+// The browser cannot open a raw UDP socket, nor can it allocate a real TURN
+// relay candidate — that needs short-lived, W365-service-issued TURN
+// credentials this tool does not have (without them ALLOCATE gets a 401 and no
+// `relay` candidate appears, and WebRTC never surfaces the 401 to JS, so the
+// absence is ambiguous: blocked vs auth-failure).
+//
+// What we CAN do deterministically: point a `stun:` URL at the actual TURN
+// relay host on :3478. TURN servers also answer plain STUN Binding requests on
+// the same port, so a server-reflexive (srflx) candidate from the relay host
+// proves the UDP 3478 path to that relay is open and the relay is responding —
+// essentially what the Local Scanner's raw-UDP probe (L-UDP-03) measures.
+//
+// This certifies REACHABILITY of the relay's UDP path, NOT relay allocation.
+// Authoritative relay-allocation / NAT-type analysis stays with the Local
+// Scanner (L-UDP-03 reachability, L-UDP-05 NAT type).
+async function testTurnReachability(test) {
+    const t0 = performance.now();
+
+    if (typeof RTCPeerConnection === 'undefined') {
+        return makeResult(test, 'Failed', 'WebRTC not supported',
+            'Your browser does not support WebRTC, so the UDP 3478 path to the TURN relay cannot be probed. Run the Local Scanner (L-UDP-03) instead.',
+            Math.round(performance.now() - t0));
+    }
+
+    const relayHost = (EndpointConfig.turnRelayEndpoints && EndpointConfig.turnRelayEndpoints[0]) || 'world.relay.avd.microsoft.com';
+    const relayPort = EndpointConfig.turnRelayPort || 3478;
+    const relayUrl = `stun:${relayHost}:${relayPort}`;
+
+    try {
+        const candidates = await gatherIceCandidates({
+            iceServers: [{ urls: relayUrl }]
+        }, 6000);
+
+        const duration = Math.round(performance.now() - t0);
+        // Accept any server-reflexive candidate (IPv4 or IPv6): an srflx from the
+        // relay host proves the UDP 3478 path is open regardless of address family.
+        // Filtering to IPv4 only would falsely warn "blocked" on IPv6-only egress.
+        const srflx = candidates.filter(c => c.type === 'srflx' && c.address);
+        const host = candidates.filter(c => c.type === 'host');
+
+        const candidateList = candidates.length
+            ? candidates.map(c => `  ${c.type}: ${c.address}:${c.port} (${c.protocol})`).join('\n')
+            : '  (none)';
+        const footer =
+            `\n\nProbed: ${relayUrl} (STUN Binding to the TURN relay host)\n` +
+            'This confirms the UDP 3478 path to the relay is open — not that a TURN relay\n' +
+            'allocation succeeds (that needs W365-issued credentials). For authoritative\n' +
+            'relay allocation and NAT-type analysis, run the Local Scanner (L-UDP-03, L-UDP-05).';
+
+        if (srflx.length > 0) {
+            const reflexive = srflx[0];
+            return makeResult(test, 'Passed',
+                `TURN relay UDP 3478 reachable \u2014 reflexive ${reflexive.address}`,
+                `The TURN relay host (${relayHost}) responded to a STUN binding on UDP ${relayPort}, ` +
+                `so the UDP path to the relay is open.\nReflexive address: ${reflexive.address}:${reflexive.port}\n\n` +
+                `ICE candidates:\n${candidateList}${footer}`,
+                duration);
+        }
+
+        if (host.length > 0) {
+            return makeResult(test, 'Warning',
+                'No response from TURN relay on UDP 3478',
+                `Only host candidates were gathered \u2014 the TURN relay host (${relayHost}) did not answer a ` +
+                `STUN binding on UDP ${relayPort}. This usually means UDP 3478 to the relay is blocked ` +
+                `(firewall, proxy/SWG, or UDP-stripping NAT), which forces RDP Shortpath onto the TCP path ` +
+                `and degrades the Cloud PC experience. Some enterprise networks also drop unauthenticated ` +
+                `STUN to the relay while permitting credentialed TURN, so confirm with the Local Scanner ` +
+                `(L-UDP-03 raw UDP probe).\n\nICE candidates:\n${candidateList}${footer}`,
+                duration, EndpointConfig.docs.turnRelay);
+        }
+
+        return makeResult(test, 'Failed',
+            'No ICE candidates gathered \u2014 UDP path blocked',
+            `WebRTC ICE gathering produced no candidates at all, so UDP connectivity to the TURN relay ` +
+            `(${relayHost}:${relayPort}) could not be established. RDP Shortpath (UDP) will be unavailable ` +
+            `and the session will fall back to TCP. Confirm with the Local Scanner (L-UDP-03).${footer}`,
+            duration, EndpointConfig.docs.turnRelay);
+    } catch (e) {
+        return makeResult(test, 'Error', `TURN reachability error: ${e.message}`,
             e.stack || e.message, Math.round(performance.now() - t0));
     }
 }

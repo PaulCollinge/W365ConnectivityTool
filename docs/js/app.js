@@ -64,7 +64,8 @@ const BROWSER_TO_CPC_ID = {
     'B-TCP-03': 'C-TCP-05',
     'B-TCP-04': 'C-TCP-09',
     'B-UDP-01': 'C-UDP-03',
-    'B-UDP-02': 'C-UDP-04'
+    'B-UDP-02': 'C-UDP-04',
+    'B-UDP-03': 'C-UDP-05'
 };
 
 function dedupeResultsById(results) {

@@ -685,6 +685,7 @@ class Program
             "Warning" => ("\u26A0", ConsoleColor.Yellow),
             "Failed" => ("\u2718", ConsoleColor.Red),
             "Error" => ("\u2718", ConsoleColor.Red),
+            "Info" => ("\u2139", ConsoleColor.Cyan),
             "Skipped" => ("\u2022", ConsoleColor.DarkGray),
             _ => ("\u2022", ConsoleColor.Gray)
         };
@@ -896,6 +897,7 @@ class Program
         var passed = results.Count(r => r.Status == "Passed");
         var warned = results.Count(r => r.Status == "Warning");
         var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
+        var infoed = results.Count(r => r.Status == "Info");
         Console.Write($"  Tests run: {results.Count}   ");
         Console.ForegroundColor = ConsoleColor.Green;
         Console.Write($"\u2714 {passed} passed");
@@ -908,6 +910,13 @@ class Program
         Console.ForegroundColor = failed > 0 ? ConsoleColor.Red : ConsoleColor.DarkGray;
         Console.Write($"\u2718 {failed} failed");
         Console.ResetColor();
+        if (infoed > 0)
+        {
+            Console.Write("   ");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.Write($"\u2139 {infoed} info");
+            Console.ResetColor();
+        }
         Console.WriteLine();
         Console.WriteLine();
 
@@ -1698,6 +1707,7 @@ class Program
             new("L-LE-14", "DNS Server Identification", "Identifies configured and active DNS resolvers and classifies provider", "local", RunDnsServerIdentification),
             new("L-LE-15", "Path MTU Discovery", "Discovers maximum transmission unit to key W365/AVD endpoints", "local", RunPathMtuDiscovery),
             new("L-LE-16", "NIC Driver Analysis", "Analyzes network adapter drivers for age and known issues impacting connectivity", "local", RunNicDriverAnalysis),
+            new("L-LE-17", "Network Stack Agents", "Inventories VPN/SWG/proxy/security agents in the host network stack that can affect RDP Shortpath UDP (informational)", "local", RunNetworkStackAgents),
 
             // ── Endpoint Access ──
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
@@ -1753,6 +1763,7 @@ class Program
             // ── Cloud PC Environment ──
             new("C-LE-01", "Cloud PC Location", "Identifies Azure region and public IP of the Cloud PC", "cloudpc-env", RunCpcLocation),
             new("C-LE-02", "Cloud PC Network Info", "Shows network adapters and ISP on the Cloud PC", "cloudpc-env", RunCpcNetworkInfo),
+            new("C-LE-05", "Network Stack Agents (Cloud PC)", "Inventories VPN/SWG/proxy/security agents in the Cloud PC network stack that can affect RDP Shortpath UDP (informational)", "cloudpc-env", RunCpcNetworkStackAgents),
 
             // ── Cloud PC → Gateway/TURN Connectivity ──
             new("C-TCP-04", "Gateway Connectivity (Cloud PC)", "Tests RDP Gateway reachability from Cloud PC", "cloudpc-tcp", RunCpcGatewayConnectivity),
@@ -3187,12 +3198,35 @@ class Program
                 }
             }
 
-            // ── Version currency check ──
+            // ── Version currency check (N-3 policy) ──
+            // Published PUBLIC releases of Windows App for Windows, newest first.
             // Source: https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=windows
-            // Windows App for Windows currently publishes 2.0.x package versions.
-            var latestKnownWindowsApp = new Version(2, 0, 964, 0);  // Public release, 2026-02-10
-            var minimumSupported      = new Version(2, 0, 804, 0);  // Public release, 2025-11-12
-            var latestDate = new DateTime(2026, 2, 10);
+            // Policy: latest (N) = up to date (Passed); N-1..N-3 = update available
+            //         (Warning, still within support window); N-4 or older = unsupported
+            //         (Failed). N-3 currently equals Microsoft's published
+            //         "Minimum supported version" (2.0.1071.0).
+            // To refresh: prepend new public releases as Microsoft ships them.
+            var publishedWindowsApp = new (Version ver, string date)[]
+            {
+                (new Version(2, 0, 1193, 0), "2026-06-10"),  // N    (Minimum supported per MS: 2.0.1071.0)
+                (new Version(2, 0, 1186, 0), "2026-05-26"),  // N-1
+                (new Version(2, 0, 1129, 0), "2026-05-05"),  // N-2
+                (new Version(2, 0, 1071, 0), "2026-04-24"),  // N-3  <- minimum supported
+                (new Version(2, 0, 1070, 0), "2026-04-14"),  // N-4  (fails)
+                (new Version(2, 0, 1069, 0), "2026-04-07"),
+                (new Version(2, 0,  964, 0), "2026-02-10"),
+                (new Version(2, 0,  918, 0), "2026-01-22"),
+                (new Version(2, 0,  916, 0), "2026-01-14"),
+                (new Version(2, 0,  866, 0), "2025-12-16"),
+                (new Version(2, 0,  804, 0), "2025-11-12"),
+                (new Version(2, 0,  757, 0), "2025-10-23"),
+            };
+            var latestKnownWindowsApp = publishedWindowsApp[0].ver;
+            var latestDate = publishedWindowsApp[0].date;
+            // N-3 = the 4th-newest published release (or the oldest we know about if the
+            // list is shorter). Anything older than this (N-4+) is unsupported.
+            int n3Index = Math.Min(3, publishedWindowsApp.Length - 1);
+            var minimumSupported = publishedWindowsApp[n3Index].ver;
 
             if (primaryClient == "Windows App" && primaryVersion != null)
             {
@@ -3200,23 +3234,24 @@ class Program
 
                 if (primaryVersion >= latestKnownWindowsApp)
                 {
-                    sb.AppendLine($"\u2714 Running latest known version (released {latestDate:yyyy-MM-dd})");
+                    sb.AppendLine($"\u2714 Running latest known version (released {latestDate})");
                     result.Status = "Passed";
                     result.ResultValue = $"Windows App {primaryVersion} \u2014 up to date";
                 }
                 else if (primaryVersion >= minimumSupported)
                 {
-                    sb.AppendLine($"\u26a0 Update available: latest known version is {latestKnownWindowsApp} (released {latestDate:yyyy-MM-dd})");
+                    sb.AppendLine($"\u26a0 Update available: latest known version is {latestKnownWindowsApp} (released {latestDate})");
+                    sb.AppendLine($"  Within the supported window (N-3 minimum is {minimumSupported}).");
                     result.Status = "Warning";
                     result.ResultValue = $"Windows App {primaryVersion} \u2014 update available";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-app/whats-new?tabs=windows";
                 }
                 else
                 {
-                    sb.AppendLine($"\u2718 Version is below minimum supported ({minimumSupported})");
-                    sb.AppendLine($"  Latest known: {latestKnownWindowsApp} (released {latestDate:yyyy-MM-dd})");
+                    sb.AppendLine($"\u2718 Older than N-3 \u2014 below minimum supported version ({minimumSupported})");
+                    sb.AppendLine($"  Latest known: {latestKnownWindowsApp} (released {latestDate})");
                     result.Status = "Failed";
-                    result.ResultValue = $"Windows App {primaryVersion} \u2014 below minimum supported version";
+                    result.ResultValue = $"Windows App {primaryVersion} \u2014 below minimum supported (older than N-3)";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-app/whats-new?tabs=windows";
                 }
             }
@@ -5238,6 +5273,150 @@ class Program
         }
     }
 
+    // ── Network-stack agents (VPN / SWG / proxy / endpoint-security) ──
+    // Components that insert themselves into the host networking path (WFP callout
+    // drivers, NDIS filters, LSPs, per-user UDP source-port assignment). Their
+    // PRESENCE is reported as a neutral inventory ONLY — it is never treated as a
+    // fault and never judged against a version. They are listed because they CAN
+    // affect the in-session RDP Shortpath UDP socket independently of routing or
+    // reachability — the blind spot where TURN/UDP reachability probes pass green
+    // yet the live session quietly falls back to TCP. If a user has Shortpath/UDP
+    // problems, these are the first components to update with the vendor or rule
+    // out. (Process names are best-effort; an unmatched name simply isn't listed.)
+    static readonly (string proc, string label)[] _networkStackAgents =
+    {
+        // VPN clients
+        ("PanGPS",                    "Palo Alto GlobalProtect"),
+        ("vpnagent",                  "Cisco AnyConnect / Secure Client"),
+        ("acwebsecagent",             "Cisco AnyConnect Web Security"),
+        ("FortiSSLVPNdaemon",         "FortiClient SSL VPN"),
+        ("FortiClient",               "FortiClient"),
+        ("openvpn",                   "OpenVPN"),
+        ("wireguard",                 "WireGuard"),
+        ("tailscaled",                "Tailscale"),
+        // SWG / proxy / secure-access agents
+        ("ZscalerService",            "Zscaler"),
+        ("ZSATunnel",                 "Zscaler Tunnel"),
+        ("stAgentSvc",                "Netskope"),
+        ("warp-svc",                  "Cloudflare WARP"),
+        ("acumbrellaagent",           "Cisco Umbrella"),
+        ("iboss",                     "iboss"),
+        ("FA_Scheduler",              "Forcepoint"),
+        ("GlobalSecureAccessClient",  "Microsoft Global Secure Access"),
+        // Endpoint security with network filtering
+        ("CSFalconService",           "CrowdStrike Falcon"),
+        ("SentinelAgent",             "SentinelOne"),
+    };
+
+    /// <summary>Best-effort version of a running agent: the running binary's file
+    /// version first (most accurate), falling back to the installed product's
+    /// Uninstall registry DisplayVersion. Returns null if neither is readable
+    /// (e.g. the service runs cross-session and we lack rights to its module).</summary>
+    static string? TryGetAgentVersion(Process proc, string uninstallKeyword)
+    {
+        try
+        {
+            var fv = proc.MainModule?.FileVersionInfo;
+            var v = fv?.FileVersion ?? fv?.ProductVersion;
+            if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+        }
+        catch { /* Win32Exception (access denied) for elevated/cross-session services — fall through */ }
+
+        if (!string.IsNullOrEmpty(uninstallKeyword))
+        {
+            foreach (var root in new[]
+            {
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            })
+            {
+                try
+                {
+                    using var key = Registry.LocalMachine.OpenSubKey(root);
+                    if (key == null) continue;
+                    foreach (var sub in key.GetSubKeyNames())
+                    {
+                        using var k = key.OpenSubKey(sub);
+                        if (k?.GetValue("DisplayName") is string name &&
+                            name.Contains(uninstallKeyword, StringComparison.OrdinalIgnoreCase) &&
+                            k.GetValue("DisplayVersion") is string dv &&
+                            !string.IsNullOrWhiteSpace(dv))
+                            return dv.Trim();
+                    }
+                }
+                catch { }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Neutral inventory of network-stack agents (VPN / SWG / proxy /
+    /// endpoint-security) that can sit in the host networking path and affect RDP
+    /// Shortpath UDP. PRESENCE IS NOT A FAULT and no version is judged — the row
+    /// always passes and exists purely so that, if Shortpath/UDP is degraded, the
+    /// user can see exactly which inline agents are candidates to update or rule
+    /// out (the blind spot where reachability probes pass yet the session falls
+    /// back to TCP).</summary>
+    static TestResult BuildNetworkStackAgents(string id, string name, string category)
+    {
+        var result = new TestResult { Id = id, Name = name, Category = category };
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Inventory of VPN / SWG / proxy / endpoint-security agents that sit in the");
+            sb.AppendLine("host network stack (WFP callouts, NDIS filters, LSPs, per-user UDP port");
+            sb.AppendLine("assignment). These CAN affect RDP Shortpath UDP independently of routing or");
+            sb.AppendLine("reachability — the case where UDP/TURN reachability probes pass yet the live");
+            sb.AppendLine("session falls back to TCP.");
+            sb.AppendLine();
+            sb.AppendLine("Presence is informational only: it is NOT a fault and no version is judged.");
+            sb.AppendLine("If this tool reports no issues yet network problems persist, check these");
+            sb.AppendLine("agents for updates — or temporarily remove them — to test whether the");
+            sb.AppendLine("network issues still occur without them in the stack.");
+            sb.AppendLine();
+
+            var found = new List<string>();
+            foreach (var agent in _networkStackAgents)
+            {
+                Process[] procs;
+                try { procs = Process.GetProcessesByName(agent.proc); }
+                catch { continue; }
+                if (procs.Length == 0) continue;
+
+                var verStr = TryGetAgentVersion(procs[0], "");
+                var label = verStr != null ? $"{agent.label} (v{verStr})" : agent.label;
+                found.Add(label);
+                sb.AppendLine($"  • {label}  [process {agent.proc}, PID {procs[0].Id}]");
+            }
+
+            if (found.Count == 0)
+            {
+                sb.AppendLine("  ✓ None detected.");
+                result.ResultValue = "No inline network-stack agents detected";
+            }
+            else
+            {
+                result.ResultValue = found.Count == 1
+                    ? $"1 network-stack agent present ({found[0]})"
+                    : $"{found.Count} network-stack agents present";
+            }
+            result.Status = "Info";
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Info";
+            result.ResultValue = $"Agent inventory unavailable: {ex.Message}";
+        }
+        return result;
+    }
+
+    static Task<TestResult> RunNetworkStackAgents()
+        => Task.FromResult(BuildNetworkStackAgents("L-LE-17", "Network Stack Agents", "local"));
+
+    static Task<TestResult> RunCpcNetworkStackAgents()
+        => Task.FromResult(BuildNetworkStackAgents("C-LE-05", "Network Stack Agents (Cloud PC)", "cloudpc-env"));
+
     static async Task<TestResult> RunProxyVpnDetection()
     {
         var result = new TestResult { Id = "L-TCP-07", Name = "Proxy / VPN / SWG Detection", Category = "tcp" };
@@ -5697,6 +5876,7 @@ class Program
                 if (detected.Count > 0)
                     sb.AppendLine($"\n  ℹ Also present but not intercepting RDP: {string.Join("; ", detected)}");
             }
+
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
