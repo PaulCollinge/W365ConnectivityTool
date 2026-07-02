@@ -16,9 +16,9 @@
     <Authors>Paul Collinge</Authors>
     <Description>Local connectivity diagnostics tool for Windows 365 and Azure Virtual Desktop. Runs network tests requiring OS-level access and exports results to the web dashboard.</Description>
     <Copyright>Copyright © Microsoft 2025-2026</Copyright>
-    <Version>1.14.5</Version>
-    <FileVersion>1.14.5.0</FileVersion>
-    <AssemblyVersion>1.14.5.0</AssemblyVersion>
+    <Version>1.14.6</Version>
+    <FileVersion>1.14.6.0</FileVersion>
+    <AssemblyVersion>1.14.6.0</AssemblyVersion>
     <NeutralLanguage>en</NeutralLanguage>
     
     <!-- Application icon -->
@@ -30,6 +30,12 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishTrimmed>true</PublishTrimmed>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- System.Management (WMI) reaches the CIM classes via COM. Self-contained /
+         trimmed publish disables built-in COM interop by default, so enable it
+         explicitly or the NDIS binding sweep throws (COM feature switch / the
+         WmiNetUtilsHelper type initializer). -->
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
 
     <!-- Reproducible build settings. <Deterministic> is true by default in
          the .NET SDK; declared here explicitly so it's visible to reviewers.
@@ -48,6 +54,13 @@
     <PackageReference Include="System.Diagnostics.EventLog" Version="9.0.4" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="9.0.4" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.4" />
+    <PackageReference Include="System.Management" Version="9.0.4" />
+  </ItemGroup>
+
+  <!-- System.Management uses COM/reflection to reach WMI; root it so the
+       single-file trimmer can't strip the types the NDIS binding sweep needs. -->
+  <ItemGroup>
+    <TrimmerRootAssembly Include="System.Management" />
   </ItemGroup>
 
 </Project>

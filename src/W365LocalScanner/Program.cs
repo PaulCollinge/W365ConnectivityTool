@@ -14,6 +14,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
@@ -79,52 +80,178 @@ class Program
 
     // ── Dynamic Service Tags WVD subnet → region lookup ──
     static List<(uint network, uint mask, string region)>? _wvdSubnets = null;
+    const string ServiceTagsDownloadPage = "https://www.microsoft.com/en-us/download/details.aspx?id=56519";
 
     /// <summary>
-    /// Downloads the latest Azure Service Tags JSON and builds a prefix → region
-    /// lookup table for WindowsVirtualDesktop.* entries (IPv4 only).
+    /// Discovers the current Azure Service Tags JSON and builds a prefix → region
+    /// lookup table for WindowsVirtualDesktop.* entries (IPv4 only). Falls back
+    /// to the newest local cache before using the hard-coded tables downstream.
     /// </summary>
     static async Task InitServiceTagsLookupAsync()
     {
-        const string url = "https://download.microsoft.com/download/7/1/d/71d86715-5596-4529-9b13-da13a5de5b63/ServiceTags_Public_20260420.json";
+        Exception? refreshError = null;
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            var json = await http.GetStringAsync(url);
-            var doc = JsonDocument.Parse(json);
-            var entries = new List<(uint network, uint mask, string region)>();
+            using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(20));
+            var (json, sourceUrl, publishedDate) = await DownloadCurrentServiceTagsJsonAsync(http);
+            _wvdSubnets = ParseServiceTagsSubnets(json);
+            CacheServiceTagsJson(json, publishedDate);
+        }
+        catch (Exception ex)
+        {
+            refreshError = ex;
+        }
 
-            foreach (var value in doc.RootElement.GetProperty("values").EnumerateArray())
+        if (_wvdSubnets != null) return;
+
+        var cached = TryLoadCachedServiceTagsJson();
+        if (cached != null)
+        {
+            try
             {
-                var name = value.GetProperty("name").GetString() ?? "";
-                if (!name.StartsWith("WindowsVirtualDesktop.", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                var props = value.GetProperty("properties");
-                var region = props.GetProperty("region").GetString() ?? "";
-                if (string.IsNullOrEmpty(region)) continue;
-
-                foreach (var prefix in props.GetProperty("addressPrefixes").EnumerateArray())
-                {
-                    var cidr = prefix.GetString();
-                    if (cidr == null || cidr.Contains(':')) continue; // skip IPv6
-                    var parts = cidr.Split('/');
-                    if (parts.Length != 2) continue;
-                    if (!IPAddress.TryParse(parts[0], out var addr)) continue;
-                    if (!int.TryParse(parts[1], out var prefixLen)) continue;
-                    var bytes = addr.GetAddressBytes();
-                    uint net = (uint)bytes[0] << 24 | (uint)bytes[1] << 16 | (uint)bytes[2] << 8 | bytes[3];
-                    uint m = prefixLen == 0 ? 0 : ~((1u << (32 - prefixLen)) - 1);
-                    entries.Add((net & m, m, region));
-                }
+                _wvdSubnets = ParseServiceTagsSubnets(cached.Value.json);
+                var ageDays = cached.Value.publishedDate == null
+                    ? null
+                    : (int?)Math.Max(0, (DateTime.UtcNow.Date - cached.Value.publishedDate.Value.Date).Days);
+                Console.WriteLine(ageDays != null
+                    ? $"  Warning: Azure Service Tags refresh failed ({refreshError?.Message}); using cached table from {cached.Value.publishedDate:yyyy-MM-dd} ({ageDays} days old)."
+                    : $"  Warning: Azure Service Tags refresh failed ({refreshError?.Message}); using cached table {Path.GetFileName(cached.Value.path)}.");
+                Console.WriteLine();
+                return;
             }
+            catch (Exception ex)
+            {
+                refreshError = ex;
+            }
+        }
 
-            // Sort by mask descending (longest prefix first) for correct matching
-            entries.Sort((a, b) => b.mask.CompareTo(a.mask));
-            _wvdSubnets = entries;
+        Console.WriteLine($"  Warning: Azure Service Tags could not be loaded ({refreshError?.Message ?? "unknown error"}).");
+        Console.WriteLine("  Falling back to built-in W365/AVD range tables; region and DNS-hijack verdicts may be less current.");
+        Console.WriteLine();
+    }
+
+    static async Task<(string json, string sourceUrl, DateTime? publishedDate)> DownloadCurrentServiceTagsJsonAsync(HttpClient http)
+    {
+        var page = await http.GetStringAsync(ServiceTagsDownloadPage);
+        var matches = Regex.Matches(page, @"https://download\.microsoft\.com/[^""']*ServiceTags_Public_(\d{8})\.json")
+            .Cast<Match>()
+            .Select(m => new
+            {
+                Url = WebUtility.HtmlDecode(m.Value),
+                Published = TryParseServiceTagsDate(m.Groups[1].Value)
+            })
+            .Where(m => m.Published != null)
+            .GroupBy(m => m.Url)
+            .Select(g => g.First())
+            .OrderByDescending(m => m.Published)
+            .ToList();
+
+        if (matches.Count == 0)
+            throw new InvalidOperationException("current Service Tags download link was not found");
+
+        var latest = matches[0];
+        var json = await http.GetStringAsync(latest.Url);
+        return (json, latest.Url, latest.Published);
+    }
+
+    static List<(uint network, uint mask, string region)> ParseServiceTagsSubnets(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var entries = new List<(uint network, uint mask, string region)>();
+
+        foreach (var value in doc.RootElement.GetProperty("values").EnumerateArray())
+        {
+            var name = value.GetProperty("name").GetString() ?? "";
+            if (!name.StartsWith("WindowsVirtualDesktop.", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var props = value.GetProperty("properties");
+            var region = props.GetProperty("region").GetString() ?? "";
+            if (string.IsNullOrEmpty(region)) continue;
+
+            foreach (var prefix in props.GetProperty("addressPrefixes").EnumerateArray())
+            {
+                var cidr = prefix.GetString();
+                if (cidr == null || cidr.Contains(':')) continue; // skip IPv6
+                var parts = cidr.Split('/');
+                if (parts.Length != 2) continue;
+                if (!IPAddress.TryParse(parts[0], out var addr)) continue;
+                if (!int.TryParse(parts[1], out var prefixLen)) continue;
+                if (prefixLen < 0 || prefixLen > 32) continue;
+                var bytes = addr.GetAddressBytes();
+                uint net = (uint)bytes[0] << 24 | (uint)bytes[1] << 16 | (uint)bytes[2] << 8 | bytes[3];
+                uint m = prefixLen == 0 ? 0 : ~((1u << (32 - prefixLen)) - 1);
+                entries.Add((net & m, m, region));
+            }
+        }
+
+        if (entries.Count == 0)
+            throw new InvalidOperationException("Service Tags JSON contained no WindowsVirtualDesktop IPv4 prefixes");
+
+        // Sort by mask descending (longest prefix first) for correct matching
+        entries.Sort((a, b) => b.mask.CompareTo(a.mask));
+        return entries;
+    }
+
+    static string ServiceTagsCacheDirectory()
+    {
+        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(root)) root = Path.GetTempPath();
+        return Path.Combine(root, "W365ConnectivityTool", "service-tags");
+    }
+
+    static void CacheServiceTagsJson(string json, DateTime? publishedDate)
+    {
+        if (publishedDate == null) return;
+        try
+        {
+            var dir = ServiceTagsCacheDirectory();
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"ServiceTags_Public_{publishedDate:yyyyMMdd}.json");
+            File.WriteAllText(path, json, Encoding.UTF8);
+        }
+        catch { /* cache is best-effort */ }
+    }
+
+    static (string json, string path, DateTime? publishedDate)? TryLoadCachedServiceTagsJson()
+    {
+        try
+        {
+            var dir = ServiceTagsCacheDirectory();
+            if (!Directory.Exists(dir)) return null;
+            foreach (var path in Directory.GetFiles(dir, "ServiceTags_Public_*.json")
+                         .Select(p => new { Path = p, Date = TryExtractServiceTagsDate(p) })
+                         .OrderByDescending(x => x.Date ?? DateTime.MinValue))
+            {
+                try
+                {
+                    return (File.ReadAllText(path.Path, Encoding.UTF8), path.Path, path.Date);
+                }
+                catch { /* try next cache file */ }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    static DateTime? TryExtractServiceTagsDate(string value)
+    {
+        var m = Regex.Match(value, @"ServiceTags_Public_(\d{8})\.json", RegexOptions.IgnoreCase);
+        return m.Success ? TryParseServiceTagsDate(m.Groups[1].Value) : null;
+    }
+
+    static DateTime? TryParseServiceTagsDate(string yyyymmdd)
+    {
+        if (yyyymmdd.Length != 8) return null;
+        if (!int.TryParse(yyyymmdd.Substring(0, 4), out var year)) return null;
+        if (!int.TryParse(yyyymmdd.Substring(4, 2), out var month)) return null;
+        if (!int.TryParse(yyyymmdd.Substring(6, 2), out var day)) return null;
+        try
+        {
+            return new DateTime(year, month, day, 0, 0, 0, DateTimeKind.Utc);
         }
         catch
         {
-            // Silently fall through — hardcoded tables will be used as fallback
+            return null;
         }
     }
 
@@ -5283,32 +5410,52 @@ class Program
     // yet the live session quietly falls back to TCP. If a user has Shortpath/UDP
     // problems, these are the first components to update with the vendor or rule
     // out. (Process names are best-effort; an unmatched name simply isn't listed.)
-    // proc = process image name; label = display label; uninstall = a substring that
-    // matches the product's Uninstall-key DisplayName, used to recover a version when
-    // the running binary's file version is unreadable (SYSTEM/session-0 services).
-    static readonly (string proc, string label, string uninstall)[] _networkStackAgents =
+    //
+    // Some agents are pure filter/kernel drivers with NO persistent user-mode
+    // process to match — most notably the Palo Alto Terminal Server (TS) Agent,
+    // which loads its driver at boot and rewrites per-user UDP source ports
+    // (breaking RDP Shortpath) yet is "not technically a network-stack
+    // application" and so was invisible to a process-only scan. For those,
+    // detect INSTALLATION via the Uninstall registry (DisplayName + Publisher):
+    // the driver sits in the path from boot regardless of any running process.
+    //
+    // proc      = running process image name (empty = no user process to match;
+    //             rely on installed-product detection instead).
+    // label     = display label.
+    // uninstall = substring matching the product's Uninstall-key DisplayName —
+    //             used both to recover a version when the running binary's file
+    //             version is unreadable (SYSTEM/session-0 services) AND, for
+    //             driverAgent entries, to detect the installed product itself.
+    // publisher = optional Uninstall Publisher substring, to disambiguate a
+    //             generic DisplayName (e.g. "Terminal Server Agent").
+    // driverAgent = true when the component is a filter/kernel driver that is in
+    //             the network stack whenever INSTALLED (even with no running
+    //             process); such entries are inventoried on installation.
+    static readonly (string proc, string label, string uninstall, string publisher, bool driverAgent)[] _networkStackAgents =
     {
         // VPN clients
-        ("PanGPS",                    "Palo Alto GlobalProtect",           "GlobalProtect"),
-        ("vpnagent",                  "Cisco AnyConnect / Secure Client",  "AnyConnect"),
-        ("acwebsecagent",             "Cisco AnyConnect Web Security",     "Web Security"),
-        ("FortiSSLVPNdaemon",         "FortiClient SSL VPN",               "FortiClient"),
-        ("FortiClient",               "FortiClient",                       "FortiClient"),
-        ("openvpn",                   "OpenVPN",                           "OpenVPN"),
-        ("wireguard",                 "WireGuard",                         "WireGuard"),
-        ("tailscaled",                "Tailscale",                         "Tailscale"),
+        ("PanGPS",                    "Palo Alto GlobalProtect",           "GlobalProtect",       "",           false),
+        ("vpnagent",                  "Cisco AnyConnect / Secure Client",  "AnyConnect",          "",           false),
+        ("acwebsecagent",             "Cisco AnyConnect Web Security",     "Web Security",        "",           false),
+        ("FortiSSLVPNdaemon",         "FortiClient SSL VPN",               "FortiClient",         "",           false),
+        ("FortiClient",               "FortiClient",                       "FortiClient",         "",           false),
+        ("openvpn",                   "OpenVPN",                           "OpenVPN",             "",           false),
+        ("wireguard",                 "WireGuard",                         "WireGuard",           "",           false),
+        ("tailscaled",                "Tailscale",                         "Tailscale",           "",           false),
         // SWG / proxy / secure-access agents
-        ("ZscalerService",            "Zscaler",                           "Zscaler"),
-        ("ZSATunnel",                 "Zscaler Tunnel",                    "Zscaler"),
-        ("stAgentSvc",                "Netskope",                          "Netskope"),
-        ("warp-svc",                  "Cloudflare WARP",                   "Cloudflare WARP"),
-        ("acumbrellaagent",           "Cisco Umbrella",                    "Umbrella"),
-        ("iboss",                     "iboss",                             "iboss"),
-        ("FA_Scheduler",              "Forcepoint",                        "Forcepoint"),
-        ("GlobalSecureAccessClient",  "Microsoft Global Secure Access",    "Global Secure Access"),
+        ("ZscalerService",            "Zscaler",                           "Zscaler",             "",           false),
+        ("ZSATunnel",                 "Zscaler Tunnel",                    "Zscaler",             "",           false),
+        ("stAgentSvc",                "Netskope",                          "Netskope",            "",           false),
+        ("warp-svc",                  "Cloudflare WARP",                   "Cloudflare WARP",     "",           false),
+        ("acumbrellaagent",           "Cisco Umbrella",                    "Umbrella",            "",           false),
+        ("iboss",                     "iboss",                             "iboss",               "",           false),
+        ("FA_Scheduler",              "Forcepoint",                        "Forcepoint",          "",           false),
+        ("GlobalSecureAccessClient",  "Microsoft Global Secure Access",    "Global Secure Access","",           false),
         // Endpoint security with network filtering
-        ("CSFalconService",           "CrowdStrike Falcon",                "CrowdStrike"),
-        ("SentinelAgent",             "SentinelOne",                       "Sentinel"),
+        ("CSFalconService",           "CrowdStrike Falcon",                "CrowdStrike",         "",           false),
+        ("SentinelAgent",             "SentinelOne",                       "Sentinel",            "",           false),
+        // Filter/kernel-driver agents — detected when INSTALLED (no user process)
+        ("",                          "Palo Alto Terminal Server Agent",   "Terminal Server Agent","Palo Alto", true),
     };
 
     /// <summary>Best-effort version of a running agent: the running binary's file
@@ -5353,11 +5500,108 @@ class Program
         return null;
     }
 
-    /// <summary>Neutral inventory of network-stack agents (VPN / SWG / proxy /
+    /// <summary>Finds an installed product in the Uninstall registry by DisplayName
+    /// substring (plus an optional Publisher substring to disambiguate a generic
+    /// name such as "Terminal Server Agent"). Returns the matched DisplayName,
+    /// DisplayVersion (or null) and Publisher (or null) of the first match, else
+    /// null. Used to inventory filter/kernel-driver agents that sit in the network
+    /// stack from boot and therefore have no matching user-mode process to detect
+    /// (e.g. the Palo Alto Terminal Server Agent).</summary>
+    static (string displayName, string? version, string? publisher)? FindInstalledAgent(string displayNameKeyword, string publisherKeyword)
+    {
+        foreach (var root in new[]
+        {
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        })
+        {
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(root);
+                if (key == null) continue;
+                foreach (var sub in key.GetSubKeyNames())
+                {
+                    using var k = key.OpenSubKey(sub);
+                    if (k?.GetValue("DisplayName") is not string name) continue;
+                    if (!name.Contains(displayNameKeyword, StringComparison.OrdinalIgnoreCase)) continue;
+                    var publisher = k.GetValue("Publisher") as string;
+                    if (!string.IsNullOrEmpty(publisherKeyword) &&
+                        (publisher == null || !publisher.Contains(publisherKeyword, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    var version = k.GetValue("DisplayVersion") as string;
+                    return (name, string.IsNullOrWhiteSpace(version) ? null : version.Trim(), publisher);
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+    // Words stripped when computing a component's de-dup key, so the same product
+    // detected via different signals (running process label vs installed DisplayName
+    // vs NDIS binding DisplayName) collapses to one entry — e.g. "Microsoft Global
+    // Secure Access" (process) and "Global Secure Access Client" (binding) both key
+    // to "globalsecureaccess".
+    static readonly HashSet<string> _agentNoiseWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "microsoft","inc","incorporated","corp","corporation","ltd","llc","co",
+        "client","driver","service","svc","agent","networks","network","the","for",
+    };
+
+    /// <summary>Normalises a product/component name to a vendor key for de-duplication:
+    /// lower-cased, punctuation removed, generic noise words dropped.</summary>
+    static string NormAgentKey(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var tokens = Regex.Split(s.ToLowerInvariant(), @"[^a-z0-9]+")
+            .Where(t => t.Length > 0 && !_agentNoiseWords.Contains(t));
+        return string.Concat(tokens);
+    }
+
+    /// <summary>Holistic, vendor-AGNOSTIC view of what is actually bound into the
+    /// network stack: enumerates enabled NDIS bindings via WMI
+    /// (ROOT\StandardCimv2 : MSFT_NetAdapterBindingSettingData — the class behind
+    /// Get-NetAdapterBinding, readable without elevation). Microsoft inbox
+    /// primitives use the "ms_" ComponentID prefix (ms_tcpip, ms_pacer, ms_server,
+    /// …) and are excluded, leaving third-party LWF/protocol drivers (VPN adapters,
+    /// SWG/inspection filters, packet drivers) that we would otherwise need a
+    /// per-product entry to know about. Returns distinct (componentId, displayName).
+    /// Best-effort: returns empty if WMI is unavailable.</summary>
+    static List<(string componentId, string displayName)> EnumerateNdisBoundComponents()
+    {
+        var list = new List<(string, string)>();
+        try
+        {
+            var scope = new ManagementScope(@"\\.\ROOT\StandardCimv2");
+            scope.Connect();
+            var query = new ObjectQuery(
+                "SELECT ComponentID, DisplayName, Enabled FROM MSFT_NetAdapterBindingSettingData");
+            using var searcher = new ManagementObjectSearcher(scope, query);
+            using var results = searcher.Get();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (ManagementBaseObject mo in results)
+            {
+                try
+                {
+                    if (mo["Enabled"] is bool enabled && !enabled) continue;
+                    var cid = mo["ComponentID"] as string ?? "";
+                    if (string.IsNullOrEmpty(cid)) continue;
+                    if (cid.StartsWith("ms_", StringComparison.OrdinalIgnoreCase)) continue; // Microsoft inbox
+                    if (!seen.Add(cid)) continue;
+                    var dn = mo["DisplayName"] as string ?? cid;
+                    list.Add((cid, dn));
+                }
+                finally { mo.Dispose(); }
+            }
+        }
+        catch { /* WMI unavailable / class missing — holistic binding sweep skipped */ }
+        return list;
+    }
+
+    /// <summary>Neutral inventory of network-stack components (VPN / SWG / proxy /
     /// endpoint-security) that can sit in the host networking path and affect RDP
     /// Shortpath UDP. PRESENCE IS NOT A FAULT and no version is judged — the row
     /// always passes and exists purely so that, if Shortpath/UDP is degraded, the
-    /// user can see exactly which inline agents are candidates to update or rule
+    /// user can see exactly which inline components are candidates to update or rule
     /// out (the blind spot where reachability probes pass yet the session falls
     /// back to TCP).</summary>
     static TestResult BuildNetworkStackAgents(string id, string name, string category)
@@ -5366,42 +5610,93 @@ class Program
         try
         {
             var sb = new StringBuilder();
-            sb.AppendLine("Inventory of VPN / SWG / proxy / endpoint-security agents that sit in the");
+            sb.AppendLine("Inventory of VPN / SWG / proxy / endpoint-security components that sit in the");
             sb.AppendLine("host network stack (WFP callouts, NDIS filters, LSPs, per-user UDP port");
             sb.AppendLine("assignment). These CAN affect RDP Shortpath UDP independently of routing or");
             sb.AppendLine("reachability — the case where UDP/TURN reachability probes pass yet the live");
             sb.AppendLine("session falls back to TCP.");
             sb.AppendLine();
             sb.AppendLine("Presence is informational only: it is NOT a fault and no version is judged.");
+            sb.AppendLine("Detection is holistic — it combines three signals so a component is caught");
+            sb.AppendLine("regardless of how it inserts itself:");
+            sb.AppendLine("  1. running user-mode agents (known VPN/SWG/security processes);");
+            sb.AppendLine("  2. installed filter/kernel-driver products with no user process");
+            sb.AppendLine("     (e.g. the Palo Alto Terminal Server Agent, detected via the");
+            sb.AppendLine("     Uninstall registry — it is in the stack from boot yet runs no app);");
+            sb.AppendLine("  3. every non-Microsoft component actually BOUND to a network adapter");
+            sb.AppendLine("     (NDIS bindings via WMI) — a vendor-agnostic sweep that surfaces");
+            sb.AppendLine("     similar products we have no explicit entry for.");
             sb.AppendLine("If this tool reports no issues yet network problems persist, check these");
-            sb.AppendLine("agents for updates — or temporarily remove them — to test whether the");
+            sb.AppendLine("components for updates — or temporarily remove them — to test whether the");
             sb.AppendLine("network issues still occur without them in the stack.");
             sb.AppendLine();
 
+            // Merge the three signals, de-duplicated by vendor key so a component
+            // seen via more than one signal is listed once (running > installed >
+            // bound, by first-write order below).
             var found = new List<string>();
+            var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void Register(string label, string evidence, string dedupSource)
+            {
+                var key = NormAgentKey(dedupSource);
+                if (key.Length == 0 || !seenKeys.Add(key)) return;
+                found.Add(label);
+                sb.AppendLine($"  • {label}  [{evidence}]");
+            }
+
+            // (1) + (2): known agents — running process first, else installed driver.
             foreach (var agent in _networkStackAgents)
             {
-                Process[] procs;
-                try { procs = Process.GetProcessesByName(agent.proc); }
-                catch { continue; }
-                if (procs.Length == 0) continue;
+                Process[] procs = Array.Empty<Process>();
+                if (!string.IsNullOrEmpty(agent.proc))
+                {
+                    try { procs = Process.GetProcessesByName(agent.proc); }
+                    catch { procs = Array.Empty<Process>(); }
+                }
+                if (procs.Length > 0)
+                {
+                    var verStr = TryGetAgentVersion(procs[0], agent.uninstall);
+                    var label = verStr != null ? $"{agent.label} (v{verStr})" : agent.label;
+                    Register(label, $"running — process {agent.proc}, PID {procs[0].Id}", agent.label);
+                    continue;
+                }
+                // Filter/kernel-driver agents: detect via the INSTALLED product even
+                // when no user process matches. The driver sits in the network stack
+                // from boot regardless of any UI/service process — this is the case
+                // that made the Palo Alto Terminal Server Agent invisible to a
+                // process-only scan (a driver, "not technically a network-stack
+                // application", that still rewrites per-user UDP source ports).
+                if (agent.driverAgent && !string.IsNullOrEmpty(agent.uninstall))
+                {
+                    var inst = FindInstalledAgent(agent.uninstall, agent.publisher);
+                    if (inst != null)
+                    {
+                        var label = inst.Value.version != null ? $"{agent.label} (v{inst.Value.version})" : agent.label;
+                        var pub = string.IsNullOrEmpty(inst.Value.publisher) ? "" : $" by {inst.Value.publisher}";
+                        Register(label, $"installed — \"{inst.Value.displayName}\"{pub}; filter/kernel driver, in the stack even with no running process", agent.label);
+                    }
+                }
+            }
 
-                var verStr = TryGetAgentVersion(procs[0], agent.uninstall);
-                var label = verStr != null ? $"{agent.label} (v{verStr})" : agent.label;
-                found.Add(label);
-                sb.AppendLine($"  • {label}  [process {agent.proc}, PID {procs[0].Id}]");
+            // (3): holistic NDIS binding sweep — any non-Microsoft-inbox component
+            // bound to a network adapter, whether or not we have an entry for it.
+            foreach (var (componentId, displayName) in EnumerateNdisBoundComponents())
+            {
+                var label = string.IsNullOrWhiteSpace(displayName) ? componentId : displayName;
+                Register(label, $"NDIS-bound network component (ComponentID {componentId})", label);
             }
 
             if (found.Count == 0)
             {
                 sb.AppendLine("  ✓ None detected.");
-                result.ResultValue = "No inline network-stack agents detected";
+                result.ResultValue = "No inline network-stack components detected";
             }
             else
             {
                 result.ResultValue = found.Count == 1
-                    ? $"1 network-stack agent present ({found[0]})"
-                    : $"{found.Count} network-stack agents present";
+                    ? $"1 network-stack component present ({found[0]})"
+                    : $"{found.Count} network-stack components present";
             }
             result.Status = "Info";
             result.DetailedInfo = sb.ToString().Trim();
