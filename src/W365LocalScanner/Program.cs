@@ -2196,9 +2196,18 @@ class Program
             var times = new List<long>();
             for (int i = 0; i < 5; i++)
             {
-                var reply = await ping.SendPingAsync(gateway, 2000);
-                if (reply.Status == IPStatus.Success)
-                    times.Add(reply.RoundtripTime);
+                try
+                {
+                    var reply = await ping.SendPingAsync(gateway, 2000);
+                    if (reply.Status == IPStatus.Success)
+                        times.Add(reply.RoundtripTime);
+                }
+                catch (Exception)
+                {
+                    // ICMP may be blocked or refused by the gateway (e.g. VPN/SWG tunnel
+                    // gateways such as 169.254.254.1), which throws a PingException. Treat
+                    // it as a non-response sample rather than failing the whole test.
+                }
                 await Task.Delay(200);
             }
 
@@ -9509,8 +9518,11 @@ class Program
                 if (!string.IsNullOrEmpty(edgeRef))
                 {
                     sb.AppendLine($"    Edge Ref: {edgeRef}");
+                    // Ref B formats vary by PoP: "JNB02EDGE0810" (contains "EDGE") and
+                    // "LON212050702025" (digits only, no "EDGE"). Capture the leading PoP/
+                    // airport code (letters before the first digit) to handle both forms.
                     var popMatch = System.Text.RegularExpressions.Regex.Match(
-                        edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})\d*Edge",
+                        edgeRef, @"Ref\s+B:\s*([A-Z]{2,5})\d",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (popMatch.Success)
                     {
