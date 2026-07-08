@@ -631,7 +631,7 @@ function updateMapWifiBadge(lookup) {
 
     let label = ssid ? escapeHtml(ssid) : 'Wi\u2011Fi';
     if (sig !== null) label += `<span class="map-wifi-sig"> · ${sig}%</span>`;
-    if (radioFriendly) label += `<span class="map-wifi-radio"> · ${radioFriendly}</span>`;
+    if (radioFriendly) label += `<span class="map-wifi-radio"> · ${escapeHtml(radioFriendly)}</span>`;
 
     badge.innerHTML = iconSvg + `<span>${label}</span>`;
     badge.className = `map-wifi-badge ${sigClass}`;
@@ -2524,11 +2524,11 @@ function updateMapVpnOverlay(lookup) {
         if (natBadgeContainer && !natBadgeContainer.querySelector('.map-vpn-endpoint-badge')) {
             const epBadge = document.createElement('div');
             epBadge.className = 'map-vpn-badge vpn-active map-vpn-endpoint-badge';
-            epBadge.innerHTML = `🛡️ ${vpnDetail}`;
+            epBadge.innerHTML = `🛡️ ${escapeHtml(vpnDetail)}`;
             natBadgeContainer.querySelector('.device-info').appendChild(epBadge);
         } else {
             const existing = natBadgeContainer && natBadgeContainer.querySelector('.map-vpn-endpoint-badge');
-            if (existing) existing.innerHTML = `🛡️ ${vpnDetail}`;
+            if (existing) existing.innerHTML = `🛡️ ${escapeHtml(vpnDetail)}`;
         }
 
         // Add tunnel label on arrow4 (between Azure and VPN Endpoint after CSS swap)
