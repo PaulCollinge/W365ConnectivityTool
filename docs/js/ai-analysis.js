@@ -37,6 +37,14 @@ function parseSignal(str) {
     return m ? parseInt(m[1], 10) : NaN;
 }
 
+function unrecognisedRouteMatchesDirectGateway(detail) {
+    const directRoute = detail.match(/RDP gateway[^\n]*routes direct via\s+(\d{1,3}(?:\.\d{1,3}){3})/i);
+    const divertedIfIps = [...detail.matchAll(/diverted:[^\n]*, if\s+(\d{1,3}(?:\.\d{1,3}){3})\)/gi)]
+        .map(match => match[1]);
+    return !!directRoute && divertedIfIps.length > 0
+        && divertedIfIps.every(ip => ip === directRoute[1]);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Spike detector
 // ═══════════════════════════════════════════════════════════════════
@@ -652,7 +660,10 @@ function runAnalysisEngine(results) {
         const resVal = (vpn.resultValue || '');
         const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|routes via VPN interface/i.test(detail);
         const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|VPN is active but RDP traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i.test(detail);
-        const tunnelDivertsRdp = /egresses via an UNRECOGNISED non-primary interface|diverts via an unrecognised non-primary interface/i.test(detail) || /unrecognised interface/i.test(resVal);
+        const contradictoryDirectRoute = unrecognisedRouteMatchesDirectGateway(detail);
+        const tunnelDivertsRdp = !contradictoryDirectRoute
+            && (/egresses via an UNRECOGNISED non-primary interface|diverts via an unrecognised non-primary interface/i.test(detail)
+                || /unrecognised interface/i.test(resVal));
         const vpnDetected = /VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
 
         // Pull the precise captured CIDRs from the routing analysis so the finding
@@ -1048,7 +1059,14 @@ function runAnalysisEngine(results) {
 
     // CPC-3: Proxy/VPN on Cloud PC affecting RDP
     const cpcProxy = r('C-TCP-07');
-    if (cpcProxy && (cpcProxy.status === 'Warning' || cpcProxy.status === 'Failed')) {
+    const cpcProxyLegacyFalsePositive = cpcProxy
+        && /^Intercepting RDP traffic \(Diverted route \(unrecognised interface\)\)$/i.test(cpcProxy.resultValue || '')
+        && unrecognisedRouteMatchesDirectGateway(cpcProxy.detailedInfo || '');
+    if (cpcProxyLegacyFalsePositive) {
+        findings.push(finding(SEV.INFO, 'VPN detected — correctly split-tunnelled',
+            'A VPN/SASE adapter is active, but the RDP gateway and excluded W365 routes use the Cloud PC direct interface.',
+            null));
+    } else if (cpcProxy && (cpcProxy.status === 'Warning' || cpcProxy.status === 'Failed')) {
         findings.push(finding(SEV.WARNING, 'Proxy/VPN detected on Cloud PC',
             cpcProxy.resultValue || 'A VPN, proxy, or SWG is active on the Cloud PC network path.',
             'If this is Entra Private Access or Zscaler for general traffic, that is expected. Ensure RDP traffic to W365 gateways is excluded.'));

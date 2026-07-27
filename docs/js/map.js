@@ -957,11 +957,20 @@ function updateMapAfdCard(lookup) {
 // ── VPN context helper ──
 // Returns whether a VPN/SWG is in the RDP path and, if so, the CPC's true
 // Azure region (from IMDS) so other cards can reason about region mismatches.
+function vpnWarningContradictsDirectRoute(tcpVpn) {
+    const detail = (tcpVpn && tcpVpn.detailedInfo) || '';
+    const directRoute = detail.match(/RDP gateway[^\n]*routes direct via\s+(\d{1,3}(?:\.\d{1,3}){3})/i);
+    const divertedIfIps = [...detail.matchAll(/diverted:[^\n]*, if\s+(\d{1,3}(?:\.\d{1,3}){3})\)/gi)]
+        .map(match => match[1]);
+    return !!directRoute && divertedIfIps.length > 0
+        && divertedIfIps.every(ip => ip === directRoute[1]);
+}
+
 function getVpnContext(lookup) {
     const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
     const routeAnalysis = lookup['B-TCP-04'];
     let vpnActive = false;
-    if (tcpVpn && tcpVpn.status === 'Warning') vpnActive = true;
+    if (tcpVpn && tcpVpn.status === 'Warning' && !vpnWarningContradictsDirectRoute(tcpVpn)) vpnActive = true;
     if (!vpnActive && routeAnalysis && routeAnalysis.status === 'Warning') {
         const info = routeAnalysis.detailedInfo || '';
         if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
@@ -2405,8 +2414,16 @@ function updateMapVpnOverlay(lookup) {
     let vpnDetail = '';
 
     if (tcpVpn && tcpVpn.status === 'Warning') {
-        vpnDetected = true;
-        const lines = (tcpVpn.detailedInfo || '').split('\n');
+        const detail = tcpVpn.detailedInfo || '';
+        const lines = detail.split('\n');
+        const contradictoryDirectRoute = vpnWarningContradictsDirectRoute(tcpVpn);
+        const namedVpnCarriesTraffic = /VPN tunnel is carrying W365\/AVD traffic|RDP gateway[^\n]*routes via VPN interface/i.test(detail);
+
+        // Older scanners could call the Azure VM NIC "unrecognised" when a
+        // SASE adapter owned the default route, then identify that same NIC as
+        // the direct gateway path later in the test. Trust the endpoint route
+        // and do not draw the detected-but-non-intercepting VPN into the path.
+        vpnDetected = !contradictoryDirectRoute;
 
         // 1. Specific VPN adapter (e.g. "Teleport", "Unifi Teleport VPN") — prefer this
         //    so we show the actual product name rather than generic "VPN/SWG".
@@ -2414,7 +2431,9 @@ function updateMapVpnOverlay(lookup) {
         //    these are not VPN tunnels. Scanner v1.12.4+ filters them out, but older
         //    scanner exports still contain them, so we re-filter here.
         const TRANSITION_RE = /\b(Teredo|isatap|6to4)\b/i;
-        const vpnLine = lines.find(l => /VPN adapter detected:/i.test(l) && !TRANSITION_RE.test(l));
+        const vpnLine = namedVpnCarriesTraffic
+            ? lines.find(l => /VPN adapter detected:/i.test(l) && !TRANSITION_RE.test(l))
+            : null;
         // 2. Specific SWG product lines — only match actual vendor names, NOT the
         //    generic summary "W365 traffic may be routing through VPN/SWG".
         const swgLine = lines.find(l => /(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP)/i.test(l));
@@ -2429,7 +2448,7 @@ function updateMapVpnOverlay(lookup) {
         // mis-labeled as "Teredo intercepting RDP").
         const onlyTransition = !vpnLine && !swgLine && !proxyLine
             && lines.some(l => /VPN adapter detected:/i.test(l) && TRANSITION_RE.test(l));
-        if (onlyTransition) {
+        if (!vpnDetected || onlyTransition) {
             vpnDetected = false;
         } else if (vpnLine) {
             // Parse: "ℹ VPN adapter detected: Teleport (Unifi Teleport VPN)"

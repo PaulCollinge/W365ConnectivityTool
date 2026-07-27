@@ -1619,14 +1619,27 @@ class Program
     static HashSet<string> GetPrimaryEgressIfIps()
     {
         var set = new HashSet<string>();
+        AddRouteEgressAdapterIps(set, IPAddress.Parse("8.8.8.8"));
+
+        // A SASE/VPN can own the general-internet default route while W365 is
+        // correctly excluded onto the VM's Azure NIC. On a VM already proven by
+        // IMDS, the interface Windows selects for the Azure fabric endpoint is
+        // therefore also an authoritative direct path.
+        if (_azureVmRegion != null)
+            AddRouteEgressAdapterIps(set, IPAddress.Parse("169.254.169.254"));
+
+        return set;
+    }
+
+    static void AddRouteEgressAdapterIps(HashSet<string> set, IPAddress target)
+    {
         try
         {
             using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            sock.Connect(IPAddress.Parse("8.8.8.8"), 443); // no packets sent; just binds the egress
+            sock.Connect(target, 443); // no packets sent; just selects the route
             var localIp = ((IPEndPoint)sock.LocalEndPoint!).Address.ToString();
             set.Add(localIp);
-            // Add every IPv4 address on the SAME adapter, so secondary IPs on the
-            // primary NIC also count as the direct path.
+
             foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
             {
                 var ips = ni.GetIPProperties().UnicastAddresses
@@ -1636,8 +1649,7 @@ class Program
                     foreach (var ip in ips) set.Add(ip);
             }
         }
-        catch { /* offline or blocked — leave empty so the diverted check is skipped */ }
-        return set;
+        catch { /* unavailable route — retain any other direct-path evidence */ }
     }
 
     record struct RouteEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
