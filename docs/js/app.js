@@ -488,12 +488,12 @@ function setupDragDrop() {
         const file = e.dataTransfer.files[0];
         if (!file || !file.name.endsWith('.json')) return;
         try {
-            const text = await file.text();
-            const data = JSON.parse(text);
+            const data = await parseLocalJsonFile(file);
             if (routeWatchTimeline(data)) return;
             processImportedData(data);
         } catch (err) {
             console.error('Drag-drop import failed:', err);
+            alert(`Error reading file: ${err.message}`);
         }
     });
 }
@@ -922,8 +922,7 @@ async function importLocalResults(event) {
     if (!file) return;
 
     try {
-        const text = await file.text();
-        const data = JSON.parse(text);
+        const data = await parseLocalJsonFile(file);
         if (routeWatchTimeline(data)) return;
         processImportedData(data);
     } catch (e) {
@@ -1169,6 +1168,16 @@ function decodeUncompressedHash(raw) {
 const VALID_IMPORT_STATUSES = new Set(['Passed', 'Failed', 'Warning', 'Error', 'Skipped', 'NotRun', 'Pending', 'Info']);
 const MAX_IMPORT_RESULTS = 2000;
 const MAX_IMPORT_STRING_LEN = 200000; // 200 KB per field — detailedInfo can be large but not unbounded
+const MAX_LOCAL_IMPORT_BYTES = 25 * 1024 * 1024; // Allows long Watch timelines while bounding file.text() and JSON.parse()
+
+async function parseLocalJsonFile(file) {
+    if (!file || typeof file.size !== 'number') throw new Error('No readable file was selected.');
+    if (file.size > MAX_LOCAL_IMPORT_BYTES) {
+        const limitMb = MAX_LOCAL_IMPORT_BYTES / (1024 * 1024);
+        throw new Error(`File is too large (${file.size.toLocaleString()} bytes). The import limit is ${limitMb} MB.`);
+    }
+    return JSON.parse(await file.text());
+}
 
 function sanitizeImportedResult(lr) {
     if (!lr || typeof lr !== 'object') return null;
@@ -2575,9 +2584,11 @@ function exportCsvReport() {
     const machineName = _importedMachineName || 'Unknown';
     const scanDate    = _importedScanTimestamp || new Date().toLocaleString();
 
-    // Wrap a value safely for CSV (quote and escape internal quotes)
+    // Wrap a value safely for CSV. Excel evaluates formula-leading cells even
+    // when quoted, so prefix those values with an apostrophe before escaping.
     const csv = val => {
-        const s = String(val ?? '').replace(/\r?\n/g, ' ').replace(/"/g, '""');
+        let s = String(val ?? '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+        if (/^[=+\-@\t]/.test(s)) s = `'${s}`;
         return `"${s}"`;
     };
 
@@ -2809,8 +2820,7 @@ async function importBaselineResults(event) {
     const file = event.target.files[0];
     if (!file) return;
     try {
-        const text = await file.text();
-        const data = JSON.parse(text);
+        const data = await parseLocalJsonFile(file);
         const baselineResults = Array.isArray(data.results) ? data.results : (Array.isArray(data) ? data : null);
         if (!baselineResults) { alert('Invalid baseline file. Expected a W365 Connectivity JSON export.'); return; }
         const baselineMachine = data.machineName || 'Baseline';

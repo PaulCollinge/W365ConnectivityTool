@@ -334,7 +334,7 @@ function setDualLatencyBadge(elementId, clientMs, cpcMs, isTcp) {
  */
 function extractMs(result, opts) {
     if (!result) return null;
-    const allowDuration = !opts || opts.allowDuration === true;
+    const allowDuration = opts && opts.allowDuration === true;
     const preferHttps = opts && opts.prefer === 'https';
 
     // 1. Section-scoped extraction (must be tried first when requested)
@@ -949,7 +949,7 @@ function updateMapAfdCard(lookup) {
         prefer: 'https',
         allowDuration: false
     });
-    setDualLatencyBadge('map-afd-badge', extractMs(clientLat), cpcAfdMs, true);
+    setDualLatencyBadge('map-afd-badge', extractMs(clientLat, { allowDuration: true }), cpcAfdMs, true);
 
     setAccentStatus('map-afd-accent', status);
 }
@@ -1054,7 +1054,7 @@ function extractGwFqdn(info) {
 // detector uses, so the map and the AI finding can never disagree.
 const LIGHT_KM_PER_MS_MAP = 300;
 function gatewayMeasuredRttMs(lookup) {
-    return extractMs(lookup['B-TCP-02']);
+    return extractMs(lookup['B-TCP-02'], { allowDuration: true });
 }
 // Tightest provable UPPER BOUND on a single network RTT (ms). Reuses the
 // ai-analysis helper (min across B-TCP-02 / B-EP-01 / B-TCP-03, each /2 for the
@@ -1065,7 +1065,7 @@ function gatewayPerRttUpperBoundMs(lookup) {
         const v = minNetworkRttUpperBoundMs(_lastMapResults);
         if (v != null) return v;
     }
-    const httpsMs = extractMs(lookup['B-TCP-02']);
+    const httpsMs = extractMs(lookup['B-TCP-02'], { allowDuration: true });
     return httpsMs != null ? httpsMs / 2 : null;
 }
 function hairpinFloorMs(distKm) { return (2 * distKm) / LIGHT_KM_PER_MS_MAP; }
@@ -1369,7 +1369,7 @@ function updateMapRdGwCard(lookup) {
         prefer: 'tcp',
         allowDuration: false
     });
-    setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat), cpcRdgwMs, true);
+    setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat, { allowDuration: true }), cpcRdgwMs, true);
 
     // ── RD Gateway proximity: follows the USER's EGRESS, NOT the CPC region ──
     // The RD gateway is AFD-selected from the USER's internet egress, so a

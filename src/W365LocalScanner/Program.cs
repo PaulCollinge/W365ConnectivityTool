@@ -6213,68 +6213,95 @@ class Program
         {
             var host = "world.relay.avd.microsoft.com";
             var port = 3478;
-            var ips = await Dns.GetHostAddressesAsync(host);
 
-            if (ips.Length == 0)
+            // Collect multiple distinct IPv4 relay IPs from the required TURN range (51.5.0.0/16).
+            // DNS (Azure Traffic Manager) round-robins across several relays; an individual relay IP
+            // can be unreachable — or intermittently blocked by an upstream SWG — while the range as a
+            // whole is open. Basing a CRITICAL "UDP 3478 blocked" verdict on a single DNS answer is
+            // fragile, so resolve a few times to gather round-robin IPs and probe each until one
+            // responds. Only report a block if EVERY resolved relay IP fails.
+            var relayIps = new List<IPAddress>();
+            var seenIps = new HashSet<IPAddress>();
+            for (int i = 0; i < 6 && relayIps.Count < 4; i++)
+            {
+                try
+                {
+                    var addrs = await Dns.GetHostAddressesAsync(host);
+                    foreach (var a in addrs.Where(a => a.AddressFamily == AddressFamily.InterNetwork))
+                        if (seenIps.Add(a)) relayIps.Add(a);
+                }
+                catch { }
+                if (relayIps.Count >= 2) break;
+                await Task.Delay(200); // Brief pause to allow DNS round-robin rotation
+            }
+
+            if (relayIps.Count == 0)
             {
                 result.Status = "Failed";
                 result.ResultValue = $"Could not resolve {host}";
                 return result;
             }
 
-            var ip = ips.First(i => i.AddressFamily == AddressFamily.InterNetwork);
+            // Send a STUN binding request per IP. UDP has no transport-layer retransmission, so a single
+            // unACKed datagram lost on a lossy path would falsely read as "UDP 3478 blocked". Retry up to
+            // 3× per IP and validate the STUN Binding Success (0x0101) response, mirroring L-UDP-05, so
+            // transient loss can't produce a phantom block. A genuine block gets no valid response from
+            // ANY resolved relay IP across all attempts.
+            const int maxAttempts = 3;
             using var udp = new UdpClient();
 
-            // Send a STUN binding request. UDP has no transport-layer retransmission, so a single
-            // unACKed datagram lost on a lossy path would falsely read as "UDP 3478 blocked" — a
-            // CRITICAL "Shortpath dead" verdict off one dropped packet. Retry up to 3× and validate
-            // the STUN Binding Success (0x0101) response, mirroring L-UDP-05, so transient loss can't
-            // produce a phantom block. A genuine block still gets no valid response on all attempts.
-            var stunRequest = BuildStunRequest();
-            var endpoint = new IPEndPoint(ip, port);
-            const int maxAttempts = 3;
+            IPAddress? reachableIp = null;
             long rttMs = 0;
             int responseBytes = 0;
-            bool reachable = false;
+            var triedNotes = new List<string>();
 
-            for (int attempt = 1; attempt <= maxAttempts && !reachable; attempt++)
+            foreach (var ip in relayIps)
             {
-                try
+                var endpoint = new IPEndPoint(ip, port);
+                bool thisReachable = false;
+                for (int attempt = 1; attempt <= maxAttempts && !thisReachable; attempt++)
                 {
-                    var sw = Stopwatch.StartNew();
-                    await udp.SendAsync(stunRequest, stunRequest.Length, endpoint);
-                    var receiveTask = udp.ReceiveAsync();
-                    if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
+                    try
                     {
-                        var response = await receiveTask;
-                        // Validate it is a STUN Binding Success Response (0x0101), not a stray datagram.
-                        if (response.Buffer.Length >= 20 && ((response.Buffer[0] << 8) | response.Buffer[1]) == 0x0101)
+                        var stunRequest = BuildStunRequest();
+                        var sw = Stopwatch.StartNew();
+                        await udp.SendAsync(stunRequest, stunRequest.Length, endpoint);
+                        var response = await ReceiveExpectedStunResponse(udp, stunRequest, endpoint, TimeSpan.FromSeconds(3));
+                        if (response.HasValue)
                         {
                             sw.Stop();
                             rttMs = sw.ElapsedMilliseconds;
-                            responseBytes = response.Buffer.Length;
-                            reachable = true;
+                            responseBytes = response.Value.Buffer.Length;
+                            thisReachable = true;
                         }
+                        // else: timeout — retry
                     }
-                    // else: timeout — retry
+                    catch
+                    {
+                        // Send/receive error — retry
+                    }
                 }
-                catch
+
+                if (thisReachable)
                 {
-                    // Send/receive error — retry
+                    reachableIp = ip;
+                    triedNotes.Add($"  \u2714 {ip}: STUN success, {rttMs}ms");
+                    break; // one working relay in the required range is enough
                 }
+                triedNotes.Add($"  \u2717 {ip}: no valid response after {maxAttempts} attempts");
             }
 
-            if (reachable)
+            if (reachableIp != null)
             {
                 result.Status = "Passed";
-                result.ResultValue = $"TURN relay reachable at {ip}:{port} — {rttMs}ms RTT";
-                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nPort: {port}\nResponse: {responseBytes} bytes\nLatency: {rttMs}ms\n\nNote: This tests UDP 3478 reachability via DNS-resolved IP. The actual session TURN relay is assigned by the RDP gateway (via CRLB anycast), not by client DNS.";
+                result.ResultValue = $"TURN relay reachable at {reachableIp}:{port} — {rttMs}ms RTT";
+                result.DetailedInfo = $"Host: {host}\nPort: {port}\nResponse: {responseBytes} bytes\nLatency: {rttMs}ms\n\nRelay IPs probed (required range 51.5.0.0/16):\n{string.Join("\n", triedNotes)}\n\nNote: This tests UDP 3478 reachability via DNS-resolved IP(s). The actual session TURN relay is assigned by the RDP gateway (via CRLB anycast), not by client DNS.";
             }
             else
             {
                 result.Status = "Failed";
-                result.ResultValue = $"TURN relay {ip}:{port} — UDP 3478 blocked (RDP Shortpath will not work)";
-                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nSent {maxAttempts} STUN binding requests but received no valid response, so outbound UDP 3478 is blocked by a firewall or network policy.\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded — higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
+                result.ResultValue = $"UDP 3478 blocked to all {relayIps.Count} TURN relay IP(s) tried (RDP Shortpath will not work)";
+                result.DetailedInfo = $"Host: {host}\nPort: {port}\n\nProbed every resolved relay IP in the required TURN range (51.5.0.0/16) and none responded to a STUN binding request, so outbound UDP 3478 is blocked by a firewall, VPN, or SWG:\n{string.Join("\n", triedNotes)}\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded — higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
         }
@@ -6776,8 +6803,14 @@ class Program
             var stunIp1 = sortedIps[0];
             var stunIp2 = sortedIps[1];
 
+            // Server 1 is always a required TURN relay (resolved from turnHost). Server 2 may be the
+            // stun.azure.com fallback (20.202.0.0/16), which is NOT a W365-required range — so its
+            // success or failure alone must never drive a W365-relevant reachability verdict. It is
+            // only ever used as a second reference point for NAT-type classification.
+            bool server2IsFallback = !turnIps.Contains(stunIp2);
+
             sb.AppendLine($"Server 1: {stunIp1} ({turnHost})");
-            sb.AppendLine($"Server 2: {stunIp2} ({(sortedIps.Count > 1 && turnIps.Contains(stunIp2) ? turnHost : "stun.azure.com")})");
+            sb.AppendLine($"Server 2: {stunIp2} ({(server2IsFallback ? "stun.azure.com \u2014 NOT a W365-required range" : turnHost)})");
             if (sortedIps.Count > 2)
                 sb.AppendLine($"  (also resolved: {string.Join(", ", sortedIps.Skip(2))})");
             sb.AppendLine();
@@ -6796,13 +6829,27 @@ class Program
 
             if (mapped1 == null && mapped2 == null)
             {
-                sb.AppendLine("✗ Neither STUN server responded.");
-                sb.AppendLine("  UDP port 3478 is blocked by firewall, VPN, or SWG.");
+                if (server2IsFallback)
+                {
+                    // Server 2 is stun.azure.com (20.202.0.0/16) — NOT a W365-required range — so its
+                    // silence is not evidence of a W365-relevant block (many networks legitimately do
+                    // not allow it). The verdict rests solely on Server 1, the required TURN relay
+                    // (51.5.0.0/16), which also did not respond.
+                    sb.AppendLine("✗ The required TURN relay did not respond to STUN on UDP 3478.");
+                    sb.AppendLine($"  Server 1 (required, 51.5.0.0/16): {stunIp1} — no response");
+                    sb.AppendLine($"  Server 2 (stun.azure.com, NOT W365-required): {stunIp2} — no response (excluded from verdict)");
+                    sb.AppendLine("  → Verdict is based only on the required TURN relay above.");
+                }
+                else
+                {
+                    sb.AppendLine("✗ Neither required TURN relay responded.");
+                }
+                sb.AppendLine("  UDP port 3478 to 51.5.0.0/16 is blocked by a firewall, VPN, or SWG.");
                 sb.AppendLine("  RDP Shortpath for public networks will NOT work — RDP falls back to TCP via the gateway (port 443).");
                 sb.AppendLine("  A session can still be made over TCP, but the experience is significantly degraded (higher latency, poor under packet loss).");
                 result.Status = "Failed";
-                result.ResultValue = "STUN failed — UDP 3478 blocked (RDP Shortpath will not work)";
-                result.RemediationText = "Allow outbound UDP 3478 to Microsoft STUN/TURN servers so RDP Shortpath can be used.";
+                result.ResultValue = "STUN failed — UDP 3478 to required TURN range blocked (RDP Shortpath will not work)";
+                result.RemediationText = "Allow outbound UDP 3478 to the AVD TURN range (51.5.0.0/16) so RDP Shortpath can be used.";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
             else if (mapped1 == null || mapped2 == null)
@@ -6810,25 +6857,46 @@ class Program
                 var working = mapped1 ?? mapped2;
                 var okIp = mapped1 != null ? stunIp1 : stunIp2;
                 var failIp = mapped1 == null ? stunIp1 : stunIp2;
+                string LabelFor(IPAddress ipx) => (ipx.Equals(stunIp2) && server2IsFallback) ? "stun.azure.com \u2014 NOT a W365-required range" : turnHost;
+                // The responder counts as proof the required range is open ONLY if it is a required
+                // TURN relay. A response from the non-required stun.azure.com fallback does NOT prove
+                // the required 51.5.0.0/16 range is reachable.
+                bool responderIsRequired = !(okIp.Equals(stunIp2) && server2IsFallback);
                 sb.AppendLine($"⚠ Only one STUN server responded — reflexive endpoint: {working}");
-                sb.AppendLine($"  Responding:     {okIp} ({turnHost})");
-                sb.AppendLine($"  Non-responding: {failIp} ({turnHost})");
+                sb.AppendLine($"  Responding:     {okIp} ({LabelFor(okIp)})");
+                sb.AppendLine($"  Non-responding: {failIp} ({LabelFor(failIp)})");
                 sb.AppendLine();
                 sb.AppendLine("NAT Type: Cannot determine (need two server responses to compare)");
                 sb.AppendLine();
-                sb.AppendLine("However, STUN binding DID succeed, which confirms:");
-                sb.AppendLine("  • Outbound UDP 3478 to 51.5.0.0/16 is NOT fully blocked");
-                sb.AppendLine("  • RDP Shortpath via TURN relay should work");
-                sb.AppendLine("  • STUN direct hole-punching may also work (NAT type unknown)");
+                if (responderIsRequired)
+                {
+                    sb.AppendLine("However, STUN binding DID succeed against the required TURN range, which confirms:");
+                    sb.AppendLine("  • Outbound UDP 3478 to 51.5.0.0/16 is NOT fully blocked");
+                    sb.AppendLine("  • RDP Shortpath via TURN relay should work");
+                    sb.AppendLine("  • STUN direct hole-punching may also work (NAT type unknown)");
+                    result.Status = "Warning";
+                    result.ResultValue = $"Partial STUN — NAT type undetermined ({working})";
+                    result.RemediationText = $"TURN server {failIp} did not respond to STUN. UDP works but NAT type could not be classified.";
+                }
+                else
+                {
+                    // Only the non-required stun.azure.com responded; the required TURN relay did not.
+                    // Its success does NOT prove the required range is open, so do not count it.
+                    sb.AppendLine("⚠ Only the non-required fallback server (stun.azure.com) responded; the");
+                    sb.AppendLine("  required TURN relay (51.5.0.0/16) did NOT respond. stun.azure.com is outside");
+                    sb.AppendLine("  the W365 requirements, so its response does not confirm the required TURN");
+                    sb.AppendLine("  range is reachable — treat UDP 3478 to 51.5.0.0/16 as suspect (see L-UDP-03).");
+                    result.Status = "Warning";
+                    result.ResultValue = "Required TURN relay did not respond (only non-required stun.azure.com did) — inconclusive";
+                    result.RemediationText = "The required TURN range (51.5.0.0/16) did not respond on UDP 3478. Verify it is allowed; see L-UDP-03.";
+                    result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
+                }
                 sb.AppendLine();
                 sb.AppendLine("NAT type reference (for when both servers respond):");
                 sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
                 sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
                 sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
                 sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails");
-                result.Status = "Warning";
-                result.ResultValue = $"Partial STUN — NAT type undetermined ({working})";
-                result.RemediationText = $"TURN server {failIp} did not respond to STUN. UDP works but NAT type could not be classified.";
             }
             else if (mapped1 == mapped2)
             {
@@ -6994,29 +7062,24 @@ class Program
     /// </summary>
     static async Task<string?> SendStunAndGetMapped(UdpClient udp, IPEndPoint server, StringBuilder sb, string label)
     {
-        var stunReq = BuildStunRequest();
         const int maxAttempts = 3;
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
+                var stunReq = BuildStunRequest();
                 await udp.SendAsync(stunReq, stunReq.Length, server);
-                var recvTask = udp.ReceiveAsync();
-                if (await Task.WhenAny(recvTask, Task.Delay(3000)) == recvTask)
+                var resp = await ReceiveExpectedStunResponse(udp, stunReq, server, TimeSpan.FromSeconds(3));
+                if (resp.HasValue)
                 {
-                    var resp = await recvTask;
-                    // Validate STUN response: type should be 0x0101 (Binding Success)
-                    if (resp.Buffer.Length >= 20 && ((resp.Buffer[0] << 8) | resp.Buffer[1]) == 0x0101)
+                    var mapped = ParseStunMappedAddress(resp.Value.Buffer);
+                    if (mapped != null)
                     {
-                        var mapped = ParseStunMappedAddress(resp.Buffer);
-                        if (mapped != null)
-                        {
-                            sb.AppendLine($"  {label} ({server.Address}): reflexive = {mapped}" + (attempt > 1 ? $" (attempt {attempt})" : ""));
-                            return mapped;
-                        }
+                        sb.AppendLine($"  {label} ({server.Address}): reflexive = {mapped}" + (attempt > 1 ? $" (attempt {attempt})" : ""));
+                        return mapped;
                     }
-                    sb.AppendLine($"  {label} ({server.Address}): invalid STUN response ({resp.Buffer.Length} bytes)");
+                    sb.AppendLine($"  {label} ({server.Address}): STUN response had no mapped address ({resp.Value.Buffer.Length} bytes)");
                     return null;
                 }
                 // Timeout — retry
@@ -7849,34 +7912,25 @@ class Program
             using var udp = new UdpClient();
             udp.Client.ReceiveTimeout = 3000;
             var ep = new IPEndPoint(ip, port);
-            var stunReq = BuildStunRequest();
-
             // Retry up to 3× and validate the STUN Binding Success (0x0101) response. UDP has no
             // retransmission, so a single lost datagram on a lossy path would otherwise read as
             // "UDP blocked / Shortpath unavailable". A genuine block still gets no valid response
             // across all attempts. Mirrors L-UDP-03 / L-UDP-05.
             const int maxAttempts = 3;
             bool reachable = false;
-            bool validStun = false;
             double rttMs = 0;
 
             for (int attempt = 1; attempt <= maxAttempts && !reachable; attempt++)
             {
+                var stunReq = BuildStunRequest();
                 var sw = Stopwatch.StartNew();
                 await udp.SendAsync(stunReq, stunReq.Length, ep);
-                var recvTask = udp.ReceiveAsync();
-                var completed = await Task.WhenAny(recvTask, Task.Delay(3000));
-                if (completed == recvTask)
+                var resp = await ReceiveExpectedStunResponse(udp, stunReq, ep, TimeSpan.FromSeconds(3));
+                if (resp.HasValue)
                 {
                     sw.Stop();
-                    var resp = await recvTask;
-                    validStun = resp.Buffer.Length >= 20 && ((resp.Buffer[0] << 8) | resp.Buffer[1]) == 0x0101;
-                    if (validStun)
-                    {
-                        rttMs = sw.Elapsed.TotalMilliseconds;
-                        reachable = true;
-                    }
-                    // non-STUN datagram — treat as not-yet-confirmed, retry
+                    rttMs = sw.Elapsed.TotalMilliseconds;
+                    reachable = true;
                 }
                 // else: timeout — retry
             }
@@ -9255,6 +9309,36 @@ class Program
         // Transaction ID (12 cryptographically random bytes per RFC 5389)
         System.Security.Cryptography.RandomNumberGenerator.Fill(msg.AsSpan(8, 12));
         return msg;
+    }
+
+    static async Task<UdpReceiveResult?> ReceiveExpectedStunResponse(
+        UdpClient udp,
+        byte[] request,
+        IPEndPoint server,
+        TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            while (true)
+            {
+                var response = await udp.ReceiveAsync(cts.Token);
+                if (response.RemoteEndPoint.Address.Equals(server.Address) &&
+                    response.RemoteEndPoint.Port == server.Port &&
+                    response.Buffer.Length >= 20 &&
+                    response.Buffer[0] == 0x01 && response.Buffer[1] == 0x01 &&
+                    response.Buffer[4] == 0x21 && response.Buffer[5] == 0x12 &&
+                    response.Buffer[6] == 0xA4 && response.Buffer[7] == 0x42 &&
+                    response.Buffer.AsSpan(8, 12).SequenceEqual(request.AsSpan(8, 12)))
+                {
+                    return response;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     static string? ParseStunMappedAddress(byte[] data)
@@ -11806,13 +11890,15 @@ class Program
                 try
                 {
                     await udp.SendAsync(req, req.Length, stunEp);
-                    using var cts = new CancellationTokenSource(600);
-                    var res = await udp.ReceiveAsync(cts.Token);
-                    sw.Stop();
-                    recv++;
-                    rtts.Add(sw.Elapsed.TotalMilliseconds);
-                    var mapped = ParseStunMappedAddress(res.Buffer);
-                    if (mapped != null) egress = mapped.Split(':')[0];
+                    var res = await ReceiveExpectedStunResponse(udp, req, stunEp, TimeSpan.FromMilliseconds(600));
+                    if (res.HasValue)
+                    {
+                        sw.Stop();
+                        recv++;
+                        rtts.Add(sw.Elapsed.TotalMilliseconds);
+                        var mapped = ParseStunMappedAddress(res.Value.Buffer);
+                        if (mapped != null) egress = mapped.Split(':')[0];
+                    }
                 }
                 catch { /* lost / timed out */ }
                 await Task.Delay(15);
