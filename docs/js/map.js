@@ -957,20 +957,37 @@ function updateMapAfdCard(lookup) {
 // ── VPN context helper ──
 // Returns whether a VPN/SWG is in the RDP path and, if so, the CPC's true
 // Azure region (from IMDS) so other cards can reason about region mismatches.
-function vpnWarningContradictsDirectRoute(tcpVpn) {
-    const detail = (tcpVpn && tcpVpn.detailedInfo) || '';
-    const directRoute = detail.match(/RDP gateway[^\n]*routes direct via\s+(\d{1,3}(?:\.\d{1,3}){3})/i);
-    const divertedIfIps = [...detail.matchAll(/diverted:[^\n]*, if\s+(\d{1,3}(?:\.\d{1,3}){3})\)/gi)]
+function vpnWarningContradictsDirectRoute(tcpVpn, source) {
+    if (!tcpVpn || tcpVpn.id !== 'C-TCP-07') return false;
+    const get = id => Array.isArray(source)
+        ? source.find(result => result && result.id === id)
+        : source && source[id];
+    const imds = get('C-NET-01');
+    const egress = get('C-NET-02');
+    if (!imds || !egress || egress.status !== 'Passed') return false;
+
+    const azureNic = ((imds.detailedInfo || '').match(/Private IP:\s*(\d{1,3}(?:\.\d{1,3}){3})/i) || [])[1];
+    const localRoutes = [...(egress.detailedInfo || '').matchAll(/Local route:\s*(\d{1,3}(?:\.\d{1,3}){3})/gi)]
         .map(match => match[1]);
-    return !!directRoute && divertedIfIps.length > 0
-        && divertedIfIps.every(ip => ip === directRoute[1]);
+    const directChecks = ((egress.detailedInfo || '').match(/does not route via VPN adapter/gi) || []).length;
+    const routeTests = [tcpVpn, get('C-UDP-07')].filter(Boolean);
+    const divertedIfIps = routeTests.flatMap(test =>
+        [...(test.detailedInfo || '').matchAll(/diverted:[^\n]*, if\s+(\d{1,3}(?:\.\d{1,3}){3})\)/gi)]
+            .map(match => match[1]));
+
+    return !!azureNic
+        && localRoutes.length >= 2
+        && localRoutes.every(ip => ip === azureNic)
+        && directChecks >= 2
+        && divertedIfIps.length > 0
+        && divertedIfIps.every(ip => ip === azureNic);
 }
 
 function getVpnContext(lookup) {
     const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
     const routeAnalysis = lookup['B-TCP-04'];
     let vpnActive = false;
-    if (tcpVpn && tcpVpn.status === 'Warning' && !vpnWarningContradictsDirectRoute(tcpVpn)) vpnActive = true;
+    if (tcpVpn && tcpVpn.status === 'Warning' && !vpnWarningContradictsDirectRoute(tcpVpn, lookup)) vpnActive = true;
     if (!vpnActive && routeAnalysis && routeAnalysis.status === 'Warning') {
         const info = routeAnalysis.detailedInfo || '';
         if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
@@ -2416,7 +2433,7 @@ function updateMapVpnOverlay(lookup) {
     if (tcpVpn && tcpVpn.status === 'Warning') {
         const detail = tcpVpn.detailedInfo || '';
         const lines = detail.split('\n');
-        const contradictoryDirectRoute = vpnWarningContradictsDirectRoute(tcpVpn);
+        const contradictoryDirectRoute = vpnWarningContradictsDirectRoute(tcpVpn, lookup);
         const namedVpnCarriesTraffic = /VPN tunnel is carrying W365\/AVD traffic|RDP gateway[^\n]*routes via VPN interface/i.test(detail);
 
         // Older scanners could call the Azure VM NIC "unrecognised" when a

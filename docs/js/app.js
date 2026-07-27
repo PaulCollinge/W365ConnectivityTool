@@ -3645,11 +3645,13 @@ async function updateKeyFindings(results) {
     const vpnUdp = r('L-UDP-07') || r('C-UDP-07');
 
     if (vpnTcp && vpnTcp.status !== 'NotRun' && vpnTcp.status !== 'Pending') {
+        const contradictoryDirectRoute = typeof vpnWarningContradictsDirectRoute === 'function'
+            && vpnWarningContradictsDirectRoute(vpnTcp, results);
         // When the scanner detected more than one VPN/SWG it emits a per-solution
         // verdict block. Render each solution on its own row so the user can see,
         // for every VPN/SWG independently, whether RDP is bypassing it correctly.
         const solutions = extractSecuritySolutions([vpnTcp, vpnUdp]);
-        if (solutions.length > 0) {
+        if (solutions.length > 0 && !contradictoryDirectRoute) {
         for (const s of solutions) {
             const detail = s.detail.map(d => esc(d)).join('<br>');
             if (s.ok === false) {
@@ -3663,8 +3665,8 @@ async function updateKeyFindings(results) {
             }
         }
         } else {
-        const tcpPass = vpnTcp.status === 'Passed';
-        const udpPass = !vpnUdp || vpnUdp.status === 'Passed';
+        const tcpPass = vpnTcp.status === 'Passed' || contradictoryDirectRoute;
+        const udpPass = !vpnUdp || vpnUdp.status === 'Passed' || contradictoryDirectRoute;
         const tcpTimedOut = !tcpPass && /timed out/i.test(vpnTcp.resultValue);
         const udpTimedOut = vpnUdp && vpnUdp.status !== 'Passed' && /timed out/i.test(vpnUdp.resultValue);
         const vpnNames = extractVpnNames([vpnTcp, vpnUdp]);

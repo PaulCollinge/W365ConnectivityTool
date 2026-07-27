@@ -37,14 +37,6 @@ function parseSignal(str) {
     return m ? parseInt(m[1], 10) : NaN;
 }
 
-function unrecognisedRouteMatchesDirectGateway(detail) {
-    const directRoute = detail.match(/RDP gateway[^\n]*routes direct via\s+(\d{1,3}(?:\.\d{1,3}){3})/i);
-    const divertedIfIps = [...detail.matchAll(/diverted:[^\n]*, if\s+(\d{1,3}(?:\.\d{1,3}){3})\)/gi)]
-        .map(match => match[1]);
-    return !!directRoute && divertedIfIps.length > 0
-        && divertedIfIps.every(ip => ip === directRoute[1]);
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  Spike detector
 // ═══════════════════════════════════════════════════════════════════
@@ -660,10 +652,8 @@ function runAnalysisEngine(results) {
         const resVal = (vpn.resultValue || '');
         const tunnelCarriesRdp = /VPN tunnel is carrying W365\/AVD traffic|routes via VPN interface/i.test(detail);
         const tunnelBypassesRdp = /No W365\/AVD service traffic goes through the VPN tunnel|VPN is active but RDP traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i.test(detail);
-        const contradictoryDirectRoute = unrecognisedRouteMatchesDirectGateway(detail);
-        const tunnelDivertsRdp = !contradictoryDirectRoute
-            && (/egresses via an UNRECOGNISED non-primary interface|diverts via an unrecognised non-primary interface/i.test(detail)
-                || /unrecognised interface/i.test(resVal));
+        const tunnelDivertsRdp = /egresses via an UNRECOGNISED non-primary interface|diverts via an unrecognised non-primary interface/i.test(detail)
+            || /unrecognised interface/i.test(resVal);
         const vpnDetected = /VPN adapter detected|VPN\/SWG detected|VPN active/i.test(detail) || /\bVPN\b/i.test(resVal);
 
         // Pull the precise captured CIDRs from the routing analysis so the finding
@@ -712,7 +702,7 @@ function runAnalysisEngine(results) {
     const dnsRoute = r('B-TCP-04');
     if (dnsRoute && dnsRoute.detailedInfo) {
         const detail = dnsRoute.detailedInfo.toLowerCase();
-        const swgNames = ['zscaler', 'netskope', 'globalsecureaccess', 'cloudflare-gateway', 'swg', 'menlo'];
+        const swgNames = ['zscaler', 'netskope', 'globalsecureaccess', 'cloudflare-gateway', 'menlo'];
         const detectedSwg = swgNames.find(s => detail.includes(s));
         const alreadyHandled = findings.some(f =>
             /carrying Windows 365 RDP traffic|correctly split-tunnelled|split tunnelling not confirmed/i.test(f.title));
@@ -1061,7 +1051,8 @@ function runAnalysisEngine(results) {
     const cpcProxy = r('C-TCP-07');
     const cpcProxyLegacyFalsePositive = cpcProxy
         && /^Intercepting RDP traffic \(Diverted route \(unrecognised interface\)\)$/i.test(cpcProxy.resultValue || '')
-        && unrecognisedRouteMatchesDirectGateway(cpcProxy.detailedInfo || '');
+        && typeof vpnWarningContradictsDirectRoute === 'function'
+        && vpnWarningContradictsDirectRoute(cpcProxy, results);
     if (cpcProxyLegacyFalsePositive) {
         findings.push(finding(SEV.INFO, 'VPN detected — correctly split-tunnelled',
             'A VPN/SASE adapter is active, but the RDP gateway and excluded W365 routes use the Cloud PC direct interface.',
@@ -1085,9 +1076,15 @@ function runAnalysisEngine(results) {
     if (cpcNet && cpcNet.status === 'Passed' && cpcNet.resultValue) {
         const orgVal = cpcNet.resultValue.toLowerCase();
         if (!orgVal.includes('microsoft') && !orgVal.includes('azure')) {
-            findings.push(finding(SEV.INFO, 'Cloud PC network is not Azure-native',
-                `Cloud PC network organization: ${cpcNet.resultValue}. This may indicate the VNet is peered to an external network.`,
-                'If this is expected (e.g., ExpressRoute/peering), no action needed. Otherwise verify the Cloud PC virtual network configuration.'));
+            if (cpcProxyLegacyFalsePositive) {
+                findings.push(finding(SEV.INFO, 'Cloud PC general internet uses a separate egress',
+                    `General internet exits through ${cpcNet.resultValue}, while endpoint-specific routing confirms the RDP gateway and TURN relay remain direct through the Cloud PC Azure NIC.`,
+                    null));
+            } else {
+                findings.push(finding(SEV.INFO, 'Cloud PC public egress is not Microsoft',
+                    `Cloud PC public egress organization: ${cpcNet.resultValue}. This can be caused by a VPN, proxy, SWG, ExpressRoute, or external network peering.`,
+                    'Correlate this public-egress observation with C-TCP-07 and C-NET-02 before changing the VNet or bypass policy.'));
+            }
         }
     }
 
