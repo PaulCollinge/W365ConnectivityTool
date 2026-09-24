@@ -36,6 +36,11 @@ The dashboard is at [**paulcollinge.github.io/W365ConnectivityTool**](https://pa
 | `--watch [5m\|300s\|until-stopped]` | Continuous Session Watch monitoring after the one-shot snapshot (opt-in). |
 | `--interval [Ns]` | Sampling interval for `--watch` (default 3s, clamped 2–60s). |
 
+Session Watch treats outbound SNAT addresses on Cloud PCs and AVD session hosts
+as a learned pool: normal rotation within that pool is informational, while an
+egress change accompanied by a W365 route or local network environment change
+remains a warning. Client mode continues to warn on every egress-IP change.
+
 ## Verify the download
 
 Every release includes a **SHA256 checksum** in the [release notes](https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest) and is built with [GitHub artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) (SLSA provenance).

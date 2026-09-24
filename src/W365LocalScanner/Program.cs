@@ -11610,10 +11610,10 @@ class Program
         }
 
         string? prevRouteHash = null;
-        string? prevEgress = null;
         EnvFingerprint? prevEnv = null;
         int routeChangeCount = 0;
         var gatewayBaseline = new List<double>();
+        var egressTransitions = new EgressTransitionTracker(allowPoolRotation: _isCloudPcMode);
         int sampleNum = 0;
 
         try
@@ -11695,18 +11695,15 @@ class Program
                         Message = $"DNS resolution slow ({dns.Value:F0}ms) for {gatewayHost}." });
                 }
 
-                if (egress != null && prevEgress != null && egress != prevEgress)
-                {
-                    anomalies.Add("egress");
-                    events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = "warning", Track = "egress",
-                        Message = $"Egress IP changed: {prevEgress} → {egress} (re-NAT / VPN reconnect / PoP change)." });
-                }
-                if (egress != null) prevEgress = egress;
-
                 // ── Tier 2 context: environment changes (explain the Tier 1 flip) ──
+                bool environmentChanged = false;
                 if (prevEnv.HasValue)
                 {
                     var p = prevEnv.Value;
+                    environmentChanged = p.VpnAdapters != env.VpnAdapters
+                        || p.DefaultGateways != env.DefaultGateways
+                        || p.DnsServers != env.DnsServers
+                        || p.Adapters != env.Adapters;
                     if (p.VpnAdapters != env.VpnAdapters)
                         events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "context", Severity = "info", Track = "vpnAdapter",
                             Message = DescribeChange("VPN/tunnel adapter", p.VpnAdapters, env.VpnAdapters) });
@@ -11721,6 +11718,28 @@ class Program
                             Message = DescribeChange("Active adapters", p.Adapters, env.Adapters) });
                 }
                 prevEnv = env;
+
+                var egressDecision = egressTransitions.Observe(egress, routeChanged, environmentChanged);
+                if (egressDecision.Kind == EgressTransitionKind.Warning)
+                {
+                    anomalies.Add("egress");
+                    string reason = _isCloudPcMode
+                        ? "alongside a W365 route or local network environment change"
+                        : "possible re-NAT, VPN reconnect, or PoP change";
+                    events.Add(new WatchEvent
+                    {
+                        ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = "warning", Track = "egress",
+                        Message = $"Egress IP changed: {egressDecision.PreviousAddress} → {egressDecision.CurrentAddress} ({reason})."
+                    });
+                }
+                else if (egressDecision.Kind == EgressTransitionKind.PoolAddressObserved)
+                {
+                    events.Add(new WatchEvent
+                    {
+                        ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "context", Severity = "info", Track = "egress",
+                        Message = $"Additional Azure-host outbound NAT address observed: {egressDecision.CurrentAddress} ({egressDecision.ObservedAddressCount} addresses seen; pool rotation does not change the W365 route)."
+                    });
+                }
 
                 var sample = new WatchSample
                 {
