@@ -381,7 +381,7 @@ scannerChannel.onmessage = (event) => {
 
 // Fallback: listen for localStorage changes from other tabs
 window.addEventListener('storage', (event) => {
-    if (event.key === 'w365-scanner-results' && event.newValue) {
+    if (event.key === 'w365-scanner-results' && DashboardConsent.allowsStorage() && event.newValue) {
         try {
             const data = JSON.parse(event.newValue);
             console.log('Received scanner results from another tab via localStorage');
@@ -390,6 +390,26 @@ window.addEventListener('storage', (event) => {
             console.error('Failed to parse localStorage scanner results:', e);
         }
     }
+});
+
+window.addEventListener('w365-consent-changed', () => {
+    if (DashboardConsent.allowsStorage()) {
+        const importPending = document.documentElement.classList.contains('awaiting-scanner-import');
+        if (importPending && !new URLSearchParams(window.location.search).has('mode')) {
+            // Consent arrived after the inline bootstrap ran, so re-apply the
+            // sticky host-mode hint it could not read yet (before consent,
+            // getItem() always returns null).
+            const rememberedMode = DashboardConsent.getItem('w365-last-mode');
+            if (rememberedMode === 'cloudpc' || rememberedMode === 'avd') {
+                hostType = rememberedMode;
+                const select = document.getElementById('host-type-select');
+                if (select) select.value = hostType;
+            }
+        }
+        if (cloudPcMode && hostType && !importPending) DashboardConsent.setItem('w365-last-mode', hostType);
+        saveResultsToHistory();
+    }
+    updateHistoryBar();
 });
 
 // ── Initialize on page load ──
@@ -410,7 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const sel = document.getElementById('host-type-select');
         if (sel) sel.value = hostType;
         ilog(`CPC mode enabled via URL param: mode=${urlMode}`);
-        try { localStorage.setItem('w365-last-mode', urlMode); } catch (e) {}
+        DashboardConsent.setItem('w365-last-mode', urlMode);
     }
 
     // Consume the early-CPC bootstrap hint: if the inline <head> script set
@@ -452,7 +472,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (picker) picker.classList.remove('hidden');
                 ilog('Host type unknown — showing picker banner');
             }
-            try { localStorage.setItem('w365-last-mode', result.hostType || 'cloudpc'); } catch (e) {}
+            DashboardConsent.setItem('w365-last-mode', result.hostType || 'cloudpc');
             ilog('CPC Mode auto-enabled');
         } else {
             // IMDS unreachable AND no URL hint AND we optimistically promoted
@@ -520,6 +540,7 @@ async function detectCloudPcEnvironment() {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), 3000);
         const resp = await fetch('http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01', { // DevSkim: ignore DS137138 - Azure IMDS is HTTP-only by design (link-local)
+            credentials: 'omit',
             headers: { 'Metadata': 'true' },
             signal: ctrl.signal
         });
@@ -540,6 +561,7 @@ async function detectCloudPcEnvironment() {
         const ctrl2 = new AbortController();
         const t2 = setTimeout(() => ctrl2.abort(), 3000);
         await fetch('http://169.254.169.254/metadata/instance?api-version=2021-02-01', { // DevSkim: ignore DS137138 - Azure IMDS is HTTP-only by design (link-local)
+            credentials: 'omit',
             mode: 'no-cors',
             signal: ctrl2.signal
         });
@@ -738,7 +760,7 @@ function toggleCloudPcMode(enabled) {
         // Also drop the bootstrap early-CPC hint so the next page load
         // starts in client mode (user explicitly chose to leave CPC mode).
         document.documentElement.classList.remove('early-cpc-mode');
-        try { localStorage.removeItem('w365-last-mode'); } catch (e) {}
+        DashboardConsent.removeItem('w365-last-mode');
         // Restore Cloud PC card title
         const cpcTitle = document.getElementById('map-cpc-title');
         if (cpcTitle) cpcTitle.textContent = hostLabelShort();
@@ -1028,8 +1050,8 @@ async function checkForAutoImport() {
         try {
             scannerChannel.postMessage({ type: 'scanner-results', payload: data });
             // Also write to localStorage as a fallback signal
-            localStorage.setItem('w365-scanner-results', JSON.stringify(data));
-            localStorage.removeItem('w365-scanner-results');
+            DashboardConsent.setItem('w365-scanner-results', JSON.stringify(data));
+            DashboardConsent.removeItem('w365-scanner-results');
         } catch (broadcastErr) {
             console.warn('Could not broadcast to other tabs:', broadcastErr);
         }
@@ -1338,7 +1360,7 @@ function processImportedData(data) {
         // page would re-promote to CPC mode on every reload even though the
         // user is now scanning their own laptop. Also flip the runtime mode
         // off if it's currently on from a previous CPC import.
-        try { localStorage.removeItem('w365-last-mode'); } catch (e) {}
+        DashboardConsent.removeItem('w365-last-mode');
         if (cloudPcMode) {
             const toggle = document.getElementById('cpc-mode-toggle');
             if (toggle) toggle.checked = false;
@@ -3074,9 +3096,9 @@ function updateRemediationPanel() {
 }
 
 function saveResultsToHistory() {
-    if (allResults.length === 0) return;
+    if (!DashboardConsent.allowsStorage() || allResults.length === 0) return;
     try {
-        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        const history = JSON.parse(DashboardConsent.getItem(HISTORY_KEY) || '[]');
         const entry = {
             timestamp: new Date().toISOString(),
             scannerTimestamp: _importedScanTimestamp || null,
@@ -3098,7 +3120,7 @@ function saveResultsToHistory() {
 
         history.unshift(entry);
         if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+        DashboardConsent.setItem(HISTORY_KEY, JSON.stringify(history));
     } catch (e) {
         console.warn('Failed to save history:', e);
     }
@@ -3171,8 +3193,19 @@ function updateHistoryBar() {
     const select = document.getElementById('history-select');
     if (!bar || !select) return;
 
+    if (!DashboardConsent.allowsStorage()) {
+        bar.classList.add('hidden');
+        select.selectedIndex = 0;
+        const diff = document.getElementById('history-diff');
+        if (diff) {
+            diff.textContent = '';
+            diff.classList.add('hidden');
+        }
+        return;
+    }
+
     try {
-        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        const history = JSON.parse(DashboardConsent.getItem(HISTORY_KEY) || '[]');
         if (history.length < 2) { bar.classList.add('hidden'); return; }
 
         // Show bar and populate dropdown (skip first entry = current)
@@ -3188,16 +3221,21 @@ function updateHistoryBar() {
             select.appendChild(opt);
         }
     } catch (e) {
+        console.warn('Could not display diagnostic history:', e);
         bar.classList.add('hidden');
     }
 }
 
 function loadHistoryEntry(index) {
+    if (!DashboardConsent.allowsStorage()) {
+        updateHistoryBar();
+        return;
+    }
     const diffEl = document.getElementById('history-diff');
     if (!diffEl || !index) { if (diffEl) diffEl.classList.add('hidden'); return; }
 
     try {
-        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        const history = JSON.parse(DashboardConsent.getItem(HISTORY_KEY) || '[]');
         const current = history[0];
         const previous = history[parseInt(index)];
         if (!current || !previous) return;
@@ -3236,14 +3274,20 @@ function loadHistoryEntry(index) {
         }
         diffEl.classList.remove('hidden');
     } catch (e) {
+        console.warn('Could not load diagnostic history:', e);
         diffEl.classList.add('hidden');
     }
 }
 
 function clearHistory() {
-    localStorage.removeItem(HISTORY_KEY);
+    DashboardConsent.removeItem(HISTORY_KEY);
     const bar = document.getElementById('history-bar');
     if (bar) bar.classList.add('hidden');
+    const diff = document.getElementById('history-diff');
+    if (diff) {
+        diff.textContent = '';
+        diff.classList.add('hidden');
+    }
 }
 
 // ── Satellite / Aircraft WiFi banner ──
@@ -3290,8 +3334,8 @@ async function updateKeyFindings(results) {
 
     function flagImg(locationStr) {
         const cc = typeof resolveCountryCode === 'function' ? resolveCountryCode(locationStr || '') : '';
-        if (!cc) return '';
-        return `<img src="https://flagcdn.com/20x15/${cc}.png" alt="${cc.toUpperCase()}" width="20" height="15" class="country-flag" onerror="this.style.display='none'"> `;
+        const flag = createFlagImg(cc);
+        return flag ? flag.outerHTML + ' ' : '';
     }
     function tag(cls, text) {
         return `<span class="kf-tag kf-tag-${cls}">${text}</span>`;

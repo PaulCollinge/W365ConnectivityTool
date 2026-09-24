@@ -2835,6 +2835,27 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 /* ════════════════════════════════════════
    FOOTER
    ════════════════════════════════════════ */
+#cookie-banner {
+    position: relative;
+    z-index: 100001;
+}
+
+.cookie-consent-status {
+    position: relative;
+    max-width: var(--content-max);
+    margin: 12px auto;
+    padding: 12px 24px;
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-emphasis);
+    border-radius: var(--r-sm);
+}
+.cookie-consent-status .btn { margin-left: 8px; }
+.cookie-consent-status[hidden],
+#cookie-consent-retry[hidden],
+#cookie-manage-control[hidden],
+img[data-cookie-src][hidden] { display: none !important; }
+
 footer {
     border-top: 1px solid var(--border-default);
     margin-top: 48px;
@@ -2866,6 +2887,7 @@ footer {
 .footer-links {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     font-size: var(--text-xs);
 }
@@ -2876,6 +2898,23 @@ footer {
     transition: color var(--transition);
 }
 .footer-links a:hover { text-decoration: underline; color: var(--accent-bright); }
+
+.footer-cookie-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.footer-cookie-button {
+    border: 0;
+    padding: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+}
+.footer-cookie-button:disabled { color: var(--text-muted); cursor: default; }
+.footer-cookie-button:not(:disabled):hover { text-decoration: underline; }
 
 /* Build pill in the footer — quiet, neutral */
 .footer-build {

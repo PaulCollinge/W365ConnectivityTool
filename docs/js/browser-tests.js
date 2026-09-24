@@ -436,7 +436,7 @@ async function fetchUserLocation() {
             const acc = (typeof pos.coords.accuracy === 'number') ? pos.coords.accuracy : null;
             try {
                 const rgUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=en`;
-                const rgResp = await fetch(rgUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'W365ConnectivityTool/1.0' } });
+                const rgResp = await fetch(rgUrl, { credentials: 'omit', signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'W365ConnectivityTool/1.0' } });
                 if (rgResp.ok) {
                     const rgData = await rgResp.json();
                     const addr = rgData.address || {};
@@ -509,7 +509,7 @@ async function _fetchGeoIpUncached() {
     if (_geoCache) return _geoCache;
     // Primary: ipinfo.io (most accurate city-level geo, HTTPS, CORS-friendly)
     try {
-        const r = await fetch(EndpointConfig.geoIpPrimaryUrl, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
+        const r = await fetch(EndpointConfig.geoIpPrimaryUrl, { credentials: 'omit', signal: AbortSignal.timeout(8000), cache: 'no-store' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.ip) {
@@ -531,7 +531,7 @@ async function _fetchGeoIpUncached() {
     } catch (e) { console.warn('GeoIP primary (ipinfo.io) failed:', e.message); }
     // Fallback 1: freeipapi.com
     try {
-        const r = await fetch(EndpointConfig.geoIpFallbackUrl, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
+        const r = await fetch(EndpointConfig.geoIpFallbackUrl, { credentials: 'omit', signal: AbortSignal.timeout(8000), cache: 'no-store' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.ipAddress) {
@@ -552,7 +552,7 @@ async function _fetchGeoIpUncached() {
     } catch (e) { console.warn('GeoIP fallback 1 (freeipapi.com) failed:', e.message); }
     // Fallback 2: geojs.io (HTTPS, CORS-friendly, generous rate limits)
     try {
-        const r = await fetch(EndpointConfig.geoIpFallback2Url, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
+        const r = await fetch(EndpointConfig.geoIpFallback2Url, { credentials: 'omit', signal: AbortSignal.timeout(8000), cache: 'no-store' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.ip) {
@@ -573,7 +573,7 @@ async function _fetchGeoIpUncached() {
     } catch (e) { console.warn('GeoIP fallback 2 (geojs.io) failed:', e.message); }
     // Fallback 3: ipwho.is
     try {
-        const r = await fetch('https://ipwho.is/', { signal: AbortSignal.timeout(8000), cache: 'no-store' });
+        const r = await fetch('https://ipwho.is/', { credentials: 'omit', signal: AbortSignal.timeout(8000), cache: 'no-store' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (data.success !== false) {
@@ -646,6 +646,7 @@ async function testEndpointReachability(test) {
         const start = performance.now();
         try {
             await fetch(url, {
+                credentials: 'omit',
                 method: 'GET',
                 mode: 'no-cors',
                 cache: 'no-store',
@@ -915,6 +916,7 @@ async function testCaptivePortal(test) {
 
     try {
         await fetch(PROBE_URL, {
+            credentials: 'omit',
             mode: 'no-cors',
             signal: AbortSignal.timeout(15000),
             cache: 'no-store'
@@ -992,7 +994,7 @@ async function testConnectionSpeed(test) {
             const cacheBust = `&_cb=${Date.now()}-${Math.random().toString(36).slice(2)}`;
             const fetchUrl = probe.url + cacheBust;
             const start = performance.now();
-            const resp = await fetch(fetchUrl, { cache: 'no-store', mode: 'cors' });
+            const resp = await fetch(fetchUrl, { credentials: 'omit', cache: 'no-store', mode: 'cors' });
             if (!resp.ok) { lines.push(`${probe.label}: HTTP ${resp.status}`); continue; }
 
             // Read the full response body to ensure we measure complete download
@@ -1105,6 +1107,7 @@ async function testGatewayLatency(test) {
     try {
         const start = performance.now();
         const resp = await fetch(`https://${ep}/?_t=${Date.now()}`, {
+            credentials: 'omit',
             cache: 'no-store',
             signal: AbortSignal.timeout(10000)
         });
@@ -1132,6 +1135,7 @@ async function testGatewayLatency(test) {
         try {
             const start = performance.now();
             await fetch(`https://${ep}/?_t=${Date.now()}`, {
+                credentials: 'omit',
                 method: 'HEAD', mode: 'no-cors', cache: 'no-store',
                 signal: AbortSignal.timeout(10000)
             });
@@ -1211,6 +1215,7 @@ async function testGatewayLatency(test) {
             try {
                 const s = performance.now();
                 await fetch(`https://${ep}/?_t=${Date.now()}_${i}`, {
+                    credentials: 'omit',
                     method: 'HEAD', mode: 'no-cors', cache: 'no-store',
                     signal: AbortSignal.timeout(8000)
                 });
@@ -1254,7 +1259,7 @@ async function testDnsPerformance(test) {
         const url = `https://${host}/?_dns_t=${Date.now()}`;
         try {
             const start = performance.now();
-            await fetch(url, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(8000) });
+            await fetch(url, { credentials: 'omit', method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(8000) });
             const elapsed = Math.round(performance.now() - start);
             results.push({ host, time: elapsed, status: 'OK' });
         } catch (e) {
@@ -1825,6 +1830,7 @@ async function testNetworkPathTrace(test) {
             try {
                 const start = performance.now();
                 await fetch(`https://${target.host}/?_trace=${Date.now()}`, {
+                    credentials: 'omit',
                     method: 'HEAD', mode: 'no-cors', cache: 'no-store',
                     signal: AbortSignal.timeout(10000)
                 });

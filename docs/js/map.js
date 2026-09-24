@@ -175,15 +175,15 @@ function _resolveCountryCodeInner(locationStr) {
  * Create a small flag <img> element for a 2-letter country code.
  * Uses flagcdn.com (free, no key required, CDN-backed).
  */
-function createFlagImg(code) {
+function createFlagImg(code, deferLoading = false) {
     if (!code) return null;
     const img = document.createElement('img');
-    img.src = `https://flagcdn.com/20x15/${code}.png`;
     img.alt = code.toUpperCase();
     img.width = 20;
     img.height = 15;
     img.className = 'country-flag';
-    img.onerror = function() { this.style.display = 'none'; };
+    img.setAttribute('onerror', "this.style.display='none'");
+    DashboardConsent.setImageSource(img, `https://flagcdn.com/20x15/${code}.png`, deferLoading);
     return img;
 }
 
@@ -726,7 +726,12 @@ function setIspLogo(ispName) {
     const img = document.getElementById('isp-logo-img');
     if (!img) return;
     const domain = guessIspDomain(ispName);
-    if (!domain) { img.style.display = 'none'; return; }
+    if (!domain) {
+        img.style.display = 'none';
+        img.removeAttribute('src');
+        delete img.dataset.cookieSrc;
+        return;
+    }
     // Try favicon providers in order of reliability. Clearbit's free logo API was
     // retired in 2023 so we start with Google favicons, then DuckDuckGo.
     const providers = [
@@ -736,12 +741,18 @@ function setIspLogo(ispName) {
     ];
     let idx = 0;
     const tryNext = () => {
-        if (idx >= providers.length) { img.style.display = 'none'; return; }
-        img.src = providers[idx++];
+        if (!DashboardConsent.allowsResources()) return;
+        if (idx >= providers.length) {
+            img.style.display = 'none';
+            img.removeAttribute('src');
+            delete img.dataset.cookieSrc;
+            return;
+        }
+        DashboardConsent.setImageSource(img, providers[idx++]);
     };
     img.onerror = tryNext;
     img.style.display = 'block';
-    tryNext();
+    DashboardConsent.setImageSource(img, providers[idx++]);
 }
 
 // ── ISP Card ──
