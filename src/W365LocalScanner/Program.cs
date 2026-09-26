@@ -10968,19 +10968,94 @@ class Program
                 }
             }
 
+            static bool IsWarmIngestHost(string host) =>
+                host.EndsWith(".prod.warm.ingest.monitor.core.windows.net", StringComparison.OrdinalIgnoreCase);
+
+            // Robust probe used only for the warm-ingest monitor wildcard (and
+            // its canaries). A plain hostname-based connect resolves DNS once
+            // and — depending on the runtime's internal address-selection
+            // order — effectively gambles on a SINGLE backend node. Observed in
+            // the field: *.prod.warm.ingest.monitor.core.windows.net round-
+            // robins across several backend nodes behind one FQDN, and some
+            // individual nodes silently drop (blackhole, no RST) raw TCP SYN
+            // from an unauthenticated prober while sibling nodes behind the
+            // exact same hostname answer fine — they only answer the signed
+            // agent traffic they're meant for. If the address-selection logic
+            // happens to pick a blackholed node, the whole 8s budget is spent
+            // waiting on it even though a friendly node was sitting right
+            // there, which is what produced the "flags as unavailable on every
+            // second run" pattern: DNS answers rotate between runs, and only
+            // some rotations happen to land on the sole address that got
+            // tried.
+            //
+            // Fix: resolve the FQDN ourselves and dial EVERY returned address
+            // in parallel, succeeding if any single one connects. That removes
+            // the luck-of-the-draw element within a single run instead of
+            // needing a re-roll on a later script invocation.
+            async Task<(bool ok, long ms, string? err)> TryConnectAnyAddressAsync(string host, int port)
+            {
+                IPAddress[] addrs;
+                try { addrs = await System.Net.Dns.GetHostAddressesAsync(host); }
+                catch (Exception ex) { return (false, 0L, $"DNS resolution failed: {ex.Message}"); }
+                if (addrs.Length == 0) return (false, 0L, "DNS resolution returned no addresses");
+
+                var sw = Stopwatch.StartNew();
+                var attempts = addrs.Select(async addr =>
+                {
+                    using var tcp = new TcpClient(addr.AddressFamily);
+                    using var cts = new CancellationTokenSource(PerAttemptTimeoutMs);
+                    try
+                    {
+                        await tcp.ConnectAsync(addr, port, cts.Token);
+                        return (ok: true, err: (string?)null, addr: addr.ToString());
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return (ok: false, err: $"Timeout ({PerAttemptTimeoutMs / 1000}s)", addr: addr.ToString());
+                    }
+                    catch (Exception ex)
+                    {
+                        return (ok: false, err: ex.InnerException?.Message ?? ex.Message, addr: addr.ToString());
+                    }
+                }).ToArray();
+
+                var all = await Task.WhenAll(attempts);
+                sw.Stop();
+                var winner = Array.Find(all, a => a.ok);
+                if (winner.ok)
+                {
+                    var suffix = addrs.Length > 1 ? $" (1 of {addrs.Length} backend addresses)" : "";
+                    return (true, sw.ElapsedMilliseconds, $"addr:{winner.addr}{suffix}");
+                }
+                return (false, 0L, string.Join("; ", all.Select(a => $"{a.addr}={a.err}")));
+            }
+
+            async Task<(bool ok, long ms, string? err)> ProbeEndpointAsync((string host, int port, string purpose, string group) ep)
+            {
+                bool warmIngest = IsWarmIngestHost(ep.host);
+                var attempt = warmIngest
+                    ? await TryConnectAnyAddressAsync(ep.host, ep.port)
+                    : await TryConnectAsync(ep.host, ep.port);
+                // Retry once — always for the flaky warm-ingest host, or on
+                // timeout only for everything else (other socket errors like
+                // ConnectionRefused aren't transient and don't warrant a retry).
+                if (!attempt.ok && (warmIngest || (attempt.err != null && attempt.err.StartsWith("Timeout"))))
+                {
+                    var retry = warmIngest
+                        ? await TryConnectAnyAddressAsync(ep.host, ep.port)
+                        : await TryConnectAsync(ep.host, ep.port);
+                    if (retry.ok) attempt = retry;
+                }
+                return attempt;
+            }
+
             var semaphore = new SemaphoreSlim(6);
             var tasks = endpoints.Select(async ep =>
             {
                 await semaphore.WaitAsync();
                 try
                 {
-                    var attempt = await TryConnectAsync(ep.host, ep.port);
-                    // Retry once on timeout only.
-                    if (!attempt.ok && attempt.err != null && attempt.err.StartsWith("Timeout"))
-                    {
-                        var retry = await TryConnectAsync(ep.host, ep.port);
-                        if (retry.ok) attempt = retry;
-                    }
+                    var attempt = await ProbeEndpointAsync(ep);
                     return (ep, ok: attempt.ok, ms: attempt.ms, err: attempt.err);
                 }
                 finally { semaphore.Release(); }
@@ -10989,31 +11064,36 @@ class Program
             var results = await Task.WhenAll(tasks);
 
             // Monitor-ingest fallback: if the VM's local-region warm-ingest
-            // exemplar timed out, retry against canary regions. Success against
-            // any canary proves the *.prod.warm.ingest.monitor.core.windows.net
-            // wildcard firewall rule is open — which is what this check is
+            // exemplar still failed after the multi-address probe above, fall
+            // back to canary regions/cluster-slots. Success against any canary
+            // proves the *.prod.warm.ingest.monitor.core.windows.net wildcard
+            // firewall rule is open — which is what this check is actually
             // trying to establish. Some regional clusters (e.g. ukwest-0 as
-            // observed Apr 2026) silently drop raw TCP SYN from arbitrary
-            // probers even on a perfectly healthy CPC, and we should not fail
-            // the whole session-host verdict on that.
+            // observed Apr 2026) can have every one of their backend nodes
+            // refuse raw TCP SYN from arbitrary probers even on a perfectly
+            // healthy CPC, and we should not fail the whole session-host
+            // verdict on that. Try both cross-region canaries across all three
+            // known cluster slots (-0/-1/-2), all in parallel — first success
+            // wins.
             for (int i = 0; i < results.Length; i++)
             {
                 var r = results[i];
-                if (r.ok || !r.ep.host.EndsWith(".prod.warm.ingest.monitor.core.windows.net",
-                                                 StringComparison.OrdinalIgnoreCase))
+                if (r.ok || !IsWarmIngestHost(r.ep.host))
                     continue;
-                foreach (var canary in new[] {
-                    "eastus-0.prod.warm.ingest.monitor.core.windows.net",
-                    "westus-0.prod.warm.ingest.monitor.core.windows.net" })
+
+                var canaryCandidates = (from region in new[] { "eastus", "westus" }
+                                        from suffix in new[] { "-0", "-1", "-2" }
+                                        select $"{region}{suffix}.prod.warm.ingest.monitor.core.windows.net")
+                                       .Where(c => !string.Equals(c, r.ep.host, StringComparison.OrdinalIgnoreCase))
+                                       .ToArray();
+
+                var canaryTasks = canaryCandidates.Select(async c => (candidate: c, res: await TryConnectAnyAddressAsync(c, 443))).ToArray();
+                var canaryResults = await Task.WhenAll(canaryTasks);
+                var canaryWinner = Array.Find(canaryResults, x => x.res.ok);
+                if (canaryWinner.res.ok)
                 {
-                    if (string.Equals(canary, r.ep.host, StringComparison.OrdinalIgnoreCase)) continue;
-                    var c = await TryConnectAsync(canary, 443);
-                    if (c.ok)
-                    {
-                        results[i] = (r.ep, ok: true, ms: c.ms,
-                            err: $"via-canary:{canary} ({c.ms}ms) — local region cluster refused probe");
-                        break;
-                    }
+                    results[i] = (r.ep, ok: true, ms: canaryWinner.res.ms,
+                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) — every local-region cluster address refused the probe");
                 }
             }
 
@@ -11077,10 +11157,25 @@ class Program
             // while user-mode is blocked, which is why CPCs "look fine" despite
             // this failing \u2014 but session-host health reporting relies on this
             // endpoint and can silently degrade. It is worth investigating.
+            // *.prod.warm.ingest.monitor.core.windows.net (the Azure Monitor
+            // warm-ingest wildcard) is ALSO soft, for a different reason than
+            // wireserver: this scan already probes every DNS-resolved backend
+            // address for the local-region exemplar in parallel and falls back
+            // to eastus/westus canaries across all three cluster slots (see
+            // TryConnectAnyAddressAsync and the canary loop above) before
+            // giving up on it. A failure that survives ALL of that is still
+            // more likely to be a probing artefact of this specific cluster
+            // (some backend nodes blackhole unauthenticated TCP SYN) than a
+            // real firewall block, so it is surfaced but does not by itself
+            // flip the whole endpoint check to Failed.
             bool IsSoft((string host, int port, string purpose, string group) e)
-                => e.host == "168.63.129.16";
+                => e.host == "168.63.129.16" || IsWarmIngestHost(e.host);
             string SoftNote((string host, int port, string purpose, string group) e, string? err)
             {
+                if (IsWarmIngestHost(e.host))
+                {
+                    return "This wildcard's backend cluster round-robins across several nodes, and some individual nodes silently drop unauthenticated TCP probes even though the wildcard firewall rule is fully open — they only answer the signed agent traffic they're meant for. This scan already probed every resolved backend address for the local-region exemplar in parallel and retried against eastus/westus canaries across all three cluster slots (-0/-1/-2) before reporting this as unreachable. If it still fails here, either every one of those nodes was uncooperative for this run (has happened, e.g. ukwest-0 as observed Apr 2026), or there genuinely is a block. It is worth re-running the scan once before investigating further, since this specific endpoint is known to produce transient false negatives; it does not affect the overall pass/fail verdict.";
+                }
                 if (e.host != "168.63.129.16") return "";
                 var lower = (err ?? "").ToLowerInvariant();
                 // WSAEACCES (10013): socket forbidden by access permissions. On an
@@ -11146,6 +11241,10 @@ class Program
                     {
                         sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} (wildcard verified {r.err.Substring("via-canary:".Length)})");
                     }
+                    else if (r.err != null && r.err.StartsWith("addr:"))
+                    {
+                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("addr:".Length)})");
+                    }
                     else
                     {
                         sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
@@ -11158,7 +11257,8 @@ class Program
                     // user-mode access to 168.63.129.16:80. Show as informational
                     // and do NOT count toward pass/fail or warning.
                     var lower = (r.err ?? "").ToLowerInvariant();
-                    bool expected = lower.Contains("forbidden") || lower.Contains("access permissions") || lower.Contains("10013");
+                    bool expected = r.ep.host == "168.63.129.16" &&
+                        (lower.Contains("forbidden") || lower.Contains("access permissions") || lower.Contains("10013"));
                     var glyph = expected ? "\u2714" : "\u2139";
                     var tail  = expected ? " (expected: Guest Agent lockdown)" : $" \u2014 {r.err}";
                     sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose}{tail}");
