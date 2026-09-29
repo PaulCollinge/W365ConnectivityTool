@@ -30,6 +30,11 @@ const ALL_TESTS = [
         category: 'endpoint', source: 'browser', run: testEndpointReachability
     },
     {
+        id: 'B-ARC-01', name: 'Azure Arc Control Plane Reachability',
+        description: 'Tests HTTPS connectivity to the Azure Arc-enabled server control-plane endpoints an AVD Hybrid session host uses continuously. Meaningful when this page is opened FROM the session host itself (via RDP or console) so the browser fetches originate from the machine we care about.',
+        category: 'endpoint', source: 'browser', run: testArcControlPlaneReachability
+    },
+    {
         id: 'L-EP-01', name: 'Certificate Endpoints (Port 80)',
         description: 'Tests TCP port 80 connectivity to certificate endpoints (requires Local Scanner)',
         category: 'endpoint', source: 'local'
@@ -732,6 +737,75 @@ async function testEndpointReachability(test) {
     const value = parts.join(EndpointConfig.browserBlocked.headlineSeparator) + ' (browser check via /favicon.ico)';
 
     return makeResult(test, status, value, detail, duration, EndpointConfig.docs.avdRequiredUrls);
+}
+
+// ── Azure Arc Control Plane Reachability ──
+// Browser-side probe of the Azure Arc-enabled server control plane. Useful
+// when this page is opened FROM the hybrid session host itself (RDP or
+// console), so the browser's fetches originate from the machine we actually
+// care about. Uses fetch(..., {mode: 'no-cors'}) — an 'opaque' response or
+// success means the TCP+TLS handshake worked; a TypeError means DNS, TCP or
+// TLS failed (which is the same failure surface the Arc agent would see).
+async function testArcControlPlaneReachability(test) {
+    const t0 = performance.now();
+    const results = [];
+
+    const checks = EndpointConfig.arcEndpoints.map(async (ep) => {
+        const url = `https://${ep.url}/favicon.ico`;
+        const start = performance.now();
+        try {
+            await fetch(url, {
+                method: 'GET',
+                mode: 'no-cors',
+                cache: 'no-store',
+                signal: AbortSignal.timeout(10000),
+                redirect: 'follow',
+            });
+            const elapsed = Math.round(performance.now() - start);
+            results.push({ ep, status: 'Reachable', time: elapsed });
+        } catch (e) {
+            const elapsed = Math.round(performance.now() - start);
+            const status = (e.name === 'AbortError' || e.name === 'TimeoutError') ? 'Timeout' : 'Unreachable';
+            results.push({ ep, status, time: elapsed, note: e.name || 'fetch failed' });
+        }
+    });
+    await Promise.all(checks);
+    const duration = Math.round(performance.now() - t0);
+
+    // Score only the required entries; optional ones show as info.
+    const required = results.filter(r => r.ep.required);
+    const optional = results.filter(r => !r.ep.required);
+    const reachable = required.filter(r => r.status === 'Reachable').length;
+    const unreachable = required.filter(r => r.status !== 'Reachable').length;
+
+    const line = (r) => {
+        const icon = r.status === 'Reachable' ? '\u2714' : (r.status === 'Timeout' ? '\u23f1' : '\u2716');
+        const display = r.ep.display || r.ep.url;
+        const timing = r.time > 0 ? ` (${r.time}ms)` : '';
+        const note = r.note ? ` [${r.note}]` : '';
+        return `${icon} ${display} \u2014 ${r.ep.purpose} \u2014 ${r.status}${timing}${note}`;
+    };
+
+    const detail =
+          '\u2550\u2550 Required Arc endpoints \u2550\u2550\n'
+        + required.map(line).join('\n')
+        + (optional.length > 0
+             ? '\n\n\u2550\u2550 Optional / older-agent Arc endpoints \u2550\u2550\n' + optional.map(line).join('\n')
+             : '')
+        + '\n\n\u2139 Regional endpoints under *.his.arc.azure.com are discovered dynamically'
+        + '\n  at agent runtime from gbl.his.arc.azure.com \u2014 reaching the global endpoint'
+        + '\n  above proves the wildcard firewall rule is open.'
+        + '\n\u2139 The *.servicebus.windows.net notification wildcard needs the Local Scanner'
+        + '\n  to enumerate its rotating regional hostnames \u2014 not probed from the browser.';
+
+    let status;
+    if (unreachable === 0) status = 'Passed';
+    else if (unreachable === required.length) status = 'Failed';
+    else status = 'Warning';
+
+    const value = `${reachable}/${required.length} Arc control-plane endpoints reachable (browser check)`;
+    return makeResult(test, status, value, detail, duration,
+        'https://learn.microsoft.com/azure/azure-arc/network-requirements-consolidated');
 }
 
 // ── User Location ──
