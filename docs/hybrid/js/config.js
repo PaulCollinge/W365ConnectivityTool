@@ -74,6 +74,30 @@ const EndpointConfig = {
         //   *.aikcertaia.microsoft.com, azcsprodeusaikpublish.blob.core.windows.net
     ],
 
+    // ── Azure Arc control-plane endpoints ──
+    // These are the URLs the Azure Connected Machine Agent uses continuously
+    // on an Arc-onboarded host (AVD Hybrid session hosts, Azure Local, Azure
+    // Stack HCI, BYO hardware). Reference:
+    //   https://learn.microsoft.com/azure/azure-arc/network-requirements-consolidated#urls
+    // Wildcards use the convention introduced above (`url` = exemplar,
+    // `display` = wildcard shown to the user). Regional endpoints under
+    // *.his.arc.azure.com are discovered dynamically at agent runtime from
+    // gbl.his.arc.azure.com, so we only probe the global endpoint — reaching
+    // it proves the wildcard firewall rule is open.
+    arcEndpoints: [
+        { url: 'gbl.his.arc.azure.com', purpose: 'Hybrid Identity Service (Arc metadata + Managed Identity)', port: 443, required: true },
+        { url: 'agentserviceapi.guestconfiguration.azure.com', display: '*.guestconfiguration.azure.com', purpose: 'Extension management + guest configuration', port: 443, required: true },
+        { url: 'guestnotificationservice.azure.com', purpose: 'Notification service (extension + connectivity)', port: 443, required: true },
+        { url: 'management.azure.com', purpose: 'Azure Resource Manager (connect/disconnect + goal-state)', port: 443, required: true },
+        { url: 'pas.windows.net', purpose: 'Microsoft Entra ID (PAS)', port: 443, required: true },
+        { url: 'login.microsoftonline.com', purpose: 'Global Entra token endpoint', port: 443, required: true },
+        { url: 'download.microsoft.com', purpose: 'Arc agent installer (install/upgrade only)', port: 443, required: false },
+        { url: 'dc.services.visualstudio.com', purpose: 'Arc agent telemetry (not used by agent v1.24+)', port: 443, required: false }
+        // *.servicebus.windows.net notification wildcard — deliberately NOT
+        // probed here. The specific azgn* hosts are regional and rotate; the
+        // Local Scanner covers them from ephemeral DNS resolution.
+    ],
+
     // Documentation links
     docs: {
         networkRequirements: 'https://learn.microsoft.com/windows-365/enterprise/requirements-network',
