@@ -1,6 +1,6 @@
 # Windows 365 / Azure Virtual Desktop Connectivity Diagnostics
 
-A lightweight diagnostic tool that tests network connectivity for **Windows 365 Cloud PC** and **Azure Virtual Desktop (AVD)** environments from the client's perspective.
+A lightweight English-language diagnostic tool for IT professionals and support engineers that tests network connectivity for **Windows 365 Cloud PC** and **Azure Virtual Desktop (AVD)** environments from the client's perspective.
 
 1. **Download & run** the scanner exe — no install, no admin rights
 2. It performs ~23 network tests in ~30 seconds
@@ -137,6 +137,12 @@ dotnet publish src/W365LocalScanner/W365LocalScanner.csproj -c Release -r win-x6
 
 - **Web Dashboard**: Any modern browser (Chrome, Edge, Firefox, Safari)
 - **Local Scanner**: Windows 10/11 (x64), no dependencies (self-contained .NET 8)
+
+## Language and regional formats
+
+- The preview UI and documentation are currently available in **English**; the product does not expose a language selector or fallback chain.
+- The web dashboard derives locale metadata and human-readable dates/times from the browser or operating-system regional settings.
+- ISO dates used in filenames, diagnostic output, and machine-readable data remain culture-invariant for interoperability.
 
 ## References
 
