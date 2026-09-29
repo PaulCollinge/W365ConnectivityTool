@@ -185,6 +185,9 @@
         renderVerdict(output);
         renderTracks(samples, events);
         renderFindings(events, samples);
+        if (typeof applyAutomaticTextDirection === 'function') {
+            applyAutomaticTextDirection(host);
+        }
 
         _rendered = true;
     }
@@ -201,7 +204,7 @@
         // conveyed by the icon + colour, so we don't prepend a generated title
         // (which would duplicate summaries that already lead with the verdict).
         const summary = output.summary || verdictTitle(v) + '.';
-        el.innerHTML = `<span class="big">${icon}</span><div>${escapeHtml(summary)}</div>`;
+        el.innerHTML = `<span class="big">${icon}</span><div>${bidiIsolateHtml(summary)}</div>`;
     }
 
     function verdictTitle(v) {
@@ -249,7 +252,7 @@
               <div class="wt-spark"><svg viewBox="0 0 100 46" preserveAspectRatio="none">
                   ${k.warn != null && !k.isRoute && !k.isEgress ? '<line class="wt-thr" x1="0" x2="100" />' : ''}
                   <path fill="none" stroke="var(--accent)" stroke-width="1.4" /></svg></div>
-              <div class="wt-now"><span style="color:${nowColor}">${escapeHtml(String(nowText))}</span><small>${k.unit || ''}</small></div>`;
+              <div class="wt-now"><span style="color:${nowColor}">${bidiIsolateHtml(String(nowText))}</span><small>${k.unit || ''}</small></div>`;
             wrap.appendChild(row);
 
             const sp = row.querySelector('.wt-spark');
@@ -438,7 +441,7 @@
                       <div class="h">${escapeHtml(trackLabel(track))}
                         <span class="kindtag anomaly">anomaly</span>
                         <span class="freqtag ${badge.cls}">${escapeHtml(badge.txt)}</span></div>
-                      <div class="d">${escapeHtml(rep ? (rep.message || '') : '')}</div>
+                      <div class="d">${bidiIsolateHtml(rep ? (rep.message || '') : '')}</div>
                       <div class="meta">${bits.join(' &middot; ')}</div>
                     </div>
                     <div class="time">${escapeHtml(timeLabel)}</div>
@@ -469,7 +472,7 @@
                 <span class="dot"></span>
                 <div class="body">
                   <div class="h">${escapeHtml(trackLabel(e.track))} <span class="kindtag ${kind}">${kind}</span></div>
-                  <div class="d">${escapeHtml(e.message || '')}</div>
+                  <div class="d">${bidiIsolateHtml(e.message || '')}</div>
                 </div>
                 <div class="time">+${fmtDur(e.elapsedSeconds || 0)}</div>
               </div>`
@@ -493,7 +496,7 @@
         host.hidden = false;
         showTabs('watch');
         host.innerHTML = `<div class="watch-wrap"><div class="watch-panel">
-            <div class="watch-verdict warn"><span class="big">▲</span><div>${escapeHtml(msg)}</div></div>
+            <div class="watch-verdict warn"><span class="big">▲</span><div>${bidiIsolateHtml(msg)}</div></div>
           </div></div>`;
     }
 
@@ -523,8 +526,22 @@
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    function text(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
-    function setVal(id, v, color) { const el = document.getElementById(id); if (el) { el.textContent = v; if (color) el.style.color = color; } return el; }
+    function text(id, v) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = v;
+            el.setAttribute('dir', 'auto');
+        }
+    }
+    function setVal(id, v, color) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = v;
+            el.setAttribute('dir', 'auto');
+            if (color) el.style.color = color;
+        }
+        return el;
+    }
 
     function fmtDur(sec) {
         sec = Math.round(sec || 0);

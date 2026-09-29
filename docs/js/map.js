@@ -56,6 +56,10 @@ function updateConnectivityMap(results) {
         updateMapVpnOverlay(lookup);
         updateMapTlsOverlay(lookup);
     }
+
+    if (typeof applyAutomaticTextDirection === 'function') {
+        applyAutomaticTextDirection(document.querySelector('.map-diagram'));
+    }
 }
 
 // ── Card helpers ──
@@ -629,9 +633,9 @@ function updateMapWifiBadge(lookup) {
         `<path d="M-0.5 3.5a10.8 10.8 0 0 1 15 0" stroke-width="1.5" opacity="${a3}"/>` +
         `</svg>`;
 
-    let label = ssid ? escapeHtml(ssid) : 'Wi\u2011Fi';
+    let label = ssid ? bidiIsolateHtml(ssid) : 'Wi\u2011Fi';
     if (sig !== null) label += `<span class="map-wifi-sig"> · ${sig}%</span>`;
-    if (radioFriendly) label += `<span class="map-wifi-radio"> · ${escapeHtml(radioFriendly)}</span>`;
+    if (radioFriendly) label += `<span class="map-wifi-radio"> · ${bidiIsolateHtml(radioFriendly)}</span>`;
 
     badge.innerHTML = iconSvg + `<span>${label}</span>`;
     badge.className = `map-wifi-badge ${sigClass}`;
@@ -2560,11 +2564,11 @@ function updateMapVpnOverlay(lookup) {
         if (natBadgeContainer && !natBadgeContainer.querySelector('.map-vpn-endpoint-badge')) {
             const epBadge = document.createElement('div');
             epBadge.className = 'map-vpn-badge vpn-active map-vpn-endpoint-badge';
-            epBadge.innerHTML = `🛡️ ${escapeHtml(vpnDetail)}`;
+            epBadge.innerHTML = `🛡️ ${bidiIsolateHtml(vpnDetail)}`;
             natBadgeContainer.querySelector('.device-info').appendChild(epBadge);
         } else {
             const existing = natBadgeContainer && natBadgeContainer.querySelector('.map-vpn-endpoint-badge');
-            if (existing) existing.innerHTML = `🛡️ ${escapeHtml(vpnDetail)}`;
+            if (existing) existing.innerHTML = `🛡️ ${bidiIsolateHtml(vpnDetail)}`;
         }
 
         // Add tunnel label on arrow4 (between Azure and VPN Endpoint after CSS swap)
@@ -2717,16 +2721,16 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
         if (tcpBypass && headlineProduct) {
             const parts = [];
             parts.push(`<span class="vpn-sum-icon">\u2705</span>`);
-            parts.push(`<span class="vpn-sum-title">${escapeHtml(headlineProduct)} detected, but RDP traffic correctly bypasses it</span>`);
+            parts.push(`<span class="vpn-sum-title">${bidiIsolateHtml(headlineProduct)} detected, but RDP traffic correctly bypasses it</span>`);
             parts.push(`<span class="vpn-sum-sep">\u2192</span>`);
             parts.push(`<span class="vpn-sum-chip vpn-sum-chip-good">\u2713 RDP / TURN \u2014 direct via Azure backbone</span>`);
             // Secondary chip: only add if it carries different information from the headline.
             if (saseProvider && localVpnLabel && saseProvider.toLowerCase() !== localVpnLabel.toLowerCase()) {
-                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 ${escapeHtml(localVpnLabel)} adapter also present</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 ${bidiIsolateHtml(localVpnLabel)} adapter also present</span>`);
             } else if (saseProvider && !localVpnLabel) {
-                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${escapeHtml(saseProvider)}</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${bidiIsolateHtml(saseProvider)}</span>`);
             } else if (localVpnLabel && !saseProvider) {
-                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic may use the ${escapeHtml(localVpnLabel)} tunnel</span>`);
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic may use the ${bidiIsolateHtml(localVpnLabel)} tunnel</span>`);
             }
             el.className = 'map-vpn-summary ok';
             el.innerHTML = parts.join(' ');
@@ -2780,13 +2784,13 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
 
     let headline;
     if (cpcRegion && egressText) {
-        headline = `Cloud PC is in <strong>${escapeHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong> and egresses the internet in <strong>${escapeHtml(egressText)}</strong>`;
+        headline = `Cloud PC is in <strong>${bidiIsolateHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${bidiIsolateHtml(productLabel)}</strong> and egresses the internet in <strong>${bidiIsolateHtml(egressText)}</strong>`;
     } else if (cpcRegion) {
-        headline = `Cloud PC is in <strong>${escapeHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong>`;
+        headline = `Cloud PC is in <strong>${bidiIsolateHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${bidiIsolateHtml(productLabel)}</strong>`;
     } else if (egressText) {
-        headline = `RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong> and egresses the internet in <strong>${escapeHtml(egressText)}</strong>`;
+        headline = `RDP traffic is tunneled via <strong>${bidiIsolateHtml(productLabel)}</strong> and egresses the internet in <strong>${bidiIsolateHtml(egressText)}</strong>`;
     } else {
-        headline = `RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong>`;
+        headline = `RDP traffic is tunneled via <strong>${bidiIsolateHtml(productLabel)}</strong>`;
     }
     parts.push(`<span class="vpn-sum-title">${headline}</span>`);
 
@@ -2798,10 +2802,10 @@ function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
         // it is the expected consequence of the egress location. Keep the chip
         // neutral/informational; genuine "distant egress" is surfaced on the
         // RD Gateway card via measured RTT, not by CPC-region mismatch.
-        parts.push(`<span class="vpn-sum-chip">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
+        parts.push(`<span class="vpn-sum-chip">🎯 Using <strong>${bidiIsolateHtml(gwRegion)}</strong> RDP gateway</span>`);
     }
     if (ispText) {
-        parts.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);
+        parts.push(`<span class="vpn-sum-chip">🏢 ${bidiIsolateHtml(ispText)}</span>`);
     }
 
     el.className = 'map-vpn-summary';

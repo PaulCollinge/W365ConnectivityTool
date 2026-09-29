@@ -1681,6 +1681,44 @@ main {
 }
 .test-details.expanded { display: block; }
 
+/* Treat each paragraph of imported diagnostic text as independent bidi text.
+   JavaScript adds dir="auto" only to dynamic values, not to the English UI. */
+.test-result-value,
+.test-details,
+.test-remediation-text,
+.satellite-banner-detail,
+.device-detail,
+.map-card-detail,
+.map-card-badge,
+.map-wifi-badge,
+.map-vpn-badge,
+.map-path-pill,
+.map-vpn-summary,
+.trace-target-role,
+.trace-target-meta,
+.trace-routed,
+.trace-empty,
+.trace-hop-host,
+.compare-meta,
+.compare-name,
+.compare-val,
+.rem-test-name,
+.rem-text,
+.kf-desc,
+.kf-fix,
+.kf-row-val,
+.watch-meta .v,
+.watch-verdict > div,
+.wt-now > span,
+.wfind .h,
+.wfind .d,
+.analysis-finding-title,
+.analysis-finding-detail,
+.analysis-remediation,
+textarea[readonly] {
+    unicode-bidi: plaintext;
+}
+
 .test-meta {
     display: flex;
     flex-direction: column;
