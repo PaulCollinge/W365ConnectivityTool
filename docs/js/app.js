@@ -222,7 +222,7 @@ function reconcileEgressGeoIpAgainstAfdPop() {
         // Headline: the ISP test appends a " · {city}, {country}" egress suffix
         // (e.g. "AS17071 UBS AG · Unknown, CH"). That location is the same
         // unreliable IP-registry value, so replace the suffix with the true
-        // AFD-edge breakout rather than leaving the wrong country in the title.
+        // AFD-edge breakout rather than leaving the wrong country/region in the title.
         if (typeof isp.resultValue === 'string' && / \u00b7 /.test(isp.resultValue)) {
             isp.resultValue = isp.resultValue.replace(/ \u00b7 .*$/, ` \u00b7 egress ${popCity} (IP-geo unreliable)`);
         }
@@ -2083,8 +2083,8 @@ async function generateExportText() {
     // Classify why HTTP and STUN egress IPs differ. Order of evidence:
     //   1. Traceroute (L-TCP-10) hops in 100.64.0.0/10  → CGNAT confirmed
     //   2. IPv4 vs IPv6                                 → dual-stack (no fault)
-    //   3. Different countries on GeoIP                 → split-path / proxy
-    //   4. Same country, same family, no CGN evidence   → different egress paths
+    //   3. Different country/region codes on GeoIP      → split-path / proxy
+    //   4. Same country/region, same family, no CGN evidence → different egress paths
     let reportStunCountry = '';
     let reportStunCity = '';
     let reportHttpCountry = freshLoc?.country || '';
@@ -2103,7 +2103,7 @@ async function generateExportText() {
                 reportStunCity = geoData.city || '';
             }
         } catch (e) { /* GeoIP lookup failed */ }
-        // Different countries = proxy / split-path
+        // Different country/region codes = proxy / split-path
         if (reportStunCountry && reportHttpCountry &&
             reportStunCountry.toUpperCase() !== reportHttpCountry.toUpperCase()) {
             reportIsSplitPath = true;
@@ -2169,7 +2169,7 @@ async function generateExportText() {
 
     // 7. TURN (UDP) Security Report
     // CGNAT in this section is keyed off traceroute evidence only — the old
-    // "different IPs, same country" heuristic mis-classified dual-stack and
+    // "different IPs, same country/region" heuristic mis-classified dual-stack and
     // multi-egress ISP customers as CGNAT.
     const reportIsCgnat = reportCgnHops.length > 0;
 
@@ -3594,8 +3594,8 @@ async function updateKeyFindings(results) {
                     // Order of evidence from strongest to weakest:
                     //   1. Traceroute hops in 100.64.0.0/10 → CGNAT confirmed
                     //   2. IPv4 vs IPv6 → dual-stack (informational only)
-                    //   3. Same country, same family, no CGN evidence → different egress paths
-                    //   4. Different countries → split-path proxy
+                    //   3. Same country/region, same family, no CGN evidence → different egress paths
+                    //   4. Different country/region codes → split-path proxy
                     const cgnHops = findCgnHopsInTraceroute(results);
                     const dualStack = (isIpv6(httpEgressIp) && isIpv4(stunReflexiveIp))
                                    || (isIpv4(httpEgressIp) && isIpv6(stunReflexiveIp));
@@ -3616,14 +3616,14 @@ async function updateKeyFindings(results) {
                             `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg) || 'IPv6'}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg) || 'IPv4'})`);
                     } else if (stunCountry && httpCountry &&
                                stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                        // Same country, same family, no CGN hops, no SWG vendor.
+                        // Same country/region, same family, no CGN hops, no SWG vendor.
                         // Most often: separate v4 egress points within one ISP, or a load-balanced
                         // dual-WAN setup. NOT enough evidence to call this CGNAT.
                         add('kf-info', 'Different egress paths',
-                            'HTTP and UDP traffic exit via different IPs in the same country',
+                            'HTTP and UDP traffic exit via different IPs in the same country or region',
                             `HTTP: ${esc(httpEgressIp)} · UDP: ${esc(stunReflexiveIp)}. No CGN hops in traceroute and no proxy/SWG vendor identified — likely two egress paths within your ISP. Not CGNAT.`);
                     } else if (stunCountry && httpCountry) {
-                        // Different countries — split-path proxy
+                        // Different country/region codes — split-path proxy
                         add('kf-error', 'Split Routing',
                             `\u{1F53A} TCP/UDP taking different paths — HTTP proxy or SWG likely`,
                             `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);

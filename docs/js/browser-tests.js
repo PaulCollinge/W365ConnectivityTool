@@ -450,7 +450,7 @@ async function fetchUserLocation() {
                 }
             } catch (_) { /* reverse geocode failed */ }
             if (!browserLoc) {
-                // Reverse geocode failed — use GeoIP for city/region/country
+                // Reverse geocode failed — use GeoIP for location details
                 // but keep the accurate browser coords
                 const fallbackGeo = await geoPromise;
                 browserLoc = {
@@ -1075,7 +1075,7 @@ const AFD_POP_MAP = {
     // Asia Pacific
     'SIN': 'Singapore', 'HKG': 'Hong Kong', 'NRT': 'Tokyo',
     'KIX': 'Osaka', 'ICN': 'Seoul', 'BOM': 'Mumbai', 'MAA': 'Chennai',
-    'DEL': 'Delhi', 'BLR': 'Bangalore', 'HYD': 'Hyderabad',
+    'DEL': 'Delhi', 'BLR': 'Bengaluru', 'HYD': 'Hyderabad',
     'KUL': 'Kuala Lumpur', 'BKK': 'Bangkok', 'CGK': 'Jakarta',
     'MNL': 'Manila', 'TPE': 'Taipei',
     // Australia & NZ

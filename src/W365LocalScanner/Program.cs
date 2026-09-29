@@ -1204,7 +1204,7 @@ class Program
     }
 
     /// <summary>
-    /// Extracts the last comma-separated token as a country code from a location string
+    /// Extracts the last comma-separated token as a country/region code from a location string
     /// like "London, England, GB" → "GB".
     /// </summary>
     static string ExtractCountryCode(string location)
@@ -1214,7 +1214,7 @@ class Program
     }
 
     /// <summary>
-    /// Determines if a user↔service country pairing is reasonable.
+    /// Determines if a user↔service country/region pairing is reasonable.
     /// Uses broad groupings to avoid false alarms — e.g. UK user hitting
     /// Netherlands or Ireland gateways is normal.
     /// </summary>
@@ -1222,7 +1222,7 @@ class Program
     {
         if (userCountry == serviceCountry) return true;
 
-        // Define broad geographic regions where cross-country routing is expected
+        // Define broad geographic regions where routing across countries/regions is expected
         var regions = new List<HashSet<string>>
         {
             // Western Europe — Azure regions in NL, IE, UK, FR, DE, CH, AT etc.
