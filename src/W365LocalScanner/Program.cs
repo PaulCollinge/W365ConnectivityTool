@@ -25,65 +25,222 @@ namespace W365LocalScanner;
 
 class Program
 {
-    // ── Static field: are we running in Cloud PC mode? ──
+    // â”€â”€ Static field: are we running in Cloud PC mode? â”€â”€
     static bool _isCloudPcMode = false;
     static string? _azureVmRegion = null;
     static string? _azureVmName = null;
-    // "cloudpc", "avd", or null (unknown / client mode)
+    // "cloudpc", "avd", "avd-arc" (on-prem AVD session host, Azure Arc-onboarded),
+    // or null (unknown / client mode)
     static string? _hostType = null;
 
-    // ── Session Watch (continuous monitoring) — strictly opt-in, default OFF.
+    // â”€â”€ Arc-onboarded host metadata (populated only when _hostType == "avd-arc").
+    //    Arc-onboarded machines expose an IMDS-lookalike surface via the
+    //    Hybrid Instance Metadata Service (himds) on the local loopback at
+    //    port 40342. It does NOT require the Azure fabric IP (169.254.169.254)
+    //    and is the correct authoritative source for "which Azure region has
+    //    this on-prem host projected into ARM?" â€” plus tenant, resource id and
+    //    agent state. Nullable so the whole block collapses to null when
+    //    running on a real Azure VM or in client mode. â”€â”€
+    static ArcMetadata? _arcMetadata = null;
+
+    // â”€â”€ Session Watch (continuous monitoring) â€” strictly opt-in, default OFF.
     //    When enabled, a full run-once snapshot runs FIRST (unchanged), then a
-    //    separate lightweight sampler loop monitors the live path. ──
+    //    separate lightweight sampler loop monitors the live path. â”€â”€
     static bool _watchEnabled = false;
     static int _watchDurationSeconds = 300; // 0 = until stopped (Ctrl+C)
     static int _watchIntervalSeconds = 3;   // seconds between samples
 
-    // ── Headless mode (--no-browser): strictly opt-in, default OFF.
+    // â”€â”€ Headless mode (--no-browser): strictly opt-in, default OFF.
     //    Runs every test and writes W365ScanResults.json exactly as normal, but
     //    suppresses the automatic browser tab. Intended for unattended/agent
     //    invocations (RDAgent on Cloud PC / Session Host) that consume the JSON
-    //    directly. The default interactive behaviour is unchanged. ──
+    //    directly. The default interactive behaviour is unchanged. â”€â”€
     static bool _noBrowser = false;
 
-    // ── Self-host (Microsoft-internal) endpoint check: runs AUTOMATICALLY, but ONLY
+    // â”€â”€ Self-host (Microsoft-internal) endpoint check: runs AUTOMATICALLY, but ONLY
     //    when the device proves it is a Microsoft-internal machine (corp-AD domain
-    //    join or Entra join to the Microsoft tenant — see IsMicrosoftInternalDevice).
+    //    join or Entra join to the Microsoft tenant â€” see IsMicrosoftInternalDevice).
     //    An extra test (L-TCP-11 / C-TCP-10) probes the internal self-host/dogfood
     //    AVD endpoints (deschutes-sh, *.wvdselfhost.microsoft.com). External
-    //    customers can never see or run it. ──
+    //    customers can never see or run it. â”€â”€
 
-    // ── Dashboard location. The ONLY runtime coupling between the scanner and
+    // â”€â”€ Dashboard location. The ONLY runtime coupling between the scanner and
     //    the web dashboard: the scanner opens this URL (with the results encoded
     //    in the URL hash) after a scan. To rehost the dashboard (e.g. to an
     //    MS-owned site), change this single value and ship a new signed release.
-    //    Trailing slash is required. ──
-    const string DashboardBaseUrl = "https://paulcollinge.github.io/W365ConnectivityTool/";
+    //    Trailing slash is required. â”€â”€
+    const string DashboardBaseUrl = "https://paulcollinge.github.io/W365ConnectivityTool/hybrid/";
 
-    // ── Compressed, base64url-encoded run-once snapshot payload (the same
+    // â”€â”€ Compressed, base64url-encoded run-once snapshot payload (the same
     //    #zresults= blob OpenBrowserWithResults embeds in the snapshot tab).
     //    Cached here so that when Session Watch completes and opens its own
-    //    browser tab, that tab can ALSO carry the full snapshot — otherwise the
+    //    browser tab, that tab can ALSO carry the full snapshot â€” otherwise the
     //    watch tab's "Snapshot" sub-tab would be blank (no results were ever
-    //    loaded into that page). Set once in OpenBrowserWithResults. ──
+    //    loaded into that page). Set once in OpenBrowserWithResults. â”€â”€
     static string? _snapshotResultsB64 = null;
 
-    // ── Cached AFD-discovered RDP gateway (set once, reused by all tests) ──
+    // â”€â”€ Cached AFD-discovered RDP gateway (set once, reused by all tests) â”€â”€
     static string? _cachedGatewayHost = null;
     static string? _cachedGatewayDetail = null;
 
-    // ── When the slow traceroute (L-TCP-10) runs concurrently in the background,
+    // â”€â”€ When the slow traceroute (L-TCP-10) runs concurrently in the background,
     //    suppress its inline per-hop console output so it doesn't tangle with the
     //    [i/N] progress lines of the foreground tests. Its detailed report is still
-    //    captured in the TestResult. ──
+    //    captured in the TestResult. â”€â”€
     static bool _traceConsoleSilent = false;
 
-    // ── Dynamic Service Tags WVD subnet → region lookup ──
+    // â”€â”€ Dynamic Service Tags WVD subnet â†’ region lookup â”€â”€
     static List<(uint network, uint mask, string region)>? _wvdSubnets = null;
     const string ServiceTagsDownloadPage = "https://www.microsoft.com/en-us/download/details.aspx?id=56519";
 
+    // ── Small helpers for consistent host-type labelling across every message
+    //    the scanner writes (banner, per-test detail, report tag). The whole
+    //    codebase used to sprinkle ternaries like `_hostType == "avd" ? ...`
+    //    which broke silently when a third value ("avd-arc", introduced for
+    //    AVD Hybrid session hosts) was added — centralised so it's one place
+    //    to touch if a fourth ever arrives. ──
+    static string HostLabel() => _hostType switch
+    {
+        "avd"     => "AVD Session Host",
+        "avd-arc" => "AVD Hybrid Session Host",
+        "cloudpc" => "Cloud PC",
+        _         => "Unknown",
+    };
+    static string HostLabelLower() => _hostType switch
+    {
+        "avd"     => "AVD session host",
+        "avd-arc" => "AVD hybrid session host",
+        "cloudpc" => "Cloud PC",
+        _         => "host",
+    };
+    static string HostTag() => _hostType switch
+    {
+        "avd"     => "AVD",
+        "avd-arc" => "AVD-HYBRID",
+        "cloudpc" => "W365",
+        _         => "UNKNOWN",
+    };
+
+    /// <summary>True on an on-prem AVD session host (Azure Arc-onboarded).</summary>
+    static bool IsHybridHost() => _hostType == "avd-arc";
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Azure Arc / Hybrid Instance Metadata Service (himds) helpers
+    // ══════════════════════════════════════════════════════════════════════
+    //
+    // On an Azure Arc-onboarded machine (which is how on-prem AVD session
+    // hosts, "AVD for Azure Local", and BYO hybrid session hosts project
+    // themselves into Azure Resource Manager), the Azure Connected Machine
+    // Agent runs a service called `himds` that exposes an IMDS-lookalike
+    // REST endpoint on the loopback at TCP 40342.
+    //
+    // Unlike Azure IMDS (169.254.169.254) it requires a per-request
+    // authentication challenge:
+    //   1. GET /metadata/instance?api-version=... with header "Metadata: true"
+    //      returns 401 with a WWW-Authenticate header pointing at a token file
+    //      under %ProgramData%\AzureConnectedMachineAgent\Tokens\*.key
+    //   2. Re-request with header "Authorization: Basic <contents-of-token-file>"
+    //      returns the JSON metadata document.
+    //
+    // The token file is readable only by administrators, so this helper
+    // returns null on non-admin runs and the rest of the scanner treats
+    // Arc metadata as best-effort. When it fails, the surrounding logic
+    // still recognises the host as Arc-onboarded via the himds service
+    // presence (see fallback detection in Main); it just won't have the
+    // rich resourceId / location detail.
+    //
+    // Reference: https://learn.microsoft.com/azure/azure-arc/servers/managed-identity-authentication#acquire-an-access-token
+    static async Task<ArcMetadata?> TryFetchArcMetadataAsync()
+    {
+        const string himdsBase = "http://127.0.0.1:40342"; // DevSkim: ignore DS137138 - Arc HIMDS is loopback-only HTTP by design
+        const string himdsPath = "/metadata/instance?api-version=2020-06-01";
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            client.DefaultRequestHeaders.Add("Metadata", "true");
+
+            var challenge = await client.GetAsync(himdsBase + himdsPath);
+            string? tokenPath = null;
+            if (challenge.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                if (challenge.Headers.TryGetValues("WWW-Authenticate", out var auths))
+                {
+                    foreach (var a in auths)
+                    {
+                        // Format: Basic realm=<path-to-.key-file>
+                        var idx = a.IndexOf("realm=", StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0)
+                        {
+                            tokenPath = a.Substring(idx + "realm=".Length).Trim().Trim('"');
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (challenge.IsSuccessStatusCode)
+            {
+                // Some Arc agent versions serve metadata without a token challenge
+                // on loopback. If that ever happens, parse directly.
+                return ParseArcMetadata(await challenge.Content.ReadAsStringAsync());
+            }
+
+            if (tokenPath == null) return null;
+
+            byte[] tokenBytes;
+            try { tokenBytes = await File.ReadAllBytesAsync(tokenPath); }
+            catch { return null; } // Not admin, or token file gone
+
+            using var authed = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            authed.DefaultRequestHeaders.Add("Metadata", "true");
+            authed.DefaultRequestHeaders.Add("Authorization",
+                "Basic " + Encoding.UTF8.GetString(tokenBytes).Trim());
+
+            var resp = await authed.GetAsync(himdsBase + himdsPath);
+            if (!resp.IsSuccessStatusCode) return null;
+            return ParseArcMetadata(await resp.Content.ReadAsStringAsync());
+        }
+        catch { return null; }
+    }
+
+    static ArcMetadata? ParseArcMetadata(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            static string? GetString(JsonElement el, string name)
+                => el.TryGetProperty(name, out var v) ? v.GetString() : null;
+
+            var m = new ArcMetadata();
+
+            if (root.TryGetProperty("compute", out var compute))
+            {
+                m.ResourceId = GetString(compute, "resourceId");
+                m.SubscriptionId = GetString(compute, "subscriptionId");
+                m.ResourceGroup = GetString(compute, "resourceGroupName");
+                m.Location = GetString(compute, "location");
+                m.VmId = GetString(compute, "vmId");
+                m.Cloud = GetString(compute, "azEnvironment");
+            }
+            // Some HIMDS payloads report tenantId at the root (Arc-managed identity path).
+            m.TenantId = GetString(root, "tenantId");
+
+            // Agent version comes from the registry (himds writes it there on start).
+            try
+            {
+                using var arcKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Azure Connected Machine Agent");
+                m.AgentVersion = arcKey?.GetValue("AgentVersion")?.ToString();
+            }
+            catch { /* registry access restricted */ }
+
+            return m;
+        }
+        catch { return null; }
+    }
+
     /// <summary>
-    /// Discovers the current Azure Service Tags JSON and builds a prefix → region
+    /// Discovers the current Azure Service Tags JSON and builds a prefix â†’ region
     /// lookup table for WindowsVirtualDesktop.* entries (IPv4 only). Falls back
     /// to the newest local cache before using the hard-coded tables downstream.
     /// </summary>
@@ -280,7 +437,7 @@ class Program
         var outputPath = "W365ScanResults.json";
         if (args.Length > 0 && !args[0].StartsWith("-"))
         {
-            // Validate output path — only allow local file paths, no UNC or path traversal
+            // Validate output path â€” only allow local file paths, no UNC or path traversal
             var candidate = args[0];
             if (candidate.StartsWith(@"\\") || candidate.Contains(".."))
             {
@@ -293,9 +450,9 @@ class Program
             }
         }
 
-        // ── Session Watch flags (strictly opt-in) ──
+        // â”€â”€ Session Watch flags (strictly opt-in) â”€â”€
         //   --watch [5m|300s|until-stopped]   bare --watch defaults to 5 minutes
-        //   --interval [Ns]                   default 3s, clamped 2–60s
+        //   --interval [Ns]                   default 3s, clamped 2â€“60s
         // No flag = today's run-once behaviour, byte-for-byte unchanged.
         for (int i = 0; i < args.Length; i++)
         {
@@ -322,10 +479,14 @@ class Program
             }
         }
 
-        // ── Cloud PC / AVD mode detection ──
+        // â”€â”€ Cloud PC / AVD mode detection â”€â”€
         // Explicit flag overrides auto-detection.
         bool forceCloudPc = args.Any(a => a.Equals("--cloudpc", StringComparison.OrdinalIgnoreCase));
         bool forceAvd = args.Any(a => a.Equals("--avd", StringComparison.OrdinalIgnoreCase));
+        bool forceAvdHybrid = args.Any(a =>
+            a.Equals("--avd-hybrid", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("--avd-arc", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("--hybrid", StringComparison.OrdinalIgnoreCase));
         if (forceCloudPc)
         {
             _isCloudPcMode = true;
@@ -335,6 +496,16 @@ class Program
         {
             _isCloudPcMode = true;
             _hostType = "avd";
+        }
+        else if (forceAvdHybrid)
+        {
+            _isCloudPcMode = true;
+            _hostType = "avd-arc";
+            // If the user forces hybrid, still try to populate Arc metadata so
+            // the report and downstream tests have a location / resource id to
+            // work with. Best-effort; failure is not fatal because the tests
+            // that consume _arcMetadata handle null gracefully.
+            _arcMetadata = await TryFetchArcMetadataAsync();
         }
         else
         {
@@ -398,13 +569,13 @@ class Program
                           || tags.Contains("WVD", StringComparison.OrdinalIgnoreCase)
                           || tags.Contains("SessionHost", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Looks like an AVD session host — still run server-side tests
+                        // Looks like an AVD session host â€” still run server-side tests
                         _isCloudPcMode = true;
                         _hostType = "avd";
                     }
                     else
                     {
-                        // Azure VM but can't determine type — show what we found and ask user
+                        // Azure VM but can't determine type â€” show what we found and ask user
                         Console.WriteLine($"  Azure VM detected: {_azureVmName ?? "unknown"} ({vmSize}) in {_azureVmRegion ?? "unknown"}");
                         Console.WriteLine($"    offer={offer} sku={sku} publisher={publisher}");
                         Console.WriteLine($"    rg={resourceGroup} tags={tags}");
@@ -429,7 +600,7 @@ class Program
                 }
                 else
                 {
-                    Console.WriteLine($"  IMDS returned {(int)imdsResp.StatusCode} — running in client mode");
+                    Console.WriteLine($"  IMDS returned {(int)imdsResp.StatusCode} â€” running in client mode");
                 }
             }
             catch (TaskCanceledException)
@@ -440,9 +611,9 @@ class Program
             {
                 Console.WriteLine($"  IMDS probe failed ({ex.InnerException?.Message ?? ex.Message})");
             }
-            catch { /* Not in Azure — client mode */ }
+            catch { /* Not in Azure â€” client mode */ }
 
-            // ── Fallback detection when IMDS is unavailable (VPN/firewall blocking link-local) ──
+            // â”€â”€ Fallback detection when IMDS is unavailable (VPN/firewall blocking link-local) â”€â”€
             //
             // Important: registry keys like HKLM\SOFTWARE\Microsoft\Windows 365 are also
             // created on regular laptops by the **Windows 365 client app** (Windows App).
@@ -451,8 +622,9 @@ class Program
             // standalone CPC signal mis-flags client laptops as Cloud PCs, which then
             // cascades through the dashboard (mode=cloudpc, CPC cards populated from
             // laptop data, "run the local scanner" CTA still showing). Require an
-            // Azure-VM-only corroborating signal (WindowsAzureGuestAgent service) before
-            // accepting the registry/service hints below.
+            // Azure-VM-only corroborating signal (WindowsAzureGuestAgent service) OR
+            // an Arc-onboarded-machine signal (Azure Connected Machine Agent / himds
+            // service) before accepting the registry/service hints below.
             if (!_isCloudPcMode)
             {
                 bool isAzureVm = false;
@@ -464,7 +636,50 @@ class Program
                 }
                 catch { /* Not an Azure VM */ }
 
-                if (!isAzureVm)
+                // Arc-onboarded hybrid host detection. On an on-prem AVD session host
+                // (Azure Local / Azure Stack HCI or BYO hardware), the Guest Agent is
+                // absent but the Azure Connected Machine Agent runs as service `himds`,
+                // exposing an IMDS-lookalike REST surface on 127.0.0.1:40342. If we
+                // see himds AND either the RDInfraAgent registry hive or the Arc agent
+                // config, treat this as an Arc-onboarded session host. This is the
+                // signal for AVD Hybrid mode.
+                bool isArcHost = false;
+                bool hasRdInfraAgent = false;
+                try
+                {
+                    using var himdsSc = new System.ServiceProcess.ServiceController("himds");
+                    _ = himdsSc.Status;
+                    isArcHost = true;
+                }
+                catch { /* Not Arc-onboarded */ }
+                try
+                {
+                    using var rdKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\RDInfraAgent");
+                    hasRdInfraAgent = rdKey != null;
+                }
+                catch { /* Registry access restricted */ }
+
+                if (isArcHost && !isAzureVm)
+                {
+                    // Arc-onboarded (not an Azure VM). If RDInfraAgent is also present
+                    // this is definitively an AVD hybrid session host. Even without
+                    // RDInfraAgent, an Arc-onboarded host running this scanner is
+                    // almost certainly a candidate hybrid session host being tested
+                    // pre-registration, so we still enter hybrid mode but flag it.
+                    _isCloudPcMode = true;
+                    _hostType = "avd-arc";
+                    _arcMetadata = await TryFetchArcMetadataAsync();
+                    _azureVmRegion = null; // Arc "location" is the projected ARM region, not an Azure VM region
+                    var arcSignal = hasRdInfraAgent
+                        ? "Arc Connected Machine Agent (himds) + RDInfraAgent"
+                        : "Arc Connected Machine Agent (himds) â€” RDInfraAgent NOT installed yet";
+                    Console.WriteLine($"  Detected as AVD Hybrid Session Host via {arcSignal}");
+                    if (_arcMetadata?.Location != null)
+                        Console.WriteLine($"  Arc-projected region: {_arcMetadata.Location}");
+                    if (_arcMetadata?.ResourceId != null)
+                        Console.WriteLine($"  Arc resource: {_arcMetadata.ResourceId}");
+                }
+                else if (!isAzureVm)
                 {
                     Console.WriteLine("  Running in client mode");
                     Console.WriteLine("  Tip: If this is a Cloud PC where IMDS is blocked, use --cloudpc flag");
@@ -474,7 +689,7 @@ class Program
                     bool detectedViaFallback = false;
                     string fallbackSignal = "";
 
-                    // 1. Registry: Windows 365 key — only meaningful on an Azure VM
+                    // 1. Registry: Windows 365 key â€” only meaningful on an Azure VM
                     //    (on laptops it's left behind by the W365 client app).
                     try
                     {
@@ -525,10 +740,10 @@ class Program
                         catch { /* Service not found */ }
                     }
 
-                    // 4. Azure VM with no CPC/AVD-specific signal — ask the user
+                    // 4. Azure VM with no CPC/AVD-specific signal â€” ask the user
                     if (!detectedViaFallback)
                     {
-                        Console.WriteLine("  Azure VM detected via Guest Agent (IMDS unreachable — VPN may be blocking link-local)");
+                        Console.WriteLine("  Azure VM detected via Guest Agent (IMDS unreachable â€” VPN may be blocking link-local)");
                         Console.Write("  Is this a Cloud PC (C) or AVD Session Host (A)? [C/a/skip]: ");
                         var key = Console.ReadLine()?.Trim();
                         if (key != null && key.StartsWith("a", StringComparison.OrdinalIgnoreCase))
@@ -548,7 +763,7 @@ class Program
                     if (detectedViaFallback)
                     {
                         _isCloudPcMode = true;
-                        Console.WriteLine($"  Detected as {(_hostType == "avd" ? "AVD Session Host" : "Cloud PC")} via {fallbackSignal}");
+                        Console.WriteLine($"  Detected as {HostLabel()} via {fallbackSignal}");
                         if (_azureVmRegion == null)
                         {
                             Console.WriteLine("  Note: Azure region unknown (IMDS unavailable). Location tests may be limited.");
@@ -564,16 +779,16 @@ class Program
 
         if (_isCloudPcMode)
         {
-            var hostLabel = _hostType == "avd" ? "AVD Session Host" : "Cloud PC";
+            var hostLabel = HostLabel();
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("╔══════════════════════════════════════════════════════╗");
-            Console.WriteLine($"║   {hostLabel,-18} Connectivity Scanner           ║");
-            Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-            Console.WriteLine($"║   Running on {hostLabel,-20} — tests the        ║");
-            Console.WriteLine("║   server-side connectivity back to the RDP Gateway  ║");
-            Console.WriteLine("║   and TURN relay. Import results into the web       ║");
-            Console.WriteLine("║   dashboard alongside client-side results.          ║");
-            Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+            Console.WriteLine("â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+            Console.WriteLine($"â•‘   {hostLabel,-18} Connectivity Scanner           â•‘");
+            Console.WriteLine("â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£");
+            Console.WriteLine($"â•‘   Running on {hostLabel,-20} â€” tests the        â•‘");
+            Console.WriteLine("â•‘   server-side connectivity back to the RDP Gateway  â•‘");
+            Console.WriteLine("â•‘   and TURN relay. Import results into the web       â•‘");
+            Console.WriteLine("â•‘   dashboard alongside client-side results.          â•‘");
+            Console.WriteLine("â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
             Console.ResetColor();
             if (_azureVmRegion != null)
                 Console.WriteLine($"  Azure region: {_azureVmRegion}  VM: {_azureVmName ?? "unknown"}  Type: {hostLabel}");
@@ -581,13 +796,13 @@ class Program
         else
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("╔══════════════════════════════════════════════════════╗");
-            Console.WriteLine("║   Windows 365 / AVD Local Connectivity Scanner      ║");
-            Console.WriteLine($"║   Version {typeof(Program).Assembly.GetName().Version?.ToString() ?? "?"}{"".PadRight(42 - (typeof(Program).Assembly.GetName().Version?.ToString()?.Length ?? 1))}║");
-            Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-            Console.WriteLine("║   Runs tests requiring local OS access.             ║");
-            Console.WriteLine("║   Import results into the web diagnostics page.     ║");
-            Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+            Console.WriteLine("â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+            Console.WriteLine("â•‘   Windows 365 / AVD Local Connectivity Scanner      â•‘");
+            Console.WriteLine($"â•‘   Version {typeof(Program).Assembly.GetName().Version?.ToString() ?? "?"}{"".PadRight(42 - (typeof(Program).Assembly.GetName().Version?.ToString()?.Length ?? 1))}â•‘");
+            Console.WriteLine("â• â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•£");
+            Console.WriteLine("â•‘   Runs tests requiring local OS access.             â•‘");
+            Console.WriteLine("â•‘   Import results into the web diagnostics page.     â•‘");
+            Console.WriteLine("â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
             Console.ResetColor();
         }
         Console.WriteLine();
@@ -614,7 +829,7 @@ class Program
             // Unattended (stdin redirected / piped / CI): never block on an
             // interactive prompt. Default to running every test ("exactly as
             // normal"); callers can still opt out with --skip-cloud.
-            // NOTE: --no-browser does NOT skip this prompt — it only suppresses
+            // NOTE: --no-browser does NOT skip this prompt â€” it only suppresses
             // the auto-opened browser tab, so an interactive user is still asked.
             includeCloud = true;
         }
@@ -632,7 +847,7 @@ class Program
 
         var results = new List<TestResult>();
 
-        // Load Service Tags for dynamic IP → region lookups (non-blocking, silent fallback)
+        // Load Service Tags for dynamic IP â†’ region lookups (non-blocking, silent fallback)
         await InitServiceTagsLookupAsync();
 
         var allTests = _isCloudPcMode ? GetCloudPcTests() : GetAllTests();
@@ -644,13 +859,13 @@ class Program
         // see nothing here.
         if (allTests.Any(t => t.Id == "L-TCP-11" || t.Id == "C-TCP-10"))
         {
-            Console.WriteLine("  Microsoft-internal device detected — self-host endpoint checks (L-TCP-11/C-TCP-10) included.");
+            Console.WriteLine("  Microsoft-internal device detected â€” self-host endpoint checks (L-TCP-11/C-TCP-10) included.");
             Console.WriteLine();
         }
 
         if (_isCloudPcMode)
         {
-            var testLabel = _hostType == "avd" ? "AVD session host" : "Cloud PC";
+            var testLabel = HostLabelLower();
             Console.WriteLine($"  Running {tests.Count} {testLabel} connectivity tests.");
             Console.WriteLine();
         }
@@ -672,7 +887,7 @@ class Program
         // backgrounded; we await it after the foreground tests finish, then add its
         // result before writing the JSON and opening the browser ONCE (results data
         // is passed in the URL hash, which a process-launched tab can't receive after
-        // the fact — so the tab must open only after every result, traceroute
+        // the fact â€” so the tab must open only after every result, traceroute
         // included, is present).
         var traceTest = tests.FirstOrDefault(t => t.Id == "L-TCP-10");
         Task<TestResult>? traceTask = null;
@@ -710,11 +925,11 @@ class Program
 
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.WriteLine("  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
         Console.WriteLine(_noBrowser
-            ? "  All tests complete — results written (headless mode, browser suppressed)"
-            : "  All tests complete — opening results in browser...");
-        Console.WriteLine("  ────────────────────────────────────────────────────");
+            ? "  All tests complete â€” results written (headless mode, browser suppressed)"
+            : "  All tests complete â€” opening results in browser...");
+        Console.WriteLine("  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
         Console.ResetColor();
 
         await WriteResultsJson(outputPath, results);
@@ -724,7 +939,7 @@ class Program
         // Print executive summary report
         PrintSummaryReport(results, includeCloud);
 
-        // ── Optional continuous monitoring (Session Watch) ──
+        // â”€â”€ Optional continuous monitoring (Session Watch) â”€â”€
         // Strictly opt-in. Runs AFTER the full run-once snapshot so the default
         // run-once path (JSON, browser tab, exit code) is byte-for-byte unchanged.
         if (_watchEnabled)
@@ -740,7 +955,7 @@ class Program
             // behaviour (scan once and finish). When stdin is redirected
             // (headless / piped / CI) this whole block is skipped, so the
             // automated exit path is unchanged. --no-browser does NOT skip this
-            // offer — it only suppresses the auto-opened browser tab, so an
+            // offer â€” it only suppresses the auto-opened browser tab, so an
             // interactive user gets the choice on every run.
             if (ConnectionLooksVolatile(results, out var volatileReason))
             {
@@ -773,7 +988,7 @@ class Program
         return failed > 0 ? 1 : 0;
     }
 
-    // ── Helper: Run a single test with timeout and logging ──
+    // â”€â”€ Helper: Run a single test with timeout and logging â”€â”€
     static async Task RunSingleTest(TestDefinition test, List<TestResult> results)
     {
         var result = await RunSingleTestToResult(test);
@@ -781,8 +996,8 @@ class Program
         WriteStatusLine(result.Status, result.Duration);
     }
 
-    // ── Helper: Write a left-aligned "[ n/N] Test name ......" progress label
-    //    with a dot leader so the status verdicts that follow line up neatly. ──
+    // â”€â”€ Helper: Write a left-aligned "[ n/N] Test name ......" progress label
+    //    with a dot leader so the status verdicts that follow line up neatly. â”€â”€
     static void WriteTestLabel(int index, int total, string name)
         => WriteTestLabel($"{index,2}/{total}", name);
 
@@ -802,8 +1017,8 @@ class Program
         }
     }
 
-    // ── Helper: Write a colored status verdict + dimmed duration on the current
-    //    line (green Passed / yellow Warning / red Failed / gray Skipped). ──
+    // â”€â”€ Helper: Write a colored status verdict + dimmed duration on the current
+    //    line (green Passed / yellow Warning / red Failed / gray Skipped). â”€â”€
     static void WriteStatusLine(string status, int durationMs)
     {
         var (icon, color) = status switch
@@ -824,9 +1039,9 @@ class Program
         Console.ResetColor();
     }
 
-    // ── Helper: Run a test, applying the per-test timeout, and RETURN its result
+    // â”€â”€ Helper: Run a test, applying the per-test timeout, and RETURN its result
     //    without printing or appending. Used directly for the backgrounded
-    //    traceroute and via RunSingleTest for the foreground tests. ──
+    //    traceroute and via RunSingleTest for the foreground tests. â”€â”€
     static async Task<TestResult> RunSingleTestToResult(TestDefinition test)
     {
         try
@@ -873,7 +1088,7 @@ class Program
         }
     }
 
-    // ── Helper: Write results JSON file ──
+    // â”€â”€ Helper: Write results JSON file â”€â”€
     static async Task WriteResultsJson(string outputPath, List<TestResult> results)
     {
         var output = new ScanOutput
@@ -886,6 +1101,7 @@ class Program
             ScanMode = _isCloudPcMode ? "cloudpc" : "client",
             HostType = _isCloudPcMode ? (_hostType ?? "cloudpc") : null,
             AzureRegion = _isCloudPcMode ? _azureVmRegion : null,
+            ArcMetadata = _arcMetadata,
             Results = results
         };
 
@@ -894,7 +1110,7 @@ class Program
         Console.WriteLine($"  Results saved to: {Path.GetFullPath(outputPath)}");
     }
 
-    // ── Helper: Open browser with compressed results ──
+    // â”€â”€ Helper: Open browser with compressed results â”€â”€
     static async Task OpenBrowserWithResults(string outputPath, List<TestResult> results)
     {
         var output = new ScanOutput
@@ -907,6 +1123,7 @@ class Program
             ScanMode = _isCloudPcMode ? "cloudpc" : "client",
             HostType = _isCloudPcMode ? (_hostType ?? "cloudpc") : null,
             AzureRegion = _isCloudPcMode ? _azureVmRegion : null,
+            ArcMetadata = _arcMetadata,
             Results = results
         };
 
@@ -1004,7 +1221,7 @@ class Program
         }
     }
 
-    // ── Summary Report ──────────────────────────────────────────────
+    // â”€â”€ Summary Report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Prints a structured executive summary after all tests, highlighting
@@ -1014,13 +1231,13 @@ class Program
     {
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("  ╔══════════════════════════════════════════════════════╗");
-        Console.WriteLine("  ║                   SCAN SUMMARY                      ║");
-        Console.WriteLine("  ╚══════════════════════════════════════════════════════╝");
+        Console.WriteLine("  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+        Console.WriteLine("  â•‘                   SCAN SUMMARY                      â•‘");
+        Console.WriteLine("  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
         Console.ResetColor();
         Console.WriteLine();
 
-        // ── Test counts ──
+        // â”€â”€ Test counts â”€â”€
         var passed = results.Count(r => r.Status == "Passed");
         var warned = results.Count(r => r.Status == "Warning");
         var failed = results.Count(r => r.Status == "Failed" || r.Status == "Error");
@@ -1047,8 +1264,8 @@ class Program
         Console.WriteLine();
         Console.WriteLine();
 
-        // ── Key Findings ──
-        Console.WriteLine("  ── Key Findings ─────────────────────────────────────");
+        // â”€â”€ Key Findings â”€â”€
+        Console.WriteLine("  â”€â”€ Key Findings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
 
         // Extract location info from Test 27 (Local Egress) if available
         var egressResult = results.FirstOrDefault(r => r.Id == "27");
@@ -1095,7 +1312,7 @@ class Program
         if (!includeCloud && userLocation == null)
             Console.WriteLine("  Location:          Skipped (Live Connection Diagnostics not run)");
 
-        // Location pairing assessment — continent-aware, avoids false alarms
+        // Location pairing assessment â€” continent-aware, avoids false alarms
         if (userLocation != null && (gwLocation != null || turnLocation != null))
         {
             Console.WriteLine();
@@ -1111,9 +1328,9 @@ class Program
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine("  \u26A0 Location pairing may not be optimal:");
                 if (gwConcern)
-                    Console.WriteLine($"    Gateway in {gwLocation} — AFD steered you to a non-local gateway (nearest region(s) likely at capacity at connect time; service-side, usually transient)");
+                    Console.WriteLine($"    Gateway in {gwLocation} â€” AFD steered you to a non-local gateway (nearest region(s) likely at capacity at connect time; service-side, usually transient)");
                 if (turnConcern)
-                    Console.WriteLine($"    TURN relay (DNS) in {turnLocation} — indicates non-local DNS resolvers (does not affect session — TURN is assigned by gateway via CRLB)");
+                    Console.WriteLine($"    TURN relay (DNS) in {turnLocation} â€” indicates non-local DNS resolvers (does not affect session â€” TURN is assigned by gateway via CRLB)");
                 Console.ResetColor();
             }
             else
@@ -1144,13 +1361,13 @@ class Program
 
         Console.WriteLine();
 
-        // ── Highlights & Concerns ──
+        // â”€â”€ Highlights & Concerns â”€â”€
         var concerns = results.Where(r => r.Status == "Failed" || r.Status == "Error").ToList();
         var warnings = results.Where(r => r.Status == "Warning").ToList();
 
         if (concerns.Count > 0 || warnings.Count > 0)
         {
-            Console.WriteLine("  ── Highlights & Concerns ────────────────────────────");
+            Console.WriteLine("  â”€â”€ Highlights & Concerns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
 
             if (concerns.Count > 0)
             {
@@ -1176,7 +1393,7 @@ class Program
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine();
-                Console.WriteLine("  \u26A0 TLS inspection detected on RDP gateway — this can degrade");
+                Console.WriteLine("  \u26A0 TLS inspection detected on RDP gateway â€” this can degrade");
                 Console.WriteLine("    performance and cause connection instability.");
                 Console.ResetColor();
             }
@@ -1197,7 +1414,7 @@ class Program
         else
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("  \u2714 No concerns — all tests passed.");
+            Console.WriteLine("  \u2714 No concerns â€” all tests passed.");
             Console.ResetColor();
             Console.WriteLine();
         }
@@ -1205,7 +1422,7 @@ class Program
 
     /// <summary>
     /// Extracts the last comma-separated token as a country code from a location string
-    /// like "London, England, GB" → "GB".
+    /// like "London, England, GB" â†’ "GB".
     /// </summary>
     static string ExtractCountryCode(string location)
     {
@@ -1214,8 +1431,8 @@ class Program
     }
 
     /// <summary>
-    /// Determines if a user↔service country pairing is reasonable.
-    /// Uses broad groupings to avoid false alarms — e.g. UK user hitting
+    /// Determines if a userâ†”service country pairing is reasonable.
+    /// Uses broad groupings to avoid false alarms â€” e.g. UK user hitting
     /// Netherlands or Ireland gateways is normal.
     /// </summary>
     static bool IsReasonablePairing(string userCountry, string serviceCountry)
@@ -1225,15 +1442,15 @@ class Program
         // Define broad geographic regions where cross-country routing is expected
         var regions = new List<HashSet<string>>
         {
-            // Western Europe — Azure regions in NL, IE, UK, FR, DE, CH, AT etc.
+            // Western Europe â€” Azure regions in NL, IE, UK, FR, DE, CH, AT etc.
             new(StringComparer.OrdinalIgnoreCase) { "GB", "UK", "IE", "NL", "DE", "FR", "BE", "LU", "CH", "AT", "DK", "NO", "SE", "FI", "IS", "PT", "ES", "IT" },
             // Eastern Europe
             new(StringComparer.OrdinalIgnoreCase) { "PL", "CZ", "SK", "HU", "RO", "BG", "HR", "SI", "RS", "BA", "ME", "MK", "AL", "EE", "LV", "LT", "UA" },
             // North America
             new(StringComparer.OrdinalIgnoreCase) { "US", "CA", "MX" },
-            // Asia Pacific — East
+            // Asia Pacific â€” East
             new(StringComparer.OrdinalIgnoreCase) { "JP", "KR", "TW", "HK", "SG", "MY", "TH", "PH", "ID", "VN" },
-            // Asia Pacific — South
+            // Asia Pacific â€” South
             new(StringComparer.OrdinalIgnoreCase) { "IN", "LK", "BD", "PK" },
             // Middle East
             new(StringComparer.OrdinalIgnoreCase) { "AE", "SA", "QA", "BH", "KW", "OM", "IL", "JO" },
@@ -1260,7 +1477,7 @@ class Program
         return s.Length <= maxLength ? s : s[..(maxLength - 3)] + "...";
     }
 
-    // ── Shared helpers ──────────────────────────────────────────────
+    // â”€â”€ Shared helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Finds all active network adapters that appear to be VPN connections.
@@ -1279,7 +1496,7 @@ class Program
 
         // IPv6 transition pseudo-adapters that Windows installs by default. Their
         // descriptions match the "Tunnel" keyword above (e.g. "Teredo Tunneling
-        // Pseudo-Interface") but they are NOT VPNs — flagging them as such caused
+        // Pseudo-Interface") but they are NOT VPNs â€” flagging them as such caused
         // false "VPN/SWG detected" verdicts on stock Cloud PCs / Windows machines.
         var transitionExclusions = new[] { "Teredo", "isatap", "6to4" };
 
@@ -1290,7 +1507,7 @@ class Program
                 var desc = n.Description ?? "";
                 var name = n.Name ?? "";
 
-                // Exclude IPv6 transition pseudo-adapters first — these match
+                // Exclude IPv6 transition pseudo-adapters first â€” these match
                 // "Tunnel" but are not VPNs.
                 if (transitionExclusions.Any(k =>
                         desc.Contains(k, StringComparison.OrdinalIgnoreCase) ||
@@ -1318,7 +1535,7 @@ class Program
     {
         try
         {
-            // Connect a UDP socket (no data sent) — the OS binds the local interface it would route through
+            // Connect a UDP socket (no data sent) â€” the OS binds the local interface it would route through
             using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             sock.Connect(targetIp, 443);
             var localIp = ((IPEndPoint)sock.LocalEndPoint!).Address;
@@ -1338,7 +1555,7 @@ class Program
         }
         catch
         {
-            // If routing check fails, we can't confirm split tunnel — stay conservative
+            // If routing check fails, we can't confirm split tunnel â€” stay conservative
             return (true, "unknown", null);
         }
     }
@@ -1364,8 +1581,8 @@ class Program
     /// <summary>
     /// Parses the IPv4 routing table and checks which routes cover the key W365/AVD
     /// service CIDR ranges. Returns:
-    ///   vpnCaught — sub-CIDRs that egress via a *recognised* VPN adapter, and
-    ///   diverted  — sub-CIDRs that egress via an interface that is neither the
+    ///   vpnCaught â€” sub-CIDRs that egress via a *recognised* VPN adapter, and
+    ///   diverted  â€” sub-CIDRs that egress via an interface that is neither the
     ///               primary physical egress nor a recognised VPN adapter (i.e. a
     ///               tunnel whose adapter name we couldn't classify).
     /// Both empty = the whole range routes direct.
@@ -1385,7 +1602,7 @@ class Program
 
             // Determine the PRIMARY physical egress interface (the one the OS uses
             // to reach the general internet). Any W365 route that egresses on a
-            // different, non-VPN-named interface is "diverted" — likely an
+            // different, non-VPN-named interface is "diverted" â€” likely an
             // unrecognised tunnel. If we cannot determine the primary egress
             // (offline, etc.) we leave the set empty and skip the diverted check
             // to avoid false positives.
@@ -1422,7 +1639,7 @@ class Program
                 uint rangeEnd   = prefixLen == 0 ? 0xFFFFFFFF : netAddr | (0xFFFFFFFF >> prefixLen);
 
                 // Exclude the prefix's NETWORK and directed-BROADCAST addresses
-                // from the capture sweep — neither is a usable AVD unicast
+                // from the capture sweep â€” neither is a usable AVD unicast
                 // endpoint. The directed broadcast is the all-ones HOST address of
                 // the prefix (e.g. 40.64.159.255 for 40.64.144.0/20, NOT always
                 // x.x.255.255). Windows auto-creates an on-link /32 "Local" route
@@ -1537,7 +1754,7 @@ class Program
                 }
                 else
                 {
-                    // PARTIAL — some of the prefix leaks off the direct path.
+                    // PARTIAL â€” some of the prefix leaks off the direct path.
                     // Spell out exactly which sub-CIDRs are not bypassed.
                     sb.AppendLine($"    \u26A0 {label}: PARTIALLY routed off the direct path \u2014 split is incomplete");
                     sb.AppendLine($"        \u26A0 NOT bypassed: {string.Join(", ", notBypassedCidrs)}");
@@ -1594,9 +1811,9 @@ class Program
     /// Classifies the egress of a winning route: 0 = direct (primary physical
     /// egress / unknown-but-not-diverted), 1 = recognised VPN adapter,
     /// 2 = diverted (a specific route egressing on a non-primary, non-VPN
-    /// interface — likely an unrecognised tunnel). The diverted check is
+    /// interface â€” likely an unrecognised tunnel). The diverted check is
     /// suppressed when the primary egress is unknown, when the winning route is
-    /// the default route, or when the egress is loopback/link-local — to keep
+    /// the default route, or when the egress is loopback/link-local â€” to keep
     /// false positives near zero.
     /// </summary>
     static int ClassifyEgress(RouteEntry? win, HashSet<string> vpnIfIps, HashSet<string> primaryEgressIps)
@@ -1604,9 +1821,9 @@ class Program
         if (!win.HasValue) return 0;
         var r = win.Value;
         if (vpnIfIps.Contains(r.ifIp)) return 1;
-        if (primaryEgressIps.Count == 0) return 0;           // can't determine primary — don't guess
+        if (primaryEgressIps.Count == 0) return 0;           // can't determine primary â€” don't guess
         if (primaryEgressIps.Contains(r.ifIp)) return 0;     // on the direct path
-        if (r.prefixLen == 0) return 0;                      // default route — not a specific injection
+        if (r.prefixLen == 0) return 0;                      // default route â€” not a specific injection
         if (r.ifIp.StartsWith("169.254.") || r.ifIp == "127.0.0.1" || r.ifIp == "0.0.0.0") return 0;
         return 2;                                            // specific route, off the primary, not a named VPN
     }
@@ -1649,7 +1866,7 @@ class Program
                     foreach (var ip in ips) set.Add(ip);
             }
         }
-        catch { /* unavailable route — retain any other direct-path evidence */ }
+        catch { /* unavailable route â€” retain any other direct-path evidence */ }
     }
 
     record struct RouteEntry(uint dest, int prefixLen, string gateway, string ifIp, int metric, string destStr);
@@ -1761,7 +1978,7 @@ class Program
 
     /// <summary>
     /// Fetches GeoIP data with cascading fallback across 4 providers and retry on 429.
-    /// Providers: ipinfo.io → ipapi.co → ipwho.is → geojs.io
+    /// Providers: ipinfo.io â†’ ipapi.co â†’ ipwho.is â†’ geojs.io
     /// Results are cached per IP for the duration of the scan.
     /// </summary>
     static async Task<JsonElement> FetchGeoIpAsync(string url, TimeSpan timeout)
@@ -1803,7 +2020,7 @@ class Program
                     var response = await http.GetAsync(providerUrl);
                     if (response.StatusCode == (System.Net.HttpStatusCode)429)
                     {
-                        // Rate limited — wait briefly then retry once, else move to next provider
+                        // Rate limited â€” wait briefly then retry once, else move to next provider
                         if (attempt == 0)
                         {
                             await Task.Delay(1500);
@@ -1832,7 +2049,7 @@ class Program
     {
         var tests = new List<TestDefinition>
         {
-            // ── Local Environment ──
+            // â”€â”€ Local Environment â”€â”€
             new("L-LE-04", "WiFi Signal Strength", "Measures wireless signal strength", "local", RunWifiStrength),
             new("L-LE-05", "Router/Gateway Latency", "Pings default gateway", "local", RunRouterLatency),
             new("L-LE-06", "Network Adapter Details", "Enumerates network adapters", "local", RunNetworkAdapters),
@@ -1848,11 +2065,11 @@ class Program
             new("L-LE-16", "NIC Driver Analysis", "Analyzes network adapter drivers for age and known issues impacting connectivity", "local", RunNicDriverAnalysis),
             new("L-LE-17", "Network Stack Agents", "Inventories VPN/SWG/proxy/security agents in the host network stack that can affect RDP Shortpath UDP (informational)", "local", RunNetworkStackAgents),
 
-            // ── Endpoint Access ──
+            // â”€â”€ Endpoint Access â”€â”€
             new("L-EP-01", "Certificate Endpoints (Port 80)", "Tests TCP 80 connectivity to certificate endpoints", "endpoint", RunCertEndpointTest),
             new("L-EP-02", "Browser-Blocked Endpoints", "Tests required endpoints that browsers block via tracker-prevention (e.g. *.events.data.microsoft.com)", "endpoint", RunBrowserBlockedEndpointsTest),
 
-            // ── TCP Based RDP Connectivity ──
+            // â”€â”€ TCP Based RDP Connectivity â”€â”€
             new("L-TCP-03", "DNS Resolution Performance", "Measures pure DNS resolution time for key W365 endpoints", "tcp", RunDnsPerformance),
             new("L-TCP-04", "Gateway & Service Connectivity", "Tests AFD gateway discovery, RDP gateway reachability, RDWeb feed, and authentication endpoints", "tcp", RunGatewayConnectivity),
             new("L-TCP-05", "DNS CNAME Chain Analysis", "Traces DNS CNAME chain for gateway", "tcp", RunDnsCnameChain),
@@ -1862,14 +2079,14 @@ class Program
             new("L-TCP-07", "Proxy / VPN / SWG Detection", "Detects proxy, VPN, SWG", "tcp", RunProxyVpnDetection),
             new("L-TCP-10", "Network Path Trace", "ICMP traceroute to key W365/AVD endpoints", "tcp", RunNetworkPathTrace),
 
-            // ── UDP Based RDP Connectivity ──
+            // â”€â”€ UDP Based RDP Connectivity â”€â”€
             new("L-UDP-03", "TURN Relay Reachability (UDP 3478)", "Tests UDP to TURN relay", "udp", RunTurnRelay),
             new("L-UDP-04", "TURN Relay Location", "Geolocates the TURN relay server", "udp", RunTurnRelayLocation),
             new("L-UDP-05", "STUN NAT Type Detection", "Two-server STUN test for NAT type and Shortpath readiness", "udp", RunStunNatType),
             new("L-UDP-06", "TURN TLS Inspection", "Checks TLS on TURN relay", "udp", RunTurnTlsInspection),
             new("L-UDP-07", "TURN Proxy/VPN Detection", "Detects UDP-blocking proxy/VPN", "udp", RunTurnProxyVpn),
 
-            // ── Live Connection Diagnostics ──
+            // â”€â”€ Live Connection Diagnostics â”€â”€
             new("17", "Active RDP Session Detection", "Detects remote session or RDP clients", "cloud", RunActiveSession),
             new("17b", "RDP Transport Protocol", "TCP vs UDP from event logs", "cloud", RunTransportProtocol),
             new("17c", "UDP Shortpath Readiness", "STUN test to TURN relay", "cloud", RunUdpReadiness),
@@ -1889,22 +2106,22 @@ class Program
         // customers never see or run it.
         if (IsMicrosoftInternalDevice())
             tests.Add(new("L-TCP-11", "Self-Host Endpoint Connectivity (Internal)",
-                "Tests Microsoft-internal self-host AVD/Cloud PC endpoints (deschutes-sh, wvdselfhost AFD gateways) — internal testers only", "tcp", RunSelfHostConnectivity));
+                "Tests Microsoft-internal self-host AVD/Cloud PC endpoints (deschutes-sh, wvdselfhost AFD gateways) â€” internal testers only", "tcp", RunSelfHostConnectivity));
 
         return tests;
     }
 
-    // ── Cloud PC test suite (runs on the Cloud PC itself) ──
+    // â”€â”€ Cloud PC test suite (runs on the Cloud PC itself) â”€â”€
     static List<TestDefinition> GetCloudPcTests()
     {
         var tests = new List<TestDefinition>
         {
-            // ── Cloud PC Environment ──
+            // â”€â”€ Cloud PC Environment â”€â”€
             new("C-LE-01", "Cloud PC Location", "Identifies Azure region and public IP of the Cloud PC", "cloudpc-env", RunCpcLocation),
             new("C-LE-02", "Cloud PC Network Info", "Shows network adapters and ISP on the Cloud PC", "cloudpc-env", RunCpcNetworkInfo),
             new("C-LE-05", "Network Stack Agents (Cloud PC)", "Inventories VPN/SWG/proxy/security agents in the Cloud PC network stack that can affect RDP Shortpath UDP (informational)", "cloudpc-env", RunCpcNetworkStackAgents),
 
-            // ── Cloud PC → Gateway/TURN Connectivity ──
+            // â”€â”€ Cloud PC â†’ Gateway/TURN Connectivity â”€â”€
             new("C-TCP-04", "Gateway Connectivity (Cloud PC)", "Tests RDP Gateway reachability from Cloud PC", "cloudpc-tcp", RunCpcGatewayConnectivity),
             new("C-TCP-05", "DNS CNAME Chain (Cloud PC)", "Validates DNS chain from Cloud PC", "cloudpc-tcp", RunCpcDnsCnameChain),
             new("C-TCP-06", "TLS Inspection (Cloud PC)", "Checks for TLS interception on Cloud PC", "cloudpc-tcp", RunCpcTlsInspection),
@@ -1912,30 +2129,36 @@ class Program
             new("C-TCP-08", "DNS Hijacking (Cloud PC)", "Verifies gateway DNS resolves to Microsoft IPs from Cloud PC", "cloudpc-tcp", RunCpcDnsHijackingCheck),
             new("C-TCP-09", "Gateway Used (Cloud PC)", "Shows gateway endpoint reached from Cloud PC", "cloudpc-tcp", RunCpcGatewayUsed),
 
-            // ── Cloud PC → TURN Relay ──
+            // â”€â”€ Cloud PC â†’ TURN Relay â”€â”€
             new("C-UDP-03", "TURN Relay (Cloud PC)", "Tests UDP to TURN relay from Cloud PC", "cloudpc-udp", RunCpcTurnRelay),
             new("C-UDP-04", "TURN Relay Location (Cloud PC)", "Geolocates TURN relay from Cloud PC", "cloudpc-udp", RunCpcTurnRelayLocation),
             new("C-UDP-07", "TURN Proxy/VPN (Cloud PC)", "Detects UDP-blocking proxy/VPN from Cloud PC", "cloudpc-udp", RunCpcTurnProxyVpn),
 
-            // ── Cloud PC RDP Egress Validation ──
-            new("C-NET-01", "Azure IMDS Metadata", "Reads VM metadata from Azure Instance Metadata Service", "cloudpc-env", RunCpcImdsMetadata),
+            // â”€â”€ Cloud PC RDP Egress Validation â”€â”€
+            new("C-NET-01", "Azure IMDS Metadata", "Reads VM metadata from Azure Instance Metadata Service (Arc HIMDS on hybrid session hosts)", "cloudpc-env", RunCpcImdsMetadata),
             new("C-NET-02", "RDP Egress in Azure", "Checks that RDP traffic to Gateway/TURN stays within Azure", "cloudpc-tcp", RunCpcRdpEgressInAzure),
 
-            // ── Azure Fabric (WireServer + IMDS) ──
+            // â”€â”€ AVD Hybrid (Arc-onboarded session host) tests â”€â”€
+            // These self-report as "Not applicable" on Azure-VM Cloud PCs and AVD
+            // session hosts, so they cost nothing when the host isn't hybrid.
+            new("C-ARC-01", "Arc Agent Health", "Azure Connected Machine Agent state, version and heartbeat freshness", "cloudpc-env", RunHybridArcAgentHealth),
+            new("C-HY-02", "Session Host Time Sync", "Confirms clock skew is inside the Kerberos tolerance for hybrid AD auth", "cloudpc-env", RunHybridTimeSync),
+
+            // â”€â”€ Azure Fabric (WireServer + IMDS) â”€â”€
             // Probes that surface third-party EDR / WFP / proxy / NSG interference with the
             // Azure fabric communication IPs (168.63.129.16 and 169.254.169.254). A failure
             // of these frequently manifests elsewhere as Guest Agent heartbeat loss,
             // provisioning failure, or extension-install failure on the Cloud PC.
             // Ref: https://learn.microsoft.com/azure/virtual-desktop/azurecommunicationips
             new("C-AZ-01", "Azure Fabric: WireServer TCP (168.63.129.16:80)", "TCP reachability to the Azure WireServer endpoint", "cloudpc-azure", RunCpcAzureFabricWireServerTcp),
-            new("C-AZ-02", "Azure Fabric: WireServer HTTP (GoalState)", "HTTP GET to WireServer — detects proxy interception and silent blocks", "cloudpc-azure", RunCpcAzureFabricWireServerHttp),
-            new("C-AZ-03", "Azure Fabric: Instance Metadata Service (IMDS)", "HTTP GET to 169.254.169.254 with 'Metadata: true' header — verifies IMDS reachability and that headers are not being stripped by a proxy", "cloudpc-azure", RunCpcAzureFabricImds),
+            new("C-AZ-02", "Azure Fabric: WireServer HTTP (GoalState)", "HTTP GET to WireServer â€” detects proxy interception and silent blocks", "cloudpc-azure", RunCpcAzureFabricWireServerHttp),
+            new("C-AZ-03", "Azure Fabric: Instance Metadata Service (IMDS)", "HTTP GET to 169.254.169.254 with 'Metadata: true' header â€” verifies IMDS reachability and that headers are not being stripped by a proxy", "cloudpc-azure", RunCpcAzureFabricImds),
 
-            // ── Cloud PC Shortpath Config ──
+            // â”€â”€ Cloud PC Shortpath Config â”€â”€
             new("C-LE-04", "Shortpath Managed Config", "Checks RDP Shortpath for managed networks prerequisites on session host", "cloudpc-env", RunCpcShortpathManagedConfig),
 
-            // ── Cloud PC Endpoint & Speed ──
-            // Note: C-EP-01 was removed in v1.10.1 — it duplicated a subset of C-EP-02
+            // â”€â”€ Cloud PC Endpoint & Speed â”€â”€
+            // Note: C-EP-01 was removed in v1.10.1 â€” it duplicated a subset of C-EP-02
             // (Session Host Required Endpoints), which is the authoritative list.
             new("C-EP-02", "Session Host Required Endpoints", "Tests all required FQDNs for AVD/W365 session hosts", "cloudpc-env", RunCpcRequiredEndpoints),
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
@@ -1946,21 +2169,21 @@ class Program
         // Cloud PCs are unaffected.
         if (IsMicrosoftInternalDevice())
             tests.Add(new("C-TCP-10", "Self-Host Endpoint Connectivity (Cloud PC, Internal)",
-                "Tests Microsoft-internal self-host endpoints (deschutes-sh, wvdselfhost AFD gateways) from the Cloud PC — internal testers only", "cloudpc-tcp", RunCpcSelfHostConnectivity));
+                "Tests Microsoft-internal self-host endpoints (deschutes-sh, wvdselfhost AFD gateways) from the Cloud PC â€” internal testers only", "cloudpc-tcp", RunCpcSelfHostConnectivity));
 
         return tests;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  ENDPOINT ACCESS TESTS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static async Task<TestResult> RunCertEndpointTest()
     {
         var result = new TestResult { Id = "L-EP-01", Name = "Certificate Endpoints (Port 80)", Category = "endpoint" };
         try
         {
-            // Official AVD required FQDNs for end-user devices — TCP port 80 (Certificates)
+            // Official AVD required FQDNs for end-user devices â€” TCP port 80 (Certificates)
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#end-user-devices
             var targets = new (string host, string wildcard)[]
             {
@@ -2067,9 +2290,9 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  LOCAL ENVIRONMENT TESTS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
     /// Checks whether a Wi-Fi adapter is connected using the .NET NetworkInterface API (locale-independent).
@@ -2182,11 +2405,11 @@ class Program
         var result = new TestResult { Id = "L-LE-05", Name = "Router/Gateway Latency", Category = "local" };
         try
         {
-            // Azure VNet gateways block ICMP — this test is only meaningful on the client device.
+            // Azure VNet gateways block ICMP â€” this test is only meaningful on the client device.
             if (IsRemoteSession())
             {
                 result.Status = "Skipped";
-                result.ResultValue = "Running inside Cloud PC — Azure VNet gateway does not respond to ICMP";
+                result.ResultValue = "Running inside Cloud PC â€” Azure VNet gateway does not respond to ICMP";
                 result.DetailedInfo = "Gateway latency cannot be measured inside a Cloud PC.\nRun the scanner on your physical client device to test local network latency to your router.";
                 return result;
             }
@@ -2236,11 +2459,11 @@ class Program
             sb.AppendLine($"Samples: {times.Count}/5");
             sb.AppendLine(string.Join(", ", times.Select(t => $"{t}ms")));
 
-            // ── Router/Gateway Identification ──
+            // â”€â”€ Router/Gateway Identification â”€â”€
             string routerModel = null;
             try
             {
-                // 1. Reverse DNS — often reveals device hostname (e.g. "fritz.box", "router.asus.com")
+                // 1. Reverse DNS â€” often reveals device hostname (e.g. "fritz.box", "router.asus.com")
                 string reverseDns = null;
                 try
                 {
@@ -2250,7 +2473,7 @@ class Program
                 }
                 catch { }
 
-                // 2. MAC OUI lookup — get gateway MAC from ARP cache, map OUI prefix to manufacturer
+                // 2. MAC OUI lookup â€” get gateway MAC from ARP cache, map OUI prefix to manufacturer
                 string macAddress = null;
                 string ouiManufacturer = null;
                 try
@@ -2258,7 +2481,7 @@ class Program
                     var arpOutput = await RunProcessAsync("arp", $"-a {gateway}");
                     if (arpOutput != null)
                     {
-                        // Parse ARP output for MAC address (works across all locales — MAC format is universal)
+                        // Parse ARP output for MAC address (works across all locales â€” MAC format is universal)
                         var macMatch = Regex.Match(arpOutput, @"([0-9a-f]{2}[:-]){5}[0-9a-f]{2}", RegexOptions.IgnoreCase);
                         if (macMatch.Success)
                         {
@@ -2270,7 +2493,7 @@ class Program
                 }
                 catch { }
 
-                // 3. UPnP SSDP Discovery — query for Internet Gateway Device to get model info
+                // 3. UPnP SSDP Discovery â€” query for Internet Gateway Device to get model info
                 string upnpModel = null;
                 string upnpManufacturer = null;
                 string upnpFriendlyName = null;
@@ -2288,7 +2511,7 @@ class Program
 
                 // Build router identification section
                 sb.AppendLine();
-                sb.AppendLine("═══ Router/Gateway Identification ═══");
+                sb.AppendLine("â•â•â• Router/Gateway Identification â•â•â•");
 
                 if (reverseDns != null)
                     sb.AppendLine($"  Hostname: {reverseDns}");
@@ -2442,7 +2665,7 @@ class Program
         await udp.SendAsync(mSearchBytes, mSearchBytes.Length, multicastEndpoint);
         await udp.SendAsync(mSearchBytes, mSearchBytes.Length, unicastEndpoint);
 
-        // Collect responses — ONLY accept responses from the gateway IP itself.
+        // Collect responses â€” ONLY accept responses from the gateway IP itself.
         // Other devices (Hue bridges, smart TVs, etc.) also respond to SSDP multicast
         // but are not the router.
         string? locationUrl = null;
@@ -2488,7 +2711,7 @@ class Program
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
             var xml = await http.GetStringAsync(locationUrl);
 
-            // Parse key fields from the XML (simple regex — avoids XML parser dependency issues with malformed docs)
+            // Parse key fields from the XML (simple regex â€” avoids XML parser dependency issues with malformed docs)
             var friendly = Regex.Match(xml, @"<friendlyName>([^<]+)</friendlyName>", RegexOptions.IgnoreCase);
             var mfr = Regex.Match(xml, @"<manufacturer>([^<]+)</manufacturer>", RegexOptions.IgnoreCase);
             var model = Regex.Match(xml, @"<modelName>([^<]+)</modelName>", RegexOptions.IgnoreCase);
@@ -2508,7 +2731,7 @@ class Program
     static string? LookupMacOui(string oui)
     {
         // Common router/networking equipment OUI prefixes (IEEE MA-L assignments)
-        // Format: "AA:BB:CC" → "Manufacturer"
+        // Format: "AA:BB:CC" â†’ "Manufacturer"
         var ouiMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // AVM (FRITZ!Box)
@@ -2642,7 +2865,7 @@ class Program
             // Attempt reverse DNS (PTR) lookup on each DNS server to get its name
             if (allDnsServers.Count > 0)
             {
-                sb.AppendLine("═══ DNS Servers ═══");
+                sb.AppendLine("â•â•â• DNS Servers â•â•â•");
                 foreach (var dnsIp in allDnsServers)
                 {
                     string name = "";
@@ -2652,7 +2875,7 @@ class Program
                         if (!string.IsNullOrEmpty(entry.HostName) && entry.HostName != dnsIp)
                             name = entry.HostName;
                     }
-                    catch { /* PTR lookup failed — that's fine */ }
+                    catch { /* PTR lookup failed â€” that's fine */ }
 
                     sb.AppendLine(string.IsNullOrEmpty(name)
                         ? $"  {dnsIp}"
@@ -2860,9 +3083,9 @@ class Program
         return Task.FromResult(result);
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  WINDOWS FIREWALL AUDIT
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static async Task<TestResult> RunFirewallAudit()
     {
@@ -2880,7 +3103,7 @@ class Program
             using var proc = Process.Start(psi);
             var fwOutput = await proc!.StandardOutput.ReadToEndAsync();
             await proc.WaitForExitAsync();
-            sb.AppendLine("═══ Firewall Profile State ═══");
+            sb.AppendLine("â•â•â• Firewall Profile State â•â•â•");
             sb.AppendLine(fwOutput.Trim());
             sb.AppendLine();
 
@@ -2891,10 +3114,10 @@ class Program
                 (80, "TCP", "Certificate endpoints (CRL/OCSP)")
             };
 
-            sb.AppendLine("═══ Outbound Blocking Rules ═══");
+            sb.AppendLine("â•â•â• Outbound Blocking Rules â•â•â•");
             try
             {
-                // Read firewall rules directly from registry — avoids spawning powershell.exe
+                // Read firewall rules directly from registry â€” avoids spawning powershell.exe
                 var allRules = ReadFirewallRulesFromRegistry();
                 var outboundBlocks = allRules
                     .Where(r => r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase)
@@ -2913,7 +3136,7 @@ class Program
                         {
                             var issue = $"Outbound {proto} {port} ({desc}) blocked by rule: {rule.Name}";
                             issues.Add(issue);
-                            sb.AppendLine($"  ✗ {issue}");
+                            sb.AppendLine($"  âœ— {issue}");
                         }
                     }
                 }
@@ -2927,7 +3150,7 @@ class Program
                 if (rdpBlocks.Count > 0)
                 {
                     sb.AppendLine();
-                    sb.AppendLine("═══ RDP Application Block Rules ═══");
+                    sb.AppendLine("â•â•â• RDP Application Block Rules â•â•â•");
                     foreach (var rule in rdpBlocks)
                     {
                         sb.AppendLine($"  DisplayName : {rule.Name}");
@@ -2939,7 +3162,7 @@ class Program
 
             if (issues.Count == 0)
             {
-                sb.AppendLine("  ✓ No outbound blocking rules found for W365 required ports");
+                sb.AppendLine("  âœ“ No outbound blocking rules found for W365 required ports");
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -2964,9 +3187,9 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  RDP GROUP POLICY CHECK
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static Task<TestResult> RunRdpGroupPolicyCheck()
     {
@@ -2982,7 +3205,7 @@ class Program
                 @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client"
             };
 
-            sb.AppendLine("═══ Terminal Services Group Policy ═══");
+            sb.AppendLine("â•â•â• Terminal Services Group Policy â•â•â•");
 
             foreach (var path in policyPaths)
             {
@@ -3026,7 +3249,7 @@ class Program
                     if (secLayer != null)
                     {
                         var secVal = Convert.ToInt32(secLayer);
-                        if (secVal == 0) issues.Add("RDP Security Layer set to 'RDP Security' (SecurityLayer=0) — less secure than TLS");
+                        if (secVal == 0) issues.Add("RDP Security Layer set to 'RDP Security' (SecurityLayer=0) â€” less secure than TLS");
                     }
 
                     // MaxCompressionLevel
@@ -3038,7 +3261,7 @@ class Program
 
                     // AVC444ModePreferred / AVCHardwareEncodePreferred
                     var avc = key.GetValue("AVC444ModePreferred");
-                    if (avc != null) sb.AppendLine($"    → AVC 4:4:4 mode: {(Convert.ToInt32(avc) == 1 ? "Preferred" : "Not preferred")}");
+                    if (avc != null) sb.AppendLine($"    â†’ AVC 4:4:4 mode: {(Convert.ToInt32(avc) == 1 ? "Preferred" : "Not preferred")}");
 
                     sb.AppendLine();
                 }
@@ -3067,7 +3290,7 @@ class Program
                 using var msrdcKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\MSRDC\Policies");
                 if (msrdcKey != null)
                 {
-                    sb.AppendLine("═══ MSRDC Client Policies ═══");
+                    sb.AppendLine("â•â•â• MSRDC Client Policies â•â•â•");
                     foreach (var name in msrdcKey.GetValueNames())
                     {
                         sb.AppendLine($"    {name} = {msrdcKey.GetValue(name)}");
@@ -3081,7 +3304,7 @@ class Program
             {
                 result.Status = "Passed";
                 result.ResultValue = "No restrictive RDP Group Policies detected";
-                sb.AppendLine("  ✓ No problematic Terminal Services policies found");
+                sb.AppendLine("  âœ“ No problematic Terminal Services policies found");
             }
             else
             {
@@ -3097,9 +3320,9 @@ class Program
         return Task.FromResult(result);
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  WIFI CHANNEL CONGESTION
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static async Task<TestResult> RunWifiChannelCongestion()
     {
@@ -3148,14 +3371,14 @@ class Program
             await proc.WaitForExitAsync();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"═══ Your Connection ═══");
+            sb.AppendLine($"â•â•â• Your Connection â•â•â•");
             sb.AppendLine($"  SSID: {mySsid ?? "N/A"}");
             sb.AppendLine($"  BSSID: {myBssid ?? "N/A"}");
             sb.AppendLine($"  Channel: {myChannel ?? "N/A"}");
             sb.AppendLine($"  Radio: {myBand ?? "N/A"}");
             sb.AppendLine();
 
-            // Parse nearby networks — each BSSID block
+            // Parse nearby networks â€” each BSSID block
             var networks = new List<(string ssid, int channel, int signal, string band)>();
             string currentSsid = "";
             var bssidBlocks = output.Split(new[] { "BSSID" }, StringSplitOptions.RemoveEmptyEntries);
@@ -3199,7 +3422,7 @@ class Program
             // Count networks on same channel
             int sameChannel = currentChannel > 0 ? networks.Count(n => n.channel == currentChannel) : 0;
 
-            // Count overlapping channels (2.4 GHz channels 1-13 overlap ±2)
+            // Count overlapping channels (2.4 GHz channels 1-13 overlap Â±2)
             int overlapping = 0;
             bool is24Ghz = currentChannel > 0 && currentChannel <= 14;
             if (is24Ghz)
@@ -3209,12 +3432,12 @@ class Program
 
             // Channel usage histogram
             var channelCounts = networks.GroupBy(n => n.channel).OrderBy(g => g.Key).ToList();
-            sb.AppendLine($"═══ Nearby Networks: {networks.Count} total ═══");
+            sb.AppendLine($"â•â•â• Nearby Networks: {networks.Count} total â•â•â•");
             sb.AppendLine();
             sb.AppendLine("Channel usage:");
             foreach (var g in channelCounts)
             {
-                var marker = g.Key == currentChannel ? " ← YOUR CHANNEL" : "";
+                var marker = g.Key == currentChannel ? " â† YOUR CHANNEL" : "";
                 sb.AppendLine($"  Ch {g.Key,3}: {g.Count()} network{(g.Count() > 1 ? "s" : "")} (strongest: {g.Max(n => n.signal)}%){marker}");
             }
 
@@ -3236,7 +3459,7 @@ class Program
             else if (sameChannel >= 6)
             {
                 result.Status = "Warning";
-                result.ResultValue = $"{sameChannel} networks on channel {currentChannel} — heavy congestion. {(is24Ghz ? $"{overlapping} additional overlapping networks." : "")}";
+                result.ResultValue = $"{sameChannel} networks on channel {currentChannel} â€” heavy congestion. {(is24Ghz ? $"{overlapping} additional overlapping networks." : "")}";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/troubleshoot-windows-365-boot#networking-checks";
                 result.RemediationText = is24Ghz
                     ? "Consider switching to 5 GHz band or using channels 1, 6, or 11 (non-overlapping 2.4 GHz channels). A wired Ethernet connection eliminates WiFi congestion entirely."
@@ -3245,12 +3468,12 @@ class Program
             else if (sameChannel >= 3)
             {
                 result.Status = "Passed";
-                result.ResultValue = $"{sameChannel} networks on channel {currentChannel} — moderate density. {(is24Ghz ? $"{overlapping} overlapping." : "")} Total: {networks.Count} nearby networks.";
+                result.ResultValue = $"{sameChannel} networks on channel {currentChannel} â€” moderate density. {(is24Ghz ? $"{overlapping} overlapping." : "")} Total: {networks.Count} nearby networks.";
             }
             else
             {
                 result.Status = "Passed";
-                result.ResultValue = $"{sameChannel} network{(sameChannel > 1 ? "s" : "")} on channel {currentChannel} — low congestion. Total: {networks.Count} nearby networks.";
+                result.ResultValue = $"{sameChannel} network{(sameChannel > 1 ? "s" : "")} on channel {currentChannel} â€” low congestion. Total: {networks.Count} nearby networks.";
             }
         }
         catch (Exception ex)
@@ -3261,9 +3484,9 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  RDP CLIENT VERSION CHECK
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
     /// L-LE-13: Detects installed Windows App / MSRDC / MSTSC and checks version currency.
@@ -3279,7 +3502,7 @@ class Program
             Version? primaryVersion = null;
             bool foundAny = false;
 
-            // ── 1. Windows App (Store MSIX) — MicrosoftCorporationII.Windows365 ──
+            // â”€â”€ 1. Windows App (Store MSIX) â€” MicrosoftCorporationII.Windows365 â”€â”€
             try
             {
                 // Read MSIX package version from registry (avoids spawning powershell.exe)
@@ -3305,9 +3528,9 @@ class Program
                     }
                 }
             }
-            catch { /* Registry query failed — not installed or access denied */ }
+            catch { /* Registry query failed â€” not installed or access denied */ }
 
-            // ── 2. Standalone MSRDC installer (non-Store) ──
+            // â”€â”€ 2. Standalone MSRDC installer (non-Store) â”€â”€
             if (!foundAny)
             {
                 var msrdcPaths = new[]
@@ -3333,7 +3556,7 @@ class Program
                 }
             }
 
-            // ── 3. Built-in MSTSC (always present) ──
+            // â”€â”€ 3. Built-in MSTSC (always present) â”€â”€
             var mstscPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "mstsc.exe");
             if (File.Exists(mstscPath))
             {
@@ -3346,7 +3569,7 @@ class Program
                 }
             }
 
-            // ── Version currency check (N-3 policy) ──
+            // â”€â”€ Version currency check (N-3 policy) â”€â”€
             // Published PUBLIC releases of Windows App for Windows, newest first.
             // Source: https://learn.microsoft.com/en-us/windows-app/whats-new?tabs=windows
             // Policy: latest (N) = up to date (Passed); N-1..N-3 = update available
@@ -3410,7 +3633,7 @@ class Program
                 sb.AppendLine("  Windows App is recommended for the best Windows 365 / AVD experience.");
                 sb.AppendLine("  It supports RDP Shortpath, Teams AV redirect, and auto-updates.");
                 result.Status = "Warning";
-                result.ResultValue = $"mstsc.exe only — Windows App recommended";
+                result.ResultValue = $"mstsc.exe only â€” Windows App recommended";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-app/get-started-connect-devices-desktops-apps";
             }
             else if (!foundAny)
@@ -3432,9 +3655,9 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  DNS SERVER IDENTIFICATION
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
     /// L-LE-14: Identifies configured DNS servers, classifies the provider, and detects encrypted DNS.
@@ -3447,7 +3670,7 @@ class Program
             var sb = new StringBuilder();
             var dnsServers = new List<(string ip, string adapterName)>();
 
-            // ── 1. Collect DNS servers from all active adapters ──
+            // â”€â”€ 1. Collect DNS servers from all active adapters â”€â”€
             var adapters = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback);
 
@@ -3500,7 +3723,7 @@ class Program
                 }
                 catch { /* PTR lookup failed */ }
 
-                // Test responsiveness — resolve a known good domain
+                // Test responsiveness â€” resolve a known good domain
                 try
                 {
                     var sw = Stopwatch.StartNew();
@@ -3517,13 +3740,13 @@ class Program
                 sb.AppendLine();
             }
 
-            // ── 2. Detect actual resolver via whoami-style check ──
+            // â”€â”€ 2. Detect actual resolver via whoami-style check â”€â”€
             // Detect actual resolver via DNS-over-HTTPS whoami (avoids spawning nslookup)
-            sb.AppendLine("═══ Actual Resolver Detection ═══");
+            sb.AppendLine("â•â•â• Actual Resolver Detection â•â•â•");
             try
             {
                 using var dohHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-                // Google DoH: resolve o-o.myaddr.l.google.com TXT → returns resolver's IP
+                // Google DoH: resolve o-o.myaddr.l.google.com TXT â†’ returns resolver's IP
                 var dohResp = await dohHttp.GetStringAsync("https://dns.google/resolve?name=o-o.myaddr.l.google.com&type=TXT");
                 var txtMatch = Regex.Match(dohResp, @"""(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})""");
                 if (txtMatch.Success)
@@ -3538,11 +3761,11 @@ class Program
                     {
                         // Differentiate the two common patterns:
                         //   (a) Configured DNS is RFC1918 (router/DHCP) but the resolver
-                        //       egress IP is public — almost always means the local
+                        //       egress IP is public â€” almost always means the local
                         //       router/firewall is forwarding upstream to a public resolver
                         //       (typical of consumer routers, captive networks, mobile/transit
                         //       gateways). This is normal, not encrypted DNS.
-                        //   (b) Configured DNS is public but resolver egress differs — could
+                        //   (b) Configured DNS is public but resolver egress differs â€” could
                         //       indicate DoH/DoT or a transparent DNS interception by a SWG.
                         bool allConfiguredArePrivate = uniqueDns.Count > 0
                             && uniqueDns.All(d => IsPrivateIp(d.ip));
@@ -3553,7 +3776,7 @@ class Program
                         }
                         else
                         {
-                            sb.AppendLine("Note: Resolver egress IP differs from configured DNS — DNS forwarding, encrypted DNS (DoH/DoT), or a SWG transparent DNS proxy may be in use.");
+                            sb.AppendLine("Note: Resolver egress IP differs from configured DNS â€” DNS forwarding, encrypted DNS (DoH/DoT), or a SWG transparent DNS proxy may be in use.");
                         }
                     }
                 }
@@ -3564,9 +3787,9 @@ class Program
             }
             catch { sb.AppendLine("Resolver detection query failed"); }
 
-            // ── 3. Check Windows Encrypted DNS (DoH) settings via registry ──
+            // â”€â”€ 3. Check Windows Encrypted DNS (DoH) settings via registry â”€â”€
             sb.AppendLine();
-            sb.AppendLine("═══ Encrypted DNS (DoH) ═══");
+            sb.AppendLine("â•â•â• Encrypted DNS (DoH) â•â•â•");
             bool dohDetected = false;
             try
             {
@@ -3609,12 +3832,12 @@ class Program
             }
             catch { sb.AppendLine("  Could not read DoH registry settings"); }
 
-            // ── 4. Set status ──
+            // â”€â”€ 4. Set status â”€â”€
             var providerSummary = string.Join(", ", providers.Distinct());
             if (warnings.Count > 0)
             {
                 result.Status = "Warning";
-                result.ResultValue = $"{providerSummary} — {warnings.Count} issue(s)";
+                result.ResultValue = $"{providerSummary} â€” {warnings.Count} issue(s)";
             }
             else
             {
@@ -3649,9 +3872,9 @@ class Program
             "168.63.129.16" => "Azure Internal DNS",
             // Zscaler common ranges
             _ when ip.StartsWith("165.225.") || ip.StartsWith("104.129.") || ip.StartsWith("136.226.") => "Zscaler Cloud DNS",
-            // Private RFC1918 ranges — likely corporate/router DNS
+            // Private RFC1918 ranges â€” likely corporate/router DNS
             _ when IsPrivateIp(ip) => "Private/Corporate DNS",
-            // Anything else — unknown public
+            // Anything else â€” unknown public
             _ => "Public DNS"
         };
     }
@@ -3696,9 +3919,9 @@ class Program
         return null;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  PATH MTU DISCOVERY
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
     /// L-LE-15: Discovers the path MTU to key W365/AVD endpoints using DF-bit ping binary search.
@@ -3710,12 +3933,12 @@ class Program
         {
             var sb = new StringBuilder();
 
-            // ── Build target list: default gateway + reliable public ICMP responders ──
+            // â”€â”€ Build target list: default gateway + reliable public ICMP responders â”€â”€
             // Cloud endpoints (AFD, TURN) often block/filter ICMP so can't be used for MTU probing.
             // Instead we test the actual network path segments that matter.
             var targets = new List<(IPAddress ip, string label)>();
 
-            // 1. Default gateway — tests local segment MTU (VPN/tunnel impact)
+            // 1. Default gateway â€” tests local segment MTU (VPN/tunnel impact)
             var gw = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
                 .SelectMany(n => n.GetIPProperties().GatewayAddresses)
@@ -3723,7 +3946,7 @@ class Program
             if (gw != null)
                 targets.Add((gw.Address, "Default Gateway"));
 
-            // 2. Public DNS — tests Internet path MTU (ISP/WAN segment)
+            // 2. Public DNS â€” tests Internet path MTU (ISP/WAN segment)
             targets.Add((IPAddress.Parse("8.8.8.8"), "Google DNS (Internet path)"));
             targets.Add((IPAddress.Parse("1.1.1.1"), "Cloudflare DNS (Internet path)"));
 
@@ -3746,7 +3969,7 @@ class Program
                 bool respondsAtAll = await TestPingPayload(ping, targetIp, 1, options);
                 if (!respondsAtAll)
                 {
-                    sb.AppendLine($"  No ICMP response — skipped");
+                    sb.AppendLine($"  No ICMP response â€” skipped");
                     sb.AppendLine();
                     continue;
                 }
@@ -3756,7 +3979,7 @@ class Program
                 if (standardWorks)
                 {
                     bestPayload = hi;
-                    sb.AppendLine($"  MTU: ≥1500 (standard Ethernet — OK)");
+                    sb.AppendLine($"  MTU: â‰¥1500 (standard Ethernet â€” OK)");
                     minMtu = Math.Min(minMtu, 1500);
                 }
                 else
@@ -3784,23 +4007,23 @@ class Program
 
                         if (mtu < 1280)
                         {
-                            sb.AppendLine($"  ✘ MTU below 1280 — will cause fragmentation and likely connection failures");
+                            sb.AppendLine($"  âœ˜ MTU below 1280 â€” will cause fragmentation and likely connection failures");
                             issues.Add($"{label}: MTU {mtu} (critically low)");
                         }
                         else if (mtu < 1400)
                         {
-                            sb.AppendLine($"  ⚠ MTU below 1400 — may cause UDP Shortpath fragmentation");
+                            sb.AppendLine($"  âš  MTU below 1400 â€” may cause UDP Shortpath fragmentation");
                             issues.Add($"{label}: MTU {mtu} (suboptimal for Shortpath)");
                         }
                         else
                         {
-                            sb.AppendLine($"  ✓ MTU adequate for RDP traffic");
+                            sb.AppendLine($"  âœ“ MTU adequate for RDP traffic");
                         }
                         minMtu = Math.Min(minMtu, mtu);
                     }
                     else
                     {
-                        sb.AppendLine($"  ✘ Responds to ping but all DF-bit probes failed");
+                        sb.AppendLine($"  âœ˜ Responds to ping but all DF-bit probes failed");
                         issues.Add($"{label}: DF-bit probes failed");
                     }
                 }
@@ -3809,7 +4032,7 @@ class Program
                 sb.AppendLine();
             }
 
-            // ── Adapter MTU check (local interface) ──
+            // â”€â”€ Adapter MTU check (local interface) â”€â”€
             // An MTU below 1500 on a physical adapter is often legitimate:
             //   1492 = PPPoE (UK FTTC/FTTP, many DSL/fibre ISPs)
             //   1480 = GRE / IP-in-IP / 6in4
@@ -3820,7 +4043,7 @@ class Program
             // probed Internet targets actually showed reduced PMTU below 1400
             // (already captured as "critically low"/issues above). On a 1492
             // PPPoE link with full path MTU, the adapter value is informational.
-            sb.AppendLine("═══ Local Interface MTU ═══");
+            sb.AppendLine("â•â•â• Local Interface MTU â•â•â•");
             var activeAdapters = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up
                     && n.NetworkInterfaceType != NetworkInterfaceType.Loopback
@@ -3836,14 +4059,14 @@ class Program
                     sb.AppendLine($"  {a.Name}: Interface MTU = {mtu}");
                     if (mtu < 1500)
                     {
-                        // 1492 has multiple legitimate causes — PPPoE is only one of them.
+                        // 1492 has multiple legitimate causes â€” PPPoE is only one of them.
                         // Mobile / transit / bonded-cellular gateways and many carrier
                         // L2TP/MPLS access products clamp to ~1492 too. Naming PPPoE
                         // specifically misleads users on those networks; describe the
                         // observation generically and list common causes.
                         string explanation = mtu switch
                         {
-                            1492 => "common on PPPoE access (UK FTTC/FTTP, many DSL/fibre ISPs) and on mobile / transit / bonded-cellular gateways — usually expected, not a problem",
+                            1492 => "common on PPPoE access (UK FTTC/FTTP, many DSL/fibre ISPs) and on mobile / transit / bonded-cellular gateways â€” usually expected, not a problem",
                             1480 => "GRE / IP-in-IP tunnel \u2014 typical for some corporate networks",
                             1452 => "PPPoE with additional VLAN tag",
                             1428 => "PPPoE + IPSec",
@@ -3872,7 +4095,7 @@ class Program
                 }
             }
 
-            // ── Set status ──
+            // â”€â”€ Set status â”€â”€
             if (testedCount == 0)
             {
                 result.Status = "Warning";
@@ -3881,19 +4104,19 @@ class Program
             else if (issues.Any(i => i.Contains("critically low")))
             {
                 result.Status = "Failed";
-                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU {minMtu} — critically low" : "MTU issues detected";
+                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU {minMtu} â€” critically low" : "MTU issues detected";
                 result.RemediationUrl = "https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
             else if (issues.Count > 0)
             {
                 result.Status = "Warning";
-                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU {minMtu} — {issues.Count} issue(s)" : $"{issues.Count} MTU issue(s)";
+                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU {minMtu} â€” {issues.Count} issue(s)" : $"{issues.Count} MTU issue(s)";
                 result.RemediationUrl = "https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
             else
             {
                 result.Status = "Passed";
-                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU ≥{minMtu} — OK" : "All targets OK";
+                result.ResultValue = minMtu < int.MaxValue ? $"Path MTU â‰¥{minMtu} â€” OK" : "All targets OK";
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -3917,14 +4140,14 @@ class Program
         }
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  NIC DRIVER ANALYSIS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>Driver info read from the network adapter class registry key.</summary>
     record NicDriverInfo(string Description, string Provider, string Version, DateTime? Date);
 
-    /// <summary>Network adapter class GUID — stable across all Windows versions.</summary>
+    /// <summary>Network adapter class GUID â€” stable across all Windows versions.</summary>
     const string NetAdapterClassGuid = @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}";
 
     /// <summary>
@@ -3941,7 +4164,7 @@ class Program
 
             foreach (var subKeyName in classKey.GetSubKeyNames())
             {
-                // Subkeys are numbered "0000", "0001", etc. — skip "Properties"
+                // Subkeys are numbered "0000", "0001", etc. â€” skip "Properties"
                 if (!int.TryParse(subKeyName, out _)) continue;
 
                 try
@@ -3983,26 +4206,26 @@ class Program
     /// </summary>
     static readonly (string descPattern, string? maxBadVersion, string issue)[] KnownDriverIssues =
     [
-        // Realtek RTL8168/8111 — TCP checksum offload bugs cause packet corruption & retransmits
+        // Realtek RTL8168/8111 â€” TCP checksum offload bugs cause packet corruption & retransmits
         ("RTL8168", "10.044",
             "Realtek RTL8168/8111 drivers before v10.045 have TCP checksum offload bugs that cause packet corruption. Update driver or disable 'TCP Checksum Offload' in adapter advanced settings"),
 
         ("RTL8111", "10.044",
             "Realtek RTL8111/8168 drivers before v10.045 have TCP checksum offload bugs that cause packet corruption. Update driver or disable 'TCP Checksum Offload' in adapter advanced settings"),
 
-        // Intel I225-V — link drops under sustained load (fixed in later driver versions)
+        // Intel I225-V â€” link drops under sustained load (fixed in later driver versions)
         ("I225-V", "1.0.2.17",
             "Intel I225-V early drivers have known link-drop issues under sustained load. Update to the latest Intel LAN driver"),
 
-        // Intel I226-V — similar early-driver instability
+        // Intel I226-V â€” similar early-driver instability
         ("I226-V", "1.0.2.17",
             "Intel I226-V early drivers have known instability. Update to the latest Intel LAN driver"),
 
-        // Killer Networking — Advanced Stream Detect can deprioritize RDP traffic
+        // Killer Networking â€” Advanced Stream Detect can deprioritize RDP traffic
         ("Killer", null,
             "Intel Killer networking adapters use Advanced Stream Detect which can deprioritize RDP/UDP traffic. If experiencing poor session quality, disable 'Advanced Stream Detect' in Killer Control Center"),
 
-        // Cisco AnyConnect — MTU issues with UDP can break RDP Shortpath
+        // Cisco AnyConnect â€” MTU issues with UDP can break RDP Shortpath
         ("Cisco AnyConnect", null,
             "Cisco AnyConnect virtual adapter can fragment UDP packets and interfere with RDP Shortpath. If UDP connectivity fails, check AnyConnect MTU settings"),
     ];
@@ -4080,13 +4303,13 @@ class Program
                 if (driverInfo == null) continue;
                 analyzed++;
 
-                sb.AppendLine($"═══ {adapter.Name} ═══");
+                sb.AppendLine($"â•â•â• {adapter.Name} â•â•â•");
                 sb.AppendLine($"  Driver: {driverInfo.Description}");
                 sb.AppendLine($"  Provider: {driverInfo.Provider}");
                 sb.AppendLine($"  Version: {driverInfo.Version}");
                 sb.AppendLine($"  Date: {driverInfo.Date?.ToString("yyyy-MM-dd") ?? "unknown"}");
 
-                // Check driver age (informational only — old drivers are usually fine;
+                // Check driver age (informational only â€” old drivers are usually fine;
                 // most NIC vendors release updates infrequently and Windows Update keeps
                 // working drivers in place. Only surface as Info, never as a Warning,
                 // unless paired with a known-issue match below.)
@@ -4096,16 +4319,16 @@ class Program
                     if (ageDays > 730) // > 2 years
                     {
                         var years = ageDays / 365.25;
-                        sb.AppendLine($"  ℹ Driver dates to {driverInfo.Date.Value:yyyy-MM} ({years:F1} years old). This is usually fine; if you experience instability, check the manufacturer's website for an update.");
+                        sb.AppendLine($"  â„¹ Driver dates to {driverInfo.Date.Value:yyyy-MM} ({years:F1} years old). This is usually fine; if you experience instability, check the manufacturer's website for an update.");
                     }
                 }
 
-                // Check known problematic drivers — these are the only conditions that
+                // Check known problematic drivers â€” these are the only conditions that
                 // should produce a Warning verdict for this test.
                 var issue = CheckKnownDriverIssue(driverInfo);
                 if (issue != null)
                 {
-                    sb.AppendLine($"  ⚠ Known issue: {issue}");
+                    sb.AppendLine($"  âš  Known issue: {issue}");
                     warnings++;
                 }
 
@@ -4121,8 +4344,8 @@ class Program
             else
             {
                 result.ResultValue = warnings == 0
-                    ? $"{analyzed} driver(s) analyzed — no known issues"
-                    : $"{analyzed} driver(s) analyzed — {warnings} warning(s)";
+                    ? $"{analyzed} driver(s) analyzed â€” no known issues"
+                    : $"{analyzed} driver(s) analyzed â€” {warnings} warning(s)";
                 result.DetailedInfo = sb.ToString().Trim();
                 result.Status = warnings == 0 ? "Passed" : "Warning";
             }
@@ -4131,16 +4354,16 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  TCP TRANSPORT TESTS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static async Task<TestResult> RunGatewayConnectivity()
     {
         var result = new TestResult { Id = "L-TCP-04", Name = "Gateway & Service Connectivity", Category = "tcp" };
         try
         {
-            // afdfp-rdgateway-r1.wvd.microsoft.com is Azure Front Door — NOT the RDP gateway.
+            // afdfp-rdgateway-r1.wvd.microsoft.com is Azure Front Door â€” NOT the RDP gateway.
             // AFD discovers the nearest regional RDP gateway (e.g. rdgateway-c221-UKS-r1.wvd.microsoft.com).
             // The actual gateway hostname is revealed in AFD's Set-Cookie Domain= header.
             var serviceEndpoints = new (string host, int port, string role)[] {
@@ -4167,19 +4390,19 @@ class Program
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
-            // ── Step 1: Query AFD to discover the actual RDP gateway ──
+            // â”€â”€ Step 1: Query AFD to discover the actual RDP gateway â”€â”€
             var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
             sb.AppendLine($"  {afdHost}:443  [Gateway Discovery (AFD)]");
             try
             {
                 var afdIps = await Dns.GetHostAddressesAsync(afdHost);
-                sb.AppendLine($"    ✓ DNS → {string.Join(", ", afdIps.Select(a => a.ToString()))}");
-                sb.AppendLine($"    → AFD edge IP (routes to nearest regional gateway)");
+                sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", afdIps.Select(a => a.ToString()))}");
+                sb.AppendLine($"    â†’ AFD edge IP (routes to nearest regional gateway)");
 
                 var sw = Stopwatch.StartNew();
                 var afdResp = await http.GetAsync($"https://{afdHost}/");
                 sw.Stop();
-                sb.AppendLine($"    ✓ HTTPS {(int)afdResp.StatusCode} in {sw.ElapsedMilliseconds}ms");
+                sb.AppendLine($"    âœ“ HTTPS {(int)afdResp.StatusCode} in {sw.ElapsedMilliseconds}ms");
                 afdOk = true;
                 passed++;
 
@@ -4210,46 +4433,46 @@ class Program
                 if (afdResp.Headers.TryGetValues("X-MSEdge-Ref", out var edgeRefs))
                 {
                     var edgeRef = edgeRefs.FirstOrDefault() ?? "";
-                    sb.AppendLine($"    → X-MSEdge-Ref: {edgeRef}");
-                    // Parse PoP: "Ref B: LON04EDGE0816" → LON04EDGE0816
+                    sb.AppendLine($"    â†’ X-MSEdge-Ref: {edgeRef}");
+                    // Parse PoP: "Ref B: LON04EDGE0816" â†’ LON04EDGE0816
                     var popMatch = System.Text.RegularExpressions.Regex.Match(edgeRef, @"Ref B:\s*(\S+)");
                     if (popMatch.Success) afdPop = popMatch.Groups[1].Value;
                 }
 
                 if (!string.IsNullOrEmpty(discoveredGateway))
                 {
-                    sb.AppendLine($"    → Discovered gateway: {discoveredGateway}");
+                    sb.AppendLine($"    â†’ Discovered gateway: {discoveredGateway}");
                     if (!string.IsNullOrEmpty(serviceRegion))
-                        sb.AppendLine($"    → Service region: {serviceRegion}");
+                        sb.AppendLine($"    â†’ Service region: {serviceRegion}");
                     if (!string.IsNullOrEmpty(afdPop))
-                        sb.AppendLine($"    → AFD PoP: {afdPop}");
+                        sb.AppendLine($"    â†’ AFD PoP: {afdPop}");
                 }
                 else
                 {
-                    sb.AppendLine($"    → Could not extract gateway from AFD response");
+                    sb.AppendLine($"    â†’ Could not extract gateway from AFD response");
                 }
             }
             catch (Exception ex)
             {
                 var msg = ex.InnerException?.Message ?? ex.Message;
-                sb.AppendLine($"    ✗ Failed: {msg}");
+                sb.AppendLine($"    âœ— Failed: {msg}");
                 issues.Add($"{afdHost} (AFD): {msg}");
             }
             sb.AppendLine();
 
-            // ── Step 2: Test the actual discovered gateway directly ──
+            // â”€â”€ Step 2: Test the actual discovered gateway directly â”€â”€
             if (!string.IsNullOrEmpty(discoveredGateway))
             {
                 sb.AppendLine($"  {discoveredGateway}:443  [RDP Gateway]");
                 try
                 {
                     var gwIps = await Dns.GetHostAddressesAsync(discoveredGateway);
-                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", gwIps.Select(a => a.ToString()))}");
+                    sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", gwIps.Select(a => a.ToString()))}");
 
                     bool inRange = gwIps.Any(ip => IsInW365Range(ip));
                     sb.AppendLine(inRange
-                        ? $"    → IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) ✓"
-                        : $"    → IP NOT in expected W365 ranges");
+                        ? $"    â†’ IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) âœ“"
+                        : $"    â†’ IP NOT in expected W365 ranges");
 
                     // Region identification: prefer FQDN, supplement with Service Tags
                     var gwRegionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
@@ -4261,13 +4484,13 @@ class Program
                         var stFriendly = stRegion != null ? (GetAzureRegionFriendlyName(stRegion) ?? stRegion) : null;
                         var displayRegion = gwRegionName ?? stFriendly;
                         if (displayRegion != null)
-                            sb.AppendLine($"    → Gateway region (Service Tags): {displayRegion}");
+                            sb.AppendLine($"    â†’ Gateway region (Service Tags): {displayRegion}");
                         if (gwRegionName != null && stFriendly != null && !string.Equals(gwRegionName, stFriendly, StringComparison.OrdinalIgnoreCase))
-                            sb.AppendLine($"    → Note: FQDN says {gwRegionName}, Service Tags subnet says {stFriendly}");
+                            sb.AppendLine($"    â†’ Note: FQDN says {gwRegionName}, Service Tags subnet says {stFriendly}");
                     }
                     else if (gwRegionName != null)
                     {
-                        sb.AppendLine($"    → Gateway region: {gwRegionName}");
+                        sb.AppendLine($"    â†’ Gateway region: {gwRegionName}");
                     }
 
                     using var tcp = new TcpClient();
@@ -4275,41 +4498,41 @@ class Program
                     using var cts = new CancellationTokenSource(5000);
                     await tcp.ConnectAsync(discoveredGateway, 443, cts.Token);
                     sw.Stop();
-                    sb.AppendLine($"    ✓ TCP connected in {sw.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    âœ“ TCP connected in {sw.ElapsedMilliseconds}ms");
 
                     var sw2 = Stopwatch.StartNew();
                     var gwResp = await http.GetAsync($"https://{discoveredGateway}/");
                     sw2.Stop();
-                    sb.AppendLine($"    ✓ HTTPS {(int)gwResp.StatusCode} in {sw2.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    âœ“ HTTPS {(int)gwResp.StatusCode} in {sw2.ElapsedMilliseconds}ms");
                     gatewayOk = true;
                     passed++;
                 }
                 catch (OperationCanceledException)
                 {
-                    sb.AppendLine($"    ✗ TCP timed out (5s)");
+                    sb.AppendLine($"    âœ— TCP timed out (5s)");
                     issues.Add($"{discoveredGateway} (RDP Gateway): TCP blocked or timed out");
                 }
                 catch (Exception ex)
                 {
                     var msg = ex.InnerException?.Message ?? ex.Message;
-                    sb.AppendLine($"    ✗ Failed: {msg}");
+                    sb.AppendLine($"    âœ— Failed: {msg}");
                     issues.Add($"{discoveredGateway} (RDP Gateway): {msg}");
                 }
                 sb.AppendLine();
             }
 
-            // ── Step 3: Test service endpoints ──
+            // â”€â”€ Step 3: Test service endpoints â”€â”€
             foreach (var (host, port, role) in serviceEndpoints)
             {
                 sb.AppendLine($"  {host}:{port}  [{role}]");
                 try
                 {
                     var addresses = await Dns.GetHostAddressesAsync(host);
-                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addresses.Select(a => a.ToString()))}");
+                    sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", addresses.Select(a => a.ToString()))}");
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    ✗ DNS failed: {ex.Message}");
+                    sb.AppendLine($"    âœ— DNS failed: {ex.Message}");
                     issues.Add($"{host} ({role}): DNS resolution failed");
                     sb.AppendLine();
                     continue;
@@ -4322,18 +4545,18 @@ class Program
                     using var cts = new CancellationTokenSource(5000);
                     await tcp.ConnectAsync(host, port, cts.Token);
                     sw.Stop();
-                    sb.AppendLine($"    ✓ TCP connected in {sw.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    âœ“ TCP connected in {sw.ElapsedMilliseconds}ms");
                 }
                 catch (OperationCanceledException)
                 {
-                    sb.AppendLine($"    ✗ TCP timed out (5s)");
+                    sb.AppendLine($"    âœ— TCP timed out (5s)");
                     issues.Add($"{host} ({role}): TCP port {port} blocked");
                     sb.AppendLine();
                     continue;
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    ✗ TCP failed: {ex.InnerException?.Message ?? ex.Message}");
+                    sb.AppendLine($"    âœ— TCP failed: {ex.InnerException?.Message ?? ex.Message}");
                     issues.Add($"{host} ({role}): TCP port {port} refused");
                     sb.AppendLine();
                     continue;
@@ -4344,27 +4567,27 @@ class Program
                     var sw2 = Stopwatch.StartNew();
                     var response = await http.GetAsync($"https://{host}/");
                     sw2.Stop();
-                    sb.AppendLine($"    ✓ HTTPS {(int)response.StatusCode} in {sw2.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    âœ“ HTTPS {(int)response.StatusCode} in {sw2.ElapsedMilliseconds}ms");
                     passed++;
                 }
                 catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
                 {
-                    sb.AppendLine($"    ✗ TLS handshake failed: {ex.InnerException.Message}");
-                    issues.Add($"{host} ({role}): TLS handshake failed — possible TLS inspection");
+                    sb.AppendLine($"    âœ— TLS handshake failed: {ex.InnerException.Message}");
+                    issues.Add($"{host} ({role}): TLS handshake failed â€” possible TLS inspection");
                     sb.AppendLine();
                     continue;
                 }
                 catch (TaskCanceledException)
                 {
-                    sb.AppendLine($"    ✗ HTTPS timed out (10s)");
-                    issues.Add($"{host} ({role}): HTTPS timed out — possible proxy blocking");
+                    sb.AppendLine($"    âœ— HTTPS timed out (10s)");
+                    issues.Add($"{host} ({role}): HTTPS timed out â€” possible proxy blocking");
                     sb.AppendLine();
                     continue;
                 }
                 catch (Exception ex)
                 {
                     var inner = ex.InnerException?.Message ?? ex.Message;
-                    sb.AppendLine($"    ✗ HTTPS failed: {inner}");
+                    sb.AppendLine($"    âœ— HTTPS failed: {inner}");
                     issues.Add($"{host} ({role}): {inner}");
                     sb.AppendLine();
                     continue;
@@ -4376,13 +4599,13 @@ class Program
             {
                 sb.AppendLine("Issues found:");
                 foreach (var issue in issues)
-                    sb.AppendLine($"  ⚠ {issue}");
+                    sb.AppendLine($"  âš  {issue}");
             }
 
             // Total endpoints: AFD + discovered gateway (if found) + 3 service endpoints
             int totalExpected = serviceEndpoints.Length + 1 + (string.IsNullOrEmpty(discoveredGateway) ? 0 : 1);
             var gwNote = !string.IsNullOrEmpty(discoveredGateway)
-                ? $" → {discoveredGateway}"
+                ? $" â†’ {discoveredGateway}"
                 : "";
             var regionNote = !string.IsNullOrEmpty(serviceRegion) ? $" ({serviceRegion})" : "";
 
@@ -4391,11 +4614,11 @@ class Program
             else if (afdOk && !string.IsNullOrEmpty(discoveredGateway) && !gatewayOk)
                 result.ResultValue = $"AFD OK but gateway {discoveredGateway} UNREACHABLE{regionNote}";
             else if (afdOk && string.IsNullOrEmpty(discoveredGateway))
-                result.ResultValue = $"AFD reachable but could not discover gateway — {passed}/{totalExpected} OK";
+                result.ResultValue = $"AFD reachable but could not discover gateway â€” {passed}/{totalExpected} OK";
             else if (afdOk)
-                result.ResultValue = $"Gateway discovered{gwNote}{regionNote} — {passed}/{totalExpected} endpoints OK";
+                result.ResultValue = $"Gateway discovered{gwNote}{regionNote} â€” {passed}/{totalExpected} endpoints OK";
             else
-                result.ResultValue = $"AFD UNREACHABLE — cannot discover gateway — {passed}/{totalExpected} OK";
+                result.ResultValue = $"AFD UNREACHABLE â€” cannot discover gateway â€” {passed}/{totalExpected} OK";
 
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = gatewayOk && passed == totalExpected ? "Passed"
@@ -4409,10 +4632,10 @@ class Program
         return result;
     }
 
-    // ── Microsoft-internal device gate ───────────────────────────────────────
+    // â”€â”€ Microsoft-internal device gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //  Decides whether THIS device is a Microsoft-internal machine so the
     //  self-host endpoint probe (L-TCP-11 / C-TCP-10) can never run for an
-    //  external customer. This is the SOLE gate — the checks run automatically
+    //  external customer. This is the SOLE gate â€” the checks run automatically
     //  on internal devices. Two independent corroborating signals (either suffices):
     //    (a) the device is joined to a Microsoft corporate AD domain, OR
     //    (b) the device is Entra-joined to the Microsoft corporate tenant.
@@ -4422,7 +4645,7 @@ class Program
         if (_isMicrosoftInternalCache.HasValue) return _isMicrosoftInternalCache.Value;
         bool internalDevice = false;
 
-        // (a) Corporate AD domain join — e.g. redmond.corp.microsoft.com
+        // (a) Corporate AD domain join â€” e.g. redmond.corp.microsoft.com
         try
         {
             var domain = System.Net.NetworkInformation.IPGlobalProperties
@@ -4472,7 +4695,7 @@ class Program
 
     // Heuristic TLS-inspection signal for self-host endpoints. Legitimate Microsoft
     // endpoint certificates are issued by Microsoft's own public CAs or well-known
-    // public CAs. An issuer outside that set — or a chain the OS won't validate — is
+    // public CAs. An issuer outside that set â€” or a chain the OS won't validate â€” is
     // the signature of an inline TLS-inspecting proxy/SWG (this catches an inspection
     // CA even when it has been installed into the machine trust store).
     static bool IsLikelyTlsInterception(string issuer, bool chainValid)
@@ -4482,7 +4705,7 @@ class Program
         return !issuerTrusted || !chainValid;
     }
 
-    // ── L-TCP-11: Self-host (Microsoft-internal) endpoint connectivity ───────
+    // â”€â”€ L-TCP-11: Self-host (Microsoft-internal) endpoint connectivity â”€â”€â”€â”€â”€â”€â”€
     //  Probes the internal self-host/dogfood AVD/Cloud PC control-plane and
     //  gateway endpoints (the *.wvdselfhost.microsoft.com / deschutes-sh set
     //  the Windows App checks), which differ from the public *.wvd.microsoft.com
@@ -4501,7 +4724,7 @@ class Program
             };
 
             var sb = new StringBuilder();
-            sb.AppendLine("Microsoft-internal self-host (dogfood) endpoints — internal testers only.");
+            sb.AppendLine("Microsoft-internal self-host (dogfood) endpoints â€” internal testers only.");
             sb.AppendLine("These are the self-host equivalents of the public *.wvd.microsoft.com control plane.");
             sb.AppendLine();
 
@@ -4528,27 +4751,27 @@ class Program
                 try
                 {
                     var addrs = await Dns.GetHostAddressesAsync(host);
-                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addrs.Select(a => a.ToString()))}");
+                    sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", addrs.Select(a => a.ToString()))}");
 
                     var sw = Stopwatch.StartNew();
                     var resp = await http.GetAsync($"https://{host}/");
                     sw.Stop();
-                    sb.AppendLine($"    ✓ HTTPS {(int)resp.StatusCode} in {sw.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    âœ“ HTTPS {(int)resp.StatusCode} in {sw.ElapsedMilliseconds}ms");
                     passed++;
 
                     if (capturedCerts.TryGetValue(host, out var ci))
                     {
-                        sb.AppendLine($"    → Cert issuer: {ExtractCertCn(ci.issuer)}");
+                        sb.AppendLine($"    â†’ Cert issuer: {ExtractCertCn(ci.issuer)}");
                         if (IsLikelyTlsInterception(ci.issuer, ci.chainValid))
                         {
-                            sb.AppendLine("    ⚠ Issuer is not a recognized Microsoft/public CA — possible TLS inspection");
+                            sb.AppendLine("    âš  Issuer is not a recognized Microsoft/public CA â€” possible TLS inspection");
                             intercepted.Add(host);
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    ✗ {ex.GetType().Name}: {ex.Message}");
+                    sb.AppendLine($"    âœ— {ex.GetType().Name}: {ex.Message}");
                     issues.Add($"{host}: {ex.Message}");
                 }
                 sb.AppendLine();
@@ -4556,14 +4779,14 @@ class Program
 
             if (intercepted.Count > 0)
             {
-                sb.AppendLine($"⚠ Possible TLS inspection on: {string.Join(", ", intercepted)}");
+                sb.AppendLine($"âš  Possible TLS inspection on: {string.Join(", ", intercepted)}");
                 sb.AppendLine("  An inline proxy/SWG presenting its own certificate can break self-host RDP.");
             }
             if (issues.Count > 0)
             {
-                sb.AppendLine("Note: these self-host endpoints are publicly resolvable (deschutes-sh →");
-                sb.AppendLine("public Microsoft IPs, the wvdselfhost AFD gateways → the same public anycast");
-                sb.AppendLine("edge as production), so they are reachable from the open internet — not");
+                sb.AppendLine("Note: these self-host endpoints are publicly resolvable (deschutes-sh â†’");
+                sb.AppendLine("public Microsoft IPs, the wvdselfhost AFD gateways â†’ the same public anycast");
+                sb.AppendLine("edge as production), so they are reachable from the open internet â€” not");
                 sb.AppendLine("corpnet-only. A failure here points to a real block on this network (DNS");
                 sb.AppendLine("filtering, firewall, or proxy/SWG) or the endpoint being temporarily down,");
                 sb.AppendLine("not simply being off-corpnet.");
@@ -4571,7 +4794,7 @@ class Program
 
             result.DetailedInfo = sb.ToString().Trim();
             result.ResultValue = intercepted.Count > 0
-                ? $"{passed}/{endpoints.Length} reachable — possible TLS inspection on {intercepted.Count}"
+                ? $"{passed}/{endpoints.Length} reachable â€” possible TLS inspection on {intercepted.Count}"
                 : $"{passed}/{endpoints.Length} self-host endpoints reachable";
             result.Status = passed < endpoints.Length ? (passed > 0 ? "Warning" : "Failed")
                           : intercepted.Count > 0 ? "Warning"
@@ -4581,7 +4804,7 @@ class Program
         return result;
     }
 
-    // ── C-TCP-10: Self-host (Microsoft-internal) endpoint connectivity, Cloud PC side ──
+    // â”€â”€ C-TCP-10: Self-host (Microsoft-internal) endpoint connectivity, Cloud PC side â”€â”€
     //  Same confirmed self-host endpoint set as the client test (L-TCP-11), but
     //  measured FROM the Cloud PC / session host. Surfaces a self-host control-plane
     //  or gateway block that the public *.wvd.microsoft.com tests cannot see. Only
@@ -4626,27 +4849,27 @@ class Program
                 try
                 {
                     var addrs = await Dns.GetHostAddressesAsync(host);
-                    sb.AppendLine($"    ✓ DNS → {string.Join(", ", addrs.Select(a => a.ToString()))}");
+                    sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", addrs.Select(a => a.ToString()))}");
 
                     var sw = Stopwatch.StartNew();
                     var resp = await http.GetAsync($"https://{host}/");
                     sw.Stop();
-                    sb.AppendLine($"    ✓ HTTPS {(int)resp.StatusCode} in {sw.ElapsedMilliseconds}ms");
+                    sb.AppendLine($"    âœ“ HTTPS {(int)resp.StatusCode} in {sw.ElapsedMilliseconds}ms");
                     passed++;
 
                     if (capturedCerts.TryGetValue(host, out var ci))
                     {
-                        sb.AppendLine($"    → Cert issuer: {ExtractCertCn(ci.issuer)}");
+                        sb.AppendLine($"    â†’ Cert issuer: {ExtractCertCn(ci.issuer)}");
                         if (IsLikelyTlsInterception(ci.issuer, ci.chainValid))
                         {
-                            sb.AppendLine("    ⚠ Issuer is not a recognized Microsoft/public CA — possible TLS inspection");
+                            sb.AppendLine("    âš  Issuer is not a recognized Microsoft/public CA â€” possible TLS inspection");
                             intercepted.Add(host);
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    ✗ {ex.GetType().Name}: {ex.Message}");
+                    sb.AppendLine($"    âœ— {ex.GetType().Name}: {ex.Message}");
                     issues.Add($"{host}: {ex.Message}");
                 }
                 sb.AppendLine();
@@ -4654,13 +4877,13 @@ class Program
 
             if (intercepted.Count > 0)
             {
-                sb.AppendLine($"⚠ Possible TLS inspection on: {string.Join(", ", intercepted)}");
+                sb.AppendLine($"âš  Possible TLS inspection on: {string.Join(", ", intercepted)}");
                 sb.AppendLine("  An inline proxy/SWG presenting its own certificate can break self-host RDP.");
             }
 
             result.DetailedInfo = sb.ToString().Trim();
             result.ResultValue = intercepted.Count > 0
-                ? $"{passed}/{endpoints.Length} reachable — possible TLS inspection on {intercepted.Count}"
+                ? $"{passed}/{endpoints.Length} reachable â€” possible TLS inspection on {intercepted.Count}"
                 : $"{passed}/{endpoints.Length} self-host endpoints reachable from Cloud PC";
             result.Status = passed < endpoints.Length ? (passed > 0 ? "Warning" : "Failed")
                           : intercepted.Count > 0 ? "Warning"
@@ -4686,7 +4909,7 @@ class Program
 
             var sb = new StringBuilder();
             sb.AppendLine("Pure DNS resolution timing using Dns.GetHostAddressesAsync()");
-            sb.AppendLine("(no TCP/TLS overhead — raw resolver round-trip only)");
+            sb.AppendLine("(no TCP/TLS overhead â€” raw resolver round-trip only)");
             sb.AppendLine();
 
             var timings = new List<long>();
@@ -4701,12 +4924,12 @@ class Program
                     var ms = sw.ElapsedMilliseconds;
                     timings.Add(ms);
                     var firstIp = addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)?.ToString() ?? "no IPv4";
-                    sb.AppendLine($"  {ms,6}ms  {host} → {firstIp}");
+                    sb.AppendLine($"  {ms,6}ms  {host} â†’ {firstIp}");
                 }
                 catch (Exception ex)
                 {
                     sw.Stop();
-                    sb.AppendLine($"  {"ERR",6}     {host} — {ex.Message}");
+                    sb.AppendLine($"  {"ERR",6}     {host} â€” {ex.Message}");
                 }
             }
 
@@ -4725,7 +4948,7 @@ class Program
             sb.AppendLine($"Average: {avg}ms  |  Slowest: {max}ms  |  Resolved: {timings.Count}/{hosts.Length}");
 
             if (timings.Count < hosts.Length)
-                sb.AppendLine($"⚠ {hosts.Length - timings.Count} host(s) failed to resolve — check DNS server availability.");
+                sb.AppendLine($"âš  {hosts.Length - timings.Count} host(s) failed to resolve â€” check DNS server availability.");
 
             result.ResultValue = $"Avg {avg}ms DNS ({timings.Count}/{hosts.Length} resolved)";
             result.DetailedInfo = sb.ToString().Trim();
@@ -4746,9 +4969,9 @@ class Program
             var sb = new StringBuilder();
             var issues = new List<string>();
 
-            // ── Part 1: AFD endpoint (gateway discovery service) ──
+            // â”€â”€ Part 1: AFD endpoint (gateway discovery service) â”€â”€
             var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
-            sb.AppendLine($"═══ AFD Gateway Discovery Endpoint ═══");
+            sb.AppendLine($"â•â•â• AFD Gateway Discovery Endpoint â•â•â•");
             sb.AppendLine($"Target: {afdHost}");
             try
             {
@@ -4765,36 +4988,36 @@ class Program
                     foreach (var cname in afdChain)
                     {
                         sb.AppendLine($"  {prev}");
-                        sb.AppendLine($"    → {cname}");
+                        sb.AppendLine($"    â†’ {cname}");
                         prev = cname;
                     }
                 }
                 else
                 {
-                    sb.AppendLine("CNAME chain: (direct A record — no CNAMEs)");
+                    sb.AppendLine("CNAME chain: (direct A record â€” no CNAMEs)");
                 }
 
                 if (afdGsa != null)
                 {
-                    sb.AppendLine($"\n⚠ Routing: {afdGsa}");
+                    sb.AppendLine($"\nâš  Routing: {afdGsa}");
                     issues.Add($"AFD CNAME chain routed via {afdGsa}");
                 }
 
                 bool isPrivateLink = ips.Any(ip => IsPrivateIp(ip));
                 sb.AppendLine(isPrivateLink
-                    ? "\n→ Private Link detected (private IP)"
-                    : "\n→ Azure Front Door routing (anycast) — normal");
+                    ? "\nâ†’ Private Link detected (private IP)"
+                    : "\nâ†’ Azure Front Door routing (anycast) â€” normal");
             }
             catch (Exception ex)
             {
-                sb.AppendLine($"  ✗ Failed: {ex.Message}");
+                sb.AppendLine($"  âœ— Failed: {ex.Message}");
                 issues.Add($"AFD CNAME chain failed: {ex.Message}");
             }
 
             sb.AppendLine();
 
-            // ── Part 2: Actual RDP Gateway (discovered from AFD) ──
-            sb.AppendLine($"═══ Actual RDP Gateway ═══");
+            // â”€â”€ Part 2: Actual RDP Gateway (discovered from AFD) â”€â”€
+            sb.AppendLine($"â•â•â• Actual RDP Gateway â•â•â•");
             var (gwHost, gwDiscoveryMethod) = await DiscoverRdpGatewayFromAfd();
             if (!string.IsNullOrEmpty(gwHost))
             {
@@ -4815,18 +5038,18 @@ class Program
                         foreach (var cname in gwChain)
                         {
                             sb.AppendLine($"  {prev}");
-                            sb.AppendLine($"    → {cname}");
+                            sb.AppendLine($"    â†’ {cname}");
                             prev = cname;
                         }
                     }
                     else
                     {
-                        sb.AppendLine("CNAME chain: (direct A record — no CNAMEs)");
+                        sb.AppendLine("CNAME chain: (direct A record â€” no CNAMEs)");
                     }
 
                     if (gwGsa != null)
                     {
-                        sb.AppendLine($"\n⚠ Routing: {gwGsa}");
+                        sb.AppendLine($"\nâš  Routing: {gwGsa}");
                         issues.Add($"Gateway CNAME chain routed via {gwGsa}");
                     }
 
@@ -4834,18 +5057,18 @@ class Program
                     var regionCode = ExtractRegionFromGatewayFqdn(gwHost);
                     var regionName = regionCode != null ? GetAzureRegionName(regionCode) : null;
                     if (regionName != null)
-                        sb.AppendLine($"\n→ Gateway region: {regionName} ({regionCode})");
+                        sb.AppendLine($"\nâ†’ Gateway region: {regionName} ({regionCode})");
                     else if (regionCode != null)
-                        sb.AppendLine($"\n→ Gateway region code: {regionCode}");
+                        sb.AppendLine($"\nâ†’ Gateway region code: {regionCode}");
 
                     bool gwIsPrivate = gwIps.Any(ip => IsPrivateIp(ip));
                     sb.AppendLine(gwIsPrivate
-                        ? "→ Routes via private network"
-                        : "→ Routes via public internet (unicast)");
+                        ? "â†’ Routes via private network"
+                        : "â†’ Routes via public internet (unicast)");
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"  ✗ Failed: {ex.Message}");
+                    sb.AppendLine($"  âœ— Failed: {ex.Message}");
                     issues.Add($"Gateway CNAME chain failed: {ex.Message}");
                 }
             }
@@ -4856,7 +5079,7 @@ class Program
                     sb.AppendLine($"  Reason: {gwDiscoveryMethod}");
                 sb.AppendLine($"  Note: Gateway discovery requires a reachable AFD endpoint.");
                 sb.AppendLine($"  A proxy, firewall, or GSA may prevent cookie-based discovery.");
-                issues.Add("Gateway discovery failed — cannot trace RDP gateway DNS chain");
+                issues.Add("Gateway discovery failed â€” cannot trace RDP gateway DNS chain");
             }
 
             if (issues.Count > 0)
@@ -4867,7 +5090,7 @@ class Program
             else
             {
                 var gwLabel = !string.IsNullOrEmpty(gwHost) ? $" + gateway {gwHost}" : "";
-                result.ResultValue = $"AFD{gwLabel} — DNS chains verified";
+                result.ResultValue = $"AFD{gwLabel} â€” DNS chains verified";
                 result.Status = "Passed";
             }
             result.DetailedInfo = sb.ToString().Trim();
@@ -4895,7 +5118,7 @@ class Program
         // DigiCert Global Root G3
         "7E04DE896A3E666D00E687D33FFAD93BE83D349E",
         // Microsoft Azure RSA TLS Issuing CA 03 (intermediate, but commonly the deepest visible)
-        // kept as fallback — if the root matches we skip intermediate checks
+        // kept as fallback â€” if the root matches we skip intermediate checks
     };
 
     static async Task<TestResult> RunTlsInspection()
@@ -4907,7 +5130,7 @@ class Program
             bool intercepted = false;
             string? interceptReason = null;
 
-            // Discover the actual RDP gateway — this is the critical connection that must NOT be TLS-inspected
+            // Discover the actual RDP gateway â€” this is the critical connection that must NOT be TLS-inspected
             var (gwHost, _) = await DiscoverRdpGatewayFromAfd();
             var host = gwHost ?? "rdweb.wvd.microsoft.com"; // fallback if discovery fails
             var port = 443;
@@ -4921,7 +5144,7 @@ class Program
             }
             else
             {
-                sb.AppendLine($"⚠ Could not discover RDP gateway from AFD — falling back to rdweb.wvd.microsoft.com");
+                sb.AppendLine($"âš  Could not discover RDP gateway from AFD â€” falling back to rdweb.wvd.microsoft.com");
             }
             sb.AppendLine();
 
@@ -4979,22 +5202,22 @@ class Program
                     intercepted = true;
                     interceptReason = rootCert.Subject == rootCert.Issuer
                         ? $"Root CA '{rootCert.Subject}' (thumbprint {rootCert.Thumbprint}) is not a known Microsoft/DigiCert CA"
-                        : $"Chain does not terminate at a trusted root — leaf issuer: {leafCert.Issuer}";
-                    sb.AppendLine($"\n⚠ {interceptReason}");
+                        : $"Chain does not terminate at a trusted root â€” leaf issuer: {leafCert.Issuer}";
+                    sb.AppendLine($"\nâš  {interceptReason}");
                     sb.AppendLine("This indicates TLS inspection by a proxy, firewall, SWG, or network emulator.");
                     sb.AppendLine("W365 RDP gateway connections MUST NOT be TLS-inspected.");
                 }
                 else if (isPrivateLink)
                 {
-                    sb.AppendLine("\nℹ Private Link certificate detected — this is a legitimate non-standard chain.");
+                    sb.AppendLine("\nâ„¹ Private Link certificate detected â€” this is a legitimate non-standard chain.");
                 }
 
                 leafCert.Dispose();
             }
 
             result.ResultValue = intercepted
-                ? $"TLS inspection detected — {interceptReason}"
-                : $"None — certificates direct from Microsoft";
+                ? $"TLS inspection detected â€” {interceptReason}"
+                : $"None â€” certificates direct from Microsoft";
             result.Status = intercepted ? "Warning" : "Passed";
             result.DetailedInfo = sb.ToString().Trim();
             if (intercepted)
@@ -5013,43 +5236,43 @@ class Program
         if (b.Length != 4) return "";
         uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
 
-        // 104.44.0.0/16 — Microsoft WAN backbone (MSIT)
+        // 104.44.0.0/16 â€” Microsoft WAN backbone (MSIT)
         if (b[0] == 104 && b[1] == 44) return "[Microsoft backbone]";
-        // 104.40.0.0/13 — Azure compute
+        // 104.40.0.0/13 â€” Azure compute
         if (b[0] == 104 && b[1] >= 40 && b[1] <= 47) return "[Azure]";
-        // 40.64.144.0/20 — RDP Gateway (use Service Tags for region)
+        // 40.64.144.0/20 â€” RDP Gateway (use Service Tags for region)
         if (b[0] == 40 && b[1] == 64 && b[2] >= 144 && b[2] <= 159)
         {
             var region = LookupGatewayRegion(ip);
             if (region != null)
             {
                 var friendly = GetAzureRegionFriendlyName(region);
-                return friendly != null ? $"[RDP Gateway — {friendly}]" : $"[RDP Gateway — {region}]";
+                return friendly != null ? $"[RDP Gateway â€” {friendly}]" : $"[RDP Gateway â€” {region}]";
             }
             return "[RDP Gateway range]";
         }
-        // 40.64.0.0/10 — Azure / Microsoft
+        // 40.64.0.0/10 â€” Azure / Microsoft
         if (b[0] == 40 && (b[1] & 0xC0) == 64) return "[Azure]";
-        // 20.33.0.0/16 and similar — Azure networking
+        // 20.33.0.0/16 and similar â€” Azure networking
         if (b[0] == 20) return "[Azure]";
-        // 13.64.0.0/11 — Azure
+        // 13.64.0.0/11 â€” Azure
         if (b[0] == 13 && (b[1] & 0xE0) == 64) return "[Azure]";
-        // 52.96.0.0/12 — Microsoft 365
+        // 52.96.0.0/12 â€” Microsoft 365
         if (b[0] == 52 && b[1] >= 96 && b[1] <= 111) return "[Microsoft 365]";
-        // 51.5.0.0/16 — AVD TURN relay (use Service Tags for region)
+        // 51.5.0.0/16 â€” AVD TURN relay (use Service Tags for region)
         if (b[0] == 51 && b[1] == 5)
         {
             var region = LookupTurnRelayRegion(ip);
             if (region != null)
             {
                 var friendly = GetAzureRegionFriendlyName(region);
-                return friendly != null ? $"[AVD TURN relay — {friendly}]" : $"[AVD TURN relay — {region}]";
+                return friendly != null ? $"[AVD TURN relay â€” {friendly}]" : $"[AVD TURN relay â€” {region}]";
             }
             return "[AVD TURN relay range]";
         }
-        // 150.171.0.0/16 — Microsoft backbone
+        // 150.171.0.0/16 â€” Microsoft backbone
         if (b[0] == 150 && b[1] == 171) return "[Microsoft backbone]";
-        // 4.0.0.0/8 parts — Microsoft (Level3/Microsoft)
+        // 4.0.0.0/8 parts â€” Microsoft (Level3/Microsoft)
         if (b[0] == 4 && b[1] >= 150) return "[Microsoft]";
 
         return "";
@@ -5066,7 +5289,7 @@ class Program
 
         try
         {
-            // Walk the CNAME chain using .NET DNS — each GetHostEntryAsync returns
+            // Walk the CNAME chain using .NET DNS â€” each GetHostEntryAsync returns
             // the canonical name, so we iterate until it stops changing.
             var current = host;
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { current };
@@ -5145,22 +5368,22 @@ class Program
             foreach (var (host, role) in targets)
             {
                 if (!_traceConsoleSilent) Console.Write($"\n        Tracing {role}... ");
-                sb.AppendLine($"╔══════════════════════════════════════════════════════════════");
-                sb.AppendLine($"║  Traceroute: {role}");
-                sb.AppendLine($"║  Target:     {host}");
+                sb.AppendLine($"â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+                sb.AppendLine($"â•‘  Traceroute: {role}");
+                sb.AppendLine($"â•‘  Target:     {host}");
 
-                // DNS CNAME chain analysis — detect GSA/SASE routing
+                // DNS CNAME chain analysis â€” detect GSA/SASE routing
                 var (cnameChain, gsaIndicator) = await ResolveDnsCnameChainAsync(host);
                 if (cnameChain.Count > 0)
                 {
-                    sb.AppendLine($"║  DNS Chain:  {host}");
+                    sb.AppendLine($"â•‘  DNS Chain:  {host}");
                     foreach (var cname in cnameChain)
-                        sb.AppendLine($"║              → {cname}");
+                        sb.AppendLine($"â•‘              â†’ {cname}");
                 }
                 if (gsaIndicator != null)
                 {
-                    sb.AppendLine($"║  ⚠ Routed via: {gsaIndicator}");
-                    sb.AppendLine($"║    Traffic is NOT going direct — routed through a security proxy");
+                    sb.AppendLine($"â•‘  âš  Routed via: {gsaIndicator}");
+                    sb.AppendLine($"â•‘    Traffic is NOT going direct â€” routed through a security proxy");
                 }
 
                 IPAddress? targetIp;
@@ -5170,26 +5393,26 @@ class Program
                     targetIp = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                     if (targetIp == null)
                     {
-                        sb.AppendLine($"║  ✗ No IPv4 address resolved");
-                        sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
+                        sb.AppendLine($"â•‘  âœ— No IPv4 address resolved");
+                        sb.AppendLine($"â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
                         sb.AppendLine();
-                        if (!_traceConsoleSilent) Console.Write("✗");
+                        if (!_traceConsoleSilent) Console.Write("âœ—");
                         continue;
                     }
-                    sb.AppendLine($"║  Resolved:   {targetIp}");
+                    sb.AppendLine($"â•‘  Resolved:   {targetIp}");
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"║  ✗ DNS failed: {ex.Message}");
-                    sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
+                    sb.AppendLine($"â•‘  âœ— DNS failed: {ex.Message}");
+                    sb.AppendLine($"â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
                     sb.AppendLine();
-                    if (!_traceConsoleSilent) Console.Write("✗");
+                    if (!_traceConsoleSilent) Console.Write("âœ—");
                     continue;
                 }
 
-                sb.AppendLine($"╠──────────────────────────────────────────────────────────────");
-                sb.AppendLine($"║  {"Hop",-4} {"IP Address",-18} {"RTT",-8} Hostname");
-                sb.AppendLine($"║  {"───",-4} {"──────────",-18} {"───",-8} ────────");
+                sb.AppendLine($"â• â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
+                sb.AppendLine($"â•‘  {"Hop",-4} {"IP Address",-18} {"RTT",-8} Hostname");
+                sb.AppendLine($"â•‘  {"â”€â”€â”€",-4} {"â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€",-18} {"â”€â”€â”€",-8} â”€â”€â”€â”€â”€â”€â”€â”€");
 
                 bool reached = false;
                 var payload = new byte[32];
@@ -5248,46 +5471,46 @@ class Program
                             hostName = IdentifyMicrosoftHop(hopIp);
 
                         string rttStr = rttMs < 1 ? $"{rttMs:F1}ms" : $"{Math.Round(rttMs)}ms";
-                        sb.AppendLine($"║  {ttl,-4} {hopIp,-18} {rttStr,-8} {hostName}");
+                        sb.AppendLine($"â•‘  {ttl,-4} {hopIp,-18} {rttStr,-8} {hostName}");
                     }
                     else
                     {
-                        sb.AppendLine($"║  {ttl,-4} {"*",-18} {"*",-8}");
+                        sb.AppendLine($"â•‘  {ttl,-4} {"*",-18} {"*",-8}");
                     }
 
                     if (reached)
                     {
-                        sb.AppendLine($"║  → Target reached at hop {ttl}");
+                        sb.AppendLine($"â•‘  â†’ Target reached at hop {ttl}");
                         break;
                     }
 
                     if (consecutiveTimeouts >= maxConsecutiveTimeouts)
                     {
-                        sb.AppendLine($"║  → Stopped after {maxConsecutiveTimeouts} consecutive timeouts (ICMP likely blocked)");
+                        sb.AppendLine($"â•‘  â†’ Stopped after {maxConsecutiveTimeouts} consecutive timeouts (ICMP likely blocked)");
                         break;
                     }
                 }
 
                 if (!reached)
-                    sb.AppendLine($"║  → Target not reached within {maxHops} hops");
+                    sb.AppendLine($"â•‘  â†’ Target not reached within {maxHops} hops");
                 else
                     completed++;
 
-                sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
+                sb.AppendLine($"â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
                 sb.AppendLine();
-                if (!_traceConsoleSilent) Console.Write(reached ? "✓" : "✗");
+                if (!_traceConsoleSilent) Console.Write(reached ? "âœ“" : "âœ—");
             }
 
             if (completed == 0)
             {
-                result.ResultValue = $"0/{targets.Count} endpoints traced — ICMP blocked on network (informational only)";
+                result.ResultValue = $"0/{targets.Count} endpoints traced â€” ICMP blocked on network (informational only)";
             }
             else
             {
                 result.ResultValue = $"{completed}/{targets.Count} endpoints traced successfully";
             }
             result.DetailedInfo = sb.ToString().Trim();
-            // Traceroute is purely informational — ICMP blocking is extremely common on
+            // Traceroute is purely informational â€” ICMP blocking is extremely common on
             // corporate networks and does not indicate any connectivity issue.
             result.Status = "Passed";
         }
@@ -5296,16 +5519,16 @@ class Program
     }
 
     /// <summary>
-    /// Inspects RDP-client-specific proxy settings — distinct from the
+    /// Inspects RDP-client-specific proxy settings â€” distinct from the
     /// system/WinINET proxy because MSRDC / Windows App / mstsc each honour
     /// their own overrides. Returns human-readable lines for the test
-    /// detailedInfo; lines prefixed "⚠" represent active overrides.
+    /// detailedInfo; lines prefixed "âš " represent active overrides.
     /// </summary>
     static List<string> InspectRdpClientProxyConfig()
     {
         var lines = new List<string>();
 
-        // 1. Remote Desktop Connection (mstsc) — HKCU Terminal Server Client
+        // 1. Remote Desktop Connection (mstsc) â€” HKCU Terminal Server Client
         //    RDGClientTransport=1 forces HTTP/TS Gateway; ProxySettings blob
         //    contains any per-connection proxy overrides for RDS sessions.
         try
@@ -5323,13 +5546,13 @@ class Program
                         _ => $"unknown ({t})"
                     };
                     lines.Add($"mstsc RDGClientTransport: {desc}");
-                    if (t == 1) lines.Add("⚠ mstsc forced to HTTP-only — UDP shortpath disabled");
+                    if (t == 1) lines.Add("âš  mstsc forced to HTTP-only â€” UDP shortpath disabled");
                 }
             }
         }
         catch { /* best-effort */ }
 
-        // 2. Windows App / AVD store client — stores proxy under Packages
+        // 2. Windows App / AVD store client â€” stores proxy under Packages
         //    (Microsoft.Windows365 / Microsoft.RemoteDesktop). The packaged
         //    app config is per-user; if any pack has ProxyUrl or UseProxy set
         //    it overrides the system proxy for RDP sessions from that client.
@@ -5349,13 +5572,13 @@ class Program
                 {
                     var v = k.GetValue(name);
                     if (v != null && !string.IsNullOrWhiteSpace(v.ToString()))
-                        lines.Add($"⚠ {root}\\{name}={v}");
+                        lines.Add($"âš  {root}\\{name}={v}");
                 }
             }
         }
         catch { /* best-effort */ }
 
-        // 3. Global machine-wide RDP policy — HKLM\SOFTWARE\Policies\Microsoft\
+        // 3. Global machine-wide RDP policy â€” HKLM\SOFTWARE\Policies\Microsoft\
         //    Windows NT\Terminal Services holds admin-deployed proxy overrides.
         try
         {
@@ -5366,14 +5589,14 @@ class Program
                 foreach (var name in new[] { "fUseProxy", "ProxyName", "ProxyType" })
                 {
                     var v = pol.GetValue(name);
-                    if (v != null) lines.Add($"⚠ Policy: {name}={v}");
+                    if (v != null) lines.Add($"âš  Policy: {name}={v}");
                 }
             }
         }
         catch { /* best-effort */ }
 
         if (lines.Count == 0)
-            lines.Add("✓ No RDP-client-specific proxy overrides found");
+            lines.Add("âœ“ No RDP-client-specific proxy overrides found");
 
         return lines;
     }
@@ -5382,7 +5605,7 @@ class Program
     /// Opens an actual TCP connection to the proxy and sends an HTTP CONNECT
     /// request for host:port. Returns whether the proxy accepted the tunnel.
     /// This is the only way to know a declared proxy can actually reach the
-    /// RDP gateway — firewalls and ACLs frequently block specific destinations.
+    /// RDP gateway â€” firewalls and ACLs frequently block specific destinations.
     /// </summary>
     static async Task<(bool Ok, string Message)> ProbeProxyConnectAsync(
         Uri proxy, string targetHost, int targetPort, TimeSpan timeout)
@@ -5402,38 +5625,38 @@ class Program
             // Read status line + headers (up to 4 KB)
             var buf = new byte[4096];
             int read = await stream.ReadAsync(buf, cts.Token);
-            if (read <= 0) return (false, "✗ Proxy closed connection without responding");
+            if (read <= 0) return (false, "âœ— Proxy closed connection without responding");
             var resp = Encoding.ASCII.GetString(buf, 0, read);
             var firstLine = resp.Split('\n')[0].Trim();
 
             // HTTP/1.1 200 Connection Established = success (any 2xx technically)
             if (System.Text.RegularExpressions.Regex.IsMatch(firstLine, @"^HTTP/1\.[01]\s+2\d\d"))
-                return (true, $"✓ Proxy CONNECT accepted → {targetHost}:{targetPort} ({firstLine})");
-            return (false, $"✗ Proxy rejected CONNECT: {firstLine}");
+                return (true, $"âœ“ Proxy CONNECT accepted â†’ {targetHost}:{targetPort} ({firstLine})");
+            return (false, $"âœ— Proxy rejected CONNECT: {firstLine}");
         }
         catch (OperationCanceledException)
         {
-            return (false, $"✗ Proxy CONNECT to {targetHost}:{targetPort} timed out after {timeout.TotalSeconds:0}s");
+            return (false, $"âœ— Proxy CONNECT to {targetHost}:{targetPort} timed out after {timeout.TotalSeconds:0}s");
         }
         catch (Exception ex)
         {
-            return (false, $"✗ Proxy CONNECT failed: {ex.GetType().Name}: {ex.Message}");
+            return (false, $"âœ— Proxy CONNECT failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
-    // ── Network-stack agents (VPN / SWG / proxy / endpoint-security) ──
+    // â”€â”€ Network-stack agents (VPN / SWG / proxy / endpoint-security) â”€â”€
     // Components that insert themselves into the host networking path (WFP callout
     // drivers, NDIS filters, LSPs, per-user UDP source-port assignment). Their
-    // PRESENCE is reported as a neutral inventory ONLY — it is never treated as a
+    // PRESENCE is reported as a neutral inventory ONLY â€” it is never treated as a
     // fault and never judged against a version. They are listed because they CAN
     // affect the in-session RDP Shortpath UDP socket independently of routing or
-    // reachability — the blind spot where TURN/UDP reachability probes pass green
+    // reachability â€” the blind spot where TURN/UDP reachability probes pass green
     // yet the live session quietly falls back to TCP. If a user has Shortpath/UDP
     // problems, these are the first components to update with the vendor or rule
     // out. (Process names are best-effort; an unmatched name simply isn't listed.)
     //
     // Some agents are pure filter/kernel drivers with NO persistent user-mode
-    // process to match — most notably the Palo Alto Terminal Server (TS) Agent,
+    // process to match â€” most notably the Palo Alto Terminal Server (TS) Agent,
     // which loads its driver at boot and rewrites per-user UDP source ports
     // (breaking RDP Shortpath) yet is "not technically a network-stack
     // application" and so was invisible to a process-only scan. For those,
@@ -5443,7 +5666,7 @@ class Program
     // proc      = running process image name (empty = no user process to match;
     //             rely on installed-product detection instead).
     // label     = display label.
-    // uninstall = substring matching the product's Uninstall-key DisplayName —
+    // uninstall = substring matching the product's Uninstall-key DisplayName â€”
     //             used both to recover a version when the running binary's file
     //             version is unreadable (SYSTEM/session-0 services) AND, for
     //             driverAgent entries, to detect the installed product itself.
@@ -5475,7 +5698,7 @@ class Program
         // Endpoint security with network filtering
         ("CSFalconService",           "CrowdStrike Falcon",                "CrowdStrike",         "",           false),
         ("SentinelAgent",             "SentinelOne",                       "Sentinel",            "",           false),
-        // Filter/kernel-driver agents — detected when INSTALLED (no user process)
+        // Filter/kernel-driver agents â€” detected when INSTALLED (no user process)
         ("",                          "Palo Alto Terminal Server Agent",   "Terminal Server Agent","Palo Alto", true),
     };
 
@@ -5491,7 +5714,7 @@ class Program
             var v = fv?.FileVersion ?? fv?.ProductVersion;
             if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
         }
-        catch { /* Win32Exception (access denied) for elevated/cross-session services — fall through */ }
+        catch { /* Win32Exception (access denied) for elevated/cross-session services â€” fall through */ }
 
         if (!string.IsNullOrEmpty(uninstallKeyword))
         {
@@ -5559,7 +5782,7 @@ class Program
     }
     // Words stripped when computing a component's de-dup key, so the same product
     // detected via different signals (running process label vs installed DisplayName
-    // vs NDIS binding DisplayName) collapses to one entry — e.g. "Microsoft Global
+    // vs NDIS binding DisplayName) collapses to one entry â€” e.g. "Microsoft Global
     // Secure Access" (process) and "Global Secure Access Client" (binding) both key
     // to "globalsecureaccess".
     static readonly HashSet<string> _agentNoiseWords = new(StringComparer.OrdinalIgnoreCase)
@@ -5580,10 +5803,10 @@ class Program
 
     /// <summary>Holistic, vendor-AGNOSTIC view of what is actually bound into the
     /// network stack: enumerates enabled NDIS bindings via WMI
-    /// (ROOT\StandardCimv2 : MSFT_NetAdapterBindingSettingData — the class behind
+    /// (ROOT\StandardCimv2 : MSFT_NetAdapterBindingSettingData â€” the class behind
     /// Get-NetAdapterBinding, readable without elevation). Microsoft inbox
     /// primitives use the "ms_" ComponentID prefix (ms_tcpip, ms_pacer, ms_server,
-    /// …) and are excluded, leaving third-party LWF/protocol drivers (VPN adapters,
+    /// â€¦) and are excluded, leaving third-party LWF/protocol drivers (VPN adapters,
     /// SWG/inspection filters, packet drivers) that we would otherwise need a
     /// per-product entry to know about. Returns distinct (componentId, displayName).
     /// Best-effort: returns empty if WMI is unavailable.</summary>
@@ -5614,13 +5837,13 @@ class Program
                 finally { mo.Dispose(); }
             }
         }
-        catch { /* WMI unavailable / class missing — holistic binding sweep skipped */ }
+        catch { /* WMI unavailable / class missing â€” holistic binding sweep skipped */ }
         return list;
     }
 
     /// <summary>Neutral inventory of network-stack components (VPN / SWG / proxy /
     /// endpoint-security) that can sit in the host networking path and affect RDP
-    /// Shortpath UDP. PRESENCE IS NOT A FAULT and no version is judged — the row
+    /// Shortpath UDP. PRESENCE IS NOT A FAULT and no version is judged â€” the row
     /// always passes and exists purely so that, if Shortpath/UDP is degraded, the
     /// user can see exactly which inline components are candidates to update or rule
     /// out (the blind spot where reachability probes pass yet the session falls
@@ -5634,21 +5857,21 @@ class Program
             sb.AppendLine("Inventory of VPN / SWG / proxy / endpoint-security components that sit in the");
             sb.AppendLine("host network stack (WFP callouts, NDIS filters, LSPs, per-user UDP port");
             sb.AppendLine("assignment). These CAN affect RDP Shortpath UDP independently of routing or");
-            sb.AppendLine("reachability — the case where UDP/TURN reachability probes pass yet the live");
+            sb.AppendLine("reachability â€” the case where UDP/TURN reachability probes pass yet the live");
             sb.AppendLine("session falls back to TCP.");
             sb.AppendLine();
             sb.AppendLine("Presence is informational only: it is NOT a fault and no version is judged.");
-            sb.AppendLine("Detection is holistic — it combines three signals so a component is caught");
+            sb.AppendLine("Detection is holistic â€” it combines three signals so a component is caught");
             sb.AppendLine("regardless of how it inserts itself:");
             sb.AppendLine("  1. running user-mode agents (known VPN/SWG/security processes);");
             sb.AppendLine("  2. installed filter/kernel-driver products with no user process");
             sb.AppendLine("     (e.g. the Palo Alto Terminal Server Agent, detected via the");
-            sb.AppendLine("     Uninstall registry — it is in the stack from boot yet runs no app);");
+            sb.AppendLine("     Uninstall registry â€” it is in the stack from boot yet runs no app);");
             sb.AppendLine("  3. every non-Microsoft component actually BOUND to a network adapter");
-            sb.AppendLine("     (NDIS bindings via WMI) — a vendor-agnostic sweep that surfaces");
+            sb.AppendLine("     (NDIS bindings via WMI) â€” a vendor-agnostic sweep that surfaces");
             sb.AppendLine("     similar products we have no explicit entry for.");
             sb.AppendLine("If this tool reports no issues yet network problems persist, check these");
-            sb.AppendLine("components for updates — or temporarily remove them — to test whether the");
+            sb.AppendLine("components for updates â€” or temporarily remove them â€” to test whether the");
             sb.AppendLine("network issues still occur without them in the stack.");
             sb.AppendLine();
 
@@ -5663,10 +5886,10 @@ class Program
                 var key = NormAgentKey(dedupSource);
                 if (key.Length == 0 || !seenKeys.Add(key)) return;
                 found.Add(label);
-                sb.AppendLine($"  • {label}  [{evidence}]");
+                sb.AppendLine($"  â€¢ {label}  [{evidence}]");
             }
 
-            // (1) + (2): known agents — running process first, else installed driver.
+            // (1) + (2): known agents â€” running process first, else installed driver.
             foreach (var agent in _networkStackAgents)
             {
                 Process[] procs = Array.Empty<Process>();
@@ -5679,12 +5902,12 @@ class Program
                 {
                     var verStr = TryGetAgentVersion(procs[0], agent.uninstall);
                     var label = verStr != null ? $"{agent.label} (v{verStr})" : agent.label;
-                    Register(label, $"running — process {agent.proc}, PID {procs[0].Id}", agent.label);
+                    Register(label, $"running â€” process {agent.proc}, PID {procs[0].Id}", agent.label);
                     continue;
                 }
                 // Filter/kernel-driver agents: detect via the INSTALLED product even
                 // when no user process matches. The driver sits in the network stack
-                // from boot regardless of any UI/service process — this is the case
+                // from boot regardless of any UI/service process â€” this is the case
                 // that made the Palo Alto Terminal Server Agent invisible to a
                 // process-only scan (a driver, "not technically a network-stack
                 // application", that still rewrites per-user UDP source ports).
@@ -5695,12 +5918,12 @@ class Program
                     {
                         var label = inst.Value.version != null ? $"{agent.label} (v{inst.Value.version})" : agent.label;
                         var pub = string.IsNullOrEmpty(inst.Value.publisher) ? "" : $" by {inst.Value.publisher}";
-                        Register(label, $"installed — \"{inst.Value.displayName}\"{pub}; filter/kernel driver, in the stack even with no running process", agent.label);
+                        Register(label, $"installed â€” \"{inst.Value.displayName}\"{pub}; filter/kernel driver, in the stack even with no running process", agent.label);
                     }
                 }
             }
 
-            // (3): holistic NDIS binding sweep — any non-Microsoft-inbox component
+            // (3): holistic NDIS binding sweep â€” any non-Microsoft-inbox component
             // bound to a network adapter, whether or not we have an entry for it.
             foreach (var (componentId, displayName) in EnumerateNdisBoundComponents())
             {
@@ -5710,7 +5933,7 @@ class Program
 
             if (found.Count == 0)
             {
-                sb.AppendLine("  ✓ None detected.");
+                sb.AppendLine("  âœ“ None detected.");
                 result.ResultValue = "No inline network-stack components detected";
             }
             else
@@ -5751,9 +5974,9 @@ class Program
             if (gwHost != null)
                 sb.AppendLine($"Probing discovered RDP gateway: {gwHost}\n");
             else
-                sb.AppendLine("⚠ Could not discover RDP gateway — probing rdweb.wvd.microsoft.com as fallback\n");
+                sb.AppendLine("âš  Could not discover RDP gateway â€” probing rdweb.wvd.microsoft.com as fallback\n");
 
-            // System proxy — check against the actual RDP gateway
+            // System proxy â€” check against the actual RDP gateway
             // Wrapped in Task.Run with timeout because GetProxy() can trigger slow WPAD
             // auto-discovery through VPN tunnels (e.g. resolving wpad.corp.microsoft.com)
             var testUri = new Uri($"https://{probeHost}");
@@ -5770,21 +5993,21 @@ class Program
                     if (proxyUri != null && proxyUri != testUri)
                     {
                         issues.Add($"System proxy: {proxyUri}");
-                        sb.AppendLine($"⚠ System proxy detected for {probeHost}: {proxyUri}");
+                        sb.AppendLine($"âš  System proxy detected for {probeHost}: {proxyUri}");
                     }
                     else
                     {
-                        sb.AppendLine($"✓ No system proxy configured for {probeHost}");
+                        sb.AppendLine($"âœ“ No system proxy configured for {probeHost}");
                     }
                 }
                 else
                 {
-                    sb.AppendLine($"⚠ System proxy check timed out (WPAD auto-discovery may be slow through VPN)");
+                    sb.AppendLine($"âš  System proxy check timed out (WPAD auto-discovery may be slow through VPN)");
                 }
             }
             catch { sb.AppendLine("Could not check system proxy"); }
 
-            // WinHTTP proxy — read from registry (locale-independent)
+            // WinHTTP proxy â€” read from registry (locale-independent)
             try
             {
                 // The WinHttpSettings binary value at offset 8 contains proxy flags:
@@ -5813,11 +6036,11 @@ class Program
                 if (winHttpProxyDetected)
                 {
                     issues.Add("WinHTTP proxy configured");
-                    sb.AppendLine($"⚠ WinHTTP proxy configured: {winHttpDetail}");
+                    sb.AppendLine($"âš  WinHTTP proxy configured: {winHttpDetail}");
                 }
                 else
                 {
-                    sb.AppendLine("✓ WinHTTP: Direct access (no proxy)");
+                    sb.AppendLine("âœ“ WinHTTP: Direct access (no proxy)");
                 }
             }
             catch { sb.AppendLine("Could not check WinHTTP proxy"); }
@@ -5830,13 +6053,13 @@ class Program
                 if (!string.IsNullOrEmpty(val))
                 {
                     issues.Add($"{v}={val}");
-                    sb.AppendLine($"⚠ Environment: {v}={val}");
+                    sb.AppendLine($"âš  Environment: {v}={val}");
                 }
             }
 
-            // ── RDP client-specific proxy config ──
+            // â”€â”€ RDP client-specific proxy config â”€â”€
             // The MSRDC / Windows App / mstsc clients each have their own proxy
-            // knobs. What the system-wide proxy says is only a default — the
+            // knobs. What the system-wide proxy says is only a default â€” the
             // client can override it and bypass will differ accordingly. Report
             // the RDP-client view explicitly so operators can distinguish
             // "system is configured for a proxy" from "the RDP client will
@@ -5850,7 +6073,7 @@ class Program
                     sb.AppendLine("RDP client proxy configuration:");
                     foreach (var line in rdpProxy) sb.AppendLine($"  {line}");
                     // Only promote to issues if the RDP client has a non-direct setting
-                    if (rdpProxy.Any(l => l.StartsWith("⚠", StringComparison.Ordinal)))
+                    if (rdpProxy.Any(l => l.StartsWith("âš ", StringComparison.Ordinal)))
                         issues.Add("RDP client proxy override");
                 }
             }
@@ -5859,7 +6082,7 @@ class Program
                 sb.AppendLine($"  Could not inspect RDP client proxy config: {ex.Message}");
             }
 
-            // ── Live CONNECT probe through detected proxy ──
+            // â”€â”€ Live CONNECT probe through detected proxy â”€â”€
             // If the system proxy is configured for the RDP gateway, prove it
             // actually works by opening a real HTTP CONNECT tunnel through it.
             // This catches the common "proxy is declared but blocks AVD FQDNs"
@@ -5886,13 +6109,13 @@ class Program
                 sb.AppendLine($"  Live proxy verification skipped: {ex.Message}");
             }
 
-            // ── DNS-layer interception check (SWG DNS hijack) ──
+            // â”€â”€ DNS-layer interception check (SWG DNS hijack) â”€â”€
             // The routing-table analysis below is structurally blind to SWGs
             // (e.g. Global Secure Access, Zscaler, Netskope) that acquire traffic
             // by hijacking DNS + capturing the flow with WFP filters BELOW the
             // routing table, rather than by injecting routes. Such an SWG returns
             // a synthetic/relay IP for the FQDN; that IP then follows the normal
-            // default route, so a route-only check reports "direct" — a false green.
+            // default route, so a route-only check reports "direct" â€” a false green.
             //
             // The deterministic, vendor-agnostic signal: the W365 RDP gateway and
             // TURN relay have KNOWN published service ranges. We do NOT assume any
@@ -5900,7 +6123,7 @@ class Program
             // Instead we resolve the FQDN we KNOW must land in 40.64.144.0/20 (RDP
             // gateway) or 51.5.0.0/16 (TURN relay); if it resolves OUTSIDE that
             // range, DNS is being rewritten and the flow is captured at the
-            // DNS/WFP layer — which the route check cannot see.
+            // DNS/WFP layer â€” which the route check cannot see.
             bool dnsHijackDetected = false;
             try
             {
@@ -5910,7 +6133,7 @@ class Program
                 dnsTargets.Add(("world.relay.avd.microsoft.com", IpToUint32(IPAddress.Parse("51.5.0.0")), 16, "51.5.0.0/16", "TURN relay"));
 
                 sb.AppendLine();
-                sb.AppendLine("DNS integrity (expected-range check — catches SWG DNS hijacking):");
+                sb.AppendLine("DNS integrity (expected-range check â€” catches SWG DNS hijacking):");
                 foreach (var (fqdn, net, prefix, rangeText, label) in dnsTargets)
                 {
                     try
@@ -5919,7 +6142,7 @@ class Program
                         var v4 = addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                         if (v4 == null)
                         {
-                            sb.AppendLine($"  {label} {fqdn}: no IPv4 answer — check skipped");
+                            sb.AppendLine($"  {label} {fqdn}: no IPv4 answer â€” check skipped");
                             continue;
                         }
                         uint expStart = net;
@@ -5927,7 +6150,7 @@ class Program
                         uint ipU = IpToUint32(v4);
                         if (ipU >= expStart && ipU <= expEnd)
                         {
-                            sb.AppendLine($"  ✓ {label} {fqdn} → {v4} is within its expected range {rangeText} (DNS not hijacked)");
+                            sb.AppendLine($"  âœ“ {label} {fqdn} â†’ {v4} is within its expected range {rangeText} (DNS not hijacked)");
                         }
                         else
                         {
@@ -5938,33 +6161,33 @@ class Program
                             // time that the hard-coded CIDR doesn't know about. A
                             // genuine SWG synthetic IP (private / CGNAT / vendor range)
                             // is NEVER in that table, so a service-tag hit means a
-                            // legitimate (newer) Microsoft range — NOT a hijack. Only
+                            // legitimate (newer) Microsoft range â€” NOT a hijack. Only
                             // flag when the IP is in NEITHER. If the table failed to
                             // load (offline), LookupWvdRegionFromServiceTags returns
                             // null and we fall back to the hard-coded-range verdict.
                             var stRegion = LookupWvdRegionFromServiceTags(v4);
                             if (stRegion != null)
                             {
-                                sb.AppendLine($"  ✓ {label} {fqdn} → {v4} is outside the hard-coded {rangeText} but IS a published AVD service-tag range (region {stRegion}) — legitimate, not a hijack.");
+                                sb.AppendLine($"  âœ“ {label} {fqdn} â†’ {v4} is outside the hard-coded {rangeText} but IS a published AVD service-tag range (region {stRegion}) â€” legitimate, not a hijack.");
                             }
                             else
                             {
                                 dnsHijackDetected = true;
                                 issues.Add($"DNS hijack: {label} {fqdn} resolves to {v4} (outside {rangeText} and not in any AVD service tag)");
-                                sb.AppendLine($"  ⚠ {label} {fqdn} → {v4} is OUTSIDE its expected range {rangeText} AND not in any published AVD service-tag range.");
-                                sb.AppendLine($"      DNS is being rewritten — the FQDN is pointed at a synthetic/relay IP by an SWG (e.g. Global Secure Access, Zscaler). The traffic is captured at the DNS/WFP layer, BELOW the routing table, so the route-based bypass check cannot see it. RDP traffic for this endpoint is being intercepted regardless of what the routing table shows.");
+                                sb.AppendLine($"  âš  {label} {fqdn} â†’ {v4} is OUTSIDE its expected range {rangeText} AND not in any published AVD service-tag range.");
+                                sb.AppendLine($"      DNS is being rewritten â€” the FQDN is pointed at a synthetic/relay IP by an SWG (e.g. Global Secure Access, Zscaler). The traffic is captured at the DNS/WFP layer, BELOW the routing table, so the route-based bypass check cannot see it. RDP traffic for this endpoint is being intercepted regardless of what the routing table shows.");
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        sb.AppendLine($"  {label} {fqdn}: resolution failed — {ex.Message}");
+                        sb.AppendLine($"  {label} {fqdn}: resolution failed â€” {ex.Message}");
                     }
                 }
             }
             catch { /* non-critical: route checks below still run */ }
 
-            // VPN adapters — detect presence, then check if RDP traffic actually routes through them
+            // VPN adapters â€” detect presence, then check if RDP traffic actually routes through them
             var vpnAdapters = FindVpnAdapters();
             // Hoisted so the post-detection summary block (below) can tell whether
             // we positively confirmed RDP-gateway bypass via the routing table.
@@ -5972,19 +6195,19 @@ class Program
 
             if (vpnAdapters.Count > 0)
             {
-                // List VPN adapters found — tracked as detections, promoted to issues only if routing confirms interception
+                // List VPN adapters found â€” tracked as detections, promoted to issues only if routing confirms interception
                 foreach (var vpn in vpnAdapters)
                 {
                     var vpnIpList = GetAdapterIps(vpn);
                     detected.Add($"VPN: {vpn.Name} ({vpn.Description})");
-                    sb.AppendLine($"ℹ VPN adapter detected: {vpn.Name} ({vpn.Description})");
+                    sb.AppendLine($"â„¹ VPN adapter detected: {vpn.Name} ({vpn.Description})");
                     if (!string.IsNullOrEmpty(vpnIpList))
                         sb.AppendLine($"    Adapter IPs: {vpnIpList}");
                 }
             }
             else
             {
-                sb.AppendLine("ℹ No named VPN adapter detected — analysing the routing table anyway in case a tunnel uses an unrecognised adapter");
+                sb.AppendLine("â„¹ No named VPN adapter detected â€” analysing the routing table anyway in case a tunnel uses an unrecognised adapter");
             }
 
             // Routing table is the authoritative source for what's routed via VPN.
@@ -6017,26 +6240,26 @@ class Program
                             var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(gwIp, vpnAdapters);
                             if (routedViaVpn)
                             {
-                                sb.AppendLine($"\n  ⚠ RDP gateway {gwIp} ({probeHost}) routes via VPN interface {localIp}");
+                                sb.AppendLine($"\n  âš  RDP gateway {gwIp} ({probeHost}) routes via VPN interface {localIp}");
                                 issues.Add($"RDP gateway {probeHost} routes through VPN");
                                 if (!string.IsNullOrEmpty(localIp)) offendingIfIps.Add(localIp);
                             }
                             else
                             {
-                                sb.AppendLine($"\n  ✓ RDP gateway {gwIp} ({probeHost}) routes direct via {localIp}");
+                                sb.AppendLine($"\n  âœ“ RDP gateway {gwIp} ({probeHost}) routes direct via {localIp}");
                                 rdpGwDirect = true;
                             }
                         }
                     }
-                    catch { /* DNS or probe failed — non-critical since routing table already checked */ }
+                    catch { /* DNS or probe failed â€” non-critical since routing table already checked */ }
                 }
 
                 // Summary: if VPN detected but all W365 ranges and RDP gateway route direct
                 if (vpnAdapters.Count > 0 && caught.Count == 0 && diverted.Count == 0 && rdpGwDirect && !dnsHijackDetected)
-                    sb.AppendLine("\n  ✓ VPN is active but RDP traffic correctly bypasses it (split-tunnel)");
+                    sb.AppendLine("\n  âœ“ VPN is active but RDP traffic correctly bypasses it (split-tunnel)");
             }
 
-            // SWG / security processes — tracked as detections; only routing/proxy evidence promotes to issues
+            // SWG / security processes â€” tracked as detections; only routing/proxy evidence promotes to issues
             var swgProcesses = new[] { "ZscalerService", "netskope", "iboss", "forcepoint", "mcafee", "symantec", "crowdstrike", "GlobalSecureAccessClient" };
             foreach (var name in swgProcesses)
             {
@@ -6044,11 +6267,11 @@ class Program
                 if (procs.Length > 0)
                 {
                     detected.Add($"SWG: {name}");
-                    sb.AppendLine($"ℹ SWG/Security process running: {name} (PID: {procs[0].Id})");
+                    sb.AppendLine($"â„¹ SWG/Security process running: {name} (PID: {procs[0].Id})");
                 }
             }
 
-            // ── Per-solution summary ──
+            // â”€â”€ Per-solution summary â”€â”€
             // When more than one VPN/SWG solution is active at once (e.g. Microsoft
             // GSA + Azure VPN), enumerate each one explicitly and state whether it
             // intercepts W365/RDP traffic, so the user can see at a glance which
@@ -6058,7 +6281,7 @@ class Program
             if (solutionCount > 1)
             {
                 sb.AppendLine();
-                sb.AppendLine($"══ Detected security solutions ({solutionCount}) ══");
+                sb.AppendLine($"â•â• Detected security solutions ({solutionCount}) â•â•");
                 int n = 0;
                 foreach (var vpn in vpnAdapters)
                 {
@@ -6073,7 +6296,7 @@ class Program
                     sb.AppendLine($"  {n}. VPN tunnel: {vpn.Name} ({vpn.Description})");
                     if (thisVpnIntercepts)
                     {
-                        sb.AppendLine("       ⚠ ISSUE: this tunnel carries W365/RDP traffic — add the W365/AVD ranges to its bypass/exclude list.");
+                        sb.AppendLine("       âš  ISSUE: this tunnel carries W365/RDP traffic â€” add the W365/AVD ranges to its bypass/exclude list.");
                         if (caughtRanges.Count > 0)
                             sb.AppendLine($"         W365 ranges via tunnel: {string.Join(", ", caughtRanges)}");
                         if (divertedRanges.Count > 0)
@@ -6081,11 +6304,11 @@ class Program
                     }
                     else if ((caughtRanges.Count > 0 || divertedRanges.Count > 0) && offendingIfIps.Count > 0)
                     {
-                        sb.AppendLine("       ✓ No issue — W365/RDP traffic is captured, but by a DIFFERENT tunnel, not this one (this adapter's IPs are not the egress).");
+                        sb.AppendLine("       âœ“ No issue â€” W365/RDP traffic is captured, but by a DIFFERENT tunnel, not this one (this adapter's IPs are not the egress).");
                     }
                     else
                     {
-                        sb.AppendLine("       ✓ No issue — RDP gateway & W365 ranges bypass this tunnel (split-tunnel).");
+                        sb.AppendLine("       âœ“ No issue â€” RDP gateway & W365 ranges bypass this tunnel (split-tunnel).");
                     }
                 }
                 foreach (var s in swgEntries)
@@ -6095,13 +6318,13 @@ class Program
                     bool isGsa = label.Contains("GlobalSecureAccess", StringComparison.OrdinalIgnoreCase);
                     sb.AppendLine($"  {n}. SWG/security agent: {label}");
                     if (dnsHijackDetected && isGsa)
-                        sb.AppendLine("       ⚠ ISSUE: GSA is acquiring W365 traffic — the RDP gateway / TURN FQDN resolves to a synthetic IP (DNS hijack). Exclude the W365/AVD FQDNs from the GSA forwarding profile.");
+                        sb.AppendLine("       âš  ISSUE: GSA is acquiring W365 traffic â€” the RDP gateway / TURN FQDN resolves to a synthetic IP (DNS hijack). Exclude the W365/AVD FQDNs from the GSA forwarding profile.");
                     else if (isGsa)
-                        sb.AppendLine("       ✓ No issue — GSA acquires traffic by DNS interception, and the DNS-integrity check above confirms the RDP gateway & TURN FQDNs resolve to genuine Microsoft IPs (not GSA synthetic addresses). GSA is NOT capturing W365 traffic.");
+                        sb.AppendLine("       âœ“ No issue â€” GSA acquires traffic by DNS interception, and the DNS-integrity check above confirms the RDP gateway & TURN FQDNs resolve to genuine Microsoft IPs (not GSA synthetic addresses). GSA is NOT capturing W365 traffic.");
                     else if (dnsHijackDetected)
-                        sb.AppendLine("       ⚠ ISSUE: a DNS hijack was detected — W365 FQDNs are being resolved to a synthetic IP by this agent.");
+                        sb.AppendLine("       âš  ISSUE: a DNS hijack was detected â€” W365 FQDNs are being resolved to a synthetic IP by this agent.");
                     else
-                        sb.AppendLine("       ✓ No issue — DNS-integrity check passed and no proxy/captured route detected; this agent is not intercepting W365 traffic.");
+                        sb.AppendLine("       âœ“ No issue â€” DNS-integrity check passed and no proxy/captured route detected; this agent is not intercepting W365 traffic.");
                 }
             }
 
@@ -6114,15 +6337,15 @@ class Program
             {
                 // Distinguish three cases:
                 //   1. VPN adapter present AND we positively confirmed RDP gateway
-                //      routes direct (rdpGwDirect && caught.Count == 0) — real
+                //      routes direct (rdpGwDirect && caught.Count == 0) â€” real
                 //      split-tunnel evidence; the existing "VPN is active but RDP
                 //      traffic correctly bypasses it (split-tunnel)" line above
                 //      already wrote that to the body.
-                //   2. SWG agent process present, no VPN adapter — we have NOT
+                //   2. SWG agent process present, no VPN adapter â€” we have NOT
                 //      probed any traffic-capturing tunnel; the agent may simply
                 //      be running without a forwarding profile attached. Saying
                 //      "split-tunnel" overstates the evidence.
-                //   3. Mix — describe accurately.
+                //   3. Mix â€” describe accurately.
                 var vpnAdapterNames = detected
                     .Where(d => d.StartsWith("VPN:", StringComparison.OrdinalIgnoreCase))
                     .Select(d => {
@@ -6139,21 +6362,21 @@ class Program
                 {
                     var summary = string.Join(", ", vpnAdapterNames);
                     if (swgProcNames.Count > 0) summary += " + SWG: " + string.Join(", ", swgProcNames);
-                    result.ResultValue = $"VPN active ({summary}) — RDP correctly bypassed (split-tunnel verified)";
+                    result.ResultValue = $"VPN active ({summary}) â€” RDP correctly bypassed (split-tunnel verified)";
                 }
                 else if (vpnAdapterNames.Count > 0)
                 {
                     // VPN adapter exists but we couldn't positively confirm bypass for the
                     // RDP gateway IP via the routing-table check above.
                     var summary = string.Join(", ", vpnAdapterNames);
-                    result.ResultValue = $"VPN active ({summary}) — bypass for RDP gateway not confirmed";
+                    result.ResultValue = $"VPN active ({summary}) â€” bypass for RDP gateway not confirmed";
                 }
                 else
                 {
                     // SWG-only: process is present but no VPN/tunnel adapter and no
                     // captured route. State the fact, do not claim split-tunnel.
                     var summary = string.Join(", ", swgProcNames);
-                    result.ResultValue = $"SWG agent present ({summary}) — no traffic-capturing tunnel detected";
+                    result.ResultValue = $"SWG agent present ({summary}) â€” no traffic-capturing tunnel detected";
                 }
                 result.Status = "Passed";
             }
@@ -6193,7 +6416,7 @@ class Program
                 result.Status = "Warning";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/requirements-network#proxy-configuration";
                 if (detected.Count > 0)
-                    sb.AppendLine($"\n  ℹ Also present but not intercepting RDP: {string.Join("; ", detected)}");
+                    sb.AppendLine($"\n  â„¹ Also present but not intercepting RDP: {string.Join("; ", detected)}");
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -6202,9 +6425,9 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  UDP BASED RDP CONNECTIVITY TESTS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static async Task<TestResult> RunTurnRelay()
     {
@@ -6216,7 +6439,7 @@ class Program
 
             // Collect multiple distinct IPv4 relay IPs from the required TURN range (51.5.0.0/16).
             // DNS (Azure Traffic Manager) round-robins across several relays; an individual relay IP
-            // can be unreachable — or intermittently blocked by an upstream SWG — while the range as a
+            // can be unreachable â€” or intermittently blocked by an upstream SWG â€” while the range as a
             // whole is open. Basing a CRITICAL "UDP 3478 blocked" verdict on a single DNS answer is
             // fragile, so resolve a few times to gather round-robin IPs and probe each until one
             // responds. Only report a block if EVERY resolved relay IP fails.
@@ -6244,7 +6467,7 @@ class Program
 
             // Send a STUN binding request per IP. UDP has no transport-layer retransmission, so a single
             // unACKed datagram lost on a lossy path would falsely read as "UDP 3478 blocked". Retry up to
-            // 3× per IP and validate the STUN Binding Success (0x0101) response, mirroring L-UDP-05, so
+            // 3Ã— per IP and validate the STUN Binding Success (0x0101) response, mirroring L-UDP-05, so
             // transient loss can't produce a phantom block. A genuine block gets no valid response from
             // ANY resolved relay IP across all attempts.
             const int maxAttempts = 3;
@@ -6274,11 +6497,11 @@ class Program
                             responseBytes = response.Value.Buffer.Length;
                             thisReachable = true;
                         }
-                        // else: timeout — retry
+                        // else: timeout â€” retry
                     }
                     catch
                     {
-                        // Send/receive error — retry
+                        // Send/receive error â€” retry
                     }
                 }
 
@@ -6294,14 +6517,14 @@ class Program
             if (reachableIp != null)
             {
                 result.Status = "Passed";
-                result.ResultValue = $"TURN relay reachable at {reachableIp}:{port} — {rttMs}ms RTT";
+                result.ResultValue = $"TURN relay reachable at {reachableIp}:{port} â€” {rttMs}ms RTT";
                 result.DetailedInfo = $"Host: {host}\nPort: {port}\nResponse: {responseBytes} bytes\nLatency: {rttMs}ms\n\nRelay IPs probed (required range 51.5.0.0/16):\n{string.Join("\n", triedNotes)}\n\nNote: This tests UDP 3478 reachability via DNS-resolved IP(s). The actual session TURN relay is assigned by the RDP gateway (via CRLB anycast), not by client DNS.";
             }
             else
             {
                 result.Status = "Failed";
                 result.ResultValue = $"UDP 3478 blocked to all {relayIps.Count} TURN relay IP(s) tried (RDP Shortpath will not work)";
-                result.DetailedInfo = $"Host: {host}\nPort: {port}\n\nProbed every resolved relay IP in the required TURN range (51.5.0.0/16) and none responded to a STUN binding request, so outbound UDP 3478 is blocked by a firewall, VPN, or SWG:\n{string.Join("\n", triedNotes)}\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded — higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
+                result.DetailedInfo = $"Host: {host}\nPort: {port}\n\nProbed every resolved relay IP in the required TURN range (51.5.0.0/16) and none responded to a STUN binding request, so outbound UDP 3478 is blocked by a firewall, VPN, or SWG:\n{string.Join("\n", triedNotes)}\n\nImpact: RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway (port 443) so a session can still be made, but the experience is significantly degraded â€” higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience, UDP 3478 must be open.\n\nFix: allow outbound UDP 3478 to the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
         }
@@ -6325,14 +6548,14 @@ class Program
                 return result;
             }
 
-            // Primary: Use Azure Service Tags subnet→region mapping (authoritative)
+            // Primary: Use Azure Service Tags subnetâ†’region mapping (authoritative)
             var azureRegion = LookupTurnRelayRegion(ip);
             if (azureRegion != null)
             {
                 var friendlyName = GetAzureRegionFriendlyName(azureRegion);
                 var label = friendlyName != null ? $"{friendlyName} ({azureRegion})" : azureRegion;
                 result.ResultValue = $"TURN relay (DNS): {label} ({ip})";
-                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nAzure Region: {label}\nSource: Azure Service Tags (subnet mapping)\n\nNote: This is the TURN relay returned by client DNS (Azure Traffic Manager). The actual session TURN relay is assigned by the RDP gateway via CRLB anycast routing, which selects the nearest relay based on network proximity — not DNS. A mismatch between this location and your region indicates non-local DNS resolvers but does not affect session quality.";
+                result.DetailedInfo = $"Host: {host}\nIP: {ip}\nAzure Region: {label}\nSource: Azure Service Tags (subnet mapping)\n\nNote: This is the TURN relay returned by client DNS (Azure Traffic Manager). The actual session TURN relay is assigned by the RDP gateway via CRLB anycast routing, which selects the nearest relay based on network proximity â€” not DNS. A mismatch between this location and your region indicates non-local DNS resolvers but does not affect session quality.";
                 result.Status = "Passed";
             }
             else
@@ -6378,11 +6601,11 @@ class Program
         var dynamic = LookupWvdRegionFromServiceTags(ip);
         if (dynamic != null) return dynamic;
 
-        // Fallback: hardcoded subnet → Azure region mapping from Microsoft Service Tags (WVDRelays / 51.5.0.0/16)
+        // Fallback: hardcoded subnet â†’ Azure region mapping from Microsoft Service Tags (WVDRelays / 51.5.0.0/16)
         // Derived from: https://www.microsoft.com/en-us/download/details.aspx?id=56519
         var subnets = new (byte secondOctet, byte thirdOctet, int prefixLen, string region)[]
         {
-            // /23 entries (cover 2× /24 blocks)
+            // /23 entries (cover 2Ã— /24 blocks)
             (5, 0, 23, "southcentralus"),    // 51.5.0.0/23
             (5, 2, 23, "eastus2"),           // 51.5.2.0/23
             (5, 4, 23, "uksouth"),           // 51.5.4.0/23
@@ -6454,7 +6677,7 @@ class Program
         var bytes = ip.GetAddressBytes();
         if (bytes[0] != 51) return null;
 
-        // Check /23 first (more specific for ranges that span 2× /24)
+        // Check /23 first (more specific for ranges that span 2Ã— /24)
         foreach (var (_, third, prefixLen, region) in subnets)
         {
             if (prefixLen == 23 && bytes[1] == 5)
@@ -6485,7 +6708,7 @@ class Program
         var dynamic = LookupWvdRegionFromServiceTags(ip);
         if (dynamic != null) return dynamic;
 
-        // Fallback: hardcoded subnet → Azure region mapping from Microsoft Service Tags (WindowsVirtualDesktop / 40.64.144.0/20)
+        // Fallback: hardcoded subnet â†’ Azure region mapping from Microsoft Service Tags (WindowsVirtualDesktop / 40.64.144.0/20)
         // Derived from: https://www.microsoft.com/en-us/download/details.aspx?id=56519
         // Each entry: (offset from 40.64.144.0, prefix length, region)
         var subnets = new (int offset, int prefixLen, string region)[]
@@ -6612,7 +6835,7 @@ class Program
         var bytes = ip.GetAddressBytes();
         if (bytes.Length != 4) return null;
 
-        // Check if IP is in 40.64.144.0/20 (40.64.144.0 – 40.64.159.255)
+        // Check if IP is in 40.64.144.0/20 (40.64.144.0 â€“ 40.64.159.255)
         if (bytes[0] != 40 || bytes[1] != 64 || bytes[2] < 144 || bytes[2] > 159) return null;
 
         // Compute offset from 40.64.144.0
@@ -6705,7 +6928,7 @@ class Program
         return map.TryGetValue(region, out var name) ? name : null;
     }
 
-    // ── L-UDP-05: STUN NAT Type Detection ──
+    // â”€â”€ L-UDP-05: STUN NAT Type Detection â”€â”€
     // Uses a single UdpClient to send STUN binding requests to two different servers,
     // compares the reflexive (XOR-MAPPED-ADDRESS) endpoints to determine NAT type.
     // Same reflexive endpoint = Cone NAT (Shortpath likely)
@@ -6713,18 +6936,18 @@ class Program
     //
     // Both servers are resolved from world.turn.wvd.microsoft.com (51.5.0.0/16).
     // TURN servers support STUN Binding per RFC 5766, and these IPs are already
-    // required for W365 connectivity — no extra firewall rules needed.
+    // required for W365 connectivity â€” no extra firewall rules needed.
     static async Task<TestResult> RunStunNatType()
     {
         var result = new TestResult { Id = "L-UDP-05", Name = "STUN NAT Type Detection", Category = "udp" };
         try
         {
-            // Azure VM outbound NAT is always Endpoint-Dependent (Symmetric) — this is expected and
+            // Azure VM outbound NAT is always Endpoint-Dependent (Symmetric) â€” this is expected and
             // does not affect TURN relay connectivity. The test is only useful on the client device.
             if (IsRemoteSession())
             {
                 result.Status = "Passed";
-                result.ResultValue = "Not applicable — Azure VM NAT is always Symmetric (expected)";
+                result.ResultValue = "Not applicable â€” Azure VM NAT is always Symmetric (expected)";
                 result.DetailedInfo = "This test is not meaningful when run inside a Cloud PC (Azure VM).\n" +
                     "Azure's outbound NAT is always Endpoint-Dependent (Symmetric), which is normal.\n" +
                     "TURN relay connectivity is confirmed separately by L-UDP-03.\n\n" +
@@ -6765,14 +6988,14 @@ class Program
             {
                 // Fallback: if DNS only returns one IP, try stun.azure.com as Server 2
                 sb.AppendLine($"DNS: {turnHost} resolved to {(sortedIps.Count == 0 ? "nothing" : sortedIps[0].ToString())}");
-                sb.AppendLine("⚠ Could not resolve two distinct TURN IPs from DNS round-robin.");
+                sb.AppendLine("âš  Could not resolve two distinct TURN IPs from DNS round-robin.");
 
                 if (sortedIps.Count == 0)
                 {
                     sb.AppendLine($"  DNS resolution of {turnHost} failed completely.");
                     sb.AppendLine("  Check DNS and firewall allow 51.5.0.0/16 on UDP 3478.");
                     result.Status = "Failed";
-                    result.ResultValue = $"DNS failed — cannot resolve {turnHost}";
+                    result.ResultValue = $"DNS failed â€” cannot resolve {turnHost}";
                     result.RemediationText = $"Ensure {turnHost} resolves and UDP 3478 to 51.5.0.0/16 is allowed.";
                     result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
                     result.DetailedInfo = sb.ToString().Trim();
@@ -6794,7 +7017,7 @@ class Program
                 {
                     sb.AppendLine("  stun.azure.com also failed to resolve.");
                     result.Status = "Warning";
-                    result.ResultValue = "Only one STUN server IP available — cannot compare";
+                    result.ResultValue = "Only one STUN server IP available â€” cannot compare";
                     result.DetailedInfo = sb.ToString().Trim();
                     return result;
                 }
@@ -6804,7 +7027,7 @@ class Program
             var stunIp2 = sortedIps[1];
 
             // Server 1 is always a required TURN relay (resolved from turnHost). Server 2 may be the
-            // stun.azure.com fallback (20.202.0.0/16), which is NOT a W365-required range — so its
+            // stun.azure.com fallback (20.202.0.0/16), which is NOT a W365-required range â€” so its
             // success or failure alone must never drive a W365-relevant reachability verdict. It is
             // only ever used as a second reference point for NAT-type classification.
             bool server2IsFallback = !turnIps.Contains(stunIp2);
@@ -6831,24 +7054,24 @@ class Program
             {
                 if (server2IsFallback)
                 {
-                    // Server 2 is stun.azure.com (20.202.0.0/16) — NOT a W365-required range — so its
+                    // Server 2 is stun.azure.com (20.202.0.0/16) â€” NOT a W365-required range â€” so its
                     // silence is not evidence of a W365-relevant block (many networks legitimately do
                     // not allow it). The verdict rests solely on Server 1, the required TURN relay
                     // (51.5.0.0/16), which also did not respond.
-                    sb.AppendLine("✗ The required TURN relay did not respond to STUN on UDP 3478.");
-                    sb.AppendLine($"  Server 1 (required, 51.5.0.0/16): {stunIp1} — no response");
-                    sb.AppendLine($"  Server 2 (stun.azure.com, NOT W365-required): {stunIp2} — no response (excluded from verdict)");
-                    sb.AppendLine("  → Verdict is based only on the required TURN relay above.");
+                    sb.AppendLine("âœ— The required TURN relay did not respond to STUN on UDP 3478.");
+                    sb.AppendLine($"  Server 1 (required, 51.5.0.0/16): {stunIp1} â€” no response");
+                    sb.AppendLine($"  Server 2 (stun.azure.com, NOT W365-required): {stunIp2} â€” no response (excluded from verdict)");
+                    sb.AppendLine("  â†’ Verdict is based only on the required TURN relay above.");
                 }
                 else
                 {
-                    sb.AppendLine("✗ Neither required TURN relay responded.");
+                    sb.AppendLine("âœ— Neither required TURN relay responded.");
                 }
                 sb.AppendLine("  UDP port 3478 to 51.5.0.0/16 is blocked by a firewall, VPN, or SWG.");
-                sb.AppendLine("  RDP Shortpath for public networks will NOT work — RDP falls back to TCP via the gateway (port 443).");
+                sb.AppendLine("  RDP Shortpath for public networks will NOT work â€” RDP falls back to TCP via the gateway (port 443).");
                 sb.AppendLine("  A session can still be made over TCP, but the experience is significantly degraded (higher latency, poor under packet loss).");
                 result.Status = "Failed";
-                result.ResultValue = "STUN failed — UDP 3478 to required TURN range blocked (RDP Shortpath will not work)";
+                result.ResultValue = "STUN failed â€” UDP 3478 to required TURN range blocked (RDP Shortpath will not work)";
                 result.RemediationText = "Allow outbound UDP 3478 to the AVD TURN range (51.5.0.0/16) so RDP Shortpath can be used.";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
@@ -6862,7 +7085,7 @@ class Program
                 // TURN relay. A response from the non-required stun.azure.com fallback does NOT prove
                 // the required 51.5.0.0/16 range is reachable.
                 bool responderIsRequired = !(okIp.Equals(stunIp2) && server2IsFallback);
-                sb.AppendLine($"⚠ Only one STUN server responded — reflexive endpoint: {working}");
+                sb.AppendLine($"âš  Only one STUN server responded â€” reflexive endpoint: {working}");
                 sb.AppendLine($"  Responding:     {okIp} ({LabelFor(okIp)})");
                 sb.AppendLine($"  Non-responding: {failIp} ({LabelFor(failIp)})");
                 sb.AppendLine();
@@ -6871,32 +7094,32 @@ class Program
                 if (responderIsRequired)
                 {
                     sb.AppendLine("However, STUN binding DID succeed against the required TURN range, which confirms:");
-                    sb.AppendLine("  • Outbound UDP 3478 to 51.5.0.0/16 is NOT fully blocked");
-                    sb.AppendLine("  • RDP Shortpath via TURN relay should work");
-                    sb.AppendLine("  • STUN direct hole-punching may also work (NAT type unknown)");
+                    sb.AppendLine("  â€¢ Outbound UDP 3478 to 51.5.0.0/16 is NOT fully blocked");
+                    sb.AppendLine("  â€¢ RDP Shortpath via TURN relay should work");
+                    sb.AppendLine("  â€¢ STUN direct hole-punching may also work (NAT type unknown)");
                     result.Status = "Warning";
-                    result.ResultValue = $"Partial STUN — NAT type undetermined ({working})";
+                    result.ResultValue = $"Partial STUN â€” NAT type undetermined ({working})";
                     result.RemediationText = $"TURN server {failIp} did not respond to STUN. UDP works but NAT type could not be classified.";
                 }
                 else
                 {
                     // Only the non-required stun.azure.com responded; the required TURN relay did not.
                     // Its success does NOT prove the required range is open, so do not count it.
-                    sb.AppendLine("⚠ Only the non-required fallback server (stun.azure.com) responded; the");
+                    sb.AppendLine("âš  Only the non-required fallback server (stun.azure.com) responded; the");
                     sb.AppendLine("  required TURN relay (51.5.0.0/16) did NOT respond. stun.azure.com is outside");
                     sb.AppendLine("  the W365 requirements, so its response does not confirm the required TURN");
-                    sb.AppendLine("  range is reachable — treat UDP 3478 to 51.5.0.0/16 as suspect (see L-UDP-03).");
+                    sb.AppendLine("  range is reachable â€” treat UDP 3478 to 51.5.0.0/16 as suspect (see L-UDP-03).");
                     result.Status = "Warning";
-                    result.ResultValue = "Required TURN relay did not respond (only non-required stun.azure.com did) — inconclusive";
+                    result.ResultValue = "Required TURN relay did not respond (only non-required stun.azure.com did) â€” inconclusive";
                     result.RemediationText = "The required TURN range (51.5.0.0/16) did not respond on UDP 3478. Verify it is allowed; see L-UDP-03.";
                     result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
                 }
                 sb.AppendLine();
                 sb.AppendLine("NAT type reference (for when both servers respond):");
-                sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
-                sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
-                sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
-                sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails");
+                sb.AppendLine("  Full Cone          â€” Any host can send to the mapped port             âœ“ Shortpath");
+                sb.AppendLine("  Restricted Cone     â€” Only hosts the client contacted can reply       âœ“ Shortpath");
+                sb.AppendLine("  Port-Restricted Cone â€” Only the exact host:port can reply             âœ“ Shortpath");
+                sb.AppendLine("  Symmetric           â€” Different mapping per destination               âœ— STUN fails");
             }
             else if (mapped1 == mapped2)
             {
@@ -6918,33 +7141,33 @@ class Program
                 if (localAddrs.Contains(reflexIp))
                 {
                     natLabel = "Open Internet (No NAT)";
-                    sb.AppendLine($"✓ Reflexive IP {reflexIp} matches a local interface — no NAT detected.");
+                    sb.AppendLine($"âœ“ Reflexive IP {reflexIp} matches a local interface â€” no NAT detected.");
                 }
                 else
                 {
                     natLabel = "Cone NAT (Full Cone / Restricted Cone / Port-Restricted Cone)";
-                    sb.AppendLine($"✓ Both servers returned the same reflexive endpoint: {mapped1}");
+                    sb.AppendLine($"âœ“ Both servers returned the same reflexive endpoint: {mapped1}");
                     sb.AppendLine($"  Server 1: {stunIp1} ({turnHost})");
                     sb.AppendLine($"  Server 2: {stunIp2} ({turnHost})");
                 }
                 sb.AppendLine();
                 sb.AppendLine($"NAT Type: {natLabel}");
-                sb.AppendLine("  Endpoint-Independent Mapping — the same external IP:port is used");
+                sb.AppendLine("  Endpoint-Independent Mapping â€” the same external IP:port is used");
                 sb.AppendLine("  regardless of destination. This is the best NAT type for P2P/UDP.");
                 sb.AppendLine();
                 sb.AppendLine("RDP Shortpath for public networks is LIKELY to work.");
                 sb.AppendLine();
                 sb.AppendLine("Shortpath modes available:");
-                sb.AppendLine("  • STUN (direct): Client ↔ Cloud PC via UDP hole-punching ✓");
-                sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC (fallback) ✓");
+                sb.AppendLine("  â€¢ STUN (direct): Client â†” Cloud PC via UDP hole-punching âœ“");
+                sb.AppendLine("  â€¢ TURN (relayed): Client â†” TURN relay â†” Cloud PC (fallback) âœ“");
                 sb.AppendLine();
                 sb.AppendLine("NAT type reference:");
-                sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
-                sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
-                sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
-                sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails");
+                sb.AppendLine("  Full Cone          â€” Any host can send to the mapped port             âœ“ Shortpath");
+                sb.AppendLine("  Restricted Cone     â€” Only hosts the client contacted can reply       âœ“ Shortpath");
+                sb.AppendLine("  Port-Restricted Cone â€” Only the exact host:port can reply             âœ“ Shortpath");
+                sb.AppendLine("  Symmetric           â€” Different mapping per destination               âœ— STUN fails");
                 result.Status = "Passed";
-                result.ResultValue = $"{natLabel} — Shortpath ready ({mapped1})";
+                result.ResultValue = $"{natLabel} â€” Shortpath ready ({mapped1})";
             }
             else
             {
@@ -6954,7 +7177,7 @@ class Program
                 var port1 = mapped1.Split(':')[1];
                 var port2 = mapped2.Split(':')[1];
 
-                sb.AppendLine($"✗ Servers returned different reflexive endpoints:");
+                sb.AppendLine($"âœ— Servers returned different reflexive endpoints:");
                 sb.AppendLine($"    Server 1 ({stunIp1}):  {mapped1}");
                 sb.AppendLine($"    Server 2 ({stunIp2}):  {mapped2}");
                 sb.AppendLine();
@@ -6963,10 +7186,10 @@ class Program
                 // destination) from split-egress paths caused by a SWG/ZTNA agent (e.g.
                 // Microsoft Global Secure Access). W365 ranges (51.5.0.0/16, 40.64.144.0/20)
                 // are typically excluded from SWG forwarding profiles, while the fallback
-                // Server 2 (stun.azure.com, broader Azure) is NOT excluded — so the two
+                // Server 2 (stun.azure.com, broader Azure) is NOT excluded â€” so the two
                 // reflexive IPs come from two different network paths, not from NAT remapping.
                 // Heuristic: SWG agent process running AND one reflexive IP is in a Microsoft
-                // cloud-egress range while the other is not → reclassify as split-egress.
+                // cloud-egress range while the other is not â†’ reclassify as split-egress.
                 bool ipsDiffer = ip1 != ip2;
                 string? swgAgent = null;
                 if (ipsDiffer)
@@ -6978,7 +7201,7 @@ class Program
                     }
                 }
 
-                // "Microsoft/Azure cloud-egress" /8 prefixes — reflexive IPs from SWG egress
+                // "Microsoft/Azure cloud-egress" /8 prefixes â€” reflexive IPs from SWG egress
                 // most commonly land here. Conservative list; 104.x deliberately excluded
                 // because it's shared with consumer ISPs (e.g. Charter / Spectrum).
                 static bool IsCloudEgressIp(string ip) =>
@@ -6999,14 +7222,14 @@ class Program
                     sb.AppendLine("  forwarding profile, so STUN to TURN egresses via your ISP directly.");
                     sb.AppendLine("  General Azure traffic (stun.azure.com fallback) IS forwarded via the");
                     sb.AppendLine("  SWG tunnel, so it egresses from a Microsoft cloud IP.");
-                    sb.AppendLine("  → Different reflexive IPs reflect two NETWORK PATHS, not NAT remapping.");
+                    sb.AppendLine("  â†’ Different reflexive IPs reflect two NETWORK PATHS, not NAT remapping.");
                     sb.AppendLine();
                     sb.AppendLine("This means RDP Shortpath behaviour is NOT determined by this test:");
-                    sb.AppendLine("  • Actual NAT type on the W365 path is undetermined here.");
-                    sb.AppendLine("  • TURN relay reachability (L-UDP-03) is the real indicator.");
-                    sb.AppendLine("  • Direct STUN hole-punching may still work depending on the real NAT.");
+                    sb.AppendLine("  â€¢ Actual NAT type on the W365 path is undetermined here.");
+                    sb.AppendLine("  â€¢ TURN relay reachability (L-UDP-03) is the real indicator.");
+                    sb.AppendLine("  â€¢ Direct STUN hole-punching may still work depending on the real NAT.");
                     result.Status = "Passed";
-                    result.ResultValue = $"SWG split-tunneling correct — W365 UDP path healthy (TURN confirmed by L-UDP-03)";
+                    result.ResultValue = $"SWG split-tunneling correct â€” W365 UDP path healthy (TURN confirmed by L-UDP-03)";
                     result.RemediationText = "No action required. SWG split-tunneling for W365 is correctly configured. TURN relay reachability (L-UDP-03) confirms the UDP path is healthy.";
                 }
                 else if (ipsDiffer)
@@ -7014,18 +7237,18 @@ class Program
                     sb.AppendLine("NAT Type: Symmetric NAT (different external IP per destination)");
                     sb.AppendLine("  The NAT assigns a completely different public IP per destination.");
                     sb.AppendLine("  This typically indicates multi-WAN, load-balanced egress, or enterprise security.");
-                    sb.AppendLine("  ✓ This is STANDARD and EXPECTED in corporate environments.");
+                    sb.AppendLine("  âœ“ This is STANDARD and EXPECTED in corporate environments.");
                     sb.AppendLine();
                     sb.AppendLine("RDP Shortpath will use TURN relay for reliable UDP connectivity.");
                     sb.AppendLine("TURN relay provides excellent performance in enterprise environments.");
                     sb.AppendLine();
                     sb.AppendLine("NAT type reference:");
-                    sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
-                    sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
-                    sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
-                    sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
+                    sb.AppendLine("  Full Cone          â€” Any host can send to the mapped port             âœ“ Shortpath");
+                    sb.AppendLine("  Restricted Cone     â€” Only hosts the client contacted can reply       âœ“ Shortpath");
+                    sb.AppendLine("  Port-Restricted Cone â€” Only the exact host:port can reply             âœ“ Shortpath");
+                    sb.AppendLine("  Symmetric           â€” Different mapping per destination               âœ— STUN fails â† YOU ARE HERE");
                     result.Status = "Passed";
-                    result.ResultValue = $"Symmetric NAT (enterprise standard) — UDP Shortpath via TURN relay";
+                    result.ResultValue = $"Symmetric NAT (enterprise standard) â€” UDP Shortpath via TURN relay";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun";
                 }
                 else
@@ -7033,18 +7256,18 @@ class Program
                     sb.AppendLine($"NAT Type: Symmetric NAT (same IP {ip1}, but port {port1} vs {port2})");
                     sb.AppendLine("  The NAT assigns a different external port per destination.");
                     sb.AppendLine("  This is Endpoint-Dependent Mapping (Symmetric NAT).");
-                    sb.AppendLine("  ✓ This is STANDARD and EXPECTED in corporate environments.");
+                    sb.AppendLine("  âœ“ This is STANDARD and EXPECTED in corporate environments.");
                     sb.AppendLine();
                     sb.AppendLine("RDP Shortpath will use TURN relay for reliable UDP connectivity.");
                     sb.AppendLine("TURN relay provides excellent performance in enterprise environments.");
                     sb.AppendLine();
                     sb.AppendLine("NAT type reference:");
-                    sb.AppendLine("  Full Cone          — Any host can send to the mapped port             ✓ Shortpath");
-                    sb.AppendLine("  Restricted Cone     — Only hosts the client contacted can reply       ✓ Shortpath");
-                    sb.AppendLine("  Port-Restricted Cone — Only the exact host:port can reply             ✓ Shortpath");
-                    sb.AppendLine("  Symmetric           — Different mapping per destination               ✗ STUN fails ← YOU ARE HERE");
+                    sb.AppendLine("  Full Cone          â€” Any host can send to the mapped port             âœ“ Shortpath");
+                    sb.AppendLine("  Restricted Cone     â€” Only hosts the client contacted can reply       âœ“ Shortpath");
+                    sb.AppendLine("  Port-Restricted Cone â€” Only the exact host:port can reply             âœ“ Shortpath");
+                    sb.AppendLine("  Symmetric           â€” Different mapping per destination               âœ— STUN fails â† YOU ARE HERE");
                     result.Status = "Passed";
-                    result.ResultValue = $"Symmetric NAT (enterprise standard) — UDP Shortpath via TURN relay";
+                    result.ResultValue = $"Symmetric NAT (enterprise standard) â€” UDP Shortpath via TURN relay";
                     result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/understanding-remote-desktop-protocol-traffic#known-challenges-with-direct-rdp-shortpath-using-stun";
                 }
             }
@@ -7082,11 +7305,11 @@ class Program
                     sb.AppendLine($"  {label} ({server.Address}): STUN response had no mapped address ({resp.Value.Buffer.Length} bytes)");
                     return null;
                 }
-                // Timeout — retry
+                // Timeout â€” retry
             }
             catch
             {
-                // Send/receive error — retry
+                // Send/receive error â€” retry
             }
         }
 
@@ -7154,12 +7377,12 @@ class Program
             var issues = new List<string>();      // Confirmed to intercept UDP/TURN traffic
             var detected = new List<string>();    // Present on system but UDP/TURN bypasses them
 
-            // Check for VPN adapters — then verify if TURN traffic actually routes through them
+            // Check for VPN adapters â€” then verify if TURN traffic actually routes through them
             var vpnAdapters = FindVpnAdapters();
 
             if (vpnAdapters.Count > 0)
             {
-                // List VPN adapters found — tracked as detections, promoted to issues only if routing confirms interception
+                // List VPN adapters found â€” tracked as detections, promoted to issues only if routing confirms interception
                 foreach (var vpn in vpnAdapters)
                 {
                     var vpnIpList = GetAdapterIps(vpn);
@@ -7194,7 +7417,7 @@ class Program
                         }
                     }
                 }
-                catch { /* DNS or probe failed — non-critical since routing table already checked */ }
+                catch { /* DNS or probe failed â€” non-critical since routing table already checked */ }
 
                 // Summary: if VPN detected but all W365 ranges and TURN relay route direct
                 if (caught.Count == 0 && diverted.Count == 0 && turnDirect)
@@ -7204,7 +7427,7 @@ class Program
             // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall registry
             try
             {
-                // Read firewall rules from registry — avoids spawning powershell.exe
+                // Read firewall rules from registry â€” avoids spawning powershell.exe
                 var allRules = ReadFirewallRulesFromRegistry();
                 bool found3478Block = allRules.Any(r =>
                     r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase) &&
@@ -7237,7 +7460,7 @@ class Program
                     var pIdx = n.IndexOf('(');
                     return pIdx > 0 ? n.Substring(0, pIdx).Trim() : n;
                 }).ToList();
-                result.ResultValue = $"VPN detected ({string.Join(", ", shortNames)}) — UDP/TURN correctly bypassed (split-tunnel)";
+                result.ResultValue = $"VPN detected ({string.Join(", ", shortNames)}) â€” UDP/TURN correctly bypassed (split-tunnel)";
                 result.Status = "Passed";
             }
             else
@@ -7254,11 +7477,11 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  LIVE CONNECTION DIAGNOSTICS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-    // ── P/Invoke for remote session detection ──
+    // â”€â”€ P/Invoke for remote session detection â”€â”€
     [DllImport("user32.dll")]
     static extern int GetSystemMetrics(int nIndex);
     const int SM_REMOTESESSION = 0x1000;
@@ -7274,10 +7497,10 @@ class Program
         if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
         var b = ip.GetAddressBytes();
         uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
-        // 40.64.144.0/20 → mask 0xFFFFF000 (AFD signaling / connection broker)
+        // 40.64.144.0/20 â†’ mask 0xFFFFF000 (AFD signaling / connection broker)
         uint net1 = (uint)(40 << 24 | 64 << 16 | 144 << 8);
         if ((addr & 0xFFFFF000) == net1) return true;
-        // 51.5.0.0/16 → mask 0xFFFF0000 (TURN relay infrastructure)
+        // 51.5.0.0/16 â†’ mask 0xFFFF0000 (TURN relay infrastructure)
         uint net2 = (uint)(51 << 24 | 5 << 16);
         if ((addr & 0xFFFF0000) == net2) return true;
         return false;
@@ -7363,8 +7586,8 @@ class Program
     /// Extracts the Azure region code from an RDP gateway FQDN.
     /// The region code is the short alpha token immediately before the "-rN" role
     /// suffix. Handles BOTH the classic format and the newer host-pool format:
-    ///   rdgateway-c221-UKS-r1.wvd.microsoft.com           → UKS
-    ///   rdgateway-host-green-c220-weu-r1.wvd...           → WEU  (verified live)
+    ///   rdgateway-c221-UKS-r1.wvd.microsoft.com           â†’ UKS
+    ///   rdgateway-host-green-c220-weu-r1.wvd...           â†’ WEU  (verified live)
     /// The cluster token (c220) can't match (no 2+ leading letters) and the longer
     /// middle tokens (host, green) aren't immediately followed by "-rN".
     /// </summary>
@@ -7383,7 +7606,7 @@ class Program
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            // Europe — display names per https://learn.microsoft.com/azure/reliability/regions-list
+            // Europe â€” display names per https://learn.microsoft.com/azure/reliability/regions-list
             ["UKS"] = "UK South", ["UKW"] = "UK West",
             ["NEU"] = "North Europe", ["WEU"] = "West Europe",
             ["FRC"] = "France Central", ["FRS"] = "France South",
@@ -7447,7 +7670,7 @@ class Program
         return null;
     }
 
-    // ── Test 17: Active RDP Session Detection ──
+    // â”€â”€ Test 17: Active RDP Session Detection â”€â”€
     static Task<TestResult> RunActiveSession()
     {
         var result = new TestResult { Id = "17", Name = "Active RDP Session Detection", Category = "cloud" };
@@ -7489,7 +7712,7 @@ class Program
                             try { title = p.MainWindowTitle ?? ""; } catch { }
                             DateTime? started = null;
                             try { started = p.StartTime; } catch { }
-                            clients.Add($"  {label} — PID {p.Id}{(started.HasValue ? $", started {started:HH:mm:ss}" : "")}{(string.IsNullOrEmpty(title) ? "" : $", window: {title}")}");
+                            clients.Add($"  {label} â€” PID {p.Id}{(started.HasValue ? $", started {started:HH:mm:ss}" : "")}{(string.IsNullOrEmpty(title) ? "" : $", window: {title}")}");
                         }
                     }
                     catch { }
@@ -7529,7 +7752,7 @@ class Program
         return Task.FromResult(result);
     }
 
-    // ── Test 17b: RDP Transport Protocol ──
+    // â”€â”€ Test 17b: RDP Transport Protocol â”€â”€
     static async Task<TestResult> RunTransportProtocol()
     {
         var result = new TestResult { Id = "17b", Name = "RDP Transport Protocol", Category = "cloud" };
@@ -7590,13 +7813,13 @@ class Program
                                 shortpathEndpoint = $"{spIp}:{spPort}";
                                 if (IsPrivateIp(spIp))
                                 {
-                                    shortpathType = spPort == 3390 ? "Managed (RDP Shortpath for managed networks, direct UDP 3390 — optional)" : $"Managed (ICE/STUN, port {spPort})";
-                                    protocol = $"UDP Shortpath — {shortpathType}";
+                                    shortpathType = spPort == 3390 ? "Managed (RDP Shortpath for managed networks, direct UDP 3390 â€” optional)" : $"Managed (ICE/STUN, port {spPort})";
+                                    protocol = $"UDP Shortpath â€” {shortpathType}";
                                 }
                                 else
                                 {
                                     shortpathType = spPort == 3478 ? "Public (TURN relay)" : $"Public (port {spPort})";
-                                    protocol = $"UDP Shortpath — {shortpathType}";
+                                    protocol = $"UDP Shortpath â€” {shortpathType}";
                                 }
                             }
                         }
@@ -7684,7 +7907,7 @@ class Program
                 
                 if (udpListeners.Any(ep => ep.Port == 3390))
                 {
-                    sb.AppendLine($"\n  UDP listener on port 3390 detected — RDP Shortpath for managed networks (optional; only used on managed/private networks, most W365 deployments do not require it)");
+                    sb.AppendLine($"\n  UDP listener on port 3390 detected â€” RDP Shortpath for managed networks (optional; only used on managed/private networks, most W365 deployments do not require it)");
                 }
                 
                 // Check established TCP connections for TURN relay or gateway
@@ -7699,12 +7922,12 @@ class Program
                 {
                     sb.AppendLine($"\nActive TURN connections (port 3478): {turnConns.Count}");
                     foreach (var tc in turnConns.Take(3))
-                        sb.AppendLine($"  → {tc.RemoteEndPoint}");
+                        sb.AppendLine($"  â†’ {tc.RemoteEndPoint}");
                     udpConnected = true;
                     if (string.IsNullOrEmpty(shortpathType))
                     {
                         shortpathType = "Public (TURN relay)";
-                        protocol = "UDP Shortpath — Public (TURN relay)";
+                        protocol = "UDP Shortpath â€” Public (TURN relay)";
                     }
                 }
 
@@ -7712,13 +7935,13 @@ class Program
                 var managedLegacyConns = tcpConns.Where(c => c.RemoteEndPoint.Port == 3390).ToList();
                 if (managedLegacyConns.Count > 0)
                 {
-                    sb.AppendLine($"\nActive connections to port 3390 (RDP Shortpath for managed networks — optional): {managedLegacyConns.Count}");
-                    sb.AppendLine($"  Note: port 3390 is RDP Shortpath for managed/private networks only. It is NOT essential — most W365 deployments use public Shortpath (UDP 3478) or TCP fallback.");
+                    sb.AppendLine($"\nActive connections to port 3390 (RDP Shortpath for managed networks â€” optional): {managedLegacyConns.Count}");
+                    sb.AppendLine($"  Note: port 3390 is RDP Shortpath for managed/private networks only. It is NOT essential â€” most W365 deployments use public Shortpath (UDP 3478) or TCP fallback.");
                     foreach (var mc in managedLegacyConns.Take(3))
-                        sb.AppendLine($"  → {mc.RemoteEndPoint}");
+                        sb.AppendLine($"  â†’ {mc.RemoteEndPoint}");
                     shortpathConnected = true;
-                    shortpathType = "Managed (RDP Shortpath for managed networks, direct UDP 3390 — optional)";
-                    protocol = "UDP Shortpath — Managed (RDP Shortpath for managed networks, direct UDP 3390 — optional)";
+                    shortpathType = "Managed (RDP Shortpath for managed networks, direct UDP 3390 â€” optional)";
+                    protocol = "UDP Shortpath â€” Managed (RDP Shortpath for managed networks, direct UDP 3390 â€” optional)";
                 }
 
                 // Connections to RDP gateway on 443 with private remote IPs could indicate managed network
@@ -7728,7 +7951,7 @@ class Program
                 {
                     sb.AppendLine($"\nTCP 443 to private IPs: {privateRdpConns.Count} (internal gateway/proxy)");
                     foreach (var pc in privateRdpConns.Take(3))
-                        sb.AppendLine($"  → {pc.RemoteEndPoint}");
+                        sb.AppendLine($"  â†’ {pc.RemoteEndPoint}");
                 }
             }
             catch { /* netstat/connection checks may require elevation */ }
@@ -7760,32 +7983,32 @@ class Program
                 result.Status = "Passed";
                 if (!string.IsNullOrEmpty(shortpathType))
                 {
-                    result.ResultValue = $"UDP Shortpath — {shortpathType} ⚡";
-                    sb.AppendLine($"\n✓ Session is using UDP transport (RDP Shortpath).");
+                    result.ResultValue = $"UDP Shortpath â€” {shortpathType} âš¡";
+                    sb.AppendLine($"\nâœ“ Session is using UDP transport (RDP Shortpath).");
                     sb.AppendLine($"  Type: {shortpathType}");
                     if (!string.IsNullOrEmpty(shortpathEndpoint))
                         sb.AppendLine($"  Endpoint: {shortpathEndpoint}");
                     if (shortpathType.Contains("Managed"))
-                        sb.AppendLine("  ✓ Direct private connectivity — lowest latency path");
+                        sb.AppendLine("  âœ“ Direct private connectivity â€” lowest latency path");
                     else
-                        sb.AppendLine("  ✓ Relayed via TURN — good, but managed network may offer lower latency");
+                        sb.AppendLine("  âœ“ Relayed via TURN â€” good, but managed network may offer lower latency");
                 }
                 else
                 {
-                    result.ResultValue = "UDP (RDP Shortpath) ⚡";
-                    sb.AppendLine("\n✓ Session is using UDP transport (RDP Shortpath).");
+                    result.ResultValue = "UDP (RDP Shortpath) âš¡";
+                    sb.AppendLine("\nâœ“ Session is using UDP transport (RDP Shortpath).");
                 }
             }
             else if (udpFailed)
             {
                 result.Status = "Warning";
                 result.ResultValue = "TCP (UDP failed)";
-                sb.AppendLine("⚠ UDP connection failed — session fell back to TCP.");
+                sb.AppendLine("âš  UDP connection failed â€” session fell back to TCP.");
                 sb.AppendLine();
                 sb.AppendLine("W365 supports three RDP connectivity methods:");
-                sb.AppendLine("  1. TCP Reverse Connect (443) — always used initially");
-                sb.AppendLine("  2. Relayed UDP via TURN (3478) — higher reliability, works on any NAT");
-                sb.AppendLine("  3. Direct UDP via STUN — best-effort, may fail on symmetric NAT");
+                sb.AppendLine("  1. TCP Reverse Connect (443) â€” always used initially");
+                sb.AppendLine("  2. Relayed UDP via TURN (3478) â€” higher reliability, works on any NAT");
+                sb.AppendLine("  3. Direct UDP via STUN â€” best-effort, may fail on symmetric NAT");
                 sb.AppendLine();
                 sb.AppendLine("Ensure UDP 3478 to 51.5.0.0/16 is allowed outbound and bypasses VPN/SWG.");
                 result.RemediationText = "UDP-based RDP Shortpath failed. Ensure UDP 3478 outbound to 51.5.0.0/16 is allowed and bypasses VPN/SWG.";
@@ -7808,15 +8031,15 @@ class Program
                     if (rangeResult.Value.isUdp)
                     {
                         result.Status = "Passed";
-                        result.ResultValue = "UDP (RDP Shortpath via TURN) ⚡";
+                        result.ResultValue = "UDP (RDP Shortpath via TURN) âš¡";
                     }
                     else
                     {
-                        // AFD gateway range is just signaling — don't warn about Shortpath
+                        // AFD gateway range is just signaling â€” don't warn about Shortpath
                         result.Status = "Passed";
                         result.ResultValue = "Connected via gateway";
                         sb.AppendLine();
-                        sb.AppendLine("ℹ Gateway resolves to AFD signaling range (40.64.144.0/20).");
+                        sb.AppendLine("â„¹ Gateway resolves to AFD signaling range (40.64.144.0/20).");
                         sb.AppendLine("  This is the signaling/connection broker path.");
                         sb.AppendLine("  Data transport may still use UDP (RDP Shortpath) once session is established.");
                         sb.AppendLine("  Run this test while connected to your Cloud PC for definitive transport detection.");
@@ -7832,8 +8055,8 @@ class Program
                 else
                 {
                     result.Status = "Passed";
-                    result.ResultValue = "Connection detected — transport undetermined";
-                    sb.AppendLine("ℹ RDP connection found but transport type could not be determined.");
+                    result.ResultValue = "Connection detected â€” transport undetermined";
+                    sb.AppendLine("â„¹ RDP connection found but transport type could not be determined.");
                     sb.AppendLine("  Re-run while actively connected for more detailed results.");
                 }
             }
@@ -7865,31 +8088,31 @@ class Program
                 var b = ip.GetAddressBytes();
                 uint addr = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
 
-                // 40.64.144.0/20 → TCP (AFD Gateway / Reverse Connect)
+                // 40.64.144.0/20 â†’ TCP (AFD Gateway / Reverse Connect)
                 uint net1 = (uint)(40 << 24 | 64 << 16 | 144 << 8);
                 if ((addr & 0xFFFFF000) == net1)
                 {
-                    sb.AppendLine($"  {gw} → {ip} (40.64.144.0/20 = TCP Reverse Connect)");
+                    sb.AppendLine($"  {gw} â†’ {ip} (40.64.144.0/20 = TCP Reverse Connect)");
                     return (isUdp: false, ip: ip.ToString(), hostname: gw);
                 }
 
-                // 51.5.0.0/16 → UDP (TURN Relay / RDP Shortpath)
+                // 51.5.0.0/16 â†’ UDP (TURN Relay / RDP Shortpath)
                 uint net2 = (uint)(51 << 24 | 5 << 16);
                 if ((addr & 0xFFFF0000) == net2)
                 {
-                    sb.AppendLine($"  {gw} → {ip} (51.5.0.0/16 = UDP via TURN)");
+                    sb.AppendLine($"  {gw} â†’ {ip} (51.5.0.0/16 = UDP via TURN)");
                     return (isUdp: true, ip: ip.ToString(), hostname: gw);
                 }
 
-                sb.AppendLine($"  {gw} → {ip} (outside W365 ranges)");
+                sb.AppendLine($"  {gw} â†’ {ip} (outside W365 ranges)");
             }
-            catch { sb.AppendLine($"  {gw} → DNS resolution failed"); }
+            catch { sb.AppendLine($"  {gw} â†’ DNS resolution failed"); }
         }
 
         return null;
     }
 
-    // ── Test 17c: UDP Shortpath Readiness ──
+    // â”€â”€ Test 17c: UDP Shortpath Readiness â”€â”€
     static async Task<TestResult> RunUdpReadiness()
     {
         var result = new TestResult { Id = "17c", Name = "UDP Shortpath Readiness", Category = "cloud" };
@@ -7907,12 +8130,12 @@ class Program
             if (ip == null) { result.Status = "Failed"; result.ResultValue = "DNS resolution failed"; return result; }
 
             bool inRange = IsInW365Range(ip);
-            sb.AppendLine($"Resolved: {ip} ({(inRange ? "✓ W365 range" : "⚠ outside W365 range")})");
+            sb.AppendLine($"Resolved: {ip} ({(inRange ? "âœ“ W365 range" : "âš  outside W365 range")})");
 
             using var udp = new UdpClient();
             udp.Client.ReceiveTimeout = 3000;
             var ep = new IPEndPoint(ip, port);
-            // Retry up to 3× and validate the STUN Binding Success (0x0101) response. UDP has no
+            // Retry up to 3Ã— and validate the STUN Binding Success (0x0101) response. UDP has no
             // retransmission, so a single lost datagram on a lossy path would otherwise read as
             // "UDP blocked / Shortpath unavailable". A genuine block still gets no valid response
             // across all attempts. Mirrors L-UDP-03 / L-UDP-05.
@@ -7932,34 +8155,34 @@ class Program
                     rttMs = sw.Elapsed.TotalMilliseconds;
                     reachable = true;
                 }
-                // else: timeout — retry
+                // else: timeout â€” retry
             }
 
             if (reachable)
             {
-                sb.AppendLine($"✓ STUN response in {rttMs:F0}ms");
+                sb.AppendLine($"âœ“ STUN response in {rttMs:F0}ms");
                 sb.AppendLine();
-                sb.AppendLine("✓ UDP connectivity confirmed. RDP Shortpath should be available.");
+                sb.AppendLine("âœ“ UDP connectivity confirmed. RDP Shortpath should be available.");
                 sb.AppendLine();
                 sb.AppendLine("RDP Shortpath modes:");
-                sb.AppendLine("  • STUN (direct): Client ↔ Cloud PC via UDP hole-punching");
-                sb.AppendLine("  • TURN (relayed): Client ↔ TURN relay ↔ Cloud PC");
+                sb.AppendLine("  â€¢ STUN (direct): Client â†” Cloud PC via UDP hole-punching");
+                sb.AppendLine("  â€¢ TURN (relayed): Client â†” TURN relay â†” Cloud PC");
 
                 result.Status = "Passed";
                 result.ResultValue = $"UDP ready ({rttMs:F0}ms)";
             }
             else
             {
-                sb.AppendLine($"✗ UDP connectivity to STUN server timed out after {maxAttempts} attempts (3s each).");
-                sb.AppendLine("  RDP Shortpath will NOT be available — connections will use TCP.");
+                sb.AppendLine($"âœ— UDP connectivity to STUN server timed out after {maxAttempts} attempts (3s each).");
+                sb.AppendLine("  RDP Shortpath will NOT be available â€” connections will use TCP.");
                 sb.AppendLine();
                 sb.AppendLine("Common causes:");
-                sb.AppendLine("  • Firewall blocking outbound UDP 3478");
-                sb.AppendLine("  • VPN tunneling all traffic (no UDP passthrough)");
-                sb.AppendLine("  • Corporate SWG blocking non-HTTP traffic");
+                sb.AppendLine("  â€¢ Firewall blocking outbound UDP 3478");
+                sb.AppendLine("  â€¢ VPN tunneling all traffic (no UDP passthrough)");
+                sb.AppendLine("  â€¢ Corporate SWG blocking non-HTTP traffic");
 
                 result.Status = "Warning";
-                result.ResultValue = "UDP blocked — RDP Shortpath unavailable";
+                result.ResultValue = "UDP blocked â€” RDP Shortpath unavailable";
                 result.RemediationText = "UDP 3478 outbound is blocked. Allow UDP 3478 outbound to Microsoft TURN relay servers.";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
             }
@@ -7969,7 +8192,7 @@ class Program
         return result;
     }
 
-    // ── Test 18: Session Round-Trip Latency ──
+    // â”€â”€ Test 18: Session Round-Trip Latency â”€â”€
     static async Task<TestResult> RunSessionLatency()
     {
         var result = new TestResult { Id = "18", Name = "Session Round-Trip Latency", Category = "cloud" };
@@ -7985,7 +8208,7 @@ class Program
                 var tcpSamples = new List<float>();
                 var udpSamples = new List<float>();
 
-                // Sample for ~60 seconds (20 samples × 3s interval)
+                // Sample for ~60 seconds (20 samples Ã— 3s interval)
                 const int rttSampleCount = 20;
                 const int rttIntervalMs = 3000;
                 for (int i = 0; i < rttSampleCount; i++)
@@ -8016,7 +8239,7 @@ class Program
                     sb.AppendLine($"TCP RTT: avg {tcpSamples.Average():F0}ms, min {tcpSamples.Min():F0}ms, max {tcpSamples.Max():F0}ms ({tcpSamples.Count} samples over ~60s)");
                     sb.AppendLine($"  Values: {string.Join(", ", tcpSamples.Select(s => $"{s:F0}ms"))}");
                     if (tcpUnique == 1)
-                        sb.AppendLine($"  ⚠ Counter did not update during sampling — RemoteFX RTT counters refresh infrequently; value represents a single measurement.");
+                        sb.AppendLine($"  âš  Counter did not update during sampling â€” RemoteFX RTT counters refresh infrequently; value represents a single measurement.");
                 }
                 if (udpSamples.Count > 0)
                 {
@@ -8024,12 +8247,12 @@ class Program
                     sb.AppendLine($"UDP RTT: avg {udpSamples.Average():F0}ms, min {udpSamples.Min():F0}ms, max {udpSamples.Max():F0}ms ({udpSamples.Count} samples over ~60s)");
                     sb.AppendLine($"  Values: {string.Join(", ", udpSamples.Select(s => $"{s:F0}ms"))}");
                     if (udpUnique == 1)
-                        sb.AppendLine($"  ⚠ Counter did not update during sampling — RemoteFX RTT counters refresh infrequently; value represents a single measurement.");
+                        sb.AppendLine($"  âš  Counter did not update during sampling â€” RemoteFX RTT counters refresh infrequently; value represents a single measurement.");
                 }
 
                 if (tcpSamples.Count == 0 && udpSamples.Count == 0)
                 {
-                    sb.AppendLine("⚠ RemoteFX Network counters not available.");
+                    sb.AppendLine("âš  RemoteFX Network counters not available.");
                     result.Status = "Warning";
                     result.ResultValue = "Counters unavailable";
                 }
@@ -8049,7 +8272,7 @@ class Program
                 var gw = await GetValidatedGateway();
                 if (gw == null)
                 {
-                    sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+                    sb.AppendLine("âœ— No RD Gateway endpoint found within W365 IP ranges.");
                     sb.AppendLine("Expected ranges: 40.64.144.0/20, 51.5.0.0/16");
                     result.Status = "Skipped";
                     result.ResultValue = "No W365 gateway endpoint available";
@@ -8057,14 +8280,14 @@ class Program
                 else
                 {
                     var (hostname, port, ip) = gw.Value;
-                    sb.AppendLine("Source: TCP connect probes to RD Gateway (path proxy — not actual session RTT).");
+                    sb.AppendLine("Source: TCP connect probes to RD Gateway (path proxy â€” not actual session RTT).");
                     sb.AppendLine("For true session round-trip latency, run this tool inside the Cloud PC.");
                     sb.AppendLine($"Endpoint: {hostname}:{port}");
-                    sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
+                    sb.AppendLine($"Resolved IP: {ip} (âœ“ within W365 range)");
                     sb.AppendLine("Samples: 30 TCP probes over ~60s");
                     sb.AppendLine();
 
-                    // 30 probes × 2s interval = ~60 seconds of data
+                    // 30 probes Ã— 2s interval = ~60 seconds of data
                     var rtts = new List<double>();
                     for (int i = 0; i < 30; i++)
                     {
@@ -8085,7 +8308,7 @@ class Program
                     {
                         result.Status = "Failed";
                         result.ResultValue = "Gateway unreachable";
-                        sb.AppendLine("✗ All TCP connection attempts failed.");
+                        sb.AppendLine("âœ— All TCP connection attempts failed.");
                     }
                     else
                     {
@@ -8109,7 +8332,7 @@ class Program
         return result;
     }
 
-    // ── Test 19: Session Frame Rate & Bandwidth ──
+    // â”€â”€ Test 19: Session Frame Rate & Bandwidth â”€â”€
     static async Task<TestResult> RunFrameRate()
     {
         var result = new TestResult { Id = "19", Name = "Session Frame Rate & Bandwidth", Category = "cloud" };
@@ -8126,10 +8349,10 @@ class Program
                 sb.AppendLine("  2. Run this tool inside the Cloud PC");
                 sb.AppendLine();
                 sb.AppendLine("Available metrics inside remote session:");
-                sb.AppendLine("  • Input/Output Frames per Second");
-                sb.AppendLine("  • Frames Skipped (Network / Client / Server)");
-                sb.AppendLine("  • Average Encoding Time, Frame Quality");
-                sb.AppendLine("  • UDP Bandwidth");
+                sb.AppendLine("  â€¢ Input/Output Frames per Second");
+                sb.AppendLine("  â€¢ Frames Skipped (Network / Client / Server)");
+                sb.AppendLine("  â€¢ Average Encoding Time, Frame Quality");
+                sb.AppendLine("  â€¢ UDP Bandwidth");
 
                 result.Status = "Skipped";
                 result.ResultValue = "Run inside Cloud PC for live data";
@@ -8197,7 +8420,7 @@ class Program
 
             if (outputFps == null && inputFps == null)
             {
-                sb.AppendLine("⚠ RemoteFX Graphics counters not available.");
+                sb.AppendLine("âš  RemoteFX Graphics counters not available.");
                 sb.AppendLine("  Session may be idle or counters may be disabled.");
                 result.Status = "Warning";
                 result.ResultValue = "Counters unavailable";
@@ -8208,7 +8431,7 @@ class Program
                 sb.AppendLine();
                 if (inputFps.HasValue) sb.AppendLine($"Input Frames/sec:  avg {inputFps:F1}, min {inputFpsList.Min():F1}, max {inputFpsList.Max():F1}");
                 if (outputFps.HasValue) sb.AppendLine($"Output Frames/sec: avg {outputFps:F1}, min {outputFpsList.Min():F1}, max {outputFpsList.Max():F1}");
-                if (encTime.HasValue) sb.AppendLine($"Avg Encoding Time: {encTime:F1}ms {(encTime < 33 ? "✓ Good" : "⚠ High")} (range {encTimeList.Min():F1}-{encTimeList.Max():F1}ms)");
+                if (encTime.HasValue) sb.AppendLine($"Avg Encoding Time: {encTime:F1}ms {(encTime < 33 ? "âœ“ Good" : "âš  High")} (range {encTimeList.Min():F1}-{encTimeList.Max():F1}ms)");
                 if (quality.HasValue) sb.AppendLine($"Frame Quality:     avg {quality:F0}% (range {qualityList.Min():F0}-{qualityList.Max():F0}%)");
                 if (udpBw.HasValue) sb.AppendLine($"UDP Bandwidth:     avg {udpBw:F0} KB/s (range {udpBwList.Min():F0}-{udpBwList.Max():F0})");
                 sb.AppendLine();
@@ -8243,7 +8466,7 @@ class Program
         return result;
     }
 
-    // ── Test 20: Connection Jitter ──
+    // â”€â”€ Test 20: Connection Jitter â”€â”€
     static async Task<TestResult> RunJitter()
     {
         var result = new TestResult { Id = "20", Name = "Connection Jitter", Category = "cloud" };
@@ -8254,7 +8477,7 @@ class Program
 
             if (gw == null)
             {
-                sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+                sb.AppendLine("âœ— No RD Gateway endpoint found within W365 IP ranges.");
                 sb.AppendLine("Expected ranges: 40.64.144.0/20, 51.5.0.0/16");
                 sb.AppendLine("Connect to your Cloud PC at least once so gateway can be discovered.");
                 result.Status = "Skipped";
@@ -8264,14 +8487,14 @@ class Program
             }
 
             var (hostname, port, ip) = gw.Value;
-            sb.AppendLine("Source: TCP connect probes to RD Gateway (path proxy — not actual session jitter).");
+            sb.AppendLine("Source: TCP connect probes to RD Gateway (path proxy â€” not actual session jitter).");
             sb.AppendLine("For true session UDP jitter, run this tool inside the Cloud PC.");
             sb.AppendLine($"Endpoint: {hostname}:{port}");
-            sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
+            sb.AppendLine($"Resolved IP: {ip} (âœ“ within W365 range)");
             sb.AppendLine("Samples: 60 TCP connect probes at 1s intervals (~60s)");
             sb.AppendLine();
 
-            // 60 probes × 1s interval = ~60 seconds of jitter data
+            // 60 probes Ã— 1s interval = ~60 seconds of jitter data
             var rtts = new List<double>();
             for (int i = 0; i < 60; i++)
             {
@@ -8292,7 +8515,7 @@ class Program
             {
                 result.Status = "Failed";
                 result.ResultValue = "Measurement failed";
-                sb.AppendLine(rtts.Count == 0 ? "✗ All connection attempts failed" : "✗ Insufficient samples for jitter calculation");
+                sb.AppendLine(rtts.Count == 0 ? "âœ— All connection attempts failed" : "âœ— Insufficient samples for jitter calculation");
                 result.DetailedInfo = sb.ToString().Trim();
                 return result;
             }
@@ -8324,26 +8547,26 @@ class Program
             {
                 result.Status = "Passed";
                 result.ResultValue = $"{jitter:F1}ms jitter (excellent)";
-                sb.AppendLine("✓ Jitter is excellent (<10ms). Ideal for remote desktop and Teams.");
+                sb.AppendLine("âœ“ Jitter is excellent (<10ms). Ideal for remote desktop and Teams.");
             }
             else if (jitter < 30)
             {
                 result.Status = "Passed";
                 result.ResultValue = $"{jitter:F1}ms jitter (good)";
-                sb.AppendLine("✓ Jitter is acceptable (<30ms). Good enough for remote desktop.");
+                sb.AppendLine("âœ“ Jitter is acceptable (<30ms). Good enough for remote desktop.");
             }
             else if (jitter < 60)
             {
                 result.Status = "Warning";
                 result.ResultValue = $"{jitter:F1}ms jitter (elevated)";
-                sb.AppendLine("⚠ Jitter is elevated (30-60ms). May cause occasional stutter.");
+                sb.AppendLine("âš  Jitter is elevated (30-60ms). May cause occasional stutter.");
                 result.RemediationText = "Network jitter is elevated. Common causes: Wi-Fi interference, VPN overhead, or proxy-based TLS inspection.";
             }
             else
             {
                 result.Status = "Failed";
                 result.ResultValue = $"{jitter:F1}ms jitter (poor)";
-                sb.AppendLine("✗ Jitter is very high (>60ms). This will significantly impact user experience.");
+                sb.AppendLine("âœ— Jitter is very high (>60ms). This will significantly impact user experience.");
                 result.RemediationText = "Network jitter is very high. Try: wired ethernet, disable VPN for RDP, check for bandwidth contention.";
             }
 
@@ -8354,7 +8577,7 @@ class Program
         return result;
     }
 
-    // ── Test 21: Frame Drops & Packet Loss ──
+    // â”€â”€ Test 21: Frame Drops & Packet Loss â”€â”€
     static async Task<TestResult> RunPacketLoss()
     {
         var result = new TestResult { Id = "21", Name = "Frame Drops & Packet Loss", Category = "cloud" };
@@ -8401,7 +8624,7 @@ class Program
 
                 if (outFpsList21.Count == 0)
                 {
-                    sb.AppendLine("⚠ RemoteFX Graphics counters not available.");
+                    sb.AppendLine("âš  RemoteFX Graphics counters not available.");
                     result.Status = "Warning";
                     result.ResultValue = "Counters unavailable";
                 }
@@ -8444,7 +8667,7 @@ class Program
                 var gw = await GetValidatedGateway();
                 if (gw == null)
                 {
-                    sb.AppendLine("✗ No RD Gateway endpoint found within W365 IP ranges.");
+                    sb.AppendLine("âœ— No RD Gateway endpoint found within W365 IP ranges.");
                     result.Status = "Skipped";
                     result.ResultValue = "No W365 gateway endpoint available";
                 }
@@ -8452,11 +8675,11 @@ class Program
                 {
                     var (hostname, port, ip) = gw.Value;
                     sb.AppendLine($"Endpoint: {hostname}:{port}");
-                    sb.AppendLine($"Resolved IP: {ip} (✓ within W365 range)");
+                    sb.AppendLine($"Resolved IP: {ip} (âœ“ within W365 range)");
                     sb.AppendLine("Probes: 60 TCP connection attempts over ~60s");
                     sb.AppendLine();
 
-                    // 60 probes × 1s interval = ~60 seconds of loss data
+                    // 60 probes Ã— 1s interval = ~60 seconds of loss data
                     int success = 0, failure = 0;
                     for (int i = 0; i < 60; i++)
                     {
@@ -8478,7 +8701,7 @@ class Program
 
                     if (failure == 0) { result.Status = "Passed"; result.ResultValue = "TCP path stable (60/60 handshakes)"; }
                     else if (lossRate < 5) { result.Status = "Passed"; result.ResultValue = $"{lossRate:F1}% TCP handshake failures"; }
-                    else if (lossRate < 15) { result.Status = "Warning"; result.ResultValue = $"{lossRate:F0}% TCP handshake failures"; result.RemediationText = "Some TCP handshakes to the gateway failed. This is a path-stability proxy — actual RDP UDP frame loss may differ. Check network stability."; }
+                    else if (lossRate < 15) { result.Status = "Warning"; result.ResultValue = $"{lossRate:F0}% TCP handshake failures"; result.RemediationText = "Some TCP handshakes to the gateway failed. This is a path-stability proxy â€” actual RDP UDP frame loss may differ. Check network stability."; }
                     else { result.Status = "Failed"; result.ResultValue = $"{lossRate:F0}% TCP handshake failures (significant)"; result.RemediationText = "High TCP connection failure rate. Path to gateway is unstable; this strongly suggests RDP UDP frame loss as well."; }
                 }
             }
@@ -8490,7 +8713,7 @@ class Program
         return result;
     }
 
-    // ── Test 22: Cloud PC Teams Optimization ──
+    // â”€â”€ Test 22: Cloud PC Teams Optimization â”€â”€
     static Task<TestResult> RunCloudTeamsOptimization()
     {
         var result = new TestResult { Id = "22", Name = "Cloud PC Teams Optimization", Category = "cloud" };
@@ -8574,7 +8797,7 @@ class Program
             else
             {
                 result.Status = "Passed";
-                result.ResultValue = "Not in remote session — teams optimization checked locally";
+                result.ResultValue = "Not in remote session â€” teams optimization checked locally";
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -8584,7 +8807,7 @@ class Program
         return Task.FromResult(result);
     }
 
-    // ── Test 24: VPN Connection Performance ──
+    // â”€â”€ Test 24: VPN Connection Performance â”€â”€
     static async Task<TestResult> RunCloudVpnPerformance()
     {
         var result = new TestResult { Id = "24", Name = "VPN Connection Performance", Category = "cloud" };
@@ -8613,9 +8836,9 @@ class Program
             {
                 sb.AppendLine("No VPN adapters detected.");
                 sb.AppendLine();
-                sb.AppendLine("✓ Direct network connection — no VPN overhead on RDP traffic.");
+                sb.AppendLine("âœ“ Direct network connection â€” no VPN overhead on RDP traffic.");
                 result.Status = "Passed";
-                result.ResultValue = "No VPN — direct connection";
+                result.ResultValue = "No VPN â€” direct connection";
                 result.DetailedInfo = sb.ToString().Trim();
                 return result;
             }
@@ -8625,7 +8848,7 @@ class Program
             {
                 var vpnIps = vpn.GetIPProperties().UnicastAddresses
                     .Select(a => a.Address.ToString()).ToList();
-                sb.AppendLine($"  {vpn.Name} ({vpn.Description}) — IPs: {string.Join(", ", vpnIps)}");
+                sb.AppendLine($"  {vpn.Name} ({vpn.Description}) â€” IPs: {string.Join(", ", vpnIps)}");
             }
             sb.AppendLine();
 
@@ -8642,7 +8865,7 @@ class Program
             {
                 var notBypassed = vpnRanges.Concat(divertedRanges).ToList();
                 sb.AppendLine();
-                sb.AppendLine($"⚠ W365/AVD traffic is NOT bypassed for: {string.Join(", ", notBypassed)}");
+                sb.AppendLine($"âš  W365/AVD traffic is NOT bypassed for: {string.Join(", ", notBypassed)}");
                 sb.AppendLine("  This adds latency and may affect UDP transport (RDP Shortpath).");
                 sb.AppendLine();
                 sb.AppendLine("Recommended: Configure split-tunnel VPN to exclude these ranges:");
@@ -8655,7 +8878,7 @@ class Program
                 if (gw != null)
                 {
                     var (hostname, port, _) = gw.Value;
-                    // 30 probes × 2s interval = ~60 seconds of VPN latency data
+                    // 30 probes Ã— 2s interval = ~60 seconds of VPN latency data
                     var rtts = new List<double>();
                     for (int i = 0; i < 30; i++)
                     {
@@ -8681,15 +8904,15 @@ class Program
                 }
 
                 result.Status = "Warning";
-                result.ResultValue = $"VPN active — {vpnRanges.Count + divertedRanges.Count} range(s) not bypassed";
+                result.ResultValue = $"VPN active â€” {vpnRanges.Count + divertedRanges.Count} range(s) not bypassed";
                 result.RemediationText = "W365 Gateway traffic is routed through VPN. Consider split-tunnel VPN to exclude AVD/W365 ranges for better performance.";
             }
             else
             {
                 sb.AppendLine();
-                sb.AppendLine("✓ VPN detected but W365/AVD ranges appear to be split-tunneled (direct routing).");
+                sb.AppendLine("âœ“ VPN detected but W365/AVD ranges appear to be split-tunneled (direct routing).");
                 result.Status = "Passed";
-                result.ResultValue = "VPN active — split-tunneled (good)";
+                result.ResultValue = "VPN active â€” split-tunneled (good)";
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -8698,7 +8921,7 @@ class Program
         return result;
     }
 
-    // ── Test 25: RDP TLS Inspection Detection ──
+    // â”€â”€ Test 25: RDP TLS Inspection Detection â”€â”€
     // Per https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp
     // TLS inspection of RDP traffic is not supported and must be disabled.
     // RDP uses nested encryption (TLS 1.3 transport + encrypted RDP session inside).
@@ -8711,7 +8934,7 @@ class Program
             var sb = new StringBuilder();
             sb.AppendLine("Checking TLS certificate chains on W365 RDP endpoints for signs of interception.");
             sb.AppendLine("Per Microsoft: \"Inspection of RDP traffic is not supported. Disable TLS inspection");
-            sb.AppendLine("for all required endpoints.\" RDP uses nested encryption — inspecting the outer");
+            sb.AppendLine("for all required endpoints.\" RDP uses nested encryption â€” inspecting the outer");
             sb.AppendLine("TLS layer provides no security benefit but degrades performance.");
             sb.AppendLine();
 
@@ -8726,7 +8949,7 @@ class Program
 
             foreach (var (host, port, desc) in endpoints)
             {
-                sb.AppendLine($"── {desc} ──");
+                sb.AppendLine($"â”€â”€ {desc} â”€â”€");
                 sb.AppendLine($"Host: {host}:{port}");
                 try
                 {
@@ -8769,18 +8992,18 @@ class Program
 
                     if (intercepted)
                     {
-                        sb.AppendLine($"  ✗ TLS INSPECTION DETECTED — certificate is NOT from Microsoft/DigiCert.");
+                        sb.AppendLine($"  âœ— TLS INSPECTION DETECTED â€” certificate is NOT from Microsoft/DigiCert.");
                         sb.AppendLine($"    A proxy, firewall, or SWG is intercepting RDP traffic.");
                         sb.AppendLine($"    This adds latency, jitter, and reduces throughput with no security benefit.");
                     }
                     else
                     {
-                        sb.AppendLine($"  ✓ Certificate chain is valid — no TLS inspection detected.");
+                        sb.AppendLine($"  âœ“ Certificate chain is valid â€” no TLS inspection detected.");
                     }
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"  ✗ Connection failed: {ex.Message}");
+                    sb.AppendLine($"  âœ— Connection failed: {ex.Message}");
                 }
                 sb.AppendLine();
             }
@@ -8791,18 +9014,18 @@ class Program
                 result.ResultValue = "TLS inspection detected on RDP gateway";
                 result.RemediationText = "TLS inspection of RDP traffic is not supported by Microsoft. " +
                     "Disable TLS inspection for 40.64.144.0/20 (TCP/443) and 51.5.0.0/16 (UDP/3478). " +
-                    "RDP uses nested encryption — the inner session is already TLS 1.3 encrypted."; // DevSkim: ignore DS440001 - documentation string, not protocol configuration
+                    "RDP uses nested encryption â€” the inner session is already TLS 1.3 encrypted."; // DevSkim: ignore DS440001 - documentation string, not protocol configuration
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#1-disabling-tls-inspection";
             }
             else if (checked_ == 0)
             {
                 result.Status = "Warning";
-                result.ResultValue = "Could not check — endpoints unreachable";
+                result.ResultValue = "Could not check â€” endpoints unreachable";
             }
             else
             {
                 result.Status = "Passed";
-                result.ResultValue = $"No TLS inspection — {checked_} endpoint(s) verified";
+                result.ResultValue = $"No TLS inspection â€” {checked_} endpoint(s) verified";
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -8811,11 +9034,11 @@ class Program
         return result;
     }
 
-    // ── Test 26: RDP Traffic Routing (VPN/SWG Bypass) ──
+    // â”€â”€ Test 26: RDP Traffic Routing (VPN/SWG Bypass) â”€â”€
     // Per https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp
     // RDP traffic must bypass VPN and SWG tunnels. Key endpoints:
-    //   40.64.144.0/20 TCP/443  — TCP-based RDP (Reverse Connect)
-    //   51.5.0.0/16    UDP/3478 — UDP-based RDP (TURN relay / Shortpath)
+    //   40.64.144.0/20 TCP/443  â€” TCP-based RDP (Reverse Connect)
+    //   51.5.0.0/16    UDP/3478 â€” UDP-based RDP (TURN relay / Shortpath)
     static Task<TestResult> RunCloudTrafficRouting()
     {
         var result = new TestResult { Id = "26", Name = "RDP Traffic Routing", Category = "cloud" };
@@ -8826,13 +9049,13 @@ class Program
             sb.AppendLine("Per Microsoft: \"Forced tunnel exceptions for RDP traffic are essential.\"");
             sb.AppendLine();
             sb.AppendLine("Required RDP endpoints (bypass these from VPN/SWG):");
-            sb.AppendLine("  Row 1: 40.64.144.0/20  TCP/443  — TCP RDP (Reverse Connect via AFD)");
-            sb.AppendLine("  Row 2: 51.5.0.0/16     UDP/3478 — UDP RDP (TURN relay / Shortpath)");
+            sb.AppendLine("  Row 1: 40.64.144.0/20  TCP/443  â€” TCP RDP (Reverse Connect via AFD)");
+            sb.AppendLine("  Row 2: 51.5.0.0/16     UDP/3478 â€” UDP RDP (TURN relay / Shortpath)");
             sb.AppendLine();
 
             var issues = new List<string>();
 
-            // ── 1. Check for VPN adapters and route analysis ──
+            // â”€â”€ 1. Check for VPN adapters and route analysis â”€â”€
             var vpnAdapters = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up &&
                     (n.NetworkInterfaceType == NetworkInterfaceType.Ppp ||
@@ -8866,11 +9089,11 @@ class Program
                         issues.Add($"RDP range {range} diverts via an unrecognised non-primary interface");
 
                     sb.AppendLine();
-                    sb.AppendLine("⚠ The following RDP subnet(s) are NOT bypassed:");
+                    sb.AppendLine("âš  The following RDP subnet(s) are NOT bypassed:");
                     foreach (var range in caught)
-                        sb.AppendLine($"  ✗ {range} (via VPN/SWG tunnel)");
+                        sb.AppendLine($"  âœ— {range} (via VPN/SWG tunnel)");
                     foreach (var range in diverted)
-                        sb.AppendLine($"  ✗ {range} (via unrecognised non-primary interface — verify it is not a tunnel)");
+                        sb.AppendLine($"  âœ— {range} (via unrecognised non-primary interface â€” verify it is not a tunnel)");
                     sb.AppendLine();
                     sb.AppendLine("Impact: Increased latency, jitter, reduced throughput, and potential");
                     sb.AppendLine("disconnects during initial logon when user-based tunnels activate.");
@@ -8881,17 +9104,17 @@ class Program
                 }
                 else
                 {
-                    sb.AppendLine("✓ VPN/SWG detected but W365 RDP ranges are split-tunneled (bypassed).");
+                    sb.AppendLine("âœ“ VPN/SWG detected but W365 RDP ranges are split-tunneled (bypassed).");
                 }
             }
             else
             {
-                sb.AppendLine("✓ No VPN/SWG adapters detected — traffic routes directly.");
+                sb.AppendLine("âœ“ No VPN/SWG adapters detected â€” traffic routes directly.");
             }
 
-            // ── 2. Check system proxy for RDP endpoints ──
+            // â”€â”€ 2. Check system proxy for RDP endpoints â”€â”€
             sb.AppendLine();
-            sb.AppendLine("── Proxy Check ──");
+            sb.AppendLine("â”€â”€ Proxy Check â”€â”€");
             try
             {
                 var proxy = WebRequest.GetSystemWebProxy();
@@ -8907,19 +9130,19 @@ class Program
                     if (proxyUri != null && proxyUri != uri)
                     {
                         issues.Add($"Proxy routes {uri.Host} via {proxyUri}");
-                        sb.AppendLine($"  ✗ {uri.Host} → proxy {proxyUri}");
+                        sb.AppendLine($"  âœ— {uri.Host} â†’ proxy {proxyUri}");
                     }
                     else
                     {
-                        sb.AppendLine($"  ✓ {uri.Host} → direct (no proxy)");
+                        sb.AppendLine($"  âœ“ {uri.Host} â†’ direct (no proxy)");
                     }
                 }
             }
             catch { sb.AppendLine("  Could not check proxy settings."); }
 
-            // ── 3. Check for SWG agent processes ──
+            // â”€â”€ 3. Check for SWG agent processes â”€â”€
             sb.AppendLine();
-            sb.AppendLine("── SWG / Security Agent Check ──");
+            sb.AppendLine("â”€â”€ SWG / Security Agent Check â”€â”€");
             var swgProcesses = new (string name, string label)[]
             {
                 ("ZscalerService", "Zscaler"),
@@ -8940,16 +9163,16 @@ class Program
                     if (procs.Length > 0)
                     {
                         anySWG = true;
-                        sb.AppendLine($"  ⚠ {label} running (PID {procs[0].Id})");
+                        sb.AppendLine($"  âš  {label} running (PID {procs[0].Id})");
                         sb.AppendLine($"    Ensure RDP bypass is configured for 40.64.144.0/20 and 51.5.0.0/16");
                     }
                 }
                 catch { }
             }
             if (!anySWG)
-                sb.AppendLine("  ✓ No SWG agents detected.");
+                sb.AppendLine("  âœ“ No SWG agents detected.");
 
-            // ── 4. Check environment proxy vars ──
+            // â”€â”€ 4. Check environment proxy vars â”€â”€
             var envVars = new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY" };
             foreach (var v in envVars)
             {
@@ -8957,22 +9180,22 @@ class Program
                 if (!string.IsNullOrEmpty(val))
                 {
                     issues.Add($"Environment {v}={val}");
-                    sb.AppendLine($"\n  ⚠ Environment variable {v}={val}");
+                    sb.AppendLine($"\n  âš  Environment variable {v}={val}");
                 }
             }
 
             if (issues.Count == 0)
             {
                 result.Status = "Passed";
-                result.ResultValue = "RDP traffic routes directly — no VPN/SWG interception";
+                result.ResultValue = "RDP traffic routes directly â€” no VPN/SWG interception";
             }
             else
             {
                 result.Status = "Warning";
-                result.ResultValue = $"{issues.Count} routing issue(s) — RDP traffic may not be optimized";
+                result.ResultValue = $"{issues.Count} routing issue(s) â€” RDP traffic may not be optimized";
                 result.RemediationText = "RDP traffic should bypass VPN and SWG tunnels. " +
                     "Configure split-tunnel exceptions for 40.64.144.0/20 (TCP/443) and 51.5.0.0/16 (UDP/3478). " +
-                    "Microsoft owns and manages both subnets — they are dedicated to W365/AVD.";
+                    "Microsoft owns and manages both subnets â€” they are dedicated to W365/AVD.";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#2-bypass-vpn-and-secure-web-gateway-tunnels";
             }
 
@@ -8982,7 +9205,7 @@ class Program
         return Task.FromResult(result);
     }
 
-    // ── Test 27: RDP Local Egress Validation ──
+    // â”€â”€ Test 27: RDP Local Egress Validation â”€â”€
     // Per https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp
     // Traffic should egress locally to reach the nearest gateway/TURN relay.
     // Backhauling through a corporate network or distant proxy adds latency.
@@ -9025,7 +9248,7 @@ class Program
             }
             catch
             {
-                sb.AppendLine("⚠ Could not determine your public IP location.");
+                sb.AppendLine("âš  Could not determine your public IP location.");
                 sb.AppendLine();
             }
 
@@ -9034,11 +9257,11 @@ class Program
             if (gw != null)
             {
                 var (hostname, port, ip) = gw.Value;
-                sb.AppendLine($"── RDP Gateway (TCP Reverse Connect) ──");
+                sb.AppendLine($"â”€â”€ RDP Gateway (TCP Reverse Connect) â”€â”€");
                 sb.AppendLine($"Host: {hostname}");
                 sb.AppendLine($"IP:   {ip}");
 
-                // Service Tags region lookup (authoritative) — preferred over GeoIP
+                // Service Tags region lookup (authoritative) â€” preferred over GeoIP
                 string gwServiceTagRegion = null;
                 if (IPAddress.TryParse(ip.ToString(), out var gwParsedIp))
                 {
@@ -9069,7 +9292,7 @@ class Program
                             sb.AppendLine($"Distance from egress: {FormatDistance(distKm)}");
 
                             // The RD gateway is chosen by Azure Front Door from live GLOBAL
-                            // gateway load/latency, keyed off the client's egress — it is NOT
+                            // gateway load/latency, keyed off the client's egress â€” it is NOT
                             // a function of the user's VPN/routing (that shows up as egress far
                             // from the device) nor the Cloud PC region. A non-local gateway
                             // therefore points at the service side: the nearest region(s) were
@@ -9079,15 +9302,15 @@ class Program
                                 && !gwCountry.Equals(userCountry, StringComparison.OrdinalIgnoreCase);
                             if (distKm > 1500 || (gwCrossCountry && distKm > 1000))
                             {
-                                sb.AppendLine($"⚠ AFD selected a gateway {FormatDistance(distKm)} from your egress" +
+                                sb.AppendLine($"âš  AFD selected a gateway {FormatDistance(distKm)} from your egress" +
                                     (gwCrossCountry ? $" (gateway in {gwCountry}, egress in {userCountry})." : "."));
                                 sb.AppendLine("  AFD picks the optimal gateway from live global load/latency; a non-local");
                                 sb.AppendLine("  choice usually means your nearest region(s) were at capacity at connect time.");
-                                sb.AppendLine("  Service-side and typically transient — re-running later may pick a closer gateway.");
+                                sb.AppendLine("  Service-side and typically transient â€” re-running later may pick a closer gateway.");
                             }
                             else
                             {
-                                sb.AppendLine("✓ AFD selected a gateway near your egress location.");
+                                sb.AppendLine("âœ“ AFD selected a gateway near your egress location.");
                             }
                         }
                     }
@@ -9121,19 +9344,19 @@ class Program
                         // when the gateway is geographically adjacent. Egress locality is
                         // judged from gateway distance above; latency is reported here only
                         // as informational context for test 18 (Session Round-Trip Latency).
-                        sb.AppendLine("ℹ Elevated TCP RTT — see test 18 (Session Latency) and L-LE-07 (Bandwidth) for access-link assessment.");
+                        sb.AppendLine("â„¹ Elevated TCP RTT â€” see test 18 (Session Latency) and L-LE-07 (Bandwidth) for access-link assessment.");
                     else
-                        sb.AppendLine("✓ Low latency — consistent with local egress.");
+                        sb.AppendLine("âœ“ Low latency â€” consistent with local egress.");
                 }
             }
             else
             {
-                sb.AppendLine("⚠ Could not resolve a validated W365 gateway.");
+                sb.AppendLine("âš  Could not resolve a validated W365 gateway.");
             }
 
             // Check TURN relay location
             sb.AppendLine();
-            sb.AppendLine("── TURN Relay (UDP RDP Shortpath) ──");
+            sb.AppendLine("â”€â”€ TURN Relay (UDP RDP Shortpath) â”€â”€");
             try
             {
                 var turnHost = "world.relay.avd.microsoft.com";
@@ -9161,9 +9384,9 @@ class Program
                                 sb.AppendLine($"Distance from egress: {FormatDistance(distKm)}");
 
                                 if (distKm > 1500)
-                                    sb.AppendLine("ℹ DNS-resolved TURN relay is far — indicates non-local DNS resolvers. The actual session TURN relay is assigned by the RDP gateway via CRLB anycast and is not affected.");
+                                    sb.AppendLine("â„¹ DNS-resolved TURN relay is far â€” indicates non-local DNS resolvers. The actual session TURN relay is assigned by the RDP gateway via CRLB anycast and is not affected.");
                                 else
-                                    sb.AppendLine("✓ DNS-resolved TURN relay is near your location.");
+                                    sb.AppendLine("âœ“ DNS-resolved TURN relay is near your location.");
                             }
                         }
                     }
@@ -9171,18 +9394,18 @@ class Program
                 }
                 else
                 {
-                    sb.AppendLine("⚠ Could not resolve TURN relay address.");
+                    sb.AppendLine("âš  Could not resolve TURN relay address.");
                 }
             }
             catch (Exception ex) { sb.AppendLine($"TURN check failed: {ex.Message}"); }
 
             // Determine overall result. Egress locality is judged ONLY from
             // geographic proximity (gateway distance > 1500 km from egress);
-            // latency is reported in the body but does not flip the verdict —
+            // latency is reported in the body but does not flip the verdict â€”
             // a constrained access link (train/mobile/satellite Wi-Fi) can
             // produce 100ms+ RTT against a gateway 0 km away.
             var text = sb.ToString();
-            if (text.Contains("⚠ Gateway is far"))
+            if (text.Contains("âš  Gateway is far"))
             {
                 result.Status = "Warning";
                 result.ResultValue = "Traffic may not be egressing locally";
@@ -9199,7 +9422,7 @@ class Program
             else
             {
                 result.Status = "Passed";
-                result.ResultValue = "Traffic egresses locally — nearest gateway/relay in use";
+                result.ResultValue = "Traffic egresses locally â€” nearest gateway/relay in use";
             }
 
             result.DetailedInfo = sb.ToString().Trim();
@@ -9260,7 +9483,7 @@ class Program
     {
         try
         {
-            // Read English name→index mapping from the 009 (English) Perflib key
+            // Read English nameâ†’index mapping from the 009 (English) Perflib key
             using var enKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\009");
             var enCounters = enKey?.GetValue("Counter") as string[];
             if (enCounters == null) return null;
@@ -9292,9 +9515,9 @@ class Program
         return null;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  HELPERS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     static byte[] BuildStunRequest()
     {
@@ -9391,7 +9614,7 @@ class Program
             if (!string.IsNullOrEmpty(gwHost))
                 sb.AppendLine($"Discovered RDP gateway: {gwHost}\n");
             else
-                sb.AppendLine("⚠ Could not discover RDP gateway from AFD — checking rdweb only\n");
+                sb.AppendLine("âš  Could not discover RDP gateway from AFD â€” checking rdweb only\n");
 
             int passed = 0;
             var issues = new List<string>();
@@ -9410,7 +9633,7 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    ✗ DNS resolution failed: {ex.Message}");
+                    sb.AppendLine($"    âœ— DNS resolution failed: {ex.Message}");
                     issues.Add($"{host}: DNS resolution failed");
                     sb.AppendLine();
                     continue;
@@ -9492,20 +9715,20 @@ class Program
 
                     if (isLoopback)
                     {
-                        sb.AppendLine($"    ✗ {ip} → LOOPBACK — DNS is hijacked!");
+                        sb.AppendLine($"    âœ— {ip} â†’ LOOPBACK â€” DNS is hijacked!");
                         issues.Add($"{host}: resolves to loopback {ip}");
                     }
                     else if (isLinkLocal)
                     {
-                        sb.AppendLine($"    ✗ {ip} → LINK-LOCAL — DNS appears hijacked");
+                        sb.AppendLine($"    âœ— {ip} â†’ LINK-LOCAL â€” DNS appears hijacked");
                         issues.Add($"{host}: resolves to link-local {ip}");
                     }
                     else if (isPrivate)
                     {
                         if (cnameHasPrivateLink || validCert)
-                            sb.AppendLine($"    ✓ {ip} → Private Link (cert valid)");
+                            sb.AppendLine($"    âœ“ {ip} â†’ Private Link (cert valid)");
                         else
-                            sb.AppendLine($"    ✓ {ip} → Private IP (likely Private Link)");
+                            sb.AppendLine($"    âœ“ {ip} â†’ Private IP (likely Private Link)");
                     }
                     else if (isMicrosoft || isKnownAzureRange || cnameHasAfd || validCert)
                     {
@@ -9513,11 +9736,11 @@ class Program
                                    : isKnownAzureRange ? $"Azure IP range ({bytes[0]}.x.x.x)"
                                    : cnameHasAfd ? "AFD CNAME chain"
                                    : "valid Microsoft TLS cert";
-                        sb.AppendLine($"    ✓ {ip} → {reason}");
+                        sb.AppendLine($"    âœ“ {ip} â†’ {reason}");
                     }
                     else
                     {
-                        sb.AppendLine($"    ⚠ {ip} → {rdns} — not a recognized Microsoft host");
+                        sb.AppendLine($"    âš  {ip} â†’ {rdns} â€” not a recognized Microsoft host");
                         issues.Add($"{host}: resolves to non-Microsoft IP {ip} ({rdns})");
                     }
                 }
@@ -9532,7 +9755,7 @@ class Program
             {
                 sb.AppendLine("Issues found:");
                 foreach (var issue in issues)
-                    sb.AppendLine($"  ⚠ {issue}");
+                    sb.AppendLine($"  âš  {issue}");
             }
 
             result.ResultValue = issues.Count == 0
@@ -9563,7 +9786,7 @@ class Program
             };
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
 
-            // ── Fetch egress location via GeoIP ──
+            // â”€â”€ Fetch egress location via GeoIP â”€â”€
             string userCity = null, userCountry = null;
             double userLat = 0, userLon = 0;
             try
@@ -9590,8 +9813,8 @@ class Program
             }
             catch { sb.AppendLine("Could not determine your egress location (GeoIP unavailable)\n"); }
 
-            // ── Part 1: AFD Edge Location (anycast — use X-MSEdge-Ref for PoP) ──
-            sb.AppendLine("═══ AFD Edge Location (Anycast) ═══");
+            // â”€â”€ Part 1: AFD Edge Location (anycast â€” use X-MSEdge-Ref for PoP) â”€â”€
+            sb.AppendLine("â•â•â• AFD Edge Location (Anycast) â•â•â•");
             var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
             string afdPopCity = null;
             string discoveredGateway = null;
@@ -9600,7 +9823,7 @@ class Program
             {
                 var afdIps = await Dns.GetHostAddressesAsync(afdHost);
                 sb.AppendLine($"  {afdHost}");
-                sb.AppendLine($"    IP: {afdIps.First()} (anycast — cannot geolocate)");
+                sb.AppendLine($"    IP: {afdIps.First()} (anycast â€” cannot geolocate)");
 
                 var afdResp = await http.GetAsync($"https://{afdHost}/");
 
@@ -9624,11 +9847,11 @@ class Program
                     {
                         var popCode = popMatch.Groups[1].Value.ToUpperInvariant();
                         afdPopCity = GetAfdPopLocation(popCode);
-                        var popLabel = afdPopCity != null ? $"{popCode} — {afdPopCity}" : popCode;
+                        var popLabel = afdPopCity != null ? $"{popCode} â€” {afdPopCity}" : popCode;
                         sb.AppendLine($"    AFD PoP: {popLabel}");
 
                         if (afdPopCity != null && userCity != null)
-                            sb.AppendLine($"    → Your traffic egresses via AFD edge in {afdPopCity}");
+                            sb.AppendLine($"    â†’ Your traffic egresses via AFD edge in {afdPopCity}");
                     }
                     else
                     {
@@ -9669,7 +9892,7 @@ class Program
             }
             catch (Exception ex)
             {
-                sb.AppendLine($"    ✗ AFD unreachable: {ex.InnerException?.Message ?? ex.Message}");
+                sb.AppendLine($"    âœ— AFD unreachable: {ex.InnerException?.Message ?? ex.Message}");
                 // Still try cached gateway even if this AFD call failed
                 discoveredGateway = _cachedGatewayHost;
                 if (discoveredGateway == null)
@@ -9678,8 +9901,8 @@ class Program
 
             sb.AppendLine();
 
-            // ── Part 2: Actual RDP Gateway (unicast — CAN geolocate, FQDN has region) ──
-            sb.AppendLine("═══ Actual RDP Gateway (Unicast) ═══");
+            // â”€â”€ Part 2: Actual RDP Gateway (unicast â€” CAN geolocate, FQDN has region) â”€â”€
+            sb.AppendLine("â•â•â• Actual RDP Gateway (Unicast) â•â•â•");
             string gatewayDisplayRegion = null; // for summary line
             if (!string.IsNullOrEmpty(discoveredGateway))
             {
@@ -9704,9 +9927,9 @@ class Program
 
                     bool inRange = gwIps.Any(ip => IsInW365Range(ip));
                     if (inRange)
-                        sb.AppendLine($"    → IP in W365 range ✓");
+                        sb.AppendLine($"    â†’ IP in W365 range âœ“");
 
-                    // Service Tags region lookup — supplementary to FQDN region
+                    // Service Tags region lookup â€” supplementary to FQDN region
                     var gwIpv4 = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                     string serviceTagsRegion = null;
                     if (gwIpv4 != null)
@@ -9734,7 +9957,7 @@ class Program
                     }
                     catch { sb.AppendLine($"    Reverse DNS: (none)"); }
 
-                    // GeoIP for the unicast gateway IP — supplementary to Service Tags
+                    // GeoIP for the unicast gateway IP â€” supplementary to Service Tags
                     if (!IsPrivateIp(gwIp))
                     {
                         try
@@ -9758,7 +9981,7 @@ class Program
                                         sb.AppendLine($"    Gateway coordinates: {gwLat:F4}, {gwLon:F4}");
                                         sb.AppendLine($"    Distance from egress: {FormatDistance(distKm)}");
                                         // The gateway is AFD-selected from live GLOBAL gateway load/latency,
-                                        // keyed off the egress — NOT the user's VPN/routing or the CPC region.
+                                        // keyed off the egress â€” NOT the user's VPN/routing or the CPC region.
                                         // A non-local choice means the nearest region(s) were most likely at
                                         // capacity / shedding load at connect time (service-side, transient).
                                         bool gwCrossCountry = !string.IsNullOrWhiteSpace(gwCountry)
@@ -9766,12 +9989,12 @@ class Program
                                             && !gwCountry.Equals(userCountry, StringComparison.OrdinalIgnoreCase);
                                         if (distKm > 1500 || (gwCrossCountry && distKm > 1000))
                                         {
-                                            sb.AppendLine($"    ⚠ AFD selected a gateway {FormatDistance(distKm)} from your egress" +
+                                            sb.AppendLine($"    âš  AFD selected a gateway {FormatDistance(distKm)} from your egress" +
                                                 (gwCrossCountry ? $" (gateway in {gwCountry}, egress in {userCountry})." : "."));
                                             sb.AppendLine($"      AFD picks the optimal gateway from live global load/latency; a non-local");
                                             sb.AppendLine($"      choice usually means your nearest region(s) were at capacity at connect time.");
-                                            sb.AppendLine($"      Service-side and typically transient — re-running later may pick a closer gateway.");
-                                            issues.Add($"AFD selected a non-local gateway ({FormatDistance(distKm)} from egress{(gwCrossCountry ? $", in {gwCountry}" : "")}) — likely transient load-based steering");
+                                            sb.AppendLine($"      Service-side and typically transient â€” re-running later may pick a closer gateway.");
+                                            issues.Add($"AFD selected a non-local gateway ({FormatDistance(distKm)} from egress{(gwCrossCountry ? $", in {gwCountry}" : "")}) â€” likely transient load-based steering");
                                         }
                                     }
                                 }
@@ -9805,7 +10028,7 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    ✗ DNS/connect failed: {ex.Message}");
+                    sb.AppendLine($"    âœ— DNS/connect failed: {ex.Message}");
                     issues.Add($"Cannot resolve/connect to gateway {discoveredGateway}");
                 }
             }
@@ -9918,7 +10141,7 @@ class Program
             ["BAH"] = "Bahrain", ["TLV"] = "Tel Aviv, IL",
             ["RUH"] = "Riyadh, SA", ["JED"] = "Jeddah, SA",
             // South America
-            ["GRU"] = "São Paulo, BR", ["GIG"] = "Rio de Janeiro, BR",
+            ["GRU"] = "SÃ£o Paulo, BR", ["GIG"] = "Rio de Janeiro, BR",
             ["CWB"] = "Curitiba, BR", ["SCL"] = "Santiago, CL",
             ["BOG"] = "Bogota, CO", ["EZE"] = "Buenos Aires, AR",
             ["LIM"] = "Lima, PE"
@@ -9978,11 +10201,11 @@ class Program
         }
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  CLOUD PC TEST IMPLEMENTATIONS
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-    /// <summary>C-LE-01: Cloud PC Location — identifies Azure region and public IP.</summary>
+    /// <summary>C-LE-01: Cloud PC Location â€” identifies Azure region and public IP.</summary>
     static async Task<TestResult> RunCpcLocation()
     {
         var result = new TestResult { Id = "C-LE-01", Name = "Cloud PC Location", Category = "cloudpc-env" };
@@ -10013,7 +10236,7 @@ class Program
             {
                 sb.AppendLine($"Source: GeoIP (IMDS unavailable)");
                 if (_isCloudPcMode)
-                    sb.AppendLine($"⚠ GeoIP may show VPN exit point, not the actual Azure region");
+                    sb.AppendLine($"âš  GeoIP may show VPN exit point, not the actual Azure region");
             }
 
             var locText = _azureVmRegion != null
@@ -10028,7 +10251,7 @@ class Program
         return result;
     }
 
-    /// <summary>C-LE-02: Cloud PC Network Info — adapters and ISP.</summary>
+    /// <summary>C-LE-02: Cloud PC Network Info â€” adapters and ISP.</summary>
     static async Task<TestResult> RunCpcNetworkInfo()
     {
         var result = new TestResult { Id = "C-LE-02", Name = "Cloud PC Network Info", Category = "cloudpc-env" };
@@ -10074,7 +10297,7 @@ class Program
                 sb.AppendLine($"Network Type: {netType.Value.type}");
                 if (netType.Value.warning != null)
                 {
-                    sb.AppendLine($"⚠ {netType.Value.warning}");
+                    sb.AppendLine($"âš  {netType.Value.warning}");
                     result.Status = "Warning";
                     result.ResultValue = $"{org} ({netType.Value.type})";
                 }
@@ -10082,7 +10305,7 @@ class Program
             else if (!isMicrosoft)
             {
                 sb.AppendLine();
-                sb.AppendLine("Note: Network org is not Microsoft/Azure. General internet traffic may be routed via VPN/proxy — this is expected if Entra Private Access or similar is configured.");
+                sb.AppendLine("Note: Network org is not Microsoft/Azure. General internet traffic may be routed via VPN/proxy â€” this is expected if Entra Private Access or similar is configured.");
             }
             result.DetailedInfo = sb.ToString().Trim();
         }
@@ -10090,7 +10313,7 @@ class Program
         return result;
     }
 
-    /// <summary>C-TCP-04: Gateway Connectivity from Cloud PC — reuses existing RunGatewayConnectivity.</summary>
+    /// <summary>C-TCP-04: Gateway Connectivity from Cloud PC â€” reuses existing RunGatewayConnectivity.</summary>
     static async Task<TestResult> RunCpcGatewayConnectivity()
     {
         var r = await RunGatewayConnectivity();
@@ -10098,7 +10321,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-TCP-05: DNS CNAME Chain from Cloud PC — reuses existing.</summary>
+    /// <summary>C-TCP-05: DNS CNAME Chain from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcDnsCnameChain()
     {
         var r = await RunDnsCnameChain();
@@ -10106,7 +10329,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-TCP-06: TLS Inspection Detection from Cloud PC — reuses existing.</summary>
+    /// <summary>C-TCP-06: TLS Inspection Detection from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcTlsInspection()
     {
         var r = await RunTlsInspection();
@@ -10114,7 +10337,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-TCP-07: Proxy / VPN / SWG Detection from Cloud PC — reuses existing.</summary>
+    /// <summary>C-TCP-07: Proxy / VPN / SWG Detection from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcProxyVpnDetection()
     {
         var r = await RunProxyVpnDetection();
@@ -10122,7 +10345,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-TCP-08: DNS Hijacking Check from Cloud PC — reuses existing.</summary>
+    /// <summary>C-TCP-08: DNS Hijacking Check from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcDnsHijackingCheck()
     {
         var r = await RunDnsHijackingCheck();
@@ -10130,7 +10353,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-TCP-09: Gateway Used from Cloud PC — reuses existing.</summary>
+    /// <summary>C-TCP-09: Gateway Used from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcGatewayUsed()
     {
         var r = await RunGatewayUsed();
@@ -10138,7 +10361,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-UDP-03: TURN Relay from Cloud PC — reuses existing.</summary>
+    /// <summary>C-UDP-03: TURN Relay from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcTurnRelay()
     {
         var r = await RunTurnRelay();
@@ -10146,7 +10369,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-UDP-04: TURN Relay Location from Cloud PC — reuses existing.</summary>
+    /// <summary>C-UDP-04: TURN Relay Location from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcTurnRelayLocation()
     {
         var r = await RunTurnRelayLocation();
@@ -10154,7 +10377,7 @@ class Program
         return r;
     }
 
-    /// <summary>C-UDP-07: TURN Proxy/VPN from Cloud PC — reuses existing.</summary>
+    /// <summary>C-UDP-07: TURN Proxy/VPN from Cloud PC â€” reuses existing.</summary>
     static async Task<TestResult> RunCpcTurnProxyVpn()
     {
         var r = await RunTurnProxyVpn();
@@ -10162,9 +10385,51 @@ class Program
         return r;
     }
 
-    /// <summary>C-NET-01: Azure IMDS Metadata — reads VM metadata from the Instance Metadata Service.</summary>
+    /// <summary>C-NET-01: Azure IMDS Metadata â€” reads VM metadata from the Instance Metadata Service.
+    /// On a hybrid (Arc-onboarded) session host there IS no Azure IMDS on 169.254.169.254 — the
+    /// scanner instead reads the Arc HIMDS surface it already fetched at startup.</summary>
     static async Task<TestResult> RunCpcImdsMetadata()
     {
+        // Hybrid path: no Azure IMDS on this host. Report what we learned from
+        // the Arc Hybrid Instance Metadata Service (127.0.0.1:40342) at startup.
+        if (IsHybridHost())
+        {
+            var arcResult = new TestResult { Id = "C-NET-01", Name = "Arc HIMDS Metadata", Category = "cloudpc-env" };
+            var sb = new StringBuilder();
+            sb.AppendLine("Source: Azure Arc Hybrid Instance Metadata Service (himds on 127.0.0.1:40342)");
+            sb.AppendLine("Rationale: On an Arc-onboarded on-prem AVD session host the Azure IMDS");
+            sb.AppendLine("           IP (169.254.169.254) does not exist. The equivalent metadata");
+            sb.AppendLine("           for the Arc projection of this machine into ARM lives here.");
+            sb.AppendLine();
+            if (_arcMetadata == null)
+            {
+                sb.AppendLine("Arc HIMDS metadata could not be read.");
+                sb.AppendLine("Common causes:");
+                sb.AppendLine("  \u2022 Scanner not running elevated (the HIMDS token file is admin-only)");
+                sb.AppendLine("  \u2022 himds service not running (Get-Service himds)");
+                sb.AppendLine("  \u2022 Azure Connected Machine Agent not installed / not yet onboarded");
+                arcResult.Status = "Warning";
+                arcResult.ResultValue = "Arc HIMDS unreadable (elevated shell required?)";
+            }
+            else
+            {
+                if (_arcMetadata.ResourceId != null)     sb.AppendLine($"Resource ID: {_arcMetadata.ResourceId}");
+                if (_arcMetadata.SubscriptionId != null) sb.AppendLine($"Subscription: {_arcMetadata.SubscriptionId}");
+                if (_arcMetadata.ResourceGroup != null)  sb.AppendLine($"Resource Group: {_arcMetadata.ResourceGroup}");
+                if (_arcMetadata.Location != null)       sb.AppendLine($"Arc-projected Region: {_arcMetadata.Location}");
+                if (_arcMetadata.TenantId != null)       sb.AppendLine($"Tenant: {_arcMetadata.TenantId}");
+                if (_arcMetadata.VmId != null)           sb.AppendLine($"VM ID: {_arcMetadata.VmId}");
+                if (_arcMetadata.Cloud != null)          sb.AppendLine($"Cloud: {_arcMetadata.Cloud}");
+                if (_arcMetadata.AgentVersion != null)   sb.AppendLine($"Arc Agent Version: {_arcMetadata.AgentVersion}");
+                sb.AppendLine($"Host Type: {HostLabel()}");
+                arcResult.Status = "Passed";
+                arcResult.ResultValue = $"AVD-HYBRID â€” {_arcMetadata.Location ?? "region unknown"} â€” Arc-projected";
+            }
+            arcResult.DetailedInfo = sb.ToString().Trim();
+            await Task.CompletedTask;
+            return arcResult;
+        }
+
         var result = new TestResult { Id = "C-NET-01", Name = "Azure IMDS Metadata", Category = "cloudpc-env" };
         try
         {
@@ -10205,7 +10470,7 @@ class Program
                 sb.AppendLine($"Image: {publisher}/{offer}/{sku}");
 
             // Cloud PC vs AVD detection summary
-            var typeLabel = _hostType == "avd" ? "AVD Session Host" : _hostType == "cloudpc" ? "Cloud PC" : "Unknown";
+            var typeLabel = HostLabel();
             sb.AppendLine($"Host Type: {typeLabel}");
 
             // Extract private IP from network interface
@@ -10228,8 +10493,8 @@ class Program
             catch { sb.AppendLine("Could not parse network interface data."); }
 
             result.Status = "Passed";
-            var typeTag = _hostType == "avd" ? "AVD" : "W365";
-            result.ResultValue = $"{typeTag} — {location} — {vmSize}";
+            var typeTag = HostTag();
+            result.ResultValue = $"{typeTag} â€” {location} â€” {vmSize}";
             result.DetailedInfo = sb.ToString().Trim();
         }
         catch (HttpRequestException)
@@ -10237,7 +10502,7 @@ class Program
             result.Status = "Warning";
             if (_isCloudPcMode)
             {
-                result.ResultValue = "IMDS blocked — VPN may be intercepting link-local traffic";
+                result.ResultValue = "IMDS blocked â€” VPN may be intercepting link-local traffic";
                 result.DetailedInfo = "Azure Instance Metadata Service (IMDS) at 169.254.169.254 was not reachable.\n" +
                     "This Cloud PC was detected via registry/service, but IMDS is blocked.\n\n" +
                     "This typically happens when a VPN routes link-local addresses (169.254.x.x)\n" +
@@ -10247,7 +10512,7 @@ class Program
             }
             else
             {
-                result.ResultValue = "IMDS not available — may not be an Azure VM";
+                result.ResultValue = "IMDS not available â€” may not be an Azure VM";
                 result.DetailedInfo = "Azure Instance Metadata Service (IMDS) at 169.254.169.254 was not reachable.\nThis endpoint is only available inside Azure VMs.";
             }
         }
@@ -10256,7 +10521,7 @@ class Program
             result.Status = "Warning";
             if (_isCloudPcMode)
             {
-                result.ResultValue = "IMDS timed out — VPN may be intercepting link-local traffic";
+                result.ResultValue = "IMDS timed out â€” VPN may be intercepting link-local traffic";
                 result.DetailedInfo = "Azure IMDS at 169.254.169.254 timed out after 5 seconds.\n" +
                     "This Cloud PC was detected via registry/service, but IMDS is unreachable.\n\n" +
                     "VPN software (e.g. Unifi Teleport) can route link-local addresses through the tunnel.\n" +
@@ -10272,24 +10537,24 @@ class Program
         return result;
     }
 
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  AZURE FABRIC TESTS (Cloud PC side)
-    // ═══════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //
     // These tests target the Azure communication IPs that the Guest Agent,
     // extension framework and VM-bootstrap code rely on. A blocked or
     // intercepted path to these endpoints is a very common root cause of
     // Cloud PC provisioning failure, Guest Agent heartbeat loss and
-    // Windows-365 extension install failure — symptoms which otherwise
+    // Windows-365 extension install failure â€” symptoms which otherwise
     // surface nowhere in the W365 connectivity signal.
     //
     // Reference: https://learn.microsoft.com/azure/virtual-desktop/azurecommunicationips
     //
-    // Note: 168.63.129.16:32526 (HostGAPlugin) is NOT probed — Azure's own
+    // Note: 168.63.129.16:32526 (HostGAPlugin) is NOT probed â€” Azure's own
     // WFP filters intentionally restrict that port to the Guest Agent
     // process, so a non-allowlisted probe would always see WSAEACCES on a
     // healthy VM. We probe 168.63.129.16:80 (HTTP) and 169.254.169.254
-    // instead — both are open to any process and will catch the same class
+    // instead â€” both are open to any process and will catch the same class
     // of interference (proxy intercept, EDR/WFP block, VPN route hijack).
 
     private const string AzureFabricDocsUrl =
@@ -10305,14 +10570,34 @@ class Program
     /// </summary>
     static TestResult? AzureFabricNotApplicable(string id, string name)
     {
-        if (_azureVmRegion != null) return null; // in Azure — run the real test
+        if (IsHybridHost())
+        {
+            return new TestResult
+            {
+                Id = id,
+                Name = name,
+                Category = "cloudpc-azure",
+                Status = "Skipped",
+                ResultValue = "Not applicable â€” on-prem (Arc-onboarded) session host",
+                DetailedInfo =
+                    "The Azure fabric communication IPs (168.63.129.16, 169.254.169.254)\n" +
+                    "are link-local addresses that only route from inside an Azure VM.\n" +
+                    "This host was detected as an Azure Arc-onboarded on-prem session host\n" +
+                    "(AVD Hybrid), so those IPs are unroutable by design and no fabric\n" +
+                    "health can be inferred from a probe here.\n\n" +
+                    "Instead, C-EP-02 (Session Host Required Endpoints) exercises the Arc\n" +
+                    "control plane over the public internet â€” that's the actual reachability\n" +
+                    "path an Arc-onboarded host uses for goal-state, extensions and heartbeat."
+            };
+        }
+        if (_azureVmRegion != null) return null; // in Azure â€” run the real test
         return new TestResult
         {
             Id = id,
             Name = name,
             Category = "cloudpc-azure",
             Status = "Skipped",
-            ResultValue = "Not applicable — this host is not an Azure VM",
+            ResultValue = "Not applicable â€” this host is not an Azure VM",
             DetailedInfo =
                 "The Azure fabric communication IPs (168.63.129.16, 169.254.169.254)\n" +
                 "are only reachable from inside an Azure VM. The Instance Metadata\n" +
@@ -10325,7 +10610,7 @@ class Program
 
     /// <summary>
     /// Checks whether an exception chain ends in a socket-level access-denied
-    /// (WSAEACCES / error 10013) — the signature fingerprint of a local WFP /
+    /// (WSAEACCES / error 10013) â€” the signature fingerprint of a local WFP /
     /// EDR / host-firewall block, as opposed to a timeout or remote refusal.
     /// </summary>
     static bool IsWsaEAccess(Exception ex)
@@ -10338,16 +10623,16 @@ class Program
     }
 
     private const string WsaEAccessResultValue =
-        "WireServer port restricted to Guest Agent (WFP filter) — expected on modern Cloud PC images";
+        "WireServer port restricted to Guest Agent (WFP filter) â€” expected on modern Cloud PC images";
 
     private const string WsaEAccessDetailedInfo =
         "WSAEACCES (10013) means the socket was refused by a Windows Filtering Platform\n" +
-        "filter — not by the network. On modern Azure / Cloud PC images Microsoft itself\n" +
+        "filter â€” not by the network. On modern Azure / Cloud PC images Microsoft itself\n" +
         "ships WFP filters that restrict WireServer (168.63.129.16) traffic to the Guest\n" +
         "Agent process (WaAppAgent / RDAgent) by design. A user-mode probe therefore\n" +
         "sees WSAEACCES on a perfectly healthy Cloud PC and the result is informational,\n" +
         "not a failure.\n\n" +
-        "This becomes a real problem only if WireServer is broken end-to-end — which\n" +
+        "This becomes a real problem only if WireServer is broken end-to-end â€” which\n" +
         "surfaces as Guest Agent heartbeat failures, extension install errors, or\n" +
         "provisioning timeouts. If those are absent, this warning can be safely ignored.\n\n" +
         "If you DO see Guest Agent / extension symptoms alongside this, the typical\n" +
@@ -10393,7 +10678,7 @@ class Program
             var sb = new StringBuilder();
             sb.AppendLine($"\u2714 168.63.129.16:80 connected in {sw.ElapsedMilliseconds}ms");
             sb.AppendLine();
-            sb.AppendLine("168.63.129.16 is Azure's WireServer — a fabric-only virtual public IP every");
+            sb.AppendLine("168.63.129.16 is Azure's WireServer â€” a fabric-only virtual public IP every");
             sb.AppendLine("Azure VM / Cloud PC uses to talk to the host for Guest Agent heartbeat,");
             sb.AppendLine("extension management, DHCP, and IMDS-adjacent bootstrap services.");
             result.DetailedInfo = sb.ToString().Trim();
@@ -10453,7 +10738,7 @@ class Program
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            // Version probe per Azure fabric spec — same URL the Guest Agent uses.
+            // Version probe per Azure fabric spec â€” same URL the Guest Agent uses.
             var req = new HttpRequestMessage(HttpMethod.Get,
                 "http://168.63.129.16/?comp=versions"); // DevSkim: ignore DS137138 - WireServer is HTTP-only (link-local fabric IP)
             req.Headers.TryAddWithoutValidation("x-ms-version", "2012-11-30");
@@ -10477,7 +10762,7 @@ class Program
             {
                 var preview = body.Length > 300 ? body.Substring(0, 300) + "..." : body;
                 sb.AppendLine();
-                sb.AppendLine("── Response preview ──");
+                sb.AppendLine("â”€â”€ Response preview â”€â”€");
                 sb.AppendLine(preview);
             }
 
@@ -10488,10 +10773,10 @@ class Program
             }
             else if (resp.IsSuccessStatusCode)
             {
-                // 2xx but body is not Azure XML — almost certainly a transparent proxy
+                // 2xx but body is not Azure XML â€” almost certainly a transparent proxy
                 // returning its own OK page.
                 result.Status = "Failed";
-                result.ResultValue = "Response body is NOT Azure WireServer XML — likely a transparent proxy intercepting fabric traffic";
+                result.ResultValue = "Response body is NOT Azure WireServer XML â€” likely a transparent proxy intercepting fabric traffic";
                 result.RemediationUrl = AzureFabricDocsUrl;
             }
             else
@@ -10514,7 +10799,7 @@ class Program
         }
         catch (Exception ex) when (IsWsaEAccess(ex))
         {
-            // See C-AZ-01 — same rationale.
+            // See C-AZ-01 â€” same rationale.
             result.Status = "Warning";
             result.ResultValue = WsaEAccessResultValue;
             result.DetailedInfo = WsaEAccessDetailedInfo;
@@ -10581,15 +10866,15 @@ class Program
                 // IMDS returns 400 when the Metadata header is missing / stripped.
                 // Since we send it, a 400 means a proxy is mutating headers.
                 result.Status = "Failed";
-                result.ResultValue = "IMDS returned 400 — 'Metadata: true' header appears to be stripped by a proxy";
+                result.ResultValue = "IMDS returned 400 â€” 'Metadata: true' header appears to be stripped by a proxy";
                 result.RemediationUrl = AzureFabricDocsUrl;
             }
             else if (resp.IsSuccessStatusCode && !looksLikeImds)
             {
                 result.Status = "Failed";
-                result.ResultValue = "Response body is NOT Azure IMDS JSON — likely a transparent proxy intercepting 169.254.169.254";
+                result.ResultValue = "Response body is NOT Azure IMDS JSON â€” likely a transparent proxy intercepting 169.254.169.254";
                 sb.AppendLine();
-                sb.AppendLine("── Response preview ──");
+                sb.AppendLine("â”€â”€ Response preview â”€â”€");
                 sb.AppendLine(body.Length > 300 ? body.Substring(0, 300) + "..." : body);
                 result.RemediationUrl = AzureFabricDocsUrl;
             }
@@ -10636,7 +10921,7 @@ class Program
 
 
     /// <summary>
-    /// C-NET-02: RDP Egress in Azure — checks that Cloud PC traffic to RDP Gateway
+    /// C-NET-02: RDP Egress in Azure â€” checks that Cloud PC traffic to RDP Gateway
     /// and TURN relay exits from an Azure IP range (not routed outside via VPN/SWG).
     /// Only checks the RDP path, not general internet egress which may legitimately
     /// go through on-prem proxies.
@@ -10651,7 +10936,7 @@ class Program
             var knownAzureFirstOctets = new HashSet<byte> { 13, 20, 40, 51, 52, 65, 104, 131, 132, 134, 137, 138, 157, 168, 191, 204 };
 
             // 1. Check RDP Gateway egress
-            sb.AppendLine("── RDP Gateway Egress ──");
+            sb.AppendLine("â”€â”€ RDP Gateway Egress â”€â”€");
             string? gwHost = null;
             try
             {
@@ -10670,15 +10955,15 @@ class Program
 
                     if (isW365)
                     {
-                        sb.AppendLine($"✓ Gateway IP is in W365 range{(gwRegion != null ? $" ({gwRegion})" : "")}");
+                        sb.AppendLine($"âœ“ Gateway IP is in W365 range{(gwRegion != null ? $" ({gwRegion})" : "")}");
                     }
                     else if (isKnownAzure)
                     {
-                        sb.AppendLine("✓ Gateway IP is in known Azure range");
+                        sb.AppendLine("âœ“ Gateway IP is in known Azure range");
                     }
                     else
                     {
-                        sb.AppendLine("⚠ Gateway IP is NOT in a known Azure range — traffic may be routed outside Azure");
+                        sb.AppendLine("âš  Gateway IP is NOT in a known Azure range â€” traffic may be routed outside Azure");
                         concerns.Add("Gateway");
                     }
 
@@ -10691,12 +10976,12 @@ class Program
                         sb.AppendLine($"Local route: {localIp}");
                         if (routedViaVpn)
                         {
-                            sb.AppendLine($"⚠ Traffic to Gateway routes via VPN adapter: {adapterName}");
+                            sb.AppendLine($"âš  Traffic to Gateway routes via VPN adapter: {adapterName}");
                             concerns.Add("VPN-routed Gateway");
                         }
                         else
                         {
-                            sb.AppendLine("✓ Traffic to Gateway does not route via VPN adapter");
+                            sb.AppendLine("âœ“ Traffic to Gateway does not route via VPN adapter");
                         }
                     }
                 }
@@ -10706,7 +10991,7 @@ class Program
             sb.AppendLine();
 
             // 2. Check TURN Relay egress
-            sb.AppendLine("── TURN Relay Egress ──");
+            sb.AppendLine("â”€â”€ TURN Relay Egress â”€â”€");
             try
             {
                 var turnHost = "world.relay.avd.microsoft.com";
@@ -10723,15 +11008,15 @@ class Program
 
                     if (isW365)
                     {
-                        sb.AppendLine($"✓ TURN IP is in W365 range{(turnRegion != null ? $" ({turnRegion})" : "")}");
+                        sb.AppendLine($"âœ“ TURN IP is in W365 range{(turnRegion != null ? $" ({turnRegion})" : "")}");
                     }
                     else if (isKnownAzure)
                     {
-                        sb.AppendLine("✓ TURN IP is in known Azure range");
+                        sb.AppendLine("âœ“ TURN IP is in known Azure range");
                     }
                     else
                     {
-                        sb.AppendLine("⚠ TURN IP is NOT in a known Azure range — traffic may be routed outside Azure");
+                        sb.AppendLine("âš  TURN IP is NOT in a known Azure range â€” traffic may be routed outside Azure");
                         concerns.Add("TURN");
                     }
 
@@ -10744,18 +11029,18 @@ class Program
                         sb.AppendLine($"Local route: {localIp}");
                         if (routedViaVpn)
                         {
-                            sb.AppendLine($"⚠ Traffic to TURN routes via VPN adapter: {adapterName}");
+                            sb.AppendLine($"âš  Traffic to TURN routes via VPN adapter: {adapterName}");
                             concerns.Add("VPN-routed TURN");
                         }
                         else
                         {
-                            sb.AppendLine("✓ Traffic to TURN does not route via VPN adapter");
+                            sb.AppendLine("âœ“ Traffic to TURN does not route via VPN adapter");
                         }
                     }
                 }
                 else
                 {
-                    sb.AppendLine("⚠ Could not resolve TURN relay address");
+                    sb.AppendLine("âš  Could not resolve TURN relay address");
                 }
             }
             catch (Exception ex) { sb.AppendLine($"TURN check failed: {ex.Message}"); }
@@ -10764,7 +11049,7 @@ class Program
             if (_azureVmRegion != null)
             {
                 sb.AppendLine();
-                sb.AppendLine($"── Region Comparison ──");
+                sb.AppendLine($"â”€â”€ Region Comparison â”€â”€");
                 sb.AppendLine($"Cloud PC region: {_azureVmRegion}");
                 // The gateway/turn region lookups above will show nearby region info
             }
@@ -10782,7 +11067,7 @@ class Program
             else
             {
                 result.Status = "Passed";
-                result.ResultValue = "RDP traffic stays within Azure — no VPN/SWG routing detected";
+                result.ResultValue = "RDP traffic stays within Azure â€” no VPN/SWG routing detected";
             }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
@@ -10790,18 +11075,21 @@ class Program
     }
 
     /// <summary>
-    /// C-EP-02: Session Host Required Endpoints — tests all required FQDNs from the Microsoft docs.
+    /// C-EP-02: Session Host Required Endpoints â€” tests all required FQDNs from the Microsoft docs.
     /// AVD base list + W365-specific registration endpoints when _hostType == "cloudpc".
     /// Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
     /// </summary>
     static async Task<TestResult> RunCpcRequiredEndpoints()
     {
         var isCpc = _hostType == "cloudpc";
+        var isHybrid = IsHybridHost();
         // Cloud PC and AVD session hosts share the same required-endpoint list,
-        // but "Session Host" is an AVD term — on a Cloud PC we call the machine
+        // but "Session Host" is an AVD term â€” on a Cloud PC we call the machine
         // the "Cloud PC" itself. Use a single hostLabel to keep the test name,
         // group headers and result summary consistent with the detected host.
-        var hostLabel = isCpc ? "Cloud PC" : "Session Host";
+        var hostLabel = isCpc ? "Cloud PC"
+                       : isHybrid ? "Hybrid Session Host"
+                       : "Session Host";
         var requiredGroup = $"{hostLabel} Required";
         var optionalGroup = $"{hostLabel} Optional";
         var healthPurpose = $"{hostLabel} health monitoring (Azure wireserver)";
@@ -10811,9 +11099,9 @@ class Program
         {
             var endpoints = new List<(string host, int port, string purpose, string group)>();
 
-            // ── AVD base endpoints (apply to both AVD and W365) ──
+            // â”€â”€ AVD base endpoints (apply to both AVD and W365) â”€â”€
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
-            // TCP 443 — Core service traffic
+            // TCP 443 â€” Core service traffic
             endpoints.Add(("login.microsoftonline.com", 443, "Authentication to Microsoft Online Services", requiredGroup));
             endpoints.Add(("rdweb.wvd.microsoft.com", 443, "Service traffic / TCP RDP", requiredGroup));
             endpoints.Add(("catalogartifact.azureedge.net", 443, "Azure Marketplace", requiredGroup));
@@ -10837,7 +11125,7 @@ class Program
             endpoints.Add(("sash.cloudpc.windows.static.microsoft", 443,
                 "Service traffic", requiredGroup));
 
-            // *.prod.warm.ingest.monitor.core.windows.net — Log Analytics / Azure Monitor
+            // *.prod.warm.ingest.monitor.core.windows.net â€” Log Analytics / Azure Monitor
             // ingestion wildcard. The real hostnames follow the pattern
             // "{region}-{n}.prod.warm.ingest.monitor.core.windows.net" where {n} is
             // 0, 1, or 2 depending on the region's cluster. Not every region has
@@ -10845,8 +11133,8 @@ class Program
             // koreacentral, japanwest, australiasoutheast) route to a neighbouring
             // region and have no {region}-N subdomain of their own. Additionally,
             // some regional warm-ingest clusters (e.g. ukwest-0 as of 2026)
-            // silently drop raw TCP SYN from arbitrary clients — they only answer
-            // authenticated agent connections through an Azure-internal path — so
+            // silently drop raw TCP SYN from arbitrary clients â€” they only answer
+            // authenticated agent connections through an Azure-internal path â€” so
             // a TCP timeout against the VM's local region does not imply the
             // *wildcard* firewall rule is blocked.
             //
@@ -10856,27 +11144,45 @@ class Program
             //   2. If none of them resolve OR (at probe time) the local exemplar
             //      fails with a timeout, retry against eastus-0 and westus-0 as
             //      canaries. Success on either proves the wildcard firewall rule
-            //      is open — which is what this check is actually trying to
+            //      is open â€” which is what this check is actually trying to
             //      establish. The fallback happens later, during the main probe.
-            var monitorRegion = _azureVmRegion ?? "eastus";
+            //
+            //   On a hybrid Arc-onboarded host there IS no Azure VM region, so
+            //   skip the local-suffix loop entirely and go straight to the
+            //   eastus-0 canary — the multi-address probe + eastus/westus
+            //   canary fallback below handles it robustly. Using the Arc-
+            //   projected region as a hint isn't useful here because ingestion
+            //   clusters follow their own naming and can silently blackhole
+            //   arbitrary regional probes (see the warm-ingest comments below).
             string? monitorExemplar = null;
-            foreach (var suffix in new[] { "-0", "-1", "-2" })
+            if (!isHybrid)
             {
-                var candidate = $"{monitorRegion}{suffix}.prod.warm.ingest.monitor.core.windows.net";
-                try
+                var monitorRegion = _azureVmRegion ?? "eastus";
+                foreach (var suffix in new[] { "-0", "-1", "-2" })
                 {
-                    var addrs = await System.Net.Dns.GetHostAddressesAsync(candidate);
-                    if (addrs != null && addrs.Length > 0) { monitorExemplar = candidate; break; }
+                    var candidate = $"{monitorRegion}{suffix}.prod.warm.ingest.monitor.core.windows.net";
+                    try
+                    {
+                        var addrs = await System.Net.Dns.GetHostAddressesAsync(candidate);
+                        if (addrs != null && addrs.Length > 0) { monitorExemplar = candidate; break; }
+                    }
+                    catch { /* NXDOMAIN â€” try next suffix */ }
                 }
-                catch { /* NXDOMAIN — try next suffix */ }
             }
             monitorExemplar ??= "eastus-0.prod.warm.ingest.monitor.core.windows.net";
             endpoints.Add((monitorExemplar, 443,
                 "Agent diagnostics", requiredGroup));
 
-            // TCP 80 — Health monitoring and certificates
-            endpoints.Add(("168.63.129.16", 80, healthPurpose, requiredGroup));
-            endpoints.Add(("168.63.129.16", 32526, healthPurpose, requiredGroup));
+            // TCP 80 â€” Health monitoring and certificates.
+            // Wireserver (168.63.129.16) is an Azure link-local IP with no route from an
+            // on-prem Arc-onboarded session host, so skip it in hybrid mode; the equivalent
+            // control-plane heartbeat there flows over public HTTPS to *.his.arc.azure.com
+            // and *.guestconfiguration.azure.com (added further below).
+            if (!isHybrid)
+            {
+                endpoints.Add(("168.63.129.16", 80, healthPurpose, requiredGroup));
+                endpoints.Add(("168.63.129.16", 32526, healthPurpose, requiredGroup));
+            }
             endpoints.Add(("oneocsp.microsoft.com", 80, "CRL/OCSP certificate revocation", requiredGroup));
             endpoints.Add(("ctldl.windowsupdate.com", 80, "Certificate trust list updates", requiredGroup));
             // AIK / device-attestation certificate endpoints (TCP 80). These are
@@ -10891,10 +11197,58 @@ class Program
             endpoints.Add(("eus.aikcertaia.microsoft.com", 80, "Certificates", requiredGroup));
             endpoints.Add(("azcsprodeusaikpublish.blob.core.windows.net", 80, "Certificates", requiredGroup));
 
-            // TCP 1688
-            endpoints.Add(("azkms.core.windows.net", 1688, "Windows KMS activation", requiredGroup));
+            // TCP 1688. On an on-prem Arc-onboarded session host activation goes
+            // through the customer's own KMS / MAK / AVK path, not the Azure KMS
+            // relay, so the check would be a guaranteed false negative.
+            if (!isHybrid)
+            {
+                endpoints.Add(("azkms.core.windows.net", 1688, "Windows KMS activation", requiredGroup));
+            }
 
-            // ── W365-specific registration endpoints ──
+            // ── Azure Arc control-plane endpoints (hybrid session hosts only) ──
+            // Reference: https://learn.microsoft.com/azure/azure-arc/network-requirements-consolidated#urls
+            // These are the endpoints the Azure Connected Machine Agent (himds +
+            // gcarcservice + extensionservice) uses continuously — losing any of
+            // them takes an on-prem session host offline in ARM/Intune management
+            // even though the RDP media path may still work over the LAN.
+            //
+            // Wildcards have no canonical apex; we probe a real, region-suffixed
+            // exemplar under each so a working DNS + TLS handshake proves the
+            // wildcard rule is open. When Arc has told us its projected region
+            // via HIMDS we prefer that; otherwise a common canary region.
+            if (isHybrid)
+            {
+                var arcGroup = "Arc Control Plane";
+
+                endpoints.Add(("gbl.his.arc.azure.com", 443,
+                    "Arc hybrid-identity service — proves *.his.arc.azure.com wildcard rule (regional endpoints under this wildcard are discovered dynamically from this global endpoint at agent runtime)", arcGroup));
+                endpoints.Add(("agentserviceapi.guestconfiguration.azure.com", 443,
+                    "Arc extension management (*.guestconfiguration.azure.com)", arcGroup));
+                endpoints.Add(("guestnotificationservice.azure.com", 443,
+                    "Arc notification service (extensions + connectivity)", arcGroup));
+                endpoints.Add(("management.azure.com", 443,
+                    "Azure Resource Manager (connect/disconnect + goal-state)", arcGroup));
+                endpoints.Add(("pas.windows.net", 443,
+                    "Microsoft Entra ID (PAS)", arcGroup));
+                // Regional Entra token endpoint: prefer the actual Arc-projected
+                // region when HIMDS gave us one, else a common canary. This proves
+                // *.login.microsoft.com resolves and connects.
+                var arcRegionCompact = (_arcMetadata?.Location ?? "eastus").Replace(" ", "").ToLowerInvariant();
+                endpoints.Add(($"{arcRegionCompact}.login.microsoft.com", 443,
+                    "Regional Entra token endpoint (*.login.microsoft.com)", arcGroup));
+
+                // Optional / installation-time / older-agent endpoints. Kept
+                // visible in the report but grouped separately so a legitimately
+                // absent one (e.g. dc.services.visualstudio.com on agent 1.24+)
+                // doesn't flip the whole check.
+                var arcOptional = "Arc Optional";
+                endpoints.Add(("download.microsoft.com", 443,
+                    "Arc agent installer download (install/upgrade time only)", arcOptional));
+                endpoints.Add(("dc.services.visualstudio.com", 443,
+                    "Arc agent telemetry (not used by agent v1.24+)", arcOptional));
+            }
+
+            // â”€â”€ W365-specific registration endpoints â”€â”€
             if (_hostType == "cloudpc")
             {
                 endpoints.Add(("cpcsaamssa1prodprap01.infra.windows365.microsoft.com", 443,
@@ -10904,7 +11258,7 @@ class Program
                 endpoints.Add(("global.azure-devices-provisioning.net", 443, "IoT provisioning (TCP 443)", "W365 Registration"));
                 endpoints.Add(("global.azure-devices-provisioning.net", 5671, "IoT provisioning (AMQP 5671)", "W365 Registration"));
 
-                // IoT Hub endpoints — 443 + 5671 each
+                // IoT Hub endpoints â€” 443 + 5671 each
                 var iotHubs = new[]
                 {
                     "hm-iot-in-prod-prap01", "hm-iot-in-prod-prau01", "hm-iot-in-prod-preu01",
@@ -10930,11 +11284,16 @@ class Program
             // Do a single sequential connection up front to warm the stack.
             // ~10ms on a healthy VM; if it fails fast we still proceed to
             // the full fan-out (the soft-endpoint logic handles the result).
+            // On a hybrid (Arc-onboarded) host the wireserver IP is unroutable,
+            // so warm against a real public endpoint we're about to probe anyway.
             try
             {
                 using var warm = new TcpClient();
                 using var warmCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await warm.ConnectAsync("168.63.129.16", 80, warmCts.Token);
+                if (isHybrid)
+                    await warm.ConnectAsync("management.azure.com", 443, warmCts.Token);
+                else
+                    await warm.ConnectAsync("168.63.129.16", 80, warmCts.Token);
             }
             catch { /* swallow \u2014 the real probe below will record the result */ }
 
@@ -10973,13 +11332,13 @@ class Program
 
             // Robust probe used only for the warm-ingest monitor wildcard (and
             // its canaries). A plain hostname-based connect resolves DNS once
-            // and — depending on the runtime's internal address-selection
-            // order — effectively gambles on a SINGLE backend node. Observed in
+            // and â€” depending on the runtime's internal address-selection
+            // order â€” effectively gambles on a SINGLE backend node. Observed in
             // the field: *.prod.warm.ingest.monitor.core.windows.net round-
             // robins across several backend nodes behind one FQDN, and some
             // individual nodes silently drop (blackhole, no RST) raw TCP SYN
             // from an unauthenticated prober while sibling nodes behind the
-            // exact same hostname answer fine — they only answer the signed
+            // exact same hostname answer fine â€” they only answer the signed
             // agent traffic they're meant for. If the address-selection logic
             // happens to pick a blackholed node, the whole 8s budget is spent
             // waiting on it even though a friendly node was sitting right
@@ -11036,7 +11395,7 @@ class Program
                 var attempt = warmIngest
                     ? await TryConnectAnyAddressAsync(ep.host, ep.port)
                     : await TryConnectAsync(ep.host, ep.port);
-                // Retry once — always for the flaky warm-ingest host, or on
+                // Retry once â€” always for the flaky warm-ingest host, or on
                 // timeout only for everything else (other socket errors like
                 // ConnectionRefused aren't transient and don't warrant a retry).
                 if (!attempt.ok && (warmIngest || (attempt.err != null && attempt.err.StartsWith("Timeout"))))
@@ -11067,13 +11426,13 @@ class Program
             // exemplar still failed after the multi-address probe above, fall
             // back to canary regions/cluster-slots. Success against any canary
             // proves the *.prod.warm.ingest.monitor.core.windows.net wildcard
-            // firewall rule is open — which is what this check is actually
+            // firewall rule is open â€” which is what this check is actually
             // trying to establish. Some regional clusters (e.g. ukwest-0 as
             // observed Apr 2026) can have every one of their backend nodes
             // refuse raw TCP SYN from arbitrary probers even on a perfectly
             // healthy CPC, and we should not fail the whole session-host
             // verdict on that. Try both cross-region canaries across all three
-            // known cluster slots (-0/-1/-2), all in parallel — first success
+            // known cluster slots (-0/-1/-2), all in parallel â€” first success
             // wins.
             for (int i = 0; i < results.Length; i++)
             {
@@ -11093,7 +11452,7 @@ class Program
                 if (canaryWinner.res.ok)
                 {
                     results[i] = (r.ep, ok: true, ms: canaryWinner.res.ms,
-                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) — every local-region cluster address refused the probe");
+                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) â€” every local-region cluster address refused the probe");
                 }
             }
 
@@ -11125,7 +11484,12 @@ class Program
                     return (false, $"cannot read agent log: {ex.Message}");
                 }
             }
-            var (agentHealthy, agentDetail) = CheckAgentHeartbeat();
+            // The WaAppAgent.log heartbeat proxy only applies on a real Azure VM.
+            // Hybrid Arc-onboarded hosts don't run the Azure Guest Agent at all
+            // (they run `himds` instead) and no such log file exists there.
+            var (agentHealthy, agentDetail) = isHybrid
+                ? (false, "not applicable — Arc-onboarded host")
+                : CheckAgentHeartbeat();
             if (agentHealthy)
             {
                 for (int i = 0; i < results.Length; i++)
@@ -11174,7 +11538,7 @@ class Program
             {
                 if (IsWarmIngestHost(e.host))
                 {
-                    return "This wildcard's backend cluster round-robins across several nodes, and some individual nodes silently drop unauthenticated TCP probes even though the wildcard firewall rule is fully open — they only answer the signed agent traffic they're meant for. This scan already probed every resolved backend address for the local-region exemplar in parallel and retried against eastus/westus canaries across all three cluster slots (-0/-1/-2) before reporting this as unreachable. If it still fails here, either every one of those nodes was uncooperative for this run (has happened, e.g. ukwest-0 as observed Apr 2026), or there genuinely is a block. It is worth re-running the scan once before investigating further, since this specific endpoint is known to produce transient false negatives; it does not affect the overall pass/fail verdict.";
+                    return "This wildcard's backend cluster round-robins across several nodes, and some individual nodes silently drop unauthenticated TCP probes even though the wildcard firewall rule is fully open â€” they only answer the signed agent traffic they're meant for. This scan already probed every resolved backend address for the local-region exemplar in parallel and retried against eastus/westus canaries across all three cluster slots (-0/-1/-2) before reporting this as unreachable. If it still fails here, either every one of those nodes was uncooperative for this run (has happened, e.g. ukwest-0 as observed Apr 2026), or there genuinely is a block. It is worth re-running the scan once before investigating further, since this specific endpoint is known to produce transient false negatives; it does not affect the overall pass/fail verdict.";
                 }
                 if (e.host != "168.63.129.16") return "";
                 var lower = (err ?? "").ToLowerInvariant();
@@ -11305,7 +11669,7 @@ class Program
         return result;
     }
 
-    /// <summary>C-LE-03: Connection speed from Cloud PC — reuses bandwidth estimation test.</summary>
+    /// <summary>C-LE-03: Connection speed from Cloud PC â€” reuses bandwidth estimation test.</summary>
     static async Task<TestResult> RunCpcConnectionSpeed()
     {
         var r = await RunBandwidthTest();
@@ -11314,8 +11678,251 @@ class Program
     }
 
     // ═══════════════════════════════════════════
-    //  SHORTPATH MANAGED NETWORK CONFIG CHECK
+    //  AVD HYBRID (Arc-onboarded session host) CHECKS
     // ═══════════════════════════════════════════
+    //
+    // On an on-prem AVD session host (Azure Local / Azure Stack HCI or BYO
+    // hardware Arc-onboarded), the Azure Guest Agent is absent and no
+    // 168.63.129.16 / 169.254.169.254 route exists. Health/goal-state flows
+    // instead over the public internet via the Azure Connected Machine Agent
+    // (himds + gcarcservice + extensionservice) to *.his.arc.azure.com /
+    // *.guestconfiguration.azure.com. These tests surface the on-prem-only
+    // failure modes and short-circuit to "Not applicable" on Azure VMs so they
+    // cost nothing in the normal Cloud PC / cloud AVD path.
+
+    /// <summary>C-ARC-01: Arc Agent Health — himds service status, agent version, and heartbeat freshness.</summary>
+    static async Task<TestResult> RunHybridArcAgentHealth()
+    {
+        var result = new TestResult { Id = "C-ARC-01", Name = "Arc Agent Health", Category = "cloudpc-env" };
+        if (!IsHybridHost())
+        {
+            result.Status = "Skipped";
+            result.ResultValue = "Not applicable — this host is not Arc-onboarded";
+            result.DetailedInfo = "This test only runs on hybrid (Arc-onboarded) session hosts. " +
+                                  "Detected host type: " + HostLabel() + ".";
+            await Task.CompletedTask;
+            return result;
+        }
+        try
+        {
+            var sb = new StringBuilder();
+            var issues = new List<string>();
+
+            try
+            {
+                using var himds = new System.ServiceProcess.ServiceController("himds");
+                var status = himds.Status.ToString();
+                sb.AppendLine($"himds service: {status}");
+                if (himds.Status != System.ServiceProcess.ServiceControllerStatus.Running)
+                    issues.Add($"himds not running (state: {status})");
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"himds service: NOT FOUND ({ex.Message})");
+                issues.Add("himds service missing");
+            }
+
+            foreach (var svc in new[] { "GCArcService", "ExtensionService" })
+            {
+                try
+                {
+                    using var sc = new System.ServiceProcess.ServiceController(svc);
+                    var st = sc.Status.ToString();
+                    sb.AppendLine($"{svc}: {st}");
+                    if (sc.Status != System.ServiceProcess.ServiceControllerStatus.Running)
+                        issues.Add($"{svc} not running (state: {st})");
+                }
+                catch
+                {
+                    sb.AppendLine($"{svc}: not installed (Arc agent may need repair)");
+                    issues.Add($"{svc} missing");
+                }
+            }
+
+            string? agentVersion = _arcMetadata?.AgentVersion;
+            string? arcResourceId = _arcMetadata?.ResourceId;
+            string? arcLocation = _arcMetadata?.Location;
+            try
+            {
+                using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Azure Connected Machine Agent");
+                if (key != null)
+                {
+                    agentVersion ??= key.GetValue("AgentVersion")?.ToString();
+                    var installPath = key.GetValue("InstallLocation")?.ToString();
+                    if (!string.IsNullOrEmpty(installPath))
+                        sb.AppendLine($"Install location: {installPath}");
+                }
+            }
+            catch { /* registry access restricted */ }
+            sb.AppendLine();
+            sb.AppendLine($"Arc agent version: {agentVersion ?? "unknown"}");
+            if (arcResourceId != null) sb.AppendLine($"Arc resource: {arcResourceId}");
+            if (arcLocation != null)   sb.AppendLine($"Projected region: {arcLocation}");
+            if (_arcMetadata == null)
+                sb.AppendLine("Arc HIMDS metadata not readable (elevated shell required — the token file is admin-only).");
+
+            try
+            {
+                var himdsLog = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "AzureConnectedMachineAgent", "Log", "himds.log");
+                if (File.Exists(himdsLog))
+                {
+                    var ageSec = (DateTime.UtcNow - new FileInfo(himdsLog).LastWriteTimeUtc).TotalSeconds;
+                    sb.AppendLine($"himds.log last updated {(int)ageSec}s ago");
+                    if (ageSec > 900) issues.Add($"himds.log stale ({(int)ageSec}s)");
+                }
+                else
+                {
+                    sb.AppendLine("himds.log not found at the expected path");
+                }
+            }
+            catch { /* best-effort */ }
+
+            sb.AppendLine();
+            if (issues.Count == 0)
+            {
+                sb.AppendLine("All Arc agent components look healthy.");
+                result.Status = "Passed";
+                result.ResultValue = $"Arc agent healthy" + (agentVersion != null ? $" (v{agentVersion})" : "");
+            }
+            else
+            {
+                sb.AppendLine("Issues:");
+                foreach (var i in issues) sb.AppendLine($"  \u2022 {i}");
+                result.Status = "Warning";
+                result.ResultValue = $"Arc agent issues: {string.Join("; ", issues)}";
+                result.RemediationText = "Run 'azcmagent show' as administrator to inspect agent state, " +
+                    "'azcmagent connect' to re-onboard if needed, or reinstall from download.microsoft.com.";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/azure-arc/servers/troubleshoot-agent-onboard";
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Error";
+            result.ResultValue = ex.Message;
+        }
+        await Task.CompletedTask;
+        return result;
+    }
+
+    /// <summary>C-HY-02: Session Host Time Sync — Kerberos-sensitive clock check for hybrid AD auth.</summary>
+    static async Task<TestResult> RunHybridTimeSync()
+    {
+        var result = new TestResult { Id = "C-HY-02", Name = "Session Host Time Sync", Category = "cloudpc-env" };
+        if (!IsHybridHost())
+        {
+            result.Status = "Skipped";
+            result.ResultValue = "Not applicable — this host is not Arc-onboarded";
+            result.DetailedInfo = "Time-sync problems on Azure VMs are handled by the Azure Guest Agent and " +
+                                  "are covered by the fabric heartbeat. This targeted check runs only on hybrid " +
+                                  "session hosts where clock skew tends to break Kerberos-based hybrid AD sign-in silently.";
+            await Task.CompletedTask;
+            return result;
+        }
+        try
+        {
+            var sb = new StringBuilder();
+            string? source = null;
+            double? skewSeconds = null;
+
+            var psi = new ProcessStartInfo("w32tm", "/query /status")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using (var p = Process.Start(psi))
+            {
+                if (p != null)
+                {
+                    var stdout = await p.StandardOutput.ReadToEndAsync();
+                    p.WaitForExit(5000);
+                    foreach (var line in stdout.Split('\n'))
+                    {
+                        var l = line.Trim();
+                        if (l.StartsWith("Source:", StringComparison.OrdinalIgnoreCase))
+                            source = l.Substring("Source:".Length).Trim();
+                    }
+                    sb.AppendLine(stdout.Trim());
+                }
+            }
+
+            try
+            {
+                var strip = new ProcessStartInfo("w32tm",
+                    "/stripchart /computer:time.windows.com /samples:1 /dataonly")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using var sp = Process.Start(strip);
+                if (sp != null)
+                {
+                    var stripOut = await sp.StandardOutput.ReadToEndAsync();
+                    sp.WaitForExit(5000);
+                    foreach (var line in stripOut.Split('\n'))
+                    {
+                        var m = System.Text.RegularExpressions.Regex.Match(
+                            line, @"([+-]?\d+\.\d+)s");
+                        if (m.Success && double.TryParse(m.Groups[1].Value,
+                            System.Globalization.NumberStyles.Any,
+                            System.Globalization.CultureInfo.InvariantCulture, out var v))
+                        {
+                            skewSeconds = v;
+                            break;
+                        }
+                    }
+                    sb.AppendLine();
+                    sb.AppendLine("Skew check vs time.windows.com:");
+                    sb.AppendLine(stripOut.Trim());
+                }
+            }
+            catch { /* time.windows.com unreachable */ }
+
+            sb.AppendLine();
+            sb.AppendLine($"Source: {source ?? "unknown"}");
+            if (skewSeconds.HasValue)
+                sb.AppendLine($"Measured skew: {skewSeconds.Value:+0.000;-0.000}s");
+
+            if (skewSeconds.HasValue && Math.Abs(skewSeconds.Value) > 300)
+            {
+                result.Status = "Failed";
+                result.ResultValue = $"Clock skew {skewSeconds.Value:+0.0;-0.0}s exceeds Kerberos tolerance (\u00b15 min) \u2014 sign-in WILL fail";
+            }
+            else if (skewSeconds.HasValue && Math.Abs(skewSeconds.Value) > 60)
+            {
+                result.Status = "Warning";
+                result.ResultValue = $"Clock skew {skewSeconds.Value:+0.0;-0.0}s is close to Kerberos tolerance \u2014 investigate NTP";
+            }
+            else if (skewSeconds.HasValue)
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"Time sync healthy (skew {skewSeconds.Value:+0.00;-0.00}s, source: {source ?? "unknown"})";
+            }
+            else
+            {
+                result.Status = "Warning";
+                result.ResultValue = "Could not measure skew (time.windows.com unreachable?)";
+            }
+            result.DetailedInfo = sb.ToString().Trim();
+            if (result.Status != "Passed")
+                result.RemediationUrl = "https://learn.microsoft.com/windows-server/networking/windows-time-service/accurate-time";
+        }
+        catch (Exception ex)
+        {
+            result.Status = "Error";
+            result.ResultValue = ex.Message;
+        }
+        return result;
+    }
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  SHORTPATH MANAGED NETWORK CONFIG CHECK
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
     /// C-LE-04: Checks RDP Shortpath for managed networks prerequisites on the session host.
@@ -11330,8 +11937,8 @@ class Program
             var issues = new List<string>();
             var info = new List<string>();
 
-            // ── 1. Registry: RDP Shortpath for managed networks ──
-            sb.AppendLine("══ Registry Configuration ══");
+            // â”€â”€ 1. Registry: RDP Shortpath for managed networks â”€â”€
+            sb.AppendLine("â•â• Registry Configuration â•â•");
             bool legacyListenerEnabled = false;
             int configuredPort = 3390;
 
@@ -11341,14 +11948,14 @@ class Program
                     @"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp");
                 if (tsKey != null)
                 {
-                    // ICE-based Shortpath (modern) — enabled by default since Windows 11 24H2 / Server 2025
+                    // ICE-based Shortpath (modern) â€” enabled by default since Windows 11 24H2 / Server 2025
                     // fUseUDPPortRedirector=1 enables the legacy direct-port listener (3390)
                     var useRedirector = tsKey.GetValue("fUseUDPPortRedirector");
                     if (useRedirector != null && Convert.ToInt32(useRedirector) == 1)
                     {
                         legacyListenerEnabled = true;
                         sb.AppendLine("  fUseUDPPortRedirector = 1 (legacy listener ENABLED)");
-                        info.Add("RDP Shortpath for managed networks (legacy UDP 3390 listener) enabled — optional, only used on managed/private networks");
+                        info.Add("RDP Shortpath for managed networks (legacy UDP 3390 listener) enabled â€” optional, only used on managed/private networks");
                     }
                     else
                     {
@@ -11365,7 +11972,7 @@ class Program
                     }
                     else if (legacyListenerEnabled)
                     {
-                        sb.AppendLine($"  UdpRedirectorPort = 3390 (default — RDP Shortpath for managed networks; optional, only used on managed/private networks)");
+                        sb.AppendLine($"  UdpRedirectorPort = 3390 (default â€” RDP Shortpath for managed networks; optional, only used on managed/private networks)");
                     }
 
                     // ICE candidate disabling check
@@ -11401,7 +12008,7 @@ class Program
                     var gpSelectTransport = gpKey.GetValue("SelectTransport");
                     if (gpSelectTransport != null && Convert.ToInt32(gpSelectTransport) == 2)
                     {
-                        sb.AppendLine("  GP: SelectTransport = 2 (TCP only — ALL Shortpath disabled!)");
+                        sb.AppendLine("  GP: SelectTransport = 2 (TCP only â€” ALL Shortpath disabled!)");
                         issues.Add("Group Policy forces TCP-only transport");
                     }
 
@@ -11417,10 +12024,10 @@ class Program
 
             sb.AppendLine();
 
-            // ── 2. UDP listener check (only for legacy 3390 mode) ──
+            // â”€â”€ 2. UDP listener check (only for legacy 3390 mode) â”€â”€
             if (legacyListenerEnabled)
             {
-                sb.AppendLine($"══ UDP {configuredPort} Listener ══");
+                sb.AppendLine($"â•â• UDP {configuredPort} Listener â•â•");
                 try
                 {
                     // Use .NET API to check for UDP listener (avoids spawning netstat.exe)
@@ -11430,14 +12037,14 @@ class Program
 
                     if (matchingListeners.Count > 0)
                     {
-                        sb.AppendLine($"  ✓ UDP port {configuredPort} is actively listening");
+                        sb.AppendLine($"  âœ“ UDP port {configuredPort} is actively listening");
                         foreach (var ep in matchingListeners.Take(3))
                             sb.AppendLine($"    UDP  {ep.Address}:{ep.Port}");
                         info.Add($"UDP {configuredPort} listening");
                     }
                     else
                     {
-                        sb.AppendLine($"  ✘ UDP port {configuredPort} is NOT listening");
+                        sb.AppendLine($"  âœ˜ UDP port {configuredPort} is NOT listening");
                         sb.AppendLine($"    The RDP service may need to be restarted after enabling fUseUDPPortRedirector");
                         issues.Add($"UDP {configuredPort} not listening (restart RDP service?)");
                     }
@@ -11446,11 +12053,11 @@ class Program
                 sb.AppendLine();
             }
 
-            // ── 3. Windows Firewall: inbound UDP rule ──
-            sb.AppendLine("══ Windows Firewall ══");
+            // â”€â”€ 3. Windows Firewall: inbound UDP rule â”€â”€
+            sb.AppendLine("â•â• Windows Firewall â•â•");
             try
             {
-                // Read firewall rules from registry — avoids spawning powershell.exe
+                // Read firewall rules from registry â€” avoids spawning powershell.exe
                 var allRules = ReadFirewallRulesFromRegistry();
                 var inboundAllows = allRules
                     .Where(r => r.Dir.Equals("In", StringComparison.OrdinalIgnoreCase)
@@ -11480,14 +12087,14 @@ class Program
 
                 if (portRules.Count > 0)
                 {
-                    sb.AppendLine($"  ✓ Inbound UDP {configuredPort} explicitly allowed:");
+                    sb.AppendLine($"  âœ“ Inbound UDP {configuredPort} explicitly allowed:");
                     foreach (var rule in portRules.Take(5))
                         sb.AppendLine($"    {rule.Name}");
                     info.Add($"Firewall allows inbound UDP {configuredPort}");
                 }
                 else if (legacyListenerEnabled)
                 {
-                    sb.AppendLine($"  ⚠ No explicit inbound allow rule found for UDP {configuredPort}");
+                    sb.AppendLine($"  âš  No explicit inbound allow rule found for UDP {configuredPort}");
                     sb.AppendLine($"    Legacy Shortpath listener is enabled but firewall may block incoming connections");
                     issues.Add($"No firewall rule for inbound UDP {configuredPort}");
                 }
@@ -11500,8 +12107,8 @@ class Program
 
             sb.AppendLine();
 
-            // ── 4. OS version check for ICE/STUN support ──
-            sb.AppendLine("══ ICE/STUN Shortpath Support ══");
+            // â”€â”€ 4. OS version check for ICE/STUN support â”€â”€
+            sb.AppendLine("â•â• ICE/STUN Shortpath Support â•â•");
             var osVer = Environment.OSVersion.Version;
             // ICE-based Shortpath is supported on:
             //   Windows 11 22H2+ (build 22621+)
@@ -11509,27 +12116,27 @@ class Program
             //   Windows Server 2025+ (build 26100+)
             if (osVer.Build >= 26100)
             {
-                sb.AppendLine($"  ✓ Windows Server 2025+ (build {osVer.Build}) — ICE Shortpath supported natively");
+                sb.AppendLine($"  âœ“ Windows Server 2025+ (build {osVer.Build}) â€” ICE Shortpath supported natively");
                 info.Add("ICE Shortpath supported");
             }
             else if (osVer.Build >= 22621)
             {
-                sb.AppendLine($"  ✓ Windows 11 22H2+ (build {osVer.Build}) — ICE Shortpath supported");
+                sb.AppendLine($"  âœ“ Windows 11 22H2+ (build {osVer.Build}) â€” ICE Shortpath supported");
                 info.Add("ICE Shortpath supported");
             }
             else if (osVer.Build >= 20348)
             {
-                sb.AppendLine($"  ⚠ Windows Server 2022 (build {osVer.Build}) — ICE Shortpath requires KB5035857+");
+                sb.AppendLine($"  âš  Windows Server 2022 (build {osVer.Build}) â€” ICE Shortpath requires KB5035857+");
                 sb.AppendLine("    Check Windows Update for the latest cumulative update");
-                // Not an issue per se — may be patched
+                // Not an issue per se â€” may be patched
             }
             else
             {
-                sb.AppendLine($"  ⚠ Build {osVer.Build} — ICE Shortpath may not be supported on this OS version");
+                sb.AppendLine($"  âš  Build {osVer.Build} â€” ICE Shortpath may not be supported on this OS version");
                 sb.AppendLine("    Consider upgrading to Windows 11 22H2+ or Server 2025");
             }
 
-            // ── Set status ──
+            // â”€â”€ Set status â”€â”€
             if (issues.Any(i => i.Contains("TCP-only") || i.Contains("disables UDP")))
             {
                 result.Status = "Failed";
@@ -11565,10 +12172,10 @@ class Program
         return result;
     }
 
-    // ════════════════════════════════════════════════════════════════
-    //  SESSION WATCH — continuous lightweight monitoring (opt-in)
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  SESSION WATCH â€” continuous lightweight monitoring (opt-in)
     //  Run-once snapshot is NEVER altered by anything in this region.
-    // ════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>Parses the --watch duration token. Returns seconds, or 0 for "until stopped".</summary>
     static int ParseWatchDuration(string? val)
@@ -11585,7 +12192,7 @@ class Program
         return 300;
     }
 
-    /// <summary>Parses the --interval token (seconds). Clamped to 2–60s.</summary>
+    /// <summary>Parses the --interval token (seconds). Clamped to 2â€“60s.</summary>
     static int ParseWatchInterval(string? val)
     {
         if (string.IsNullOrWhiteSpace(val)) return 3;
@@ -11616,16 +12223,16 @@ class Program
         if (raw.Length == 0 || raw == "1") return 300;
         if (raw == "2") return 1800;
         if (raw == "3") return 0;
-        // Anything else: treat as a free-form duration token (clamped 30s–8h).
+        // Anything else: treat as a free-form duration token (clamped 30sâ€“8h).
         return ParseWatchDuration(raw);
     }
 
     // Detects whether the run-once snapshot is the kind of result a single
-    // point-in-time read can't be trusted to represent — specifically a VPN/SWG
+    // point-in-time read can't be trusted to represent â€” specifically a VPN/SWG
     // that is intercepting or ambiguously routing W365/RDP traffic. Used to offer
     // the optional post-scan Session Watch. Deterministic; reads only the
     // L-TCP-07 / L-UDP-07 verdicts the snapshot already produced (no re-thresholding,
-    // and a clean Passed split-tunnel never triggers it — avoids crying wolf).
+    // and a clean Passed split-tunnel never triggers it â€” avoids crying wolf).
     static bool ConnectionLooksVolatile(List<TestResult> results, out string reason)
     {
         reason = "";
@@ -11654,7 +12261,7 @@ class Program
         if (duration == 0 && Console.IsInputRedirected)
         {
             duration = 300;
-            Console.WriteLine("  [watch] No interactive console (stdin redirected) — bounding watch to 5 minutes.");
+            Console.WriteLine("  [watch] No interactive console (stdin redirected) â€” bounding watch to 5 minutes.");
         }
 
         // Reuse the gateway discovered during the run-once snapshot.
@@ -11679,9 +12286,9 @@ class Program
 
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("  ╔══════════════════════════════════════════════════════╗");
-        Console.WriteLine("  ║                  SESSION WATCH                       ║");
-        Console.WriteLine("  ╚══════════════════════════════════════════════════════╝");
+        Console.WriteLine("  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+        Console.WriteLine("  â•‘                  SESSION WATCH                       â•‘");
+        Console.WriteLine("  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
         Console.ResetColor();
         Console.WriteLine($"  Monitoring gateway : {gatewayHost}{(gatewayIp != null ? $" ({gatewayIp})" : "")}");
         Console.WriteLine($"  TURN/STUN relay    : {stunHost}:3478");
@@ -11736,7 +12343,7 @@ class Program
 
                 var anomalies = new List<string>();
 
-                // ── Tier 1: W365 route change (verdict-driving) ──
+                // â”€â”€ Tier 1: W365 route change (verdict-driving) â”€â”€
                 bool routeChanged = false;
                 if (prevRouteHash != null && routeHash != "unknown" && routeHash != prevRouteHash)
                 {
@@ -11747,12 +12354,12 @@ class Program
                     events.Add(new WatchEvent
                     {
                         ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = sev, Track = "route",
-                        Message = $"W365-relevant route set changed (change #{routeChangeCount}) — the gateway/exclusion routing shifted (direct ⇄ tunnel)."
+                        Message = $"W365-relevant route set changed (change #{routeChangeCount}) â€” the gateway/exclusion routing shifted (direct â‡„ tunnel)."
                     });
                 }
                 if (routeHash != "unknown") prevRouteHash = routeHash;
 
-                // ── Tier 2: transport quality (context, non-verdict) ──
+                // â”€â”€ Tier 2: transport quality (context, non-verdict) â”€â”€
                 if (gwRtt.HasValue)
                 {
                     if (gatewayBaseline.Count >= 3)
@@ -11778,7 +12385,7 @@ class Program
                 {
                     anomalies.Add("jitter");
                     events.Add(new WatchEvent { ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = jitter.Value > 50 ? "critical" : "warning", Track = "jitter",
-                        Message = $"UDP jitter {jitter.Value:F0}ms to TURN relay — RDP Shortpath quality degraded." });
+                        Message = $"UDP jitter {jitter.Value:F0}ms to TURN relay â€” RDP Shortpath quality degraded." });
                 }
 
                 if (loss.HasValue && loss.Value > 2)
@@ -11795,7 +12402,7 @@ class Program
                         Message = $"DNS resolution slow ({dns.Value:F0}ms) for {gatewayHost}." });
                 }
 
-                // ── Tier 2 context: environment changes (explain the Tier 1 flip) ──
+                // â”€â”€ Tier 2 context: environment changes (explain the Tier 1 flip) â”€â”€
                 bool environmentChanged = false;
                 if (prevEnv.HasValue)
                 {
@@ -11829,7 +12436,7 @@ class Program
                     events.Add(new WatchEvent
                     {
                         ElapsedSeconds = Math.Round(elapsed, 1), Timestamp = ts, Kind = "anomaly", Severity = "warning", Track = "egress",
-                        Message = $"Egress IP changed: {egressDecision.PreviousAddress} → {egressDecision.CurrentAddress} ({reason})."
+                        Message = $"Egress IP changed: {egressDecision.PreviousAddress} â†’ {egressDecision.CurrentAddress} ({reason})."
                     });
                 }
                 else if (egressDecision.Kind == EgressTransitionKind.PoolAddressObserved)
@@ -11873,19 +12480,19 @@ class Program
             if (handler != null) Console.CancelKeyPress -= handler;
         }
 
-        // ── Verdict ──
+        // â”€â”€ Verdict â”€â”€
         int critEvents = events.Count(e => e.Severity == "critical");
         int warnEvents = events.Count(e => e.Severity == "warning");
         string verdict, summary;
         if (routeChangeCount >= 2)
         {
             verdict = "intermittent-fault";
-            summary = $"Intermittent fault confirmed: the W365-relevant routing changed {routeChangeCount} times during the watch — the session path is flapping (typically a VPN/SWG reconnecting and reprogramming routes).";
+            summary = $"Intermittent fault confirmed: the W365-relevant routing changed {routeChangeCount} times during the watch â€” the session path is flapping (typically a VPN/SWG reconnecting and reprogramming routes).";
         }
         else if (routeChangeCount == 1)
         {
             verdict = "changed";
-            summary = "The W365 routing path changed once during the watch — a single transition (e.g. a VPN connecting or disconnecting). Review the timeline for the correlated context event.";
+            summary = "The W365 routing path changed once during the watch â€” a single transition (e.g. a VPN connecting or disconnecting). Review the timeline for the correlated context event.";
         }
         else if (critEvents > 0)
         {
@@ -12121,7 +12728,7 @@ class Program
     /// <summary>
     /// Reads the IPv4 forwarding table directly via the Win32 IP Helper API.
     /// Returns the same <see cref="RouteEntry"/> shape as <c>ParseRouteTable</c> so it
-    /// can be a drop-in source, but with no process spawn (sub-millisecond) — used by
+    /// can be a drop-in source, but with no process spawn (sub-millisecond) â€” used by
     /// the Session Watch sampler where <c>route.exe</c>'s occasional ~25s stalls would
     /// otherwise dominate the sample interval.
     /// </summary>
@@ -12203,7 +12810,7 @@ class Program
     {
         if (string.IsNullOrEmpty(before) && !string.IsNullOrEmpty(after)) return $"{what} appeared: {after}";
         if (!string.IsNullOrEmpty(before) && string.IsNullOrEmpty(after)) return $"{what} disappeared: {before}";
-        return $"{what} changed: '{before}' → '{after}'";
+        return $"{what} changed: '{before}' â†’ '{after}'";
     }
 
     static void PrintWatchSampleLine(int n, WatchSample s)
@@ -12221,12 +12828,12 @@ class Program
         if (s.RouteChanged)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            line += "  ⚠ ROUTE CHANGED";
+            line += "  âš  ROUTE CHANGED";
         }
         else if (s.Anomalies.Count > 0)
         {
             Console.ForegroundColor = ConsoleColor.DarkYellow;
-            line += "  ⚠ " + string.Join(",", s.Anomalies);
+            line += "  âš  " + string.Join(",", s.Anomalies);
         }
         Console.WriteLine(line);
         Console.ResetColor();
@@ -12236,9 +12843,9 @@ class Program
     {
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.WriteLine("  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
         Console.WriteLine("  SESSION WATCH SUMMARY");
-        Console.WriteLine("  ────────────────────────────────────────────────────");
+        Console.WriteLine("  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
         Console.ResetColor();
         Console.WriteLine($"  Samples:        {o.Samples.Count}  (every {o.IntervalSeconds}s)");
         Console.WriteLine($"  Route changes:  {o.RouteChangeCount}");
@@ -12295,7 +12902,7 @@ class Program
             var cb = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var baseUrl = $"{DashboardBaseUrl}?_cb={cb}&view=watch";
             // BOTH payloads live in the URL HASH (the fragment after '#'), which is
-            // NEVER sent to the server — so GitHub Pages can't reject the request
+            // NEVER sent to the server â€” so GitHub Pages can't reject the request
             // with HTTP 414 "URI Too Long" no matter how large the snapshot is.
             // zwatch MUST come first so the dashboard's position-0 watch detectors
             // (`hash.indexOf('#zwatch=')===0`) fire; the run-once snapshot is then
@@ -12355,9 +12962,9 @@ class Program
     }
 }
 
-// ═══════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  MODELS
-// ═══════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class TestResult
 {
@@ -12418,11 +13025,48 @@ class ScanOutput
     [JsonPropertyName("azureRegion")]
     public string? AzureRegion { get; set; }
 
+    [JsonPropertyName("arcMetadata")]
+    public ArcMetadata? ArcMetadata { get; set; }
+
     [JsonPropertyName("results")]
     public List<TestResult> Results { get; set; } = [];
 }
 
-// ── Session Watch timeline models ──────────────────────────────────
+// â”€â”€ Arc-onboarded (hybrid) host metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// Populated only when the scanner detects an Azure Arc-connected machine
+// via the Hybrid Instance Metadata Service (himds) on 127.0.0.1:40342.
+// Serialized into the report so the web dashboard can identify this as
+// an on-prem AVD session host projected into Azure via Arc, not a real
+// Azure VM, and render the right badges / hide the wrong cards.
+class ArcMetadata
+{
+    [JsonPropertyName("resourceId")]
+    public string? ResourceId { get; set; }
+
+    [JsonPropertyName("subscriptionId")]
+    public string? SubscriptionId { get; set; }
+
+    [JsonPropertyName("resourceGroup")]
+    public string? ResourceGroup { get; set; }
+
+    [JsonPropertyName("location")]
+    public string? Location { get; set; }
+
+    [JsonPropertyName("tenantId")]
+    public string? TenantId { get; set; }
+
+    [JsonPropertyName("vmId")]
+    public string? VmId { get; set; }
+
+    [JsonPropertyName("cloud")]
+    public string? Cloud { get; set; }
+
+    [JsonPropertyName("agentVersion")]
+    public string? AgentVersion { get; set; }
+}
+
+// â”€â”€ Session Watch timeline models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class WatchOutput
 {
@@ -12564,6 +13208,7 @@ class TestDefinition
 [JsonSerializable(typeof(TestResult))]
 [JsonSerializable(typeof(List<TestResult>))]
 [JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(ArcMetadata))]
 [JsonSerializable(typeof(WatchOutput))]
 [JsonSerializable(typeof(WatchSample))]
 [JsonSerializable(typeof(WatchEvent))]

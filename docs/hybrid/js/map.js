@@ -1,0 +1,3109 @@
+/**
+ * Connectivity Map — updates the network flow diagram cards from test results.
+ */
+
+// Most recent results array, captured so the upstream-tunnel indicator can be
+// re-evaluated after the ISP card's async GeoIP fallback resolves the distance.
+let _lastMapResults = null;
+
+function updateConnectivityMap(results) {
+    const lookup = {};
+    for (const r of results) {
+        lookup[r.id] = r;
+    }
+    _lastMapResults = results;
+
+    const isSatellite = typeof detectSatelliteConnection === 'function' && detectSatelliteConnection(results);
+    const isTrain     = typeof detectTrainConnection     === 'function' && detectTrainConnection(results);
+    updateMapClientCard(lookup, isSatellite, isTrain);
+    updateMapWifiBadge(lookup);
+    updateMapLocalGwCard(lookup);
+    updateMapIspCard(lookup);
+    updateMapAfdCard(lookup);
+    updateMapRdGwCard(lookup);
+    updateMapTurnCard(lookup);
+    updateMapDnsCard(lookup);
+    updateMapSecurityBar(lookup);
+    updateMapLatencyLabels(lookup);
+    updateMapTlsOverlay(lookup);  // always — TLS interception is client-side
+    updateMapTraceroute(lookup);  // per-hop path visualisation (L-TCP-10)
+
+    // Cloud PC right-side cards — show when CPC mode active OR imported scanner data
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
+    // Use any cloudpc-sourced result (C-LE-01, C-LE-02, etc.) — C-NET-01 may not run on all builds
+    const hasImportedCpc = results.some(r => r.source === 'cloudpc' && /^C-/.test(r.id));
+    if (isCpcMode) {
+        // CPC mode uses cpc-mode class (already set by toggle), just update cards
+        updateMapCloudPcCard(lookup);
+        updateMapAzureCard(lookup);
+        updateMapNatCard(lookup);
+        updateMapVpnOverlay(lookup);
+        updateMapTlsOverlay(lookup);
+        // Reveal infrastructure cards once any CPC result has data
+        const hasAnyResult = results.some(r =>
+            r.status && r.status !== 'NotRun' && r.status !== 'Pending'
+        );
+        if (hasAnyResult) {
+            document.querySelectorAll('.map-g-fanin, .map-g-azure, .map-g-arrow4, .map-g-nat, .map-g-arrow3, .map-g-rdgw, .map-g-turn, .map-g-dnsline, .map-g-dns')
+                .forEach(el => el.classList.add('cpc-revealed'));
+        }
+    } else if (hasImportedCpc) {
+        // Imported scanner data — extend the normal map with right-side cards
+        const mapDiagram = document.querySelector('.map-diagram');
+        if (mapDiagram) mapDiagram.classList.add('has-cloudpc');
+        updateMapCloudPcCard(lookup);
+        updateMapAzureCard(lookup);
+        updateMapVpnOverlay(lookup);
+        updateMapTlsOverlay(lookup);
+    }
+}
+
+// ── Card helpers ──
+
+/**
+ * Extract a 2-letter ISO country code from a location string like "London, GB"
+ * or "Marseille, Provence, FR (51.5.67.23)".
+ * Returns lowercase code (e.g. "gb") for use with flag CDN, or '' if not found.
+ */
+function extractCountryCode(locationStr) {
+    if (!locationStr) return '';
+    // Try to find a standalone 2-letter code: ", XX" at end or ", XX (" before parenthetical
+    const m = locationStr.match(/,\s*([A-Z]{2})\s*(?:\(|$)/);
+    if (m) return m[1].toLowerCase();
+    // Fallback: last CSV part is exactly 2 uppercase letters
+    const parts = locationStr.split(',');
+    if (parts.length < 2) return '';
+    const last = parts[parts.length - 1].trim();
+    if (/^[A-Z]{2}$/.test(last)) return last.toLowerCase();
+    return '';
+}
+
+/**
+ * Azure region friendly names → ISO country codes.
+ * Shared by both map.js and app.js for flag resolution.
+ */
+const AZURE_REGION_TO_COUNTRY = {
+    'uk south':'gb','uk west':'gb',
+    'north europe':'ie','west europe':'nl',
+    'france central':'fr','france south':'fr',
+    'germany west central':'de','germany north':'de',
+    'norway east':'no','norway west':'no',
+    'sweden central':'se','sweden south':'se',
+    'switzerland north':'ch','switzerland west':'ch',
+    'italy north':'it','spain central':'es','poland central':'pl',
+    'east us':'us','east us 2':'us','east us 2 euap':'us',
+    'central us':'us','north central us':'us','south central us':'us',
+    'west central us':'us','west us':'us','west us 2':'us','west us 3':'us',
+    'canada central':'ca','canada east':'ca','mexico central':'mx',
+    'chile central':'cl','brazil south':'br',
+    'southeast asia':'sg','east asia':'hk',
+    'japan east':'jp','japan west':'jp',
+    'korea central':'kr','korea south':'kr',
+    'central india':'in','south india':'in','west india':'in',
+    'jio india west':'in',
+    'australia east':'au','australia southeast':'au','australia central':'au',
+    'taiwan north':'tw','taiwan northwest':'tw',
+    'new zealand north':'nz',
+    'south africa north':'za','south africa west':'za',
+    'uae north':'ae','uae central':'ae','israel central':'il',
+    'qatar central':'qa'
+};
+
+/** AFD PoP 3-letter airport codes → ISO country codes */
+const AFD_POP_TO_COUNTRY = {
+    'LHR':'gb','LTS':'gb','LON':'gb','MAN':'gb','EDG':'gb','DUB':'ie',
+    'AMS':'nl','FRA':'de','BER':'de','MUC':'de','PAR':'fr','MRS':'fr',
+    'MAD':'es','BCN':'es','MIL':'it','ROM':'it','ZRH':'ch','GVA':'ch',
+    'VIE':'at','CPH':'dk','HEL':'fi','OSL':'no','STO':'se','WAW':'pl',
+    'BUD':'hu','PRG':'cz','LIS':'pt','ATH':'gr','BRU':'be',
+    'SOF':'bg','BUH':'ro','ZAG':'hr','BEG':'rs','BTS':'sk',
+    'IAD':'us','DCA':'us','JFK':'us','EWR':'us','TEB':'us','ATL':'us','MIA':'us','ORD':'us',
+    'DFW':'us','LAX':'us','SJC':'us','SEA':'us','DEN':'us','PHX':'us',
+    'SLC':'us','MSP':'us','BOS':'us','CLT':'us','HOU':'us','PHL':'us','IAH':'us','QRO':'mx',
+    'YYZ':'ca','YUL':'ca','YVR':'ca',
+    'SIN':'sg','HKG':'hk','NRT':'jp','KIX':'jp','ICN':'kr',
+    'BOM':'in','MAA':'in','DEL':'in','BLR':'in','HYD':'in',
+    'KUL':'my','BKK':'th','CGK':'id','MNL':'ph','TPE':'tw',
+    'SYD':'au','MEL':'au','PER':'au','BNE':'au','AKL':'nz',
+    'DXB':'ae','AUH':'ae','FJR':'ae','DOH':'qa','BAH':'bh',
+    'RUH':'sa','JED':'sa','TLV':'il',
+    'JNB':'za','CPT':'za','NBO':'ke',
+    'GRU':'br','GIG':'br','CWB':'br','SCL':'cl','BOG':'co','EZE':'ar','LIM':'pe'
+};
+
+/** Country code aliases — non-ISO codes that appear in GeoIP / scanner data */
+const COUNTRY_CODE_ALIASES = { 'uk': 'gb' };
+
+/**
+ * Resolve a country code from any location string format:
+ *   1. ", XX" suffix (GeoIP: "Cardiff, GB")
+ *   2. AFD PoP airport code ("LHR — London", "London (LHR)", "LHR")
+ *   3. Azure region friendly name ("UK South", "UK South (uksouth)")
+ *   4. Prefixed strings ("TURN relay: UK South (uksouth) (51.5.x.x)")
+ * Returns lowercase 2-letter code or ''.
+ */
+function resolveCountryCode(locationStr) {
+    if (!locationStr) return '';
+    const code = _resolveCountryCodeInner(locationStr);
+    return COUNTRY_CODE_ALIASES[code] || code;
+}
+
+function _resolveCountryCodeInner(locationStr) {
+    // 1. Standard ", XX" country code
+    const cc = extractCountryCode(locationStr);
+    if (cc) return cc;
+    // 2. AFD PoP code: "(LHR)" or "LHR — City" or bare "LHR"
+    const parenMatch = locationStr.match(/\(([A-Z]{3})\)/);
+    if (parenMatch && AFD_POP_TO_COUNTRY[parenMatch[1]]) return AFD_POP_TO_COUNTRY[parenMatch[1]];
+    const dashMatch = locationStr.match(/^([A-Z]{2,5})\s*[—–-]\s*/);
+    if (dashMatch && AFD_POP_TO_COUNTRY[dashMatch[1]]) return AFD_POP_TO_COUNTRY[dashMatch[1]];
+    const bare = locationStr.trim();
+    if (/^[A-Z]{2,5}$/.test(bare) && AFD_POP_TO_COUNTRY[bare]) return AFD_POP_TO_COUNTRY[bare];
+    // 3. Strip common prefixes and trailing IPs
+    let clean = locationStr.replace(/^(?:TURN relay|RDP Gateway|Gateway|AFD Edge|AFD PoP):\s*/i, '').trim();
+    clean = clean.replace(/\s*\([\d.]+\)\s*$/, '').trim();
+    const lower = clean.toLowerCase();
+    if (AZURE_REGION_TO_COUNTRY[lower]) return AZURE_REGION_TO_COUNTRY[lower];
+    // 4. Partial match — string starts with a known region name
+    for (const [region, code] of Object.entries(AZURE_REGION_TO_COUNTRY)) {
+        if (lower.startsWith(region)) return code;
+    }
+    return '';
+}
+
+/**
+ * Create a small flag <img> element for a 2-letter country code.
+ * Uses flagcdn.com (free, no key required, CDN-backed).
+ */
+function createFlagImg(code) {
+    if (!code) return null;
+    const img = document.createElement('img');
+    img.src = `https://flagcdn.com/20x15/${code}.png`;
+    img.alt = code.toUpperCase();
+    img.width = 20;
+    img.height = 15;
+    img.className = 'country-flag';
+    img.onerror = function() { this.style.display = 'none'; };
+    return img;
+}
+
+/**
+ * Set text on an element, prepending a country flag image if a 2-letter code is found.
+ */
+function setFlaggedText(elementId, text) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.textContent = '';
+    const code = resolveCountryCode(text);
+    if (code) {
+        const flag = createFlagImg(code);
+        if (flag) el.appendChild(flag);
+        el.appendChild(document.createTextNode(' ' + text));
+    } else {
+        el.textContent = text || '';
+    }
+}
+
+/**
+ * Set badge content with optional country flag image.
+ */
+function setFlaggedBadge(elementId, text, cssClass, locationStr) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!text) {
+        el.classList.add('hidden');
+        return;
+    }
+    el.textContent = '';
+    el.className = 'map-card-badge ' + cssClass;
+    const code = resolveCountryCode(locationStr || text);
+    if (code) {
+        const flag = createFlagImg(code);
+        if (flag) el.appendChild(flag);
+        el.appendChild(document.createTextNode(' ' + text.replace('📍 ', '')));
+    } else {
+        el.textContent = text;
+    }
+}
+
+function setAccentStatus(elementId, status) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    // Support both map-card-accent and device-accent classes
+    el.className = el.className.includes('device-accent') ? 'device-accent' : 'map-card-accent';
+    if (status === 'Passed') el.classList.add('status-passed');
+    else if (status === 'Warning') el.classList.add('status-warning');
+    else if (status === 'Failed' || status === 'Error') el.classList.add('status-failed');
+    else if (status === 'Running') el.classList.add('status-running');
+}
+
+function setDeviceDot(dotId, status) {
+    const dot = document.getElementById(dotId);
+    if (!dot) return;
+    const color = status === 'Passed' ? '#3fb950'
+        : status === 'Warning' ? '#d29922'
+        : status === 'Failed' || status === 'Error' ? '#f85149'
+        : status === 'Running' ? '#58a6ff'
+        : '#484f58';
+    dot.setAttribute('fill', color);
+}
+
+function setText(elementId, text) {
+    const el = document.getElementById(elementId);
+    if (el) el.textContent = text || '';
+}
+
+function setBadge(elementId, text, cssClass) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!text) {
+        el.classList.add('hidden');
+        return;
+    }
+    el.textContent = text;
+    el.className = 'map-card-badge ' + cssClass;
+}
+
+/**
+ * Render a latency badge that may show one OR two values depending on what's
+ * available. Used for nodes (AFD, RD Gateway, TURN) that sit between the
+ * client and the Cloud PC in an end-to-end merged view — when both a client
+ * probe (B-* / L-*) and a Cloud PC probe (C-*) reached the same node, the
+ * two latencies are genuinely different measurements (different source
+ * machines, different network paths) and we shouldn't hide one behind the
+ * other. Falls back to the existing single-pill look when only one side
+ * has data, so unchanged behaviour for client-only or CPC-only scans.
+ *
+ * clientMs / cpcMs: numeric ms or null. isTcp: passed to latencyClass.
+ */
+function setDualLatencyBadge(elementId, clientMs, cpcMs, isTcp) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const haveClient = clientMs != null && !isNaN(clientMs);
+    const haveCpc = cpcMs != null && !isNaN(cpcMs);
+    if (!haveClient && !haveCpc) {
+        el.classList.add('hidden');
+        return;
+    }
+    const latencyType = isTcp ? 'tcp' : 'udp';
+    if (haveClient && haveCpc) {
+        // Render two pills inside the badge container. Each pill keeps its
+        // own colour (latencyClass) so a fast client + slow CPC reads at a
+        // glance. The wrapper carries no colour class; .map-card-badge-dual
+        // styles it as a borderless flex row in CSS.
+        const cMs = Math.round(clientMs);
+        const pMs = Math.round(cpcMs);
+        const cCls = latencyClass(cMs, isTcp);
+        const pCls = latencyClass(pMs, isTcp);
+        const cHealth = latencyLabel(cMs, latencyType);
+        const pHealth = latencyLabel(pMs, latencyType);
+        el.className = 'map-card-badge map-card-badge-dual';
+        el.innerHTML =
+            `<span class="dual-pill ${cCls}" title="From this device (client probe)">` +
+                `<span class="dual-pill-label">Client</span> ⏱ ${cMs}ms · ${cHealth}` +
+            `</span>` +
+            `<span class="dual-pill ${pCls}" title="From the Cloud PC (scanner probe)">` +
+                `<span class="dual-pill-label">Cloud PC</span> ⏱ ${pMs}ms · ${pHealth}` +
+            `</span>`;
+        return;
+    }
+    // Single-side fallback — preserve original look.
+    const ms = Math.round(haveClient ? clientMs : cpcMs);
+    const health = latencyLabel(ms, latencyType);
+    el.textContent = `⏱ ${ms}ms · ${health}`;
+    el.className = 'map-card-badge ' + latencyClass(ms, isTcp);
+}
+
+/**
+ * Pull a latency value (ms) out of a result.
+ *
+ * Search order:
+ *   1. If `opts.section` is supplied AND the result's detailedInfo contains a
+ *      header line matching that pattern, extract the latency from inside that
+ *      block only. Within the block we prefer `TCP connected in Nms` (closest
+ *      to a raw RTT) over `HTTPS NNN in Nms` (which includes TLS handshake).
+ *      `opts.prefer = 'https' | 'tcp'` overrides the default preference.
+ *   2. A "Nms" number directly in resultValue (most browser tests).
+ *   3. A line beginning `Latency:` in detailedInfo.
+ *   4. Fall back to `result.duration` ONLY when the caller passes
+ *      `opts.allowDuration = true`. `duration` is wall-clock for the whole
+ *      test, which can be many times the network RTT when a test runs several
+ *      sub-probes (e.g. C-TCP-04 probes 4 endpoints serially), so the fallback
+ *      is opt-in to avoid silently surfacing a meaningless number on cards
+ *      that map to a specific sub-probe.
+ */
+function extractMs(result, opts) {
+    if (!result) return null;
+    const allowDuration = opts && opts.allowDuration === true;
+    const preferHttps = opts && opts.prefer === 'https';
+
+    // 1. Section-scoped extraction (must be tried first when requested)
+    if (opts && opts.section && result.detailedInfo) {
+        const ms = extractMsFromSection(result.detailedInfo, opts.section, preferHttps);
+        if (ms != null) return ms;
+        // Section was requested but not found / no latency in it — fall through
+        // to the generic strategies rather than returning null, so that older
+        // scanner outputs that don't carry the structured blocks still render.
+    }
+
+    // 2. resultValue with embedded "Nms"
+    if (result.resultValue) {
+        const m = result.resultValue.match(/(\d+)\s*ms/);
+        if (m) return parseInt(m[1]);
+    }
+    // 3. "Latency:" line in detailedInfo
+    if (result.detailedInfo) {
+        const latLine = result.detailedInfo.split('\n').find(l => /^\s*Latency:/i.test(l));
+        if (latLine) {
+            const m = latLine.match(/(\d+)\s*ms/);
+            if (m) return parseInt(m[1]);
+        }
+    }
+    // 4. Whole-test duration (opt-in; misleading for multi-probe tests)
+    if (allowDuration && result.status === 'Passed' && result.duration > 0) {
+        return result.duration;
+    }
+    return null;
+}
+
+/**
+ * Find the section in `detailedInfo` whose header matches `sectionRe`
+ * (e.g. /\[RDP Gateway\]/), then return the first "TCP connected in Nms"
+ * (or HTTPS time if preferred / no TCP line) found within that block.
+ * Block boundary = next non-indented line that looks like a header or end of
+ * string.
+ */
+function extractMsFromSection(detailedInfo, sectionRe, preferHttps) {
+    if (!detailedInfo) return null;
+    const re = sectionRe instanceof RegExp ? sectionRe : new RegExp(sectionRe);
+    const lines = detailedInfo.split('\n');
+    let inBlock = false;
+    let tcpMs = null;
+    let httpsMs = null;
+    for (const raw of lines) {
+        // Strip trailing \r (CRLF-split files leave one behind) but preserve
+        // leading whitespace — we need that to distinguish header lines from
+        // their indented body. Block headers may themselves be indented when
+        // they're not the first block in the field (the scanner emits the
+        // 2nd, 3rd... probes with two leading spaces), so we allow optional
+        // leading whitespace in the header pattern instead of requiring \S.
+        const line = raw.replace(/\r$/, '');
+        const isHeader = /^\s*\S.*\[[^\]]+\]\s*$/.test(line) || /^\s*\S+:\d+\s/.test(line);
+        if (isHeader) {
+            if (inBlock) break; // exited our block — stop scanning
+            if (re.test(line)) inBlock = true;
+            continue;
+        }
+        if (!inBlock) continue;
+        if (tcpMs == null) {
+            const m = line.match(/TCP connected in\s+(\d+)\s*ms/i);
+            if (m) tcpMs = parseInt(m[1]);
+        }
+        if (httpsMs == null) {
+            const m = line.match(/HTTPS\s+\d+\s+in\s+(\d+)\s*ms/i);
+            if (m) httpsMs = parseInt(m[1]);
+        }
+    }
+    if (preferHttps) return httpsMs ?? tcpMs;
+    return tcpMs ?? httpsMs;
+}
+
+function latencyClass(ms, isTcp) {
+    if (isTcp) {
+        if (ms < 100) return 'latency-good';
+        if (ms < 200) return 'latency-medium';
+        return 'latency-bad';
+    }
+    // UDP thresholds
+    if (ms < 150) return 'latency-good';
+    if (ms < 300) return 'latency-medium';
+    return 'latency-bad';
+}
+
+/** Return a human-friendly health word for a latency value. */
+function latencyLabel(ms, type) {
+    if (type === 'gw') return ms < 20 ? 'Healthy' : ms < 50 ? 'Moderate' : 'Poor';
+    if (type === 'udp') return ms < 150 ? 'Healthy' : ms < 300 ? 'Moderate' : 'Poor';
+    if (type === 'dns') return ms < 150 ? 'Healthy' : ms < 300 ? 'Moderate' : 'Poor';
+    // tcp default
+    return ms < 100 ? 'Healthy' : ms < 200 ? 'Moderate' : 'Poor';
+}
+
+function worstStatus(a, b) {
+    const order = { 'Failed': 0, 'Error': 0, 'Warning': 1, 'Running': 2, 'Passed': 3, 'NotRun': 4, 'Pending': 5 };
+    const aVal = order[a] ?? 5;
+    const bVal = order[b] ?? 5;
+    return aVal <= bVal ? a : b;
+}
+
+function extractLine(detailedInfo, prefix) {
+    if (!detailedInfo) return '';
+    for (const line of detailedInfo.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+            return trimmed.substring(prefix.length).trim();
+        }
+    }
+    return '';
+}
+
+function extractCoordinatesFromDetailedInfo(detailedInfo, prefixes = ['Coordinates:']) {
+    if (!detailedInfo) return null;
+    for (const line of detailedInfo.split('\n')) {
+        const trimmed = line.trim();
+        const prefix = prefixes.find(p => trimmed.toLowerCase().startsWith(p.toLowerCase()));
+        if (!prefix) continue;
+        const value = trimmed.substring(prefix.length).trim();
+        const parts = value.split(',').map(p => Number.parseFloat(p.trim()));
+        if (parts.length === 2 && !parts.some(Number.isNaN)) {
+            return { lat: parts[0], lon: parts[1] };
+        }
+    }
+    return null;
+}
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+    const toRad = deg => deg * Math.PI / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistanceKmMi(kilometers) {
+    const miles = kilometers * 0.621371;
+    return `~${Math.round(kilometers)} km (${Math.round(miles)} mi)`;
+}
+
+function formatEgressLine(city, distance) {
+    const parts = [];
+    if (city) parts.push(`📍 ${city}`);
+    if (distance) parts.push(`GPS→egress ${distance}`);
+    return parts.join(' · ');
+}
+
+// ── OS Detection for client icon ──
+function detectClientOS() {
+    const ua = navigator.userAgent || '';
+    const p = navigator.platform || '';
+    if (/Mac/i.test(p) || /Mac/i.test(ua)) return 'mac';
+    if (/Linux/i.test(p) && !/Android/i.test(ua)) return 'linux';
+    return 'win'; // default Windows
+}
+
+function setClientOSIcon() {
+    const os = detectClientOS();
+    const win = document.getElementById('os-icon-win');
+    const mac = document.getElementById('os-icon-mac');
+    const linux = document.getElementById('os-icon-linux');
+    if (win) win.style.display = os === 'win' ? '' : 'none';
+    if (mac) mac.style.display = os === 'mac' ? '' : 'none';
+    if (linux) linux.style.display = os === 'linux' ? '' : 'none';
+    // Title stays as "Client (This device)" — OS shown via icon only
+}
+
+// Run OS detection immediately
+setClientOSIcon();
+
+// ── Client Card ──
+function updateMapClientCard(lookup, isSatellite, isTrain) {
+    let location = '';
+    let publicIp = '';
+    let status = 'NotRun';
+
+    // The "This Device" card is the machine the BROWSER is running on. Only
+    // B-LE-01 measures that. C-LE-01 describes the Cloud PC and is rendered
+    // separately by updateMapCloudPcCard — we must never alias the two, even
+    // when CPC mode is on, because cloudPcMode is set whenever a CPC JSON is
+    // imported (regardless of where the browser actually is). If B-LE-01
+    // hasn't run yet, leaving the card in the "Awaiting results" state is the
+    // honest answer; back-filling from C-LE-01 would mislabel the CPC's
+    // location/IP/ISP as the user's device.
+    const userLoc = lookup['B-LE-01'];
+    if (userLoc && userLoc.status !== 'NotRun') {
+        location = userLoc.resultValue || '';
+        status = userLoc.status;
+        publicIp = extractLine(userLoc.detailedInfo, 'Public IP:');
+    }
+
+    setFlaggedText('map-client-location', location || 'Awaiting results...');
+    setText('map-client-ip', publicIp ? `🌐 ${publicIp}` : '');
+    setAccentStatus('map-client-accent', status);
+    setDeviceDot('device-status-dot', status);
+
+    // In-flight visual: toggle aircraft overlay and card label
+    const card = document.getElementById('map-client');
+    if (card) card.classList.toggle('in-flight', !!isSatellite);
+    // Train easter egg: an SSID/ISP signal that says we're on rails. Plane
+    // detection wins if both somehow fire (shouldn't happen — detector guards).
+    if (card) card.classList.toggle('on-train', !!isTrain && !isSatellite);
+    setText('map-client-title', isSatellite ? '✈ In Flight' : (isTrain ? '🚆 On Train' : 'This Device'));
+
+    // Upstream / router-level tunnel indicator. Evaluated here and also
+    // re-evaluated by updateMapIspCard once its async GeoIP fallback resolves
+    // the GPS→egress distance (which detectUpstreamTunnel depends on).
+    refreshUpstreamTunnelIndicator(isSatellite, isTrain);
+}
+
+// Show/hide the "via upstream tunnel" sub-line on the This Device card.
+// Safe to call repeatedly (e.g. after the async GeoIP distance lands).
+function refreshUpstreamTunnelIndicator(isSatellite, isTrain) {
+    const tunnelEl = document.getElementById('map-client-tunnel');
+    if (!tunnelEl) return;
+    const card = document.getElementById('map-client');
+
+    // Recompute satellite/train if not supplied, so async callers stay correct.
+    if (typeof isSatellite === 'undefined') {
+        isSatellite = _lastMapResults && typeof detectSatelliteConnection === 'function'
+            && detectSatelliteConnection(_lastMapResults);
+    }
+    if (typeof isTrain === 'undefined') {
+        isTrain = _lastMapResults && typeof detectTrainConnection === 'function'
+            && detectTrainConnection(_lastMapResults);
+    }
+
+    const upstreamTunnel = _lastMapResults && typeof detectUpstreamTunnel === 'function'
+        ? detectUpstreamTunnel(_lastMapResults)
+        : false;
+
+    if (upstreamTunnel && !isSatellite && !isTrain) {
+        const distStr = typeof formatDistanceKmMi === 'function'
+            ? formatDistanceKmMi(upstreamTunnel.distanceKm)
+            : `~${Math.round(upstreamTunnel.distanceKm)} km`;
+        tunnelEl.textContent = `🔒 via upstream tunnel · egress ${distStr} away`;
+        tunnelEl.classList.remove('hidden');
+        if (card) card.classList.add('upstream-tunnel');
+    } else {
+        tunnelEl.textContent = '';
+        tunnelEl.classList.add('hidden');
+        if (card) card.classList.remove('upstream-tunnel');
+    }
+}
+
+// ── WiFi / Wired badge on the Client→Gateway path ──
+function updateMapWifiBadge(lookup) {
+    const badge = document.getElementById('map-wifi-badge');
+    if (!badge) return;
+
+    const wifi = lookup['L-LE-04'];
+    if (!wifi || wifi.status === 'NotRun' || wifi.status === 'Pending') {
+        badge.classList.add('hidden');
+        return;
+    }
+
+    if (wifi.status === 'Skipped') {
+        // Wired connection
+        badge.innerHTML =
+            `<svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;flex-shrink:0">` +
+            `<rect x="3.5" y="1.5" width="7" height="7" rx="1" stroke-width="1.4"/>` +
+            `<line x1="5.5" y1="3.5" x2="5.5" y2="7" stroke-width="1.2"/>` +
+            `<line x1="8.5" y1="3.5" x2="8.5" y2="7" stroke-width="1.2"/>` +
+            `<line x1="7" y1="8.5" x2="7" y2="12.5" stroke-width="1.4"/>` +
+            `</svg><span>Wired</span>`;
+        badge.className = 'map-wifi-badge wired';
+        return;
+    }
+
+    // WiFi connection
+    const rv = wifi.resultValue || '';
+    const ssidMatch  = rv.match(/SSID:\s*([^,]+)/i);
+    const sigMatch   = rv.match(/Signal:\s*(\d+)%/i);
+    const radioMatch = rv.match(/Radio:\s*([^,]+)/i);
+    const ssid  = ssidMatch  ? ssidMatch[1].trim()  : '';
+    const sig   = sigMatch   ? parseInt(sigMatch[1]) : null;
+    const radio = radioMatch ? radioMatch[1].trim() : '';
+
+    const sigClass = sig === null ? '' : sig >= 80 ? 'wifi-strong' : sig >= 60 ? 'wifi-good' : sig >= 40 ? 'wifi-fair' : 'wifi-weak';
+    const a1 = sig === null || sig >= 30 ? 1 : 0.2;
+    const a2 = sig === null || sig >= 60 ? 1 : 0.2;
+    const a3 = sig === null || sig >= 80 ? 1 : 0.2;
+    const radioFriendly = /ax/i.test(radio) ? 'Wi\u2011Fi\u00A06' : /ac/i.test(radio) ? 'Wi\u2011Fi\u00A05' : /\bn\b/i.test(radio) ? 'Wi\u2011Fi\u00A04' : radio;
+
+    const iconSvg =
+        `<svg viewBox="0 0 14 12" width="14" height="12" fill="none" stroke="currentColor" stroke-linecap="round" style="vertical-align:middle;flex-shrink:0">` +
+        `<circle cx="7" cy="11" r="1.3" fill="currentColor" stroke="none"/>` +
+        `<path d="M4.5 8.5a3.6 3.6 0 0 1 5 0" stroke-width="1.5" opacity="${a1}"/>` +
+        `<path d="M2 6a7.2 7.2 0 0 1 10 0" stroke-width="1.5" opacity="${a2}"/>` +
+        `<path d="M-0.5 3.5a10.8 10.8 0 0 1 15 0" stroke-width="1.5" opacity="${a3}"/>` +
+        `</svg>`;
+
+    let label = ssid ? escapeHtml(ssid) : 'Wi\u2011Fi';
+    if (sig !== null) label += `<span class="map-wifi-sig"> · ${sig}%</span>`;
+    if (radioFriendly) label += `<span class="map-wifi-radio"> · ${escapeHtml(radioFriendly)}</span>`;
+
+    badge.innerHTML = iconSvg + `<span>${label}</span>`;
+    badge.className = `map-wifi-badge ${sigClass}`;
+}
+
+// ── Local Gateway Card ──
+function updateMapLocalGwCard(lookup) {
+    const gw = lookup['L-LE-05'];
+    if (!gw || gw.status === 'NotRun' || gw.status === 'Pending') {
+        setText('map-localgw-detail', 'Awaiting local scan...');
+        setText('map-localgw-detail2', '');
+        setAccentStatus('map-localgw-accent', 'NotRun');
+        return;
+    }
+
+    const gwIp = extractLine(gw.detailedInfo, 'Gateway:');
+    // Extract router model from detailed info
+    const routerLines = [];
+    const hostname = extractLine(gw.detailedInfo, 'Hostname:');
+    const macVendor = extractLine(gw.detailedInfo, 'MAC Vendor:');
+    const upnpModel = extractLine(gw.detailedInfo, 'UPnP Model:');
+    const upnpName = extractLine(gw.detailedInfo, 'UPnP Name:');
+    const upnpMfr = extractLine(gw.detailedInfo, 'UPnP Manufacturer:');
+
+    // Build gateway detail line with router info
+    let detail = gwIp || gw.resultValue || '';
+    const routerDesc = upnpModel ? (upnpMfr ? `${upnpMfr} ${upnpModel}` : upnpModel)
+        : upnpName ? upnpName
+        : macVendor ? macVendor
+        : hostname ? hostname
+        : null;
+    if (routerDesc) detail += ` (${routerDesc})`;
+
+    setText('map-localgw-detail', detail);
+    // Strip the router model suffix [xxx] from the second line to avoid showing it twice
+    const detail2 = (gw.resultValue || '').replace(/\s*\[.*\]\s*$/, '');
+    setText('map-localgw-detail2', detail2);
+    setAccentStatus('map-localgw-accent', gw.status);
+    setDeviceDot('device-gw-dot', gw.status);
+}
+
+// ── Well-known ISP domain map ──
+const ISP_DOMAINS = {
+    'cloudflare':'cloudflare.com','comcast':'comcast.com','xfinity':'comcast.com',
+    'at&t':'att.com','att':'att.com','verizon':'verizon.com','spectrum':'spectrum.com',
+    'charter':'spectrum.com','cox':'cox.com','t-mobile':'t-mobile.com','tmobile':'t-mobile.com',
+    'sprint':'sprint.com','centurylink':'centurylink.com','lumen':'lumen.com',
+    'frontier':'frontier.com','windstream':'windstream.com','mediacom':'mediacom.com',
+    'optimum':'optimum.net','altice':'altice.com','suddenlink':'suddenlink.com',
+    'google':'google.com','google fiber':'fiber.google.com','amazon':'amazon.com',
+    'aws':'aws.amazon.com','microsoft':'microsoft.com','azure':'azure.microsoft.com',
+    'akamai':'akamai.com','fastly':'fastly.com',
+    'bt':'bt.com','british telecom':'bt.com','sky':'sky.com','sky broadband':'sky.com',
+    'virgin media':'virginmedia.com','vodafone':'vodafone.com','talktalk':'talktalk.co.uk',
+    'plusnet':'plus.net','ee':'ee.co.uk','three':'three.co.uk','o2':'o2.co.uk',
+    'orange':'orange.com','free':'free.fr','sfr':'sfr.fr','bouygues':'bouyguestelecom.fr',
+    'deutsche telekom':'telekom.de','telekom':'telekom.de','telefonica':'telefonica.com',
+    'movistar':'movistar.com','swisscom':'swisscom.ch','proximus':'proximus.be',
+    'kpn':'kpn.com','ziggo':'ziggo.nl','telia':'telia.com','telenor':'telenor.com',
+    'telstra':'telstra.com.au','optus':'optus.com.au','tpg':'tpg.com.au','nbn':'nbnco.com.au',
+    'bell':'bell.ca','rogers':'rogers.com','telus':'telus.com','shaw':'shaw.ca',
+    'jio':'jio.com','airtel':'airtel.in','bsnl':'bsnl.co.in','vi':'myvi.in',
+    'ntt':'ntt.com','softbank':'softbank.jp','kddi':'kddi.com','au':'au.com',
+    'singtel':'singtel.com','starhub':'starhub.com',
+    'china telecom':'chinatelecom.com.cn','china unicom':'chinaunicom.com',
+    'china mobile':'chinamobile.com',
+    'etisalat':'etisalat.ae','du':'du.ae','stc':'stc.com.sa','zain':'zain.com',
+    'mtn':'mtn.com','safaricom':'safaricom.co.ke',
+    'claro':'claro.com','telmex':'telmex.com','oi':'oi.com.br','vivo':'vivo.com.br',
+    'cogent':'cogentco.com','hurricane electric':'he.net','level 3':'lumen.com',
+    'zayo':'zayo.com','tata communications':'tatacommunications.com',
+    'rackspace':'rackspace.com','digitalocean':'digitalocean.com','linode':'linode.com',
+    'ovh':'ovh.com','hetzner':'hetzner.com','scaleway':'scaleway.com',
+    'oracle':'oracle.com','ibm':'ibm.com','alibaba':'alibabacloud.com'
+};
+
+function guessIspDomain(ispName) {
+    if (!ispName) return null;
+    // Strip AS number prefix (e.g. "AS13335 Cloudflare, Inc." -> "Cloudflare, Inc.")
+    const cleaned = ispName.replace(/^AS\d+\s*/i, '').replace(/[,.]\s*(Inc|LLC|Ltd|Corp|Co|SA|GmbH|AG|NV|BV|Pty|Plc)\.?$/i, '').trim();
+    const lower = cleaned.toLowerCase();
+    // Check known mapping
+    for (const [key, domain] of Object.entries(ISP_DOMAINS)) {
+        if (lower.includes(key)) return domain;
+    }
+    // Heuristic: turn name into domain guess (e.g. "Acme Telecom" -> "acmetelecom.com")
+    const slug = lower.replace(/[^a-z0-9]/g, '');
+    return slug ? slug + '.com' : null;
+}
+
+function setIspLogo(ispName) {
+    const img = document.getElementById('isp-logo-img');
+    if (!img) return;
+    const domain = guessIspDomain(ispName);
+    if (!domain) { img.style.display = 'none'; return; }
+    // Try favicon providers in order of reliability. Clearbit's free logo API was
+    // retired in 2023 so we start with Google favicons, then DuckDuckGo.
+    const providers = [
+        `https://www.google.com/s2/favicons?domain=${domain}&sz=64`,
+        `https://icons.duckduckgo.com/ip3/${domain}.ico`,
+        `https://logo.clearbit.com/${domain}?size=80`
+    ];
+    let idx = 0;
+    const tryNext = () => {
+        if (idx >= providers.length) { img.style.display = 'none'; return; }
+        img.src = providers[idx++];
+    };
+    img.onerror = tryNext;
+    img.style.display = 'block';
+    tryNext();
+}
+
+// ── ISP Card ──
+function updateMapIspCard(lookup) {
+    // The ISP pill represents the ISP between THIS DEVICE and the W365 path.
+    // Only B-LE-02 measures the actual browser device's egress ISP. C-LE-02
+    // describes the Cloud PC's general-internet egress — if we fall back to it
+    // (which used to happen automatically when the only data loaded was a CPC
+    // JSON), the diagram makes it look like the client→gateway path goes via
+    // the CPC's ISP (commonly Zscaler/SASE), even though the CPC's own routing
+    // table check has already proven RDP routes direct. Never alias the two.
+    const isp = lookup['B-LE-02'];
+    const userLoc = lookup['B-LE-01'];
+    if (!isp || isp.status === 'NotRun') {
+        setText('map-isp-detail', 'Awaiting results...');
+        setText('map-isp-detail2', '');
+        setAccentStatus('map-isp-accent', 'NotRun');
+        return;
+    }
+
+    setText('map-isp-detail', isp.resultValue || '');
+
+    const asInfo = extractLine(isp.detailedInfo, 'AS:');
+    setText('map-isp-detail2', asInfo);
+
+    // Show egress city from IP GeoIP (not GPS), so satellite/aircraft WiFi shows network
+    // egress country (e.g. US) rather than the GPS-cached departure city (e.g. UK).
+    // Priority: result 27 egress location → L-TCP-09 location → browser ISP → GPS fallback.
+    let egressCity = '';
+    let egressDistanceKm = null;
+    const egressResult = lookup['27'];
+    const ispGeo = lookup['B-LE-02'] || lookup['C-LE-02'];
+    const gpsCoords = extractCoordinatesFromDetailedInfo(userLoc?.detailedInfo);
+    if (egressResult && egressResult.detailedInfo) {
+        egressCity = extractLine(egressResult.detailedInfo, 'Your egress location:');
+        const egressCoords = extractCoordinatesFromDetailedInfo(egressResult.detailedInfo, ['Egress coordinates:']);
+        if (gpsCoords && egressCoords) {
+            egressDistanceKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon);
+        }
+    }
+    if (!egressCity) {
+        const gwUsedForIsp = lookup['L-TCP-09'];
+        if (gwUsedForIsp && gwUsedForIsp.detailedInfo) {
+            egressCity = extractLine(gwUsedForIsp.detailedInfo, 'Your egress location:') || extractLine(gwUsedForIsp.detailedInfo, 'Your location:');
+        }
+    }
+    if (!egressCity && ispGeo && ispGeo.detailedInfo) {
+        egressCity = extractLine(ispGeo.detailedInfo, 'Egress location:');
+        const geoCoords = extractCoordinatesFromDetailedInfo(ispGeo.detailedInfo, ['Egress coordinates:']);
+        if (egressDistanceKm == null && gpsCoords && geoCoords) {
+            egressDistanceKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoCoords.lat, geoCoords.lon);
+        }
+    }
+    if (!egressCity) {
+        // Final fallback: GPS-based location (may mismatch on satellite/aircraft)
+        egressCity = userLoc ? userLoc.resultValue : '';
+    }
+
+    // The egress city is shown only in the pill badge below; the plain text
+    // line was removed because it duplicated the badge content verbatim.
+
+    // Egress location badge
+    if (egressCity) {
+        setFlaggedBadge('map-isp-egress-badge', `📍 ${egressCity}`, 'location-badge', egressCity);
+    }
+
+    // Distance badge with proximity colouring
+    setEgressDistanceBadge(egressDistanceKm);
+    // Distance is now known synchronously (if at all) — refresh the upstream
+    // tunnel indicator, which depends on the rendered GPS→egress distance.
+    if (typeof refreshUpstreamTunnelIndicator === 'function') refreshUpstreamTunnelIndicator();
+
+    // Final fallback: derive egress from live GeoIP when we still don't have a distance.
+    // Covers browser-only runs and older imported scanner results.
+    if (egressDistanceKm == null && gpsCoords && typeof fetchGeoIp === 'function') {
+        fetchGeoIp()
+            .then(geo => {
+                if (!geo) return;
+                const fallbackCity = [geo.city, geo.regionName, geo.country].filter(Boolean).join(', ');
+                const geoLat = Number.parseFloat(geo.lat);
+                const geoLon = Number.parseFloat(geo.lon);
+                if (!fallbackCity || Number.isNaN(geoLat) || Number.isNaN(geoLon)) return;
+                const distKm = haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, geoLat, geoLon);
+                const bestCity = egressCity || fallbackCity;
+                setFlaggedBadge('map-isp-egress-badge', `📍 ${bestCity}`, 'location-badge', bestCity);
+                setEgressDistanceBadge(distKm);
+                // The async distance just landed — re-evaluate the upstream
+                // tunnel indicator now that the GPS→egress badge is populated.
+                if (typeof refreshUpstreamTunnelIndicator === 'function') refreshUpstreamTunnelIndicator();
+            })
+            .catch(() => { /* best-effort */ });
+    }
+
+    setAccentStatus('map-isp-accent', isp.status);
+    setDeviceDot('device-isp-dot', isp.status);
+    setIspLogo(isp.resultValue);
+}
+
+/** Set the GPS→egress distance badge with proximity colouring. */
+function setEgressDistanceBadge(distKm) {
+    const el = document.getElementById('map-isp-distance-badge');
+    if (!el) return;
+    if (distKm == null) {
+        el.classList.add('hidden');
+        return;
+    }
+    const label = formatDistanceKmMi(distKm);
+    // RTT-aware reconciliation: a LARGE GeoIP egress distance that is
+    // contradicted by a LOW measured RTT is unreliable (the egress is actually
+    // local; the IP just geolocates poorly). Show it neutrally rather than
+    // raising a false "far" alarm. When latency corroborates the distance, the
+    // egress really is non-local — surface that as the root cause, since it
+    // forces AFD and the RD gateway to follow the egress (suboptimal path).
+    const lookup = {};
+    if (Array.isArray(_lastMapResults)) for (const r of _lastMapResults) lookup[r.id] = r;
+    const afdLocal = afdPopProvesLocalEgress(lookup);
+    const measuredNear = afdLocal || gatewayLatencyProvesLocal(lookup);
+    if (distKm >= EGRESS_FAR_MIN_KM && measuredNear) {
+        // The egress IP geolocates far, but stronger evidence (AFD edge in the
+        // user's region, or a measured RTT below the physical floor) proves the
+        // breakout is actually local. Surface it neutrally and name the reason
+        // rather than raising a phantom "non-local breakout" alarm.
+        el.textContent = afdLocal
+            ? `≈ GPS→egress ${label} · AFD edge local (egress IP geo unreliable)`
+            : `≈ GPS→egress ${label} (latency local)`;
+        el.className = 'map-card-badge proximity-moderate';
+        el.classList.remove('hidden');
+        return;
+    }
+    const proxClass = distKm < 100 ? 'proximity-near'
+        : distKm < 500 ? 'proximity-moderate'
+        : 'proximity-far';
+    const icon = distKm < 100 ? '✔' : distKm < 500 ? '≈' : '⚠';
+    const suffix = distKm >= EGRESS_FAR_MIN_KM ? ' · non-local breakout' : '';
+    el.textContent = `${icon} GPS→egress ${label}${suffix}`;
+    el.className = `map-card-badge ${proxClass}`;
+    el.classList.remove('hidden');
+}
+
+// ── AFD Edge Card ──
+function updateMapAfdCard(lookup) {
+    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'];
+    // AFD gateway discovery is a client-side concern. C-TCP-04 runs from the
+    // session host and remains useful for its separate RD Gateway/service data,
+    // but it must not create a Cloud PC status or latency on the AFD card.
+    const clientLat = lookup['B-TCP-02'];
+    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+
+    let status = 'NotRun';
+    let detail1 = 'Awaiting results...';
+
+    if (reach && reach.status !== 'NotRun') {
+        status = reach.status;
+        detail1 = reach.status === 'Passed' ? '✓ HTTPS reachable' : reach.resultValue || 'Unreachable';
+    }
+
+    // Extract route type from L-TCP-09
+    if (gwUsed && gwUsed.detailedInfo) {
+        const route = extractLine(gwUsed.detailedInfo, 'Route:');
+        if (route) {
+            const isPrivateLink = route.toLowerCase().includes('private');
+            const isAfd = route.toLowerCase().includes('front door') || route.toLowerCase().includes('afd');
+            const routeClass = isPrivateLink ? 'route-privatelink' : isAfd ? 'route-afd' : 'route-direct';
+            const icon = isPrivateLink ? '🔒' : isAfd ? '⚡' : '🔗';
+            setBadge('map-afd-route-badge', `${icon} ${route}`, routeClass);
+        }
+
+        // Show location as a badge — prefer AFD PoP (from X-MSEdge-Ref) over GeoIP Location
+        const popLine = extractLine(gwUsed.detailedInfo, 'AFD PoP:');
+        const locLine = (popLine && !popLine.toLowerCase().includes('could not parse'))
+            ? popLine.replace(/^[A-Z]{2,5}\s*—\s*/, '')   // strip PoP code prefix e.g. "LHR — "
+            : extractGatewayLocation(gwUsed.detailedInfo);
+        if (locLine) {
+            setFlaggedBadge('map-afd-loc-badge', `📍 ${locLine}`, 'location-badge', locLine);
+        }
+    }
+
+    setText('map-afd-detail', detail1);
+
+    // Proximity: AFD picks the edge nearest the EGRESS, so when the egress is
+    // genuinely far from the user (corroborated by a high measured RTT) the
+    // edge is suboptimal — and the cause is non-local egress, not AFD itself.
+    if (egressGenuinelyFar(lookup)) {
+        setBadge('map-afd-prox-badge', '⚠ Suboptimal · distant egress', 'proximity-far');
+    } else if (gatewayLatencyProvesLocal(lookup)) {
+        const ms = gatewayMeasuredRttMs(lookup);
+        setBadge('map-afd-prox-badge', ms != null ? `✔ Near (${ms} ms)` : '✔ Near', 'proximity-near');
+    } else {
+        const el = document.getElementById('map-afd-prox-badge');
+        if (el) el.classList.add('hidden');
+    }
+
+    setDualLatencyBadge('map-afd-badge', extractMs(clientLat, { allowDuration: true }), null, true);
+
+    setAccentStatus('map-afd-accent', status);
+}
+
+// ── VPN context helper ──
+// Returns whether a VPN/SWG is in the RDP path and, if so, the CPC's true
+// Azure region (from IMDS) so other cards can reason about region mismatches.
+function vpnWarningContradictsDirectRoute(tcpVpn, source) {
+    if (!tcpVpn || tcpVpn.id !== 'C-TCP-07') return false;
+    const get = id => Array.isArray(source)
+        ? source.find(result => result && result.id === id)
+        : source && source[id];
+    const imds = get('C-NET-01');
+    const egress = get('C-NET-02');
+    if (!imds || !egress || egress.status !== 'Passed') return false;
+
+    const azureNic = ((imds.detailedInfo || '').match(/Private IP:\s*(\d{1,3}(?:\.\d{1,3}){3})/i) || [])[1];
+    const localRoutes = [...(egress.detailedInfo || '').matchAll(/Local route:\s*(\d{1,3}(?:\.\d{1,3}){3})/gi)]
+        .map(match => match[1]);
+    const directChecks = ((egress.detailedInfo || '').match(/does not route via VPN adapter/gi) || []).length;
+    const routeTests = [tcpVpn, get('C-UDP-07')].filter(Boolean);
+    const divertedIfIps = routeTests.flatMap(test =>
+        [...(test.detailedInfo || '').matchAll(/diverted:[^\n]*, if\s+(\d{1,3}(?:\.\d{1,3}){3})\)/gi)]
+            .map(match => match[1]));
+
+    return !!azureNic
+        && localRoutes.length >= 2
+        && localRoutes.every(ip => ip === azureNic)
+        && directChecks >= 2
+        && divertedIfIps.length > 0
+        && divertedIfIps.every(ip => ip === azureNic);
+}
+
+function getVpnContext(lookup) {
+    const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
+    const routeAnalysis = lookup['B-TCP-04'];
+    let vpnActive = false;
+    if (tcpVpn && tcpVpn.status === 'Warning' && !vpnWarningContradictsDirectRoute(tcpVpn, lookup)) vpnActive = true;
+    if (!vpnActive && routeAnalysis && routeAnalysis.status === 'Warning') {
+        const info = routeAnalysis.detailedInfo || '';
+        if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
+            vpnActive = true;
+        }
+    }
+
+    // CPC Azure region from IMDS (authoritative) — fall back to C-LE-01 info
+    let cpcRegionCode = '';
+    const readRegion = (info) => {
+        const m = info && info.match(/Azure Region:\s*(\S+)/);
+        return m ? m[1] : '';
+    };
+    cpcRegionCode = readRegion(lookup['C-NET-01'] && lookup['C-NET-01'].detailedInfo)
+        || readRegion(lookup['C-LE-01'] && lookup['C-LE-01'].detailedInfo);
+
+    let cpcRegionName = '';
+    if (cpcRegionCode && typeof AZURE_REGIONS !== 'undefined') {
+        const az = AZURE_REGIONS.find(r => r.code === cpcRegionCode);
+        cpcRegionName = az ? az.name : cpcRegionCode;
+    }
+    return { vpnActive, cpcRegionCode, cpcRegionName };
+}
+
+// ── Authoritative region extraction ──
+// The L-TCP-09 / C-TCP-09 "Gateway Used" test writes the discovered regional
+// RDP gateway FQDN (e.g. rdgateway-c221-UKW-r1.wvd.microsoft.com) along with
+// its decoded region, e.g. "Azure Region: UK West (UKW)". This is the single
+// source of truth — derive everything from it rather than parsing free-text
+// location strings. Returns { code: 'ukwest', name: 'UK West', fqdn: '...' }.
+function getRdGatewayRegion(lookup) {
+    const gw = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+    if (!gw || !gw.detailedInfo) return null;
+    const info = gw.detailedInfo;
+
+    // Prefer the explicit "Azure Region: <Name> (<CODE>)" line emitted by the
+    // scanner against the unicast regional gateway (not the AFD anycast one).
+    const regionLine = info.match(/Azure Region:\s*([^(\n]+)\(([A-Z0-9]+)\)/);
+    if (regionLine) {
+        const name = regionLine[1].trim();
+        const shortCode = regionLine[2].trim().toUpperCase();
+        // Map the 3–4 letter FQDN code (UKW, EUS2, WEU) → full Azure slug
+        const azCode = gatewayShortCodeToAzureSlug(shortCode);
+        return { code: azCode || shortCode.toLowerCase(), name, shortCode, fqdn: extractGwFqdn(info) };
+    }
+
+    // Fallback: parse FQDN directly if the Azure Region line isn't present
+    const fqdn = extractGwFqdn(info);
+    if (fqdn) {
+        const m = fqdn.match(/rdgateway-[^-]+-([A-Za-z0-9]+)-r\d+/i);
+        if (m) {
+            const shortCode = m[1].toUpperCase();
+            const azCode = gatewayShortCodeToAzureSlug(shortCode);
+            return { code: azCode || shortCode.toLowerCase(), name: shortCode, shortCode, fqdn };
+        }
+    }
+    return null;
+}
+
+function extractGwFqdn(info) {
+    const m = info.match(/rdgateway-[^\s]+\.wvd\.microsoft\.com/i);
+    return m ? m[0] : null;
+}
+
+// The RD Gateway is selected by AFD based on the USER's location, so a healthy
+// session reaches a gateway that is genuinely NEAR the user. The measured
+// client RTT is the authoritative proximity signal: a low RTT proves the
+// serving gateway is close, regardless of what the gateway FQDN's home-region
+// NAME (e.g. "EUS"/"East US") or a GeoIP/region-centroid lookup claims. Those
+// name/centroid-based distances are unreliable (the FQDN region label and the
+// anycast IP's registered location frequently disagree with the physical PoP
+// actually serving the connection), so when they say "far" but the measured
+// RTT says "near", the measurement wins. Only treat the gateway as genuinely
+// distant — a real, user-impacting problem — when the measured RTT is high.
+// A flat millisecond cutoff cannot tell a local edge (~10-30 ms) from a
+// cross-continent hairpin (Redmond->East US is ~70-90 ms) — both are "low" in
+// absolute terms. The deterministic discriminator is PHYSICS: a round trip to a
+// point distKm away cannot be faster than 2*distKm/c, even at the speed of light
+// in vacuum (~300 km/ms). We compare the measured per-RTT against that floor for
+// the ACTUAL egress distance. This is the SAME gate the v58 upstream-tunnel
+// detector uses, so the map and the AI finding can never disagree.
+const LIGHT_KM_PER_MS_MAP = 300;
+function gatewayMeasuredRttMs(lookup) {
+    return extractMs(lookup['B-TCP-02'], { allowDuration: true });
+}
+// Tightest provable UPPER BOUND on a single network RTT (ms). Reuses the
+// ai-analysis helper (min across B-TCP-02 / B-EP-01 / B-TCP-03, each /2 for the
+// >=2 round trips a connect contains) so we never over-estimate and never
+// wrongly suppress. Falls back to B-TCP-02/2 if the helper isn't loaded.
+function gatewayPerRttUpperBoundMs(lookup) {
+    if (typeof minNetworkRttUpperBoundMs === 'function' && Array.isArray(_lastMapResults)) {
+        const v = minNetworkRttUpperBoundMs(_lastMapResults);
+        if (v != null) return v;
+    }
+    const httpsMs = extractMs(lookup['B-TCP-02'], { allowDuration: true });
+    return httpsMs != null ? httpsMs / 2 : null;
+}
+function hairpinFloorMs(distKm) { return (2 * distKm) / LIGHT_KM_PER_MS_MAP; }
+
+// Synchronous great-circle distance (km) between the device GPS fix and its
+// network egress, mirroring the priority used by the ISP card (result 27 →
+// B-LE-02/C-LE-02 egress coords → already-rendered GPS→egress badge). Returns
+// null when no coordinates are available. Cards run after updateMapIspCard, so
+// the badge fallback is populated for the synchronous coordinate-less path.
+function computeEgressDistanceKm(lookup) {
+    if (typeof extractCoordinatesFromDetailedInfo !== 'function' ||
+        typeof haversineDistanceKm !== 'function') return null;
+    const userLoc = lookup['B-LE-01'];
+    const gpsCoords = userLoc ? extractCoordinatesFromDetailedInfo(userLoc.detailedInfo) : null;
+    if (gpsCoords) {
+        let egressCoords = null;
+        const egress27 = lookup['27'];
+        if (egress27) egressCoords = extractCoordinatesFromDetailedInfo(egress27.detailedInfo, ['Egress coordinates:']);
+        if (!egressCoords) {
+            const ispGeo = lookup['B-LE-02'] || lookup['C-LE-02'];
+            if (ispGeo) egressCoords = extractCoordinatesFromDetailedInfo(ispGeo.detailedInfo, ['Egress coordinates:']);
+        }
+        if (egressCoords) {
+            return haversineDistanceKm(gpsCoords.lat, gpsCoords.lon, egressCoords.lat, egressCoords.lon);
+        }
+    }
+    // Fallback: parse the rendered GPS→egress badge (set by updateMapIspCard).
+    if (typeof document !== 'undefined') {
+        const badge = document.getElementById('map-isp-distance-badge');
+        const m = badge && badge.textContent.match(/(\d[\d,]*)\s*km/i);
+        if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+    }
+    return null;
+}
+
+// The measured latency PROVES the path is local — i.e. the large GeoIP egress
+// distance is physically IMPOSSIBLE for the RTT we observed (a packet could not
+// reach an egress that far and return in time). Used to override a misleading
+// region-name / GeoIP "far" verdict on the AFD edge and RD gateway: a low RTT
+// means the AFD-selected gateway is genuinely near the user, whatever the
+// region NAME says. Needs both a distance and a measured RTT to decide.
+function gatewayLatencyProvesLocal(lookup) {
+    // GeoIP-independent proof beats physics: if the AFD edge (routing ground
+    // truth) sits in the user's region, the breakout is local whatever the
+    // egress IP geolocates to.
+    if (afdPopProvesLocalEgress(lookup)) return true;
+    const distKm = computeEgressDistanceKm(lookup);
+    const perRtt = gatewayPerRttUpperBoundMs(lookup);
+    if (distKm == null || perRtt == null) return false;
+    return perRtt < hairpinFloorMs(distKm);
+}
+
+// True when the internet egress is GENUINELY far from the user — the GeoIP
+// distance is large AND the measured RTT is CONSISTENT with it (>= the physical
+// floor for that distance). This is the real, actionable problem: traffic
+// breaks out non-locally (VPN/SWG/proxy hairpin or ISP backhaul), which forces
+// AFD — and therefore the AFD-selected RD gateway — to a region near the
+// EGRESS rather than the user, yielding a suboptimal path. When the RTT is
+// below the physical floor the large distance is impossible (egress is actually
+// local), so this returns false and no phantom warning is raised. Covers BOTH
+// local-VPN and upstream-tunnel causes (unlike detectUpstreamTunnel, which
+// excludes local adapters).
+const EGRESS_FAR_MIN_KM = 500;
+function egressGenuinelyFar(lookup) {
+    // The AFD edge is selected by Microsoft anycast to be nearest the EGRESS,
+    // so when it lands in the user's own region the breakout is provably local
+    // and any large GeoIP distance is an artefact — suppress before physics.
+    if (afdPopProvesLocalEgress(lookup)) return false;
+    const distKm = computeEgressDistanceKm(lookup);
+    if (distKm == null || distKm < EGRESS_FAR_MIN_KM) return false;
+    const perRtt = gatewayPerRttUpperBoundMs(lookup);
+    // A large GeoIP distance is NOT actionable on its own: a carrier IP can
+    // geolocate hundreds/thousands of km from where the user actually egresses
+    // (registration-address artefact). Only call the egress "genuinely far"
+    // when a measured RTT CORROBORATES the distance (>= the physical floor).
+    // Without any latency to corroborate, suppress rather than raise a phantom
+    // "suboptimal · distant egress" warning — same rule as
+    // gatewayLatencyProvesLocal(), which also requires BOTH signals.
+    if (perRtt == null) return false;
+    return perRtt >= hairpinFloorMs(distKm);
+}
+
+// GeoIP-INDEPENDENT proof that the internet breakout is LOCAL. Azure Front Door
+// anycast always routes to the edge nearest the EGRESS, so the AFD PoP location
+// (parsed from the X-MSEdge-Ref header, NOT from any IP-geolocation) is ground
+// truth for where traffic physically breaks out. When that PoP is in the same
+// region as the device's genuine GPS fix, the egress is provably local — even
+// if a weak GeoIP provider mislocates the egress IP. This is the classic
+// corporate-AS artefact: a bank/enterprise whose IP blocks register to a
+// foreign HQ address (e.g. AS17071 UBS AG → Switzerland) geolocates the London
+// egress 769 km away, while the AFD edge, RDP gateway region, traceroute exit
+// hop and device GPS all agree it is London. RTT physics cannot catch this
+// below ~2000 km (the light-speed floor for 769 km is only ~5 ms, well under a
+// normal 20-50 ms RTT), so the PoP-vs-device comparison is the right gate.
+function afdPopProvesLocalEgress(lookup) {
+    const user = getUserLocationContext(lookup);
+    if (!user.coords) return false;
+    const gw = lookup['L-TCP-09'] || lookup['C-TCP-09'] || lookup['L-TCP-04'];
+    if (!gw || !gw.detailedInfo) return false;
+    const popLine = extractLine(gw.detailedInfo, 'AFD PoP:');
+    if (!popLine) return false;
+    const popCoords = getServiceCoords(popLine);
+    if (!popCoords) return false;
+    const distKm = haversineDistanceKm(user.coords.lat, user.coords.lon, popCoords.lat, popCoords.lon);
+    return distKm < EGRESS_FAR_MIN_KM;
+}
+
+// RDP gateway FQDN short codes (UKW, EUS2, WEU) → full Azure region slugs
+// (ukwest, eastus2, westeurope). Kept as a small table so exact-code
+// comparison with IMDS region works without string-matching heuristics.
+function gatewayShortCodeToAzureSlug(code) {
+    const map = {
+        UKS: 'uksouth', UKW: 'ukwest',
+        NEU: 'northeurope', WEU: 'westeurope',
+        FRC: 'francecentral', FRS: 'francesouth',
+        GWC: 'germanywestcentral', GN: 'germanynorth',
+        NOE: 'norwayeast', NOW: 'norwaywest',
+        SEW: 'swedencentral', SES: 'swedensouth',
+        CHN: 'switzerlandnorth', CHW: 'switzerlandwest',
+        ITA: 'italynorth',
+        SPE: 'spaincentral', ESC: 'spaincentral',
+        POC: 'polandcentral',
+        EUS: 'eastus', EUS2: 'eastus2',
+        CUS: 'centralus', NCUS: 'northcentralus', SCUS: 'southcentralus', WCUS: 'westcentralus',
+        WUS: 'westus', WUS2: 'westus2', WUS3: 'westus3',
+        CC: 'canadacentral', CE: 'canadaeast',
+        SEA: 'southeastasia', EA: 'eastasia',
+        JE: 'japaneast', JW: 'japanwest',
+        KRC: 'koreacentral', KRS: 'koreasouth',
+        CIN: 'centralindia', SIN: 'southindia', WIN: 'westindia',
+        AUE: 'australiaeast', AUSE: 'australiasoutheast', AUC: 'australiacentral',
+        SAE: 'southafricanorth', SAW: 'southafricawest',
+        UAE: 'uaenorth', UAW: 'uaecentral',
+        ILC: 'israelcentral', QAC: 'qatarcentral',
+        BRS: 'brazilsouth', BRSE: 'brazilsoutheast',
+    };
+    return map[code] || null;
+}
+
+// Which broad Azure geography does a region slug belong to?
+// Used only as a last-resort bucket when exact codes don't match — the
+// primary check is exact-slug equality, which catches intra-geo mistakes
+// (e.g. CPC in UK South but gateway in UK West is fine; CPC in East US 2
+// but gateway in UK West is not).
+function azureRegionGeo(slug) {
+    if (!slug) return null;
+    const s = slug.toLowerCase();
+    if (/^(eastus|westus|centralus|northcentralus|southcentralus|westcentralus|eastus2|westus2|westus3)$/.test(s)) return 'north-america';
+    if (/^(canada(central|east))$/.test(s)) return 'north-america';
+    if (/^(uk(south|west)|northeurope|westeurope|france(central|south)|germany(westcentral|north)|switzerland(north|west)|norway(east|west)|sweden(central|south)|italynorth|spaincentral|polandcentral)$/.test(s)) return 'europe';
+    if (/^(uae(north|central)|israelcentral|qatarcentral)$/.test(s)) return 'middle-east';
+    if (/^southafrica(north|west)$/.test(s)) return 'africa';
+    if (/^(japan(east|west)|korea(central|south)|southeastasia|eastasia|australia(east|southeast|central|central2)|central(india|)|(south|west)india|jioindia(west|central))$/.test(s)) return 'apac';
+    if (/^brazil(south|southeast)$/.test(s)) return 'south-america';
+    return null;
+}
+
+// Compare two Azure region slugs and return {level, reason}:
+//   'same'     — identical slug (no issue)
+//   'intra'    — different slug, same broad geography (acceptable for W365
+//                since AFD geo-routing may pick a neighbouring region)
+//   'cross'    — different geography (always wrong for CPC↔gateway pairing)
+//   'unknown'  — can't classify
+function compareAzureRegions(slugA, slugB) {
+    if (!slugA || !slugB) return { level: 'unknown' };
+    if (slugA === slugB) return { level: 'same' };
+    const geoA = azureRegionGeo(slugA);
+    const geoB = azureRegionGeo(slugB);
+    if (!geoA || !geoB) return { level: 'unknown' };
+    return { level: geoA === geoB ? 'intra' : 'cross' };
+}
+
+// (Legacy coarse-bucket check — kept for callers still using free-text
+// location strings. New callers should use compareAzureRegions above.)
+function isLocationInSameGeoAsRegion(locStr, regionCode) {
+    if (!locStr || !regionCode) return null;
+    const L = locStr.toLowerCase();
+    const R = regionCode.toLowerCase();
+    const buckets = [
+        { rx: /^(eastus|westus|centralus|northcentralus|southcentralus|westcentralus|eastus2|westus2|westus3)$/, loc: /(\bus\b|united states|usa|virginia|iowa|texas|washington|arizona|california|illinois|wyoming|new york|chicago|dallas|atlanta|seattle|phoenix)/ },
+        { rx: /^(canadacentral|canadaeast)$/, loc: /canada|toronto|quebec|montreal/ },
+        { rx: /^(uksouth|ukwest)$/, loc: /\buk\b|united kingdom|england|scotland|wales|london|cardiff|manchester/ },
+        { rx: /^(northeurope|westeurope)$/, loc: /ireland|netherlands|dublin|amsterdam|europe/ },
+        { rx: /^(francecentral|francesouth)$/, loc: /france|paris|marseille/ },
+        { rx: /^(germanywestcentral|germanynorth)$/, loc: /germany|frankfurt|berlin/ },
+        { rx: /^(switzerlandnorth|switzerlandwest)$/, loc: /switzerland|zurich|geneva/ },
+        { rx: /^(norwayeast|norwaywest)$/, loc: /norway|oslo/ },
+        { rx: /^(swedencentral)$/, loc: /sweden|stockholm/ },
+        { rx: /^(italynorth)$/, loc: /italy|milan/ },
+        { rx: /^(polandcentral)$/, loc: /poland|warsaw/ },
+        { rx: /^(uaenorth|uaecentral)$/, loc: /uae|dubai|abu dhabi/ },
+        { rx: /^(israelcentral)$/, loc: /israel|tel aviv/ },
+        { rx: /^(qatarcentral)$/, loc: /qatar|doha/ },
+        { rx: /^(southafrica(north|west))$/, loc: /south africa|johannesburg|cape town/ },
+        { rx: /^(australia(east|southeast|central|central2))$/, loc: /australia|sydney|melbourne|canberra/ },
+        { rx: /^(japan(east|west))$/, loc: /japan|tokyo|osaka/ },
+        { rx: /^(korea(central|south))$/, loc: /korea|seoul|busan/ },
+        { rx: /^(southeastasia|eastasia)$/, loc: /singapore|hong kong/ },
+        { rx: /^(centralindia|southindia|westindia|jioindia(west|central))$/, loc: /india|mumbai|chennai|pune|hyderabad/ },
+        { rx: /^(brazil(south|southeast))$/, loc: /brazil|sao paulo/ },
+    ];
+    for (const b of buckets) {
+        if (b.rx.test(R)) return b.loc.test(L);
+    }
+    return null;
+}
+
+// ── RD Gateway Card ──
+function updateMapRdGwCard(lookup) {
+    const tcpPorts = lookup['L-TCP-04'];
+    // Dual-side latency for the RD Gateway. Client = browser HTTPS probe
+    // (B-TCP-02 is the closest client-side measurement we have for the
+    // gateway endpoint); Cloud PC = scanner gateway probe (C-TCP-04).
+    const clientLat = lookup['B-TCP-02'];
+    const cpcLat = lookup['C-TCP-04'];
+    const latency = clientLat || cpcLat;
+    const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+
+    let status = 'NotRun';
+    let detail1 = 'Awaiting results...';
+
+    if (tcpPorts && tcpPorts.status !== 'NotRun' && tcpPorts.status !== 'Pending') {
+        status = tcpPorts.status;
+        detail1 = tcpPorts.resultValue || '';
+    } else if (latency && latency.status !== 'NotRun') {
+        status = latency.status;
+        detail1 = latency.status === 'Passed' ? '✓ Gateway reachable' : latency.resultValue || '';
+    }
+
+    // Show gateway location + proximity as badges from L-TCP-09
+    // Use rdweb/client location (not the AFD anycast IP which GeoIP maps to Redmond)
+    let rdgwLocationStr = '';
+    if (gwUsed && gwUsed.detailedInfo) {
+        const locInfo = extractRdGwLocationWithProximity(gwUsed.detailedInfo);
+        if (locInfo.location) {
+            setFlaggedBadge('map-rdgw-loc-badge', `📍 ${locInfo.location}`, 'location-badge', locInfo.location);
+            rdgwLocationStr = locInfo.location;
+        }
+        if (locInfo.proximity) {
+            // The gateway is AFD-selected by the user's location, so it should be
+            // near the user. The measured client RTT is the authoritative signal;
+            // when a region-name/GeoIP lookup claims "far" but the RTT proves the
+            // serving gateway is near, trust the measurement and show Near.
+            const measurablyNear = gatewayLatencyProvesLocal(lookup);
+            const measuredMs = gatewayMeasuredRttMs(lookup);
+            const nearLabel = measuredMs != null ? `✔ Near (${measuredMs} ms)` : '✔ Near';
+            if (locInfo.proximity.includes('✔') || locInfo.proximity.includes('Near') || locInfo.proximity.includes('near')) {
+                setBadge('map-rdgw-prox-badge', '✔ Near', 'proximity-near');
+            } else if (locInfo.proximity.includes('⚠') || locInfo.proximity.includes('Far') || locInfo.proximity.includes('far')) {
+                if (measurablyNear) {
+                    setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
+                } else if (egressGenuinelyFar(lookup)) {
+                    setBadge('map-rdgw-prox-badge', '⚠ Suboptimal · follows distant egress', 'proximity-far');
+                } else {
+                    setBadge('map-rdgw-prox-badge', '⚠ Far', 'proximity-far');
+                }
+            } else if (locInfo.proximity.includes('≈') || locInfo.proximity.includes('Moderate')) {
+                setBadge('map-rdgw-prox-badge', '≈ Moderate', 'proximity-moderate');
+            } else {
+                // Scanner provided a distance value but no near/far judgment — parse km
+                const kmMatch = locInfo.proximity.match(/(\d[\d,]*)\s*km/i);
+                if (kmMatch) {
+                    const km = parseInt(kmMatch[1].replace(/,/g, ''), 10);
+                    if (km < 2000) setBadge('map-rdgw-prox-badge', `✔ ${locInfo.proximity}`, 'proximity-near');
+                    else if (km < 5000) setBadge('map-rdgw-prox-badge', `≈ ${locInfo.proximity}`, 'proximity-moderate');
+                    else if (measurablyNear) setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
+                    else if (egressGenuinelyFar(lookup)) setBadge('map-rdgw-prox-badge', '⚠ Suboptimal · follows distant egress', 'proximity-far');
+                    else setBadge('map-rdgw-prox-badge', `⚠ ${locInfo.proximity}`, 'proximity-far');
+                }
+            }
+        } else if (rdgwLocationStr) {
+            // Scanner didn't include proximity — compute from region groups
+            const user = getUserLocationContext(lookup);
+            const serviceCoords = getServiceCoords(rdgwLocationStr);
+            const prox = checkServiceProximity(user.countryCode, rdgwLocationStr, user.coords, serviceCoords);
+            if (prox && prox.level === 'far') {
+                // A low measured RTT proves the AFD-selected gateway is actually
+                // near the user; trust it over a region-name/centroid "far".
+                if (gatewayLatencyProvesLocal(lookup)) {
+                    const measuredMs = gatewayMeasuredRttMs(lookup);
+                    const nearLabel = measuredMs != null ? `✔ Near (${measuredMs} ms)` : '✔ Near';
+                    setBadge('map-rdgw-prox-badge', nearLabel, 'proximity-near');
+                } else if (egressGenuinelyFar(lookup)) {
+                    setBadge('map-rdgw-prox-badge', '⚠ Suboptimal · follows distant egress', 'proximity-far');
+                } else {
+                    setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
+                }
+            } else if (prox && prox.level === 'ok') {
+                setBadge('map-rdgw-prox-badge', prox.label, prox.cssClass);
+            }
+        }
+    }
+
+    // Latency badge — render dual when both client and Cloud PC probed the gateway.
+    // C-TCP-04 bundles 4 sub-probes; its `duration` covers all of them and is
+    // not the gateway RTT. Pull the gateway-block TCP latency (matches what
+    // PsPing would show) out of the structured detailedInfo and disallow the
+    // duration fallback.
+    const cpcRdgwMs = extractMs(cpcLat, {
+        section: /\[RDP Gateway\]/i,
+        prefer: 'tcp',
+        allowDuration: false
+    });
+    setDualLatencyBadge('map-rdgw-badge', extractMs(clientLat, { allowDuration: true }), cpcRdgwMs, true);
+
+    // ── RD Gateway proximity: follows the USER's EGRESS, NOT the CPC region ──
+    // The RD gateway is AFD-selected from the USER's internet egress, so a
+    // healthy session reaches a gateway near the USER — which may be a completely
+    // different Azure region from the Cloud PC (e.g. a Redmond user on a UK-West
+    // CPC correctly gets a West US gateway). Comparing the gateway region to the
+    // CPC region is therefore WRONG and produced false "Wrong region" alarms.
+    // Gateway proximity is judged against the user above (measured RTT is
+    // authoritative; egressGenuinelyFar handles a genuinely distant egress).
+    // Only the TURN relay (server-side) is compared to the CPC region — see
+    // updateMapTurnCard.
+
+    setText('map-rdgw-detail', detail1);
+    setAccentStatus('map-rdgw-accent', status);
+}
+
+// ── TURN Relay Card ──
+function updateMapTurnCard(lookup) {
+    const stunTest = lookup['B-UDP-01'] || lookup['C-UDP-03'];
+    const turnReach = lookup['L-UDP-03'];
+
+    let status = 'NotRun';
+    let detail1 = 'Awaiting results...';
+
+    if (turnReach && turnReach.status !== 'NotRun' && turnReach.status !== 'Pending') {
+        status = turnReach.status;
+        if (turnReach.status === 'Passed') {
+            detail1 = '✓ Reachable (UDP 3478)';
+        } else {
+            detail1 = '✗ Unreachable (UDP 3478)';
+        }
+    } else if (stunTest && stunTest.status !== 'NotRun') {
+        detail1 = stunTest.status === 'Passed' ? '✓ STUN OK' : stunTest.resultValue || '';
+        status = stunTest.status;
+    }
+
+    // TURN relay discovery — separate the CLIENT-side relay from the CPC-side
+    // relay. They are DIFFERENT relays: the client (laptop scanner, L-UDP-04)
+    // gets a relay near the USER's egress, while the Cloud PC (C-UDP-04) gets a
+    // relay near the CPC region. The W365 session's relay is the CPC-side one, so
+    // ONLY that one may be compared to the CPC region. Comparing the client-side
+    // relay to the CPC region produced false "Wrong region" alarms (e.g. a Redmond
+    // user correctly gets a West US relay while the CPC is in UK West).
+    const parseTurnLoc = (t) => {
+        if (!t || t.status === 'NotRun' || t.status === 'Pending') return null;
+        // Match both "TURN relay: Region (ip)" and "TURN relay (DNS): Region (code) (ip)"
+        const lm = (t.resultValue || '').match(/TURN relay(?:\s*\([^)]*\))?:\s*(.+?)\s*\(/);
+        let slug = '';
+        if (t.detailedInfo) {
+            // Authoritative Azure region slug, e.g. "Azure Region: East US 2 (eastus2)".
+            const m = t.detailedInfo.match(/Azure Region:\s*[^(\n]*\(([a-z0-9-]+)\)/i);
+            if (m) slug = m[1].toLowerCase();
+        }
+        return { city: lm ? lm[1] : '', slug, status: t.status };
+    };
+    const clientTurnLoc = parseTurnLoc(lookup['L-UDP-04']);
+    const cpcTurnLoc = parseTurnLoc(lookup['C-UDP-04']);
+    // The card represents the session's TURN relay. Prefer the CPC-side relay
+    // (the relay the W365 session actually uses); fall back to the client-side.
+    const sessionTurn = cpcTurnLoc || clientTurnLoc;
+
+    let turnLocationStr = '';
+    if (sessionTurn) {
+        turnLocationStr = sessionTurn.city;
+        if (turnLocationStr) {
+            setFlaggedBadge('map-turn-loc-badge', `📍 ${turnLocationStr}`, 'location-badge', turnLocationStr);
+        }
+        status = worstStatus(status, sessionTurn.status);
+    } else if (stunTest && stunTest.status === 'Passed') {
+        // No scanner data — browser-side relay geolocation is disabled in the
+        // production build (it required a third-party DoH resolver). Run the
+        // Local Scanner (L-UDP-04) for authoritative TURN relay location.
+        geolocateTurnRelay();
+    }
+
+    // Compare TURN region against the CPC's Azure region (from IMDS).
+    //
+    // IMPORTANT: unlike the RD Gateway, TURN is server-side — the VM's region
+    // determines which TURN relay the session uses, not the client's egress.
+    // Azure's platform DNS (168.63.129.16) is intercepted at the hypervisor,
+    // so even a full-tunnel VPN on the Cloud PC does NOT tunnel TURN name
+    // resolution through the VPN. Traffic Manager correctly returns the CPC's
+    // own region — which is exactly what the session will use.
+    //
+    // So the "correct" state here is the CPC-SIDE relay region == CPC region
+    // (green). We deliberately only run this check against the CPC-side relay
+    // (cpcTurnLoc); the client-side relay legitimately follows the user's egress
+    // and must never be flagged against the CPC region.
+    const vpnCtxTurn = getVpnContext(lookup);
+    const cpcSlug = (vpnCtxTurn.cpcRegionCode || '').toLowerCase();
+    const stunHostOnly = stunTest && /host candidate/i.test(stunTest.resultValue || '');
+    // Once the CPC co-location verdict sets the proximity badge, the user-vs-relay
+    // distance check below must NOT overwrite it. The session uses the CPC-side
+    // relay, so co-location with the CPC region is the authoritative verdict;
+    // distance from the user's egress is expected (and irrelevant) for a CPC in
+    // another region (e.g. Redmond user, UK West CPC → UK West relay).
+    let proxBadgeSet = false;
+    if (cpcTurnLoc && cpcTurnLoc.slug && cpcSlug) {
+        const cmp = compareAzureRegions(cpcTurnLoc.slug, cpcSlug);
+        if (cmp.level === 'same') {
+            setBadge('map-turn-prox-badge', `✓ Co-located with CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-near');
+            proxBadgeSet = true;
+        } else if (cmp.level === 'intra') {
+            setBadge('map-turn-prox-badge', `≈ Neighbouring region to CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-moderate');
+            status = worstStatus(status, 'Warning');
+            proxBadgeSet = true;
+        } else if (cmp.level === 'cross') {
+            setBadge('map-turn-prox-badge', `⚠ Wrong region — CPC in ${vpnCtxTurn.cpcRegionName}`, 'proximity-far');
+            status = worstStatus(status, 'Warning');
+            detail1 = `⚠ Session relay in ${cpcTurnLoc.city}, CPC in ${vpnCtxTurn.cpcRegionName}`;
+            proxBadgeSet = true;
+        }
+    } else if (vpnCtxTurn.vpnActive && stunHostOnly) {
+        // VPN blocked STUN outright — we can't verify the session path at all
+        setBadge('map-turn-loc-badge', '⚠ DNS-only region — session path unknown', 'status-warn');
+        status = worstStatus(status, 'Warning');
+        detail1 = '⚠ STUN blocked by VPN — relay region uncertain';
+        turnLocationStr = '';
+    }
+
+    // Proximity badge — DNS-resolved TURN location vs user (informational only,
+    // actual session TURN relay is assigned by RDP gateway via CRLB anycast).
+    // Skip entirely when the CPC co-location verdict already owns this badge —
+    // distance from the user is expected and irrelevant for a CPC-side relay.
+    if (turnLocationStr && !proxBadgeSet) {
+        const user = getUserLocationContext(lookup);
+        const serviceCoords = getServiceCoords(turnLocationStr);
+        const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
+        if (prox && prox.level === 'far') {
+            setBadge('map-turn-prox-badge', 'ℹ Relay follows CPC region — session unaffected', 'status-info');
+        } else if (prox && prox.level === 'ok') {
+            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
+        }
+        // 'near' = normal, no badge needed
+    }
+
+    // Reachability badge
+    if (turnReach && turnReach.status !== 'NotRun' && turnReach.status !== 'Pending') {
+        if (turnReach.status === 'Passed') {
+            setBadge('map-turn-badge', '✓ Reachable', 'status-ok');
+        } else {
+            setBadge('map-turn-badge', '✗ Unreachable', 'status-fail');
+        }
+    }
+
+    // Latency badge — render dual when both client and Cloud PC have a TURN
+    // probe. Client side is L-UDP-03 (laptop scanner, when present);
+    // Cloud PC side is C-UDP-03 (CPC scanner). On a laptop without the
+    // local scanner there's no client-side TURN latency probe, so this
+    // falls back to single-pill behaviour automatically.
+    const clientTurn = lookup['L-UDP-03'];
+    const cpcTurnLat = lookup['C-UDP-03'];
+    // Don't double-count: `turnReach` above already prefers L-UDP-03, so if
+    // we have a CPC-side reading too, render both.
+    setDualLatencyBadge('map-turn-lat-badge', extractMs(clientTurn), extractMs(cpcTurnLat), false);
+
+    setText('map-turn-detail', detail1);
+    setAccentStatus('map-turn-accent', status);
+}
+
+/**
+ * Browser-based TURN relay geolocation — DISABLED for production.
+ *
+ * This previously resolved world.relay.avd.microsoft.com via a third-party DoH
+ * resolver (dns.google) and geolocated the relay IP via a third-party GeoIP
+ * service. A Microsoft-signed production build must not call non-Microsoft
+ * endpoints, so this fallback is now a no-op. Authoritative TURN relay location
+ * is provided by the Local Scanner (L-UDP-04 / C-UDP-04).
+ */
+async function geolocateTurnRelay() {
+    return; // no-op: third-party DoH/GeoIP fallback removed for production
+}
+
+// ── DNS Card ──
+function updateMapDnsCard(lookup) {
+    // Prefer L-TCP-03 (scanner — pure DNS timing) over B-TCP-03 (browser — DNS+TCP+TLS combined)
+    const dnsPerf = lookup['L-TCP-03'] || lookup['B-TCP-03'] || lookup['C-TCP-05'];
+    const dnsCname = lookup['L-TCP-05'];
+
+    let status = 'NotRun';
+    let detail1 = 'Awaiting results...';
+    let detail2 = '';
+
+    if (dnsPerf && dnsPerf.status !== 'NotRun') {
+        status = dnsPerf.status;
+        detail1 = dnsPerf.resultValue || '';
+
+        // Extract avg latency for badge
+        const match = (dnsPerf.resultValue || '').match(/(\d+)\s*ms/);
+        if (match) {
+            const ms = parseInt(match[1]);
+            const health = latencyLabel(ms, 'dns');
+            setBadge('map-dns-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
+        }
+    }
+
+    if (dnsCname && dnsCname.status !== 'NotRun' && dnsCname.status !== 'Pending') {
+        detail2 = dnsCname.resultValue || '';
+        status = worstStatus(status, dnsCname.status);
+    }
+
+    setText('map-dns-detail', detail1);
+    setText('map-dns-detail2', detail2);
+    setAccentStatus('map-dns-accent', status);
+    setDeviceDot('device-dns-dot', status);
+}
+function updateMapLatencyLabels(lookup) {
+    function setLL(id, ms, type) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (ms == null || isNaN(ms)) { el.textContent = ''; return; }
+        const msText = ms < 1 ? '<1ms' : ms + 'ms';
+        const health = latencyLabel(ms, type);
+        el.textContent = `${msText} · ${health}`;
+        el.classList.remove('lat-good', 'lat-warn', 'lat-bad');
+        el.classList.add(latencyClassLine(ms, type));
+    }
+
+    // Local GW: L-LE-05 "Gateway X.X.X.X: avg Nms"
+    const gw05 = lookup['L-LE-05'];
+    let gwMs = null;
+    if (gw05 && gw05.resultValue) {
+        const m = gw05.resultValue.match(/avg\s+(\d+)ms/);
+        if (m) gwMs = parseInt(m[1]);
+    }
+    setLL('map-lat-gw', gwMs, 'gw');
+
+    // AFD Edge: B-TCP-02 "Latency: avg Nms" or resultValue "— Nms"
+    const afd02 = lookup['B-TCP-02'];
+    let afdMs = null;
+    if (afd02 && afd02.detailedInfo) {
+        const latLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+        if (latLine) {
+            const m = latLine.match(/avg\s+(\d+)ms/);
+            if (m) afdMs = parseInt(m[1]);
+        }
+    }
+    if (afdMs == null && afd02 && afd02.resultValue) {
+        const m = afd02.resultValue.match(/(\d+)\s*ms/);
+        if (m) afdMs = parseInt(m[1]);
+    }
+    setLL('map-lat-afd', afdMs, 'tcp');
+
+    // RD Gateway: L-TCP-04 "[RDP Gateway]" → "TCP connected in Nms"
+    const tcp04 = lookup['L-TCP-04'];
+    let rdgwMs = null;
+    if (tcp04 && tcp04.detailedInfo) {
+        const lines = tcp04.detailedInfo.split('\n');
+        const gwIdx = lines.findIndex(l => l.includes('[RDP Gateway]'));
+        if (gwIdx >= 0) {
+            for (let i = gwIdx; i < Math.min(gwIdx + 5, lines.length); i++) {
+                const m = lines[i].match(/TCP connected in (\d+)ms/);
+                if (m) { rdgwMs = parseInt(m[1]); break; }
+            }
+        }
+    }
+    setLL('map-lat-rdgw', rdgwMs, 'tcp');
+
+    // TURN Relay: L-UDP-03 "Latency: Nms" in detailedInfo, or "— Nms RTT" in resultValue,
+    // or fall back to the test duration field (which equals the STUN RTT for this test)
+    const turn03 = lookup['L-UDP-03'];
+    let turnMs = null;
+    if (turn03 && turn03.detailedInfo) {
+        const latLine = turn03.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+        if (latLine) {
+            const m = latLine.match(/(\d+)\s*ms/);
+            if (m) turnMs = parseInt(m[1]);
+        }
+    }
+    if (turnMs == null && turn03 && turn03.resultValue) {
+        const m = turn03.resultValue.match(/(\d+)\s*ms/);
+        if (m) turnMs = parseInt(m[1]);
+    }
+    // Older scanner builds don't embed RTT in text — use the test duration as the RTT
+    if (turnMs == null && turn03 && turn03.status === 'Passed' && turn03.duration > 0) {
+        turnMs = turn03.duration;
+    }
+    setLL('map-lat-turn', turnMs, 'udp');
+
+    // ── CPC mode latency labels (Cloud PC → gateway services) ──
+    const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
+    if (isCpcMode) {
+        // CPC RD Gateway: C-TCP-04 scanner result. The browser AFD probe is
+        // deliberately not used as a session-host gateway measurement.
+        const cpcGw = lookup['C-TCP-04'];
+        let cpcGwMs = null;
+        if (cpcGw && cpcGw.detailedInfo) {
+            const latLine = cpcGw.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+            if (latLine) {
+                const m = latLine.match(/avg\s+(\d+)ms/);
+                if (m) cpcGwMs = parseInt(m[1]);
+            }
+        }
+        if (cpcGwMs == null && cpcGw && cpcGw.resultValue) {
+            const m = cpcGw.resultValue.match(/(\d+)\s*ms/);
+            if (m) cpcGwMs = parseInt(m[1]);
+        }
+        setLL('map-lat-cpc-rdgw', cpcGwMs, 'tcp');
+
+        // CPC TURN: In CPC mode, STUN test (C-UDP-03 / B-UDP-01) runs but doesn't
+        // measure explicit latency. Use the same gateway latency as a proxy for now,
+        // or leave empty if no TURN-specific latency data.
+        // For scanner imports, L-UDP-03 may be available as C-UDP-03.
+        const cpcTurn = lookup['C-UDP-03'];
+        let cpcTurnMs = null;
+        if (cpcTurn && cpcTurn.detailedInfo) {
+            const latLine = cpcTurn.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
+            if (latLine) {
+                const m = latLine.match(/(\d+)\s*ms/);
+                if (m) cpcTurnMs = parseInt(m[1]);
+            }
+        }
+        setLL('map-lat-cpc-turn', cpcTurnMs, 'udp');
+
+        // CPC arrow3 label (overall gateway latency)
+        setLL('map-lat-cpc-gw', cpcGwMs, 'tcp');
+    }
+}
+
+function latencyClassLine(ms, type) {
+    if (type === 'gw') return ms < 20 ? 'lat-good' : ms < 50 ? 'lat-warn' : 'lat-bad';
+    if (type === 'udp') return ms < 150 ? 'lat-good' : ms < 300 ? 'lat-warn' : 'lat-bad';
+    return ms < 100 ? 'lat-good' : ms < 200 ? 'lat-warn' : 'lat-bad';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Service proximity detection
+//  Groups countries into broad geographic regions so that
+//  load-balanced routing within the same continent (e.g. UK
+//  user → Paris AFD) is not flagged, but cross-continent
+//  routing (e.g. UK user → US East) is clearly flagged.
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Map 2-letter country codes to broad geographic regions.
+ * Countries in the same region are expected to share service infrastructure.
+ */
+const REGION_GROUPS = {
+    // Western & Northern Europe
+    'gb':'europe-west', 'ie':'europe-west', 'fr':'europe-west', 'nl':'europe-west',
+    'be':'europe-west', 'lu':'europe-west', 'de':'europe-west', 'at':'europe-west',
+    'ch':'europe-west', 'dk':'europe-west', 'no':'europe-west', 'se':'europe-west',
+    'fi':'europe-west', 'is':'europe-west', 'pt':'europe-west', 'es':'europe-west',
+    'it':'europe-west', 'mc':'europe-west', 'li':'europe-west', 'mt':'europe-west',
+    // Central & Eastern Europe
+    'pl':'europe-east', 'cz':'europe-east', 'sk':'europe-east', 'hu':'europe-east',
+    'ro':'europe-east', 'bg':'europe-east', 'hr':'europe-east', 'si':'europe-east',
+    'rs':'europe-east', 'ba':'europe-east', 'mk':'europe-east', 'al':'europe-east',
+    'me':'europe-east', 'xk':'europe-east', 'gr':'europe-east', 'cy':'europe-east',
+    'ee':'europe-east', 'lv':'europe-east', 'lt':'europe-east',
+    // North America
+    'us':'north-america', 'ca':'north-america', 'mx':'north-america',
+    // South America
+    'br':'south-america', 'ar':'south-america', 'cl':'south-america',
+    'co':'south-america', 'pe':'south-america', 've':'south-america',
+    'ec':'south-america', 'uy':'south-america', 'py':'south-america',
+    // Middle East
+    'ae':'middle-east', 'sa':'middle-east', 'qa':'middle-east', 'bh':'middle-east',
+    'kw':'middle-east', 'om':'middle-east', 'il':'middle-east', 'jo':'middle-east',
+    'lb':'middle-east', 'iq':'middle-east', 'tr':'middle-east',
+    // East Asia
+    'jp':'east-asia', 'kr':'east-asia', 'cn':'east-asia', 'tw':'east-asia',
+    'hk':'east-asia', 'mo':'east-asia', 'mn':'east-asia',
+    // Southeast Asia
+    'sg':'southeast-asia', 'my':'southeast-asia', 'th':'southeast-asia',
+    'ph':'southeast-asia', 'id':'southeast-asia', 'vn':'southeast-asia',
+    // South Asia
+    'in':'south-asia', 'pk':'south-asia', 'bd':'south-asia', 'lk':'south-asia',
+    'np':'south-asia',
+    // Oceania
+    'au':'oceania', 'nz':'oceania',
+    // Africa
+    'za':'africa', 'ke':'africa', 'ng':'africa', 'eg':'africa',
+    'gh':'africa', 'tz':'africa', 'et':'africa', 'dz':'africa',
+    'ma':'africa', 'tn':'africa',
+};
+
+/**
+ * Adjacent region pairs — routing between these is acceptable (moderate, not alarming).
+ * E.g. Western Europe ↔ Eastern Europe, Middle East ↔ South Asia.
+ */
+const ADJACENT_REGIONS = [
+    ['europe-west', 'europe-east'],
+    ['europe-east', 'middle-east'],
+    ['europe-west', 'middle-east'],
+    ['middle-east', 'south-asia'],
+    ['east-asia', 'southeast-asia'],
+    ['southeast-asia', 'south-asia'],
+    ['southeast-asia', 'oceania'],
+    ['north-america', 'south-america'],
+];
+
+function areRegionsAdjacent(r1, r2) {
+    return ADJACENT_REGIONS.some(([a, b]) => (a === r1 && b === r2) || (a === r2 && b === r1));
+}
+
+/**
+ * Determine service proximity relative to user.
+ * Returns { level: 'near'|'ok'|'far', label, cssClass } or null if insufficient data.
+ *
+ * Logic:
+ *   - Same region group → near (no badge needed, normal routing)
+ *   - Adjacent region groups → ok (might be load-balanced, show subtle indicator)
+ *   - Different region groups → far (clearly wrong routing, flag it)
+ *   - Falls back to haversine distance if coordinates are available:
+ *     < 2000 km → near, 2000-5000 km → ok, > 5000 km → far
+ */
+function checkServiceProximity(userCountryCode, serviceLocationStr, userCoords, serviceCoords) {
+    // Try coordinate-based distance first (most accurate)
+    if (userCoords && serviceCoords) {
+        const distKm = haversineDistanceKm(userCoords.lat, userCoords.lon, serviceCoords.lat, serviceCoords.lon);
+        const distLabel = formatDistanceKmMi(distKm);
+        if (distKm < 2000) {
+            return { level: 'near', label: `✔ Nearby · ${distLabel}`, cssClass: 'proximity-near' };
+        } else if (distKm < 5000) {
+            return { level: 'ok', label: `≈ Moderate · ${distLabel}`, cssClass: 'proximity-moderate' };
+        } else {
+            return { level: 'far', label: `⚠ Distant · ${distLabel}`, cssClass: 'proximity-far' };
+        }
+    }
+
+    // Fall back to region-group comparison
+    const userCC = (userCountryCode || '').toLowerCase();
+    const serviceCC = resolveCountryCode(serviceLocationStr || '').toLowerCase();
+    if (!userCC || !serviceCC) return null;
+
+    // Same country
+    if (userCC === serviceCC) {
+        return { level: 'near', label: '✔ Same country', cssClass: 'proximity-near' };
+    }
+
+    const userRegion = REGION_GROUPS[userCC];
+    const serviceRegion = REGION_GROUPS[serviceCC];
+    if (!userRegion || !serviceRegion) return null;
+
+    if (userRegion === serviceRegion) {
+        return { level: 'near', label: '✔ Same region', cssClass: 'proximity-near' };
+    }
+
+    if (areRegionsAdjacent(userRegion, serviceRegion)) {
+        return { level: 'ok', label: '≈ Adjacent region', cssClass: 'proximity-moderate' };
+    }
+
+    return { level: 'far', label: '⚠ Different continent', cssClass: 'proximity-far' };
+}
+
+/**
+ * Get user location context from results for proximity checks.
+ * Returns { countryCode, coords } or nulls.
+ */
+function getUserLocationContext(lookup) {
+    const userLoc = lookup['B-LE-01'] || lookup['C-LE-01'];
+    let countryCode = '';
+    let coords = null;
+    if (userLoc && userLoc.status !== 'NotRun') {
+        countryCode = resolveCountryCode(userLoc.resultValue || '');
+        coords = extractCoordinatesFromDetailedInfo(userLoc.detailedInfo, ['Coordinates:', 'GeoData: lat=']);
+        // Parse GeoData format: "GeoData: lat=51.5074,lon=-0.1278"
+        if (!coords && userLoc.detailedInfo) {
+            const gd = userLoc.detailedInfo.match(/GeoData:\s*lat=([-\d.]+),\s*lon=([-\d.]+)/);
+            if (gd) coords = { lat: parseFloat(gd[1]), lon: parseFloat(gd[2]) };
+        }
+    }
+    return { countryCode, coords };
+}
+
+/**
+ * Get approximate coordinates for a service location string by matching
+ * against known Azure region names/coordinates, AFD PoP codes, or country centroids.
+ */
+function getServiceCoords(locationStr) {
+    if (!locationStr) return null;
+    const lower = locationStr.toLowerCase().replace(/[📍]/g, '').trim();
+
+    // Match against AZURE_REGIONS names
+    for (const r of AZURE_REGIONS) {
+        if (lower.includes(r.name.toLowerCase()) || lower.includes(r.code.toLowerCase())) {
+            return { lat: r.lat, lon: r.lon };
+        }
+    }
+
+    // Extract AFD PoP code and use known coordinates
+    const popMatch = locationStr.match(/\b([A-Z]{2,5})\b/);
+    if (popMatch) {
+        const popCoords = AFD_POP_COORDS[popMatch[1]];
+        if (popCoords) return popCoords;
+    }
+
+    return null;
+}
+
+/** Approximate coordinates for AFD PoP codes (major cities). */
+const AFD_POP_COORDS = {
+    'LON': {lat:51.51, lon:-0.13}, 'LHR': {lat:51.47, lon:-0.46}, 'LTS': {lat:51.51, lon:-0.13},
+    'MAN': {lat:53.48, lon:-2.24}, 'EDG': {lat:55.95, lon:-3.19}, 'DUB': {lat:53.35, lon:-6.26},
+    'AMS': {lat:52.37, lon:4.89}, 'FRA': {lat:50.11, lon:8.68}, 'BER': {lat:52.52, lon:13.41},
+    'MUC': {lat:48.14, lon:11.58}, 'PAR': {lat:48.86, lon:2.35}, 'MRS': {lat:43.30, lon:5.37},
+    'MAD': {lat:40.42, lon:-3.70}, 'BCN': {lat:41.39, lon:2.17}, 'MIL': {lat:45.46, lon:9.19},
+    'ROM': {lat:41.90, lon:12.50}, 'ZRH': {lat:47.38, lon:8.54}, 'GVA': {lat:46.20, lon:6.14},
+    'VIE': {lat:48.21, lon:16.37}, 'CPH': {lat:55.68, lon:12.57}, 'HEL': {lat:60.17, lon:24.94},
+    'OSL': {lat:59.91, lon:10.75}, 'STO': {lat:59.33, lon:18.07}, 'WAW': {lat:52.23, lon:21.01},
+    'PRG': {lat:50.08, lon:14.44}, 'BUD': {lat:47.50, lon:19.04}, 'BUH': {lat:44.43, lon:26.10},
+    'LIS': {lat:38.72, lon:-9.14}, 'ATH': {lat:37.98, lon:23.73}, 'BRU': {lat:50.85, lon:4.35},
+    'IAD': {lat:38.95, lon:-77.45}, 'DCA': {lat:38.85, lon:-77.04}, 'JFK': {lat:40.64, lon:-73.78},
+    'EWR': {lat:40.69, lon:-74.17}, 'BOS': {lat:42.36, lon:-71.01}, 'ATL': {lat:33.64, lon:-84.43},
+    'MIA': {lat:25.80, lon:-80.29}, 'ORD': {lat:41.97, lon:-87.91}, 'DFW': {lat:32.90, lon:-97.04},
+    'LAX': {lat:33.94, lon:-118.41}, 'SJC': {lat:37.36, lon:-121.93}, 'SEA': {lat:47.45, lon:-122.31},
+    'DEN': {lat:39.86, lon:-104.67}, 'PHX': {lat:33.44, lon:-112.01}, 'MSP': {lat:44.88, lon:-93.22},
+    'SLC': {lat:40.79, lon:-111.98}, 'YYZ': {lat:43.68, lon:-79.63}, 'YUL': {lat:45.47, lon:-73.74},
+    'YVR': {lat:49.19, lon:-123.18}, 'QRO': {lat:20.62, lon:-100.39},
+    'SIN': {lat:1.35, lon:103.99}, 'HKG': {lat:22.31, lon:113.91}, 'NRT': {lat:35.77, lon:140.39},
+    'KIX': {lat:34.43, lon:135.23}, 'ICN': {lat:37.46, lon:126.44},
+    'BOM': {lat:19.09, lon:72.87}, 'MAA': {lat:12.99, lon:80.17}, 'DEL': {lat:28.56, lon:77.10},
+    'HYD': {lat:17.24, lon:78.43},
+    'SYD': {lat:-33.95, lon:151.18}, 'MEL': {lat:-37.67, lon:144.84},
+    'PER': {lat:-31.94, lon:115.97}, 'BNE': {lat:-27.38, lon:153.12}, 'AKL': {lat:-37.01, lon:174.78},
+    'DXB': {lat:25.25, lon:55.36}, 'AUH': {lat:24.43, lon:54.65}, 'FJR': {lat:25.11, lon:56.33},
+    'DOH': {lat:25.26, lon:51.57}, 'BAH': {lat:26.27, lon:50.64},
+    'JNB': {lat:-26.13, lon:28.23}, 'CPT': {lat:-33.97, lon:18.60},
+    'GRU': {lat:-23.43, lon:-46.47}, 'GIG': {lat:-22.81, lon:-43.25},
+    'SCL': {lat:-33.39, lon:-70.79}, 'BOG': {lat:4.70, lon:-74.15}, 'EZE': {lat:-34.82, lon:-58.54},
+    'LIM': {lat:-12.02, lon:-77.11}
+};
+
+// ── Helper: extract location from gateway detailedInfo ──
+// L-TCP-09 detailedInfo contains multiple endpoint blocks. The first is the AFD
+// endpoint (anycast — GeoIP is wrong), followed by rdweb/client (regional GW).
+// extractGatewayLocation returns the first Location: line (AFD block).
+// extractRdGwLocation skips the AFD block and returns the rdweb/client location.
+function extractGatewayLocation(detailedInfo) {
+    if (!detailedInfo) return '';
+    const match = detailedInfo.match(/Location:\s*([^\n\r]+)/i);
+    if (!match) return '';
+    return match[1].replace(/\s*[✔≈⚠].*/g, '').trim();
+}
+
+function extractGatewayLocationWithProximity(detailedInfo) {
+    if (!detailedInfo) return { location: '', proximity: '' };
+    const match = detailedInfo.match(/Location:\s*([^\n\r]+)/i);
+    if (!match) return { location: '', proximity: '' };
+    const full = match[1].trim();
+    const proxMatch = full.match(/(.+?)\s+([✔≈⚠].+)/);
+    if (proxMatch) return { location: proxMatch[1].trim(), proximity: proxMatch[2].trim() };
+    return { location: full, proximity: '' };
+}
+
+// Extract location for RD Gateway (rdweb/client endpoint, not AFD)
+// Prefers authoritative "Location:" from Service Tags (e.g. "UK South") over GeoIP city names.
+function extractRdGwLocationWithProximity(detailedInfo) {
+    if (!detailedInfo) return { location: '', proximity: '' };
+
+    // First check for Service Tags-sourced location in the RDP Gateway block
+    // L-TCP-09 outputs "    Location: UK South" from Service Tags, and
+    // "    GeoIP Location: Cardiff, GB" as supplementary. Prefer the non-GeoIP one.
+    const gwBlock = detailedInfo.match(/═══ Actual RDP Gateway[\s\S]*?(?=═══|$)/i);
+    if (gwBlock) {
+        // Look for "Location:" that is NOT "GeoIP Location:"
+        const stMatch = gwBlock[0].match(/^\s*Location:\s*([^\n\r]+)/m);
+        if (stMatch && !stMatch[0].includes('GeoIP')) {
+            const full = stMatch[1].trim();
+            const proximity = extractLine(gwBlock[0], 'Distance from egress:') || extractLine(gwBlock[0], 'Distance from you:');
+            // New AFD load-steering framing (scanner v1.13.4+): a non-local gateway
+            // is AFD's live load-based choice, not the user's VPN/routing.
+            if (/⚠\s*AFD selected a gateway/i.test(gwBlock[0])) {
+                return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+            }
+            if (/far from your (egress )?location/i.test(gwBlock[0])) {
+                return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+            }
+            if (/AFD selected a gateway near your egress|near your (egress )?location/i.test(gwBlock[0])) {
+                return { location: full, proximity: `✔ Near · ${proximity}`.trim() };
+            }
+            return { location: full, proximity };
+        }
+    }
+
+    // Fallback: find all Location: lines — the 2nd+ are rdweb/client (regional gateway)
+    const matches = [...detailedInfo.matchAll(/Location:\s*([^\n\r]+)/gi)];
+    // Use the second match (rdweb) if available, otherwise fall back to first
+    const locMatch = matches.length > 1 ? matches[1] : matches[0];
+    if (!locMatch) return { location: '', proximity: '' };
+    const full = locMatch[1].trim();
+    const proximity = extractLine(detailedInfo, 'Distance from egress:') || extractLine(detailedInfo, 'Distance from you:');
+    if (/⚠\s*AFD selected a gateway/i.test(detailedInfo)) {
+        return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+    }
+    if (/far from your (egress )?location/i.test(detailedInfo)) {
+        return { location: full, proximity: `⚠ Far · ${proximity}`.trim() };
+    }
+    if (/AFD selected a gateway near your egress|near your (egress )?location/i.test(detailedInfo)) {
+        return { location: full, proximity: `✔ Near · ${proximity}`.trim() };
+    }
+    return { location: full, proximity };
+}
+
+// Detect a Secure Web Gateway / ZTNA split-egress signal from the STUN tests.
+// The route-table proxy check (L-TCP-07) is structurally BLIND to WFP/DNS-based
+// SWGs such as Microsoft Global Secure Access: GSA intercepts below the routing
+// table, so a route-only check sees W365 going "direct" and reports Passed,
+// producing a false-green "No VPN / SWG / Proxy". The authoritative tell that a
+// SWG IS present (while correctly bypassing the W365 ranges) is the STUN
+// split-egress signal that the scanner (L-UDP-05) and browser (B-UDP-02) already
+// surface. Returns { present, provider, label, title }.
+function detectSwgSplitEgress(lookup) {
+    const nat = (lookup && (lookup['L-UDP-05'] || lookup['B-UDP-02'])) || null;
+    if (!nat || nat.status === 'NotRun' || nat.status === 'Pending') return { present: false };
+    const hay = ((nat.resultValue || '') + ' ' + (nat.detailedInfo || '')).toLowerCase();
+    // Mirror the exact phrases the producers emit: scanner L-UDP-05 split-egress
+    // detail ("SWG/ZTNA agent running", "SPLIT EGRESS PATHS") and browser B-UDP-02
+    // resultValue ("multiple egress paths").
+    const SPLIT_RE = /split[\s-]egress|multiple egress paths|swg split-tunnel|swg\/ztna agent/;
+    if (!SPLIT_RE.test(hay)) return { present: false };
+    let provider = '';
+    if (/globalsecureaccess|global secure access/.test(hay)) provider = 'GSA';
+    else if (/zscaler/.test(hay)) provider = 'Zscaler';
+    else if (/netskope/.test(hay)) provider = 'Netskope';
+    else if (/forcepoint/.test(hay)) provider = 'Forcepoint';
+    else if (/iboss/.test(hay)) provider = 'iboss';
+    const name = provider || 'SWG/ZTNA';
+    return {
+        present: true,
+        provider: name,
+        label: `${name} · W365 bypasses`,
+        title: `A Secure Web Gateway / ZTNA agent (${name}) is forwarding some traffic, but the Windows 365 RDP/TURN ranges are correctly excluded — so W365 egresses directly. The route-table proxy check (L-TCP-07) cannot see WFP/DNS-based SWGs, which is why this would otherwise show "No VPN / SWG / Proxy".`
+    };
+}
+
+// ── Security Status Bar ──
+function updateMapSecurityBar(lookup) {
+    const tls = lookup['L-TCP-06'];
+    const proxy = lookup['L-TCP-07'];
+    const dns = lookup['L-TCP-08'];
+    const gwUsed = lookup['L-TCP-09'];
+    const bar = document.getElementById('map-security-bar');
+
+    // Helper: update a single security badge
+    function updateSecBadge(id, test, labels) {
+        const badge = document.getElementById(id);
+        const icon = document.getElementById(id + '-icon');
+        const text = document.getElementById(id + '-text');
+        if (!badge || !icon || !text) return;
+
+        if (test && test.status !== 'NotRun' && test.status !== 'Pending') {
+            if (test.status === 'Passed') {
+                icon.textContent = '✓';
+                text.textContent = labels.pass;
+                badge.className = 'security-badge';
+            } else {
+                icon.textContent = '✗';
+                text.textContent = labels.fail;
+                badge.className = 'security-badge ' + (test.status === 'Failed' ? 'fail' : 'warn');
+            }
+        } else {
+            icon.textContent = '·';
+            text.textContent = labels.pending;
+            badge.className = 'security-badge pending';
+        }
+    }
+
+    updateSecBadge('sec-tls-badge', tls, {
+        pass: 'No TLS Inspection',
+        fail: 'TLS Inspection Detected',
+        pending: 'TLS Inspection'
+    });
+
+    updateSecBadge('sec-dns-badge', dns, {
+        pass: 'No DNS Hijacking',
+        fail: 'DNS Hijacking Detected',
+        pending: 'DNS Hijacking'
+    });
+
+    updateSecBadge('sec-proxy-badge', proxy, {
+        pass: 'No VPN / SWG / Proxy',
+        fail: proxy ? (proxy.resultValue || 'VPN/SWG/Proxy Detected') : '',
+        pending: 'VPN / SWG / Proxy'
+    });
+
+    // ── Override: GSA / SWG split-egress is invisible to the route-table check ──
+    // When the STUN split-egress signal shows a SWG IS present (correctly
+    // bypassing W365) AND the route check found nothing, relabel the chip
+    // honestly instead of asserting absence. Only overrides a clean/absent route
+    // verdict — a real route-level VPN (Failed/Warning) keeps its stronger badge.
+    const swg = detectSwgSplitEgress(lookup);
+    if (swg.present && (!proxy || proxy.status === 'Passed' || proxy.status === 'NotRun')) {
+        const pBadge = document.getElementById('sec-proxy-badge');
+        const pIcon = document.getElementById('sec-proxy-badge-icon');
+        const pText = document.getElementById('sec-proxy-badge-text');
+        if (pBadge && pIcon && pText) {
+            pIcon.textContent = 'ℹ';
+            pText.textContent = swg.label;
+            pBadge.className = 'security-badge info';
+            pBadge.title = swg.title;
+        }
+    }
+
+    // Gateway proximity badge
+    const gwBadge = document.getElementById('sec-gw-badge');
+    const gwIcon = document.getElementById('sec-gw-badge-icon');
+    const gwText = document.getElementById('sec-gw-badge-text');
+    if (gwBadge && gwIcon && gwText) {
+        if (gwUsed && gwUsed.status !== 'NotRun' && gwUsed.status !== 'Pending') {
+            const info = extractRdGwLocationWithProximity(gwUsed.detailedInfo);
+            // The gateway is AFD-selected by the user's location, so it should be
+            // near the user. A low measured client RTT is the authoritative
+            // proximity proof; trust it over a region-name/GeoIP "far" verdict.
+            const measurablyNear = gatewayLatencyProvesLocal(lookup);
+            if (info.proximity && (info.proximity.includes('✔') || info.proximity.includes('Near'))) {
+                gwIcon.textContent = '✓';
+                gwText.textContent = 'Gateway Near You';
+                gwBadge.className = 'security-badge';
+            } else if (info.proximity && (info.proximity.includes('⚠') || info.proximity.includes('Far'))) {
+                if (measurablyNear) {
+                    gwIcon.textContent = '✓';
+                    gwText.textContent = 'Gateway Near You';
+                    gwBadge.className = 'security-badge';
+                } else if (egressGenuinelyFar(lookup)) {
+                    gwIcon.textContent = '✗';
+                    gwText.textContent = 'Egress Far — Gateway Suboptimal';
+                    gwBadge.className = 'security-badge warn';
+                } else {
+                    gwIcon.textContent = '✗';
+                    gwText.textContent = 'Gateway Far Away';
+                    gwBadge.className = 'security-badge warn';
+                }
+            } else if (info.proximity) {
+                // Parse km value from proximity string (e.g. "~59 km")
+                const kmMatch = info.proximity.match(/([\d,.]+)\s*km/);
+                if (kmMatch) {
+                    const km = parseFloat(kmMatch[1].replace(/,/g, ''));
+                    if (km < 2000) {
+                        gwIcon.textContent = '✓';
+                        gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge';
+                    } else if (km < 5000) {
+                        gwIcon.textContent = '≈';
+                        gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge warn';
+                    } else if (measurablyNear) {
+                        gwIcon.textContent = '✓';
+                        gwText.textContent = 'Gateway Near You';
+                        gwBadge.className = 'security-badge';
+                    } else if (egressGenuinelyFar(lookup)) {
+                        gwIcon.textContent = '✗';
+                        gwText.textContent = 'Egress Far — Gateway Suboptimal';
+                        gwBadge.className = 'security-badge warn';
+                    } else {
+                        gwIcon.textContent = '✗';
+                        gwText.textContent = `Gateway ${Math.round(km)} km`;
+                        gwBadge.className = 'security-badge warn';
+                    }
+                } else {
+                    gwIcon.textContent = '≈';
+                    gwText.textContent = 'Gateway Moderate Distance';
+                    gwBadge.className = 'security-badge warn';
+                }
+            } else if (info.location) {
+                gwIcon.textContent = '✓';
+                gwText.textContent = `Gateway: ${info.location}`;
+                gwBadge.className = 'security-badge';
+            } else {
+                gwIcon.textContent = '·';
+                gwText.textContent = 'Gateway Proximity';
+                gwBadge.className = 'security-badge pending';
+            }
+        } else {
+            gwIcon.textContent = '·';
+            gwText.textContent = 'Gateway Proximity';
+            gwBadge.className = 'security-badge pending';
+        }
+    }
+
+    // Overall bar background — any warning/fail?
+    const checks = [tls, proxy, dns];
+    const anyBad = checks.some(t => t && t.status !== 'Passed' && t.status !== 'NotRun' && t.status !== 'Pending' && t.status !== 'Skipped');
+    if (bar) {
+        bar.className = 'map-security-bar' + (anyBad ? ' has-warning' : '');
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Azure region inference from geo-IP coordinates
+// ═══════════════════════════════════════════════════════════
+const AZURE_REGIONS = [
+    { name: 'UK South',             code: 'uksouth',             lat: 51.51, lon: -0.13 },
+    { name: 'UK West',              code: 'ukwest',              lat: 51.48, lon: -3.18 },
+    { name: 'North Europe',         code: 'northeurope',         lat: 53.35, lon: -6.26 },
+    { name: 'West Europe',          code: 'westeurope',          lat: 52.37, lon:  4.89 },
+    { name: 'France Central',       code: 'francecentral',       lat: 48.86, lon:  2.35 },
+    { name: 'France South',         code: 'francesouth',         lat: 43.30, lon:  5.37 },
+    { name: 'Germany West Central', code: 'germanywestcentral',  lat: 50.11, lon:  8.68 },
+    { name: 'Switzerland North',    code: 'switzerlandnorth',    lat: 47.38, lon:  8.54 },
+    { name: 'Switzerland West',     code: 'switzerlandwest',     lat: 46.20, lon:  6.14 },
+    { name: 'Norway East',          code: 'norwayeast',          lat: 59.91, lon: 10.75 },
+    { name: 'Sweden Central',       code: 'swedencentral',       lat: 60.67, lon: 17.14 },
+    { name: 'Italy North',          code: 'italynorth',          lat: 45.46, lon:  9.19 },
+    { name: 'Poland Central',       code: 'polandcentral',       lat: 52.23, lon: 21.01 },
+    { name: 'Spain Central',        code: 'spaincentral',        lat: 40.42, lon: -3.70 },
+    { name: 'East US',              code: 'eastus',              lat: 37.43, lon:-79.07 },
+    { name: 'East US 2',            code: 'eastus2',             lat: 36.68, lon:-78.17 },
+    { name: 'Central US',           code: 'centralus',           lat: 41.88, lon:-93.10 },
+    { name: 'North Central US',     code: 'northcentralus',      lat: 41.88, lon:-87.63 },
+    { name: 'South Central US',     code: 'southcentralus',      lat: 29.42, lon:-98.49 },
+    { name: 'West US',              code: 'westus',              lat: 37.78, lon:-122.42 },
+    { name: 'West US 2',            code: 'westus2',             lat: 47.23, lon:-119.85 },
+    { name: 'West US 3',            code: 'westus3',             lat: 33.45, lon:-112.07 },
+    { name: 'Canada Central',       code: 'canadacentral',       lat: 43.65, lon:-79.38 },
+    { name: 'Canada East',          code: 'canadaeast',          lat: 46.82, lon:-71.22 },
+    { name: 'Brazil South',         code: 'brazilsouth',         lat:-23.55, lon:-46.63 },
+    { name: 'East Asia',            code: 'eastasia',            lat: 22.40, lon: 114.11 },
+    { name: 'Southeast Asia',       code: 'southeastasia',       lat:  1.35, lon: 103.82 },
+    { name: 'Japan East',           code: 'japaneast',           lat: 35.69, lon: 139.69 },
+    { name: 'Japan West',           code: 'japanwest',           lat: 34.69, lon: 135.50 },
+    { name: 'Korea Central',        code: 'koreacentral',        lat: 37.57, lon: 126.98 },
+    { name: 'Korea South',          code: 'koreasouth',          lat: 35.18, lon: 129.08 },
+    { name: 'Central India',        code: 'centralindia',        lat: 18.52, lon:  73.86 },
+    { name: 'South India',          code: 'southindia',          lat: 13.08, lon:  80.27 },
+    { name: 'West India',           code: 'westindia',           lat: 19.08, lon:  72.88 },
+    { name: 'Australia East',       code: 'australiaeast',       lat:-33.87, lon: 151.21 },
+    { name: 'Australia Southeast',  code: 'australiasoutheast',  lat:-37.81, lon: 144.96 },
+    { name: 'Australia Central',    code: 'australiacentral',    lat:-35.28, lon: 149.13 },
+    { name: 'UAE North',            code: 'uaenorth',            lat: 25.28, lon:  55.30 },
+    { name: 'South Africa North',   code: 'southafricanorth',    lat:-26.20, lon:  28.05 },
+    { name: 'Qatar Central',        code: 'qatarcentral',        lat: 25.29, lon:  51.53 },
+    { name: 'Israel Central',       code: 'israelcentral',       lat: 31.77, lon:  35.22 },
+];
+
+/**
+ * Given lat/lon (from geo-IP), find the nearest Azure region.
+ * Returns { name, code } or null if coordinates are missing.
+ */
+function inferAzureRegion(lat, lon) {
+    if (lat == null || lon == null || (lat === 0 && lon === 0)) return null;
+    let best = null, bestDist = Infinity;
+    for (const r of AZURE_REGIONS) {
+        const dLat = r.lat - lat, dLon = r.lon - lon;
+        const dist = dLat * dLat + dLon * dLon; // squared Euclidean is fine for nearest
+        if (dist < bestDist) { bestDist = dist; best = r; }
+    }
+    return best;
+}
+
+/**
+ * Extract coordinates from a C-LE-01 / B-LE-01 detailedInfo string.
+ * Expected format: "Coordinates: 51.4500, -0.9500"
+ */
+function extractCoords(detailedInfo) {
+    if (!detailedInfo) return null;
+    const m = detailedInfo.match(/Coordinates:\s*([-\d.]+),\s*([-\d.]+)/);
+    if (!m) return null;
+    return { lat: parseFloat(m[1]), lon: parseFloat(m[2]) };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Cloud PC right-side map cards
+// ═══════════════════════════════════════════════════════════
+
+function updateMapCloudPcCard(lookup) {
+    // Only use scanner C-* results for CPC card — B-* browser GeoIP shows VPN/egress
+    // location, not the actual Cloud PC Azure region
+    const loc = lookup['C-LE-01'];
+    const net = lookup['C-LE-02'];
+    const imds = lookup['C-NET-01'];
+    const title = document.getElementById('map-cpc-title');
+    const locEl = document.getElementById('map-cpc-location');
+    const ipEl = document.getElementById('map-cpc-ip');
+    const dot = document.getElementById('device-cpc-dot');
+    const accent = document.getElementById('map-cpc-accent');
+
+    if (loc && loc.status === 'Passed' && loc.resultValue) {
+        // Prefer IMDS region (authoritative) over GeoIP coordinates
+        // GeoIP can be wrong when a VPN (e.g. Unifi Teleport) tunnels traffic
+        // through a remote network, making the egress IP appear elsewhere
+        let regionLabel = null;
+        const vpnCaveat = loc.detailedInfo && /VPN exit point/i.test(loc.detailedInfo);
+
+        // 1. Try IMDS Azure Region from C-NET-01 (definitive)
+        if (imds && imds.detailedInfo) {
+            const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
+            if (regionMatch) {
+                const regionCode = regionMatch[1];
+                const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
+                regionLabel = azRegion ? azRegion.name : regionCode;
+            }
+        }
+
+        // 2. Try Azure Region from C-LE-01 scanner result (also uses IMDS)
+        if (!regionLabel && loc.detailedInfo) {
+            const regionMatch = loc.detailedInfo.match(/Azure Region:\s*(\S+)/);
+            if (regionMatch) {
+                const regionCode = regionMatch[1];
+                const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
+                regionLabel = azRegion ? azRegion.name : regionCode;
+            }
+        }
+
+        // 3. Fall back to GeoIP coordinate inference (browser-only, no scanner)
+        if (!regionLabel && !vpnCaveat) {
+            const coords = extractCoords(loc.detailedInfo);
+            const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
+            if (azRegion) regionLabel = azRegion.name;
+        }
+
+        // 4. Last resort: raw resultValue (but flag VPN caveat if present)
+        if (!regionLabel && vpnCaveat) {
+            regionLabel = 'Region unknown — VPN active';
+        }
+        if (locEl) locEl.textContent = regionLabel || loc.resultValue;
+        // Extract IP from detailed info
+        if (ipEl && loc.detailedInfo) {
+            const ipMatch = loc.detailedInfo.match(/Public IP:\s*([\d.]+)/);
+            if (ipMatch) ipEl.textContent = ipMatch[1];
+        }
+        const isVpnUnknown = vpnCaveat && !regionLabel;
+        if (dot) dot.setAttribute('fill', isVpnUnknown ? '#d29922' : '#3fb950');
+        if (accent) accent.style.background = isVpnUnknown
+            ? 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)'
+            : 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+    } else if (loc && loc.status === 'Error') {
+        if (locEl) locEl.textContent = 'Error detecting location';
+        if (dot) dot.setAttribute('fill', '#f85149');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
+    }
+
+    // Show VM name if available from IMDS
+    if (imds && imds.status === 'Passed' && imds.detailedInfo && title) {
+        const vmMatch = imds.detailedInfo.match(/VM Name:\s*(\S+)/);
+        if (vmMatch) title.textContent = vmMatch[1];
+    }
+}
+
+function updateMapNatCard(lookup) {
+    // NAT card shows the public IP from STUN reflexive address (CPC mode only)
+    const stun = lookup['C-UDP-03'] || lookup['B-UDP-01'];
+    const detail = document.getElementById('map-nat-detail');
+    const ipEl = document.getElementById('map-nat-ip');
+    const dot = document.getElementById('device-nat-dot');
+    const accent = document.getElementById('map-nat-accent');
+
+    if (stun && stun.status === 'Passed') {
+        if (detail) detail.textContent = 'Public IP detected';
+        // Extract reflexive IP from detailedInfo
+        if (ipEl && stun.detailedInfo) {
+            const ipMatch = stun.detailedInfo.match(/Reflexive IP:\s*([\d.]+)/);
+            if (ipMatch) ipEl.textContent = ipMatch[1];
+        }
+        if (dot) dot.setAttribute('fill', '#3fb950');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+    } else if (stun && (stun.status === 'Failed' || stun.status === 'Error')) {
+        if (detail) detail.textContent = 'STUN failed';
+        if (dot) dot.setAttribute('fill', '#f85149');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
+    } else if (stun && stun.status === 'Warning') {
+        if (detail) detail.textContent = 'NAT restricted';
+        if (dot) dot.setAttribute('fill', '#d29922');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
+    }
+}
+
+function updateMapAzureCard(lookup) {
+    // Only use scanner C-* results — B-* browser GeoIP reflects VPN/egress, not Azure backbone
+    const loc = lookup['C-LE-01'];
+    const net = lookup['C-LE-02'];
+    const egress = lookup['C-NET-02'];
+    const imds = lookup['C-NET-01'];
+    const detail = document.getElementById('map-azure-detail');
+    const detail2 = document.getElementById('map-azure-detail2');
+    const dot = document.getElementById('device-azure-dot');
+    const accent = document.getElementById('map-azure-accent');
+
+    // Show Azure region from IMDS, or infer from geo-IP coordinates, or fall back to location value
+    if (imds && imds.status === 'Passed' && imds.detailedInfo) {
+        const regionMatch = imds.detailedInfo.match(/Azure Region:\s*(\S+)/);
+        if (regionMatch && detail) {
+            const regionCode = regionMatch[1];
+            const azRegion = AZURE_REGIONS.find(r => r.code === regionCode);
+            detail.textContent = azRegion ? azRegion.name : regionCode;
+        }
+    } else if (imds && imds.status === 'Warning') {
+        // IMDS unreachable — likely VPN blocking link-local
+        if (detail) {
+            const vpnHint = /VPN|timed out|blocked/i.test(imds.resultValue || '');
+            detail.textContent = vpnHint ? 'Region unknown — VPN blocking IMDS' : 'Region unknown';
+        }
+        if (dot) dot.setAttribute('fill', '#d29922');
+        if (accent) accent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
+    } else if (loc && loc.detailedInfo) {
+        // Infer Azure region from geo-IP coordinates
+        const coords = extractCoords(loc.detailedInfo);
+        const azRegion = coords ? inferAzureRegion(coords.lat, coords.lon) : null;
+        if (azRegion && detail) {
+            detail.textContent = azRegion.name;
+        } else if (detail && loc.resultValue) {
+            detail.textContent = loc.resultValue;
+        }
+    } else if (loc && loc.resultValue && detail) {
+        // No detailed info — use result value directly (e.g. "East US 2, Boydton, VA, US")
+        detail.textContent = loc.resultValue;
+    }
+
+    // Show org/ISP info
+    if (net && net.status === 'Passed' && net.resultValue) {
+        // Don't render the ASN string into the legacy detail2 line — the two
+        // path pills below will show this instead, separately from the Azure
+        // backbone info, so it's unambiguous they describe different paths.
+        if (detail2) detail2.textContent = '';
+        // Set status from ISP data when no egress check available
+        if (!egress) {
+            if (dot) dot.setAttribute('fill', '#3fb950');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+        }
+    }
+
+    // Overall status based on egress check
+    if (egress) {
+        if (egress.status === 'Passed') {
+            if (dot) dot.setAttribute('fill', '#3fb950');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(63,185,80,0.5), transparent)';
+        } else if (egress.status === 'Warning') {
+            if (dot) dot.setAttribute('fill', '#d29922');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
+        } else if (egress.status === 'Failed' || egress.status === 'Error') {
+            if (dot) dot.setAttribute('fill', '#f85149');
+            if (accent) accent.style.background = 'linear-gradient(180deg, rgba(248,81,73,0.5), transparent)';
+        }
+    }
+}
+
+// ── VPN / Proxy overlay on the network path map ──
+function updateMapVpnOverlay(lookup) {
+    const badge = document.getElementById('map-vpn-badge');
+    const title = document.getElementById('map-azure-title');
+    const azureCard = document.getElementById('map-azure');
+    if (!badge) return;
+
+    // Check all VPN/proxy test results — scanner L-TCP-07, CPC C-TCP-07, browser B-TCP-04
+    const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
+    const udpVpn = lookup['C-UDP-07'] || lookup['L-UDP-07'];
+    const routeAnalysis = lookup['B-TCP-04'];
+
+    // Determine if VPN/proxy is in the path  
+    let vpnDetected = false;
+    let vpnLabel = '';
+    let vpnDetail = '';
+
+    if (tcpVpn && tcpVpn.status === 'Warning') {
+        const detail = tcpVpn.detailedInfo || '';
+        const lines = detail.split('\n');
+        const contradictoryDirectRoute = vpnWarningContradictsDirectRoute(tcpVpn, lookup);
+        const namedVpnCarriesTraffic = /VPN tunnel is carrying W365\/AVD traffic|RDP gateway[^\n]*routes via VPN interface/i.test(detail);
+
+        // Older scanners could call the Azure VM NIC "unrecognised" when a
+        // SASE adapter owned the default route, then identify that same NIC as
+        // the direct gateway path later in the test. Trust the endpoint route
+        // and do not draw the detected-but-non-intercepting VPN into the path.
+        vpnDetected = !contradictoryDirectRoute;
+
+        // 1. Specific VPN adapter (e.g. "Teleport", "Unifi Teleport VPN") — prefer this
+        //    so we show the actual product name rather than generic "VPN/SWG".
+        //    EXCLUDE Windows transition pseudo-interfaces (Teredo / isatap / 6to4) —
+        //    these are not VPN tunnels. Scanner v1.12.4+ filters them out, but older
+        //    scanner exports still contain them, so we re-filter here.
+        const TRANSITION_RE = /\b(Teredo|isatap|6to4)\b/i;
+        const vpnLine = namedVpnCarriesTraffic
+            ? lines.find(l => /VPN adapter detected:/i.test(l) && !TRANSITION_RE.test(l))
+            : null;
+        // 2. Specific SWG product lines — only match actual vendor names, NOT the
+        //    generic summary "W365 traffic may be routing through VPN/SWG".
+        const swgLine = lines.find(l => /(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP)/i.test(l));
+        // 3. System proxy
+        const proxyLine = lines.find(l => /proxy detected|Proxy Server/i.test(l));
+
+        // If the only "VPN adapter" line in the test detail named a transition
+        // pseudo-interface AND no real SWG / proxy line exists, demote: the
+        // scanner flagged this as Warning but our filtered view sees nothing
+        // real. Falling back to vpnDetected=false lets the positive bypass
+        // banner run instead (so SASE-on-internet-only deployments aren't
+        // mis-labeled as "Teredo intercepting RDP").
+        const onlyTransition = !vpnLine && !swgLine && !proxyLine
+            && lines.some(l => /VPN adapter detected:/i.test(l) && TRANSITION_RE.test(l));
+        if (!vpnDetected || onlyTransition) {
+            vpnDetected = false;
+        } else if (vpnLine) {
+            // Parse: "ℹ VPN adapter detected: Teleport (Unifi Teleport VPN)"
+            const m = vpnLine.match(/VPN adapter detected:\s*(.+?)(?:\s*\(([^)]+)\))?\s*$/i);
+            if (m) {
+                // Prefer the longer/descriptive name in parens when it has more signal
+                const short = (m[1] || '').trim();
+                const descr = (m[2] || '').trim();
+                // Pick whichever looks like a product name (longer, contains letters)
+                if (descr && /[A-Za-z]{3,}/.test(descr) && descr.length > short.length) {
+                    vpnLabel = descr;
+                } else {
+                    vpnLabel = short || descr || 'VPN';
+                }
+            } else {
+                vpnLabel = 'VPN';
+            }
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        } else if (swgLine) {
+            const swgMatch = swgLine.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP)/i);
+            vpnLabel = swgMatch ? swgMatch[1] : 'SWG';
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        } else if (proxyLine) {
+            const proxyMatch = proxyLine.match(/proxy.*?:\s*(.+)/i);
+            vpnLabel = proxyMatch ? proxyMatch[1].trim() : 'Proxy';
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        } else {
+            // Generic: we know traffic is intercepted but can't name the product
+            vpnLabel = 'VPN/SWG';
+            vpnDetail = '⚠ RDP traffic not going direct';
+        }
+    }
+
+    // Also check browser-level route analysis for SWG indicators
+    if (!vpnDetected && routeAnalysis && routeAnalysis.status === 'Warning') {
+        const info = routeAnalysis.detailedInfo || '';
+        if (/Routed via:|security proxy|SWG|Zscaler|Netskope|GlobalProtect|globalsecureaccess/i.test(info)) {
+            vpnDetected = true;
+            const match = info.match(/Routed via:\s*(.+)/i);
+            vpnLabel = match ? match[1].trim() : 'VPN/SWG';
+            vpnDetail = `⚠ Traffic routed via ${vpnLabel}`;
+        }
+    }
+
+    if (vpnDetected) {
+        // Mark the map diagram for VPN-path CSS (swaps grid positions, colours lines)
+        const diagram = document.querySelector('.map-diagram');
+        if (diagram) diagram.classList.add('vpn-path');
+
+        // ── Azure card: keep as "Azure Network" — CPC lives here ──
+        // Don't change the title; Azure is just the VNet, not the VPN itself.
+        // Hide the VPN badge on the Azure card (we'll show info on the VPN Endpoint card).
+        badge.classList.add('hidden');
+        badge.className = 'map-vpn-badge hidden';
+        if (title) title.textContent = 'Azure Network';
+        if (azureCard) azureCard.classList.remove('vpn-detected');
+
+        // ── Transform NAT card → VPN Endpoint (swapped to col 3 near services via CSS) ──
+        const natTitle = document.querySelector('#map-nat .device-title');
+        const natDetail = document.getElementById('map-nat-detail');
+        const natIp = document.getElementById('map-nat-ip');
+        const natDot = document.getElementById('device-nat-dot');
+        const natAccent = document.getElementById('map-nat-accent');
+        const natSvgLabel = document.querySelector('#map-nat .device-svg text');
+        const natCard = document.getElementById('map-nat');
+
+        if (natTitle) natTitle.textContent = 'VPN Endpoint';
+        if (natSvgLabel) natSvgLabel.textContent = 'VPN';
+        if (natCard) natCard.classList.add('vpn-exit-mode');
+
+        // Show ISP name + exit IP on the VPN Endpoint card
+        const isp = lookup['C-LE-02'] || lookup['B-LE-02'];
+        if (natDetail && isp && isp.resultValue) {
+            natDetail.textContent = isp.resultValue;
+        } else if (natDetail) {
+            natDetail.textContent = vpnLabel || 'VPN endpoint';
+        }
+
+        // Status: warning (orange) — traffic hairpins through VPN
+        if (natDot) natDot.setAttribute('fill', '#d29922');
+        if (natAccent) natAccent.style.background = 'linear-gradient(180deg, rgba(210,153,34,0.5), transparent)';
+
+        // Real VPN warning is in play \u2014 hide the two-path pills so they don't
+        // contradict the warning banner.
+        const rdpPill = document.getElementById('map-azure-rdp-pill');
+        const inetPill = document.getElementById('map-azure-internet-pill');
+        if (rdpPill) { rdpPill.className = 'map-path-pill hidden'; rdpPill.innerHTML = ''; }
+        if (inetPill) { inetPill.className = 'map-path-pill hidden'; inetPill.innerHTML = ''; }
+
+        // Add VPN detail badge under the VPN Endpoint card
+        const natBadgeContainer = natCard;
+        if (natBadgeContainer && !natBadgeContainer.querySelector('.map-vpn-endpoint-badge')) {
+            const epBadge = document.createElement('div');
+            epBadge.className = 'map-vpn-badge vpn-active map-vpn-endpoint-badge';
+            epBadge.innerHTML = `🛡️ ${escapeHtml(vpnDetail)}`;
+            natBadgeContainer.querySelector('.device-info').appendChild(epBadge);
+        } else {
+            const existing = natBadgeContainer && natBadgeContainer.querySelector('.map-vpn-endpoint-badge');
+            if (existing) existing.innerHTML = `🛡️ ${escapeHtml(vpnDetail)}`;
+        }
+
+        // Add tunnel label on arrow4 (between Azure and VPN Endpoint after CSS swap)
+        const arrow4 = document.querySelector('.map-g-arrow4');
+        if (arrow4 && !arrow4.querySelector('.tunnel-label')) {
+            const lbl = document.createElement('span');
+            lbl.className = 'tunnel-label';
+            lbl.textContent = '🔒 VPN Tunnel';
+            arrow4.appendChild(lbl);
+        }
+        // Remove any stale tunnel label from arrow3
+        const staleLabel3 = document.querySelector('.map-g-arrow3 .tunnel-label');
+        if (staleLabel3) staleLabel3.remove();
+    } else {
+        badge.classList.add('hidden');
+        badge.className = 'map-vpn-badge hidden';
+        if (title) title.textContent = 'Azure Network';
+        if (azureCard) azureCard.classList.remove('vpn-detected');
+        const diagram = document.querySelector('.map-diagram');
+        if (diagram) diagram.classList.remove('vpn-path');
+
+        // Reset NAT card if previously in VPN mode
+        const natTitle = document.querySelector('#map-nat .device-title');
+        const natSvgLabel = document.querySelector('#map-nat .device-svg text');
+        const natCard = document.getElementById('map-nat');
+        if (natTitle) natTitle.textContent = 'Azure NAT';
+        if (natSvgLabel) natSvgLabel.textContent = 'NAT';
+        if (natCard) natCard.classList.remove('vpn-exit-mode');
+
+        // Remove VPN endpoint badge if present
+        const epBadge = natCard && natCard.querySelector('.map-vpn-endpoint-badge');
+        if (epBadge) epBadge.remove();
+
+        // Remove tunnel labels
+        document.querySelectorAll('.tunnel-label').forEach(el => el.remove());
+
+        // ── Two-path split ──
+        // No VPN warning was raised. Render RDP/TURN as a green pill on the
+        // Azure card AND, when a SASE provider is detected for the CPC's
+        // general-internet egress, reveal the dedicated Internet sidecar
+        // (#map-internet) below the Azure card with a downward connector.
+        // Confused users mistook the previous single-card layout for
+        // "all traffic exits via Zscaler" — the visual branch makes the
+        // two paths physically separate on the diagram.
+        const rdpPill = document.getElementById('map-azure-rdp-pill');
+        const inetCard = document.getElementById('map-internet');
+        const inetLine = document.getElementById('map-internet-line');
+        const inetDetail = document.getElementById('map-internet-detail');
+        const inetDetail2 = document.getElementById('map-internet-detail2');
+        const inetDot = document.getElementById('device-internet-dot');
+        const inetAccent = document.getElementById('map-internet-accent');
+        const net = lookup['C-LE-02'] || lookup['B-LE-02'];
+        const ispText = (net && net.status === 'Passed') ? (net.resultValue || '') : '';
+        const SASE_PROVIDERS = /(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i;
+        const isSase = SASE_PROVIDERS.test(ispText);
+        const bypassRegex = /No W365\/AVD service traffic goes through the VPN tunnel|RDP traffic correctly bypasses it|UDP\/TURN traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i;
+        const tcpBypass = tcpVpn && tcpVpn.status === 'Passed' && bypassRegex.test((tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || ''));
+
+        if (rdpPill) {
+            if (tcpBypass) {
+                rdpPill.className = 'map-path-pill path-rdp';
+                rdpPill.innerHTML = '<span class="pp-icon">✓</span><span class="pp-text">'
+                    + '<span class="pp-label">RDP / TURN path</span>'
+                    + '<span class="pp-detail">Direct via Microsoft Azure backbone</span>'
+                    + '</span>';
+                rdpPill.title = 'Route-table check confirms W365 ranges (40.64.144.0/20, 51.5.0.0/16) and the RDP gateway IP route directly through the Cloud PC NIC — NOT through the SASE/proxy tunnel.';
+            } else {
+                rdpPill.className = 'map-path-pill hidden';
+                rdpPill.innerHTML = '';
+            }
+        }
+        if (inetCard && inetLine) {
+            if (isSase) {
+                const m = ispText.match(SASE_PROVIDERS);
+                const provider = m ? (m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()) : 'SASE';
+                const asMatch = ispText.match(/AS\d+/i);
+                const asn = asMatch ? asMatch[0].toUpperCase() : '';
+                if (inetDetail) inetDetail.textContent = provider + (asn ? ` (${asn})` : '');
+                if (inetDetail2) inetDetail2.textContent = 'General internet — separate path';
+                if (inetDot) inetDot.setAttribute('fill', '#79c0ff');
+                if (inetAccent) inetAccent.style.background = 'linear-gradient(180deg, rgba(121,192,255,0.5), transparent)';
+                inetCard.classList.remove('hidden');
+                inetLine.classList.remove('hidden');
+                inetCard.title = `General-internet traffic from this Cloud PC egresses via ${provider}. RDP and TURN take a different path direct via Microsoft Azure backbone (see the green pill on the Azure card).`;
+            } else {
+                inetCard.classList.add('hidden');
+                inetLine.classList.add('hidden');
+            }
+        }
+    }
+
+    // ── Summary banner under the map ──
+    // Pass through extra context so the banner can also render the positive
+    // "VPN/SWG detected but RDP correctly bypasses it" case computed in the
+    // else branch above.
+    updateMapVpnSummary(vpnDetected, vpnLabel, lookup, {
+        bypassConfirmed: typeof tcpBypass !== 'undefined' ? tcpBypass : false,
+        saseProvider: (typeof isSase !== 'undefined' && isSase && typeof ispText === 'string')
+            ? (ispText.match(/(zscaler|netskope|cloudflare|globalsecureaccess|forcepoint|iboss|palo alto|cato\b)/i) || [])[1]
+            : ''
+    });
+}
+
+// Build a human-readable banner summarising VPN/SWG egress path.
+function updateMapVpnSummary(vpnDetected, vpnLabel, lookup, ctx) {
+    ctx = ctx || {};
+    const el = document.getElementById('map-vpn-summary');
+    if (!el) return;
+
+    // ── Positive case: VPN / SASE detected somewhere but RDP correctly bypasses ──
+    // Surfaces three signals as a single green banner so the user doesn't have to
+    // hunt through individual test results to confirm "this is OK".
+    //   1) tcpVpn (L/C-TCP-07) Passed with bypass language → real local VPN, RDP direct
+    //   2) SASE provider detected on C-LE-02 with route-table direct → SASE on internet only
+    if (!vpnDetected) {
+        const tcpVpn = lookup['C-TCP-07'] || lookup['L-TCP-07'];
+        const bypassRegex = /No W365\/AVD service traffic goes through the VPN tunnel|RDP traffic correctly bypasses it|UDP\/TURN traffic correctly bypasses it|routes direct via|Split-tunnelled \(direct\)/i;
+        const tcpBypass = !!ctx.bypassConfirmed || (tcpVpn && tcpVpn.status === 'Passed' && bypassRegex.test((tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || '')));
+        const saseRaw = ctx.saseProvider || '';
+        const saseProvider = saseRaw ? (saseRaw.charAt(0).toUpperCase() + saseRaw.slice(1).toLowerCase()) : '';
+
+        // Try to extract a specific local-VPN product name from the test detail so
+        // we can say "Cisco AnyConnect" instead of generic "VPN".
+        // IMPORTANT: exclude Windows transition pseudo-interfaces (Teredo / isatap /
+        // 6to4) — they show up as adapters but are NOT VPN tunnels. The scanner
+        // (v1.12.4+) filters them out, but older scanner builds will still surface
+        // them in the detail text, so we double-filter here as a safety net.
+        let localVpnLabel = '';
+        const TRANSITION_RE = /\b(Teredo|isatap|6to4)\b/i;
+        if (tcpVpn) {
+            const txt = (tcpVpn.detailedInfo || '') + ' ' + (tcpVpn.resultValue || '');
+            const m = txt.match(/(Zscaler|Netskope|GlobalProtect|Palo Alto|Cisco AnyConnect|NordVPN|OpenVPN|iboss|Forcepoint|GlobalSecureAccess|Cloudflare WARP|Tailscale|Teleport|WireGuard)/i);
+            if (m) localVpnLabel = m[1];
+            else if (/VPN adapter detected:\s*([^\n]+)/i.test(txt)) {
+                const a = txt.match(/VPN adapter detected:\s*([^\n]+)/i);
+                if (a) {
+                    const candidate = a[1].trim().replace(/\s*\(.*\)\s*$/, '');
+                    if (!TRANSITION_RE.test(candidate)) localVpnLabel = candidate;
+                }
+            } else if (/VPN is active/i.test(txt)) {
+                localVpnLabel = 'VPN';
+            }
+        }
+
+        // Headline product: prefer a real SASE provider over a local-VPN-adapter
+        // label. The SASE provider is detected from the actual public egress ISP,
+        // which is the strongest available signal; a VPN adapter line only proves
+        // an interface exists, not that it's the path traffic takes.
+        const headlineProduct = saseProvider || localVpnLabel;
+        if (tcpBypass && headlineProduct) {
+            const parts = [];
+            parts.push(`<span class="vpn-sum-icon">\u2705</span>`);
+            parts.push(`<span class="vpn-sum-title">${escapeHtml(headlineProduct)} detected, but RDP traffic correctly bypasses it</span>`);
+            parts.push(`<span class="vpn-sum-sep">\u2192</span>`);
+            parts.push(`<span class="vpn-sum-chip vpn-sum-chip-good">\u2713 RDP / TURN \u2014 direct via Azure backbone</span>`);
+            // Secondary chip: only add if it carries different information from the headline.
+            if (saseProvider && localVpnLabel && saseProvider.toLowerCase() !== localVpnLabel.toLowerCase()) {
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 ${escapeHtml(localVpnLabel)} adapter also present</span>`);
+            } else if (saseProvider && !localVpnLabel) {
+                parts.push(`<span class="vpn-sum-chip">\ud83c\udf10 General internet may use ${escapeHtml(saseProvider)}</span>`);
+            } else if (localVpnLabel && !saseProvider) {
+                parts.push(`<span class="vpn-sum-chip">\ud83d\udd12 Other traffic may use the ${escapeHtml(localVpnLabel)} tunnel</span>`);
+            }
+            el.className = 'map-vpn-summary ok';
+            el.innerHTML = parts.join(' ');
+            return;
+        }
+
+        el.classList.add('hidden');
+        el.innerHTML = '';
+        return;
+    }
+
+    // ── Narrative data points ──
+    // Cloud PC Azure region (from IMDS via scanner — authoritative)
+    let cpcRegion = '';
+    const imds = lookup['C-NET-01'];
+    const cpcLoc = lookup['C-LE-01'];
+    const regionFrom = (info) => {
+        const m = info && info.match(/Azure Region:\s*(\S+)/);
+        if (!m) return '';
+        const code = m[1];
+        const az = (typeof AZURE_REGIONS !== 'undefined')
+            ? AZURE_REGIONS.find(r => r.code === code) : null;
+        return az ? az.name : code;
+    };
+    cpcRegion = regionFrom(imds && imds.detailedInfo) || regionFrom(cpcLoc && cpcLoc.detailedInfo);
+
+    // Egress location & ISP from browser GeoIP — reflects the *actual* public exit
+    // when a VPN/SWG is active
+    const egressLoc = lookup['B-LE-01'];
+    const egressIsp = lookup['B-LE-02'];
+    const egressText = egressLoc && egressLoc.resultValue ? String(egressLoc.resultValue).trim() : '';
+    const ispText = egressIsp && egressIsp.resultValue ? String(egressIsp.resultValue).trim() : '';
+
+    // RD Gateway region — tells us which regional RDP infra the tunnel is steering to
+    let gwRegion = '';
+    const gwInfo = getRdGatewayRegion(lookup);
+    if (gwInfo && gwInfo.name) {
+        gwRegion = gwInfo.name;
+    } else {
+        const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
+        if (gwUsed && gwUsed.detailedInfo) {
+            const m = gwUsed.detailedInfo.match(/Location:\s*([^\n]+?)(?:\s{2,}|$)/);
+            if (m && !/GeoIP/i.test(m[0])) gwRegion = m[1].trim();
+        }
+    }
+
+    // ── Build the narrative line ──
+    const productLabel = vpnLabel && vpnLabel !== 'VPN/SWG' ? vpnLabel : 'VPN/SWG';
+    const parts = [];
+    parts.push(`<span class="vpn-sum-icon">⚠️</span>`);
+
+    let headline;
+    if (cpcRegion && egressText) {
+        headline = `Cloud PC is in <strong>${escapeHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong> and egresses the internet in <strong>${escapeHtml(egressText)}</strong>`;
+    } else if (cpcRegion) {
+        headline = `Cloud PC is in <strong>${escapeHtml(cpcRegion)}</strong>, but RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong>`;
+    } else if (egressText) {
+        headline = `RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong> and egresses the internet in <strong>${escapeHtml(egressText)}</strong>`;
+    } else {
+        headline = `RDP traffic is tunneled via <strong>${escapeHtml(productLabel)}</strong>`;
+    }
+    parts.push(`<span class="vpn-sum-title">${headline}</span>`);
+
+    // Consequence chip — which regional RDP infra the user is hitting as a result
+    if (gwRegion) {
+        parts.push(`<span class="vpn-sum-sep">→</span>`);
+        // The RD gateway follows the user's EGRESS, not the CPC region, so a
+        // gateway region differing from the CPC region is NOT inherently wrong —
+        // it is the expected consequence of the egress location. Keep the chip
+        // neutral/informational; genuine "distant egress" is surfaced on the
+        // RD Gateway card via measured RTT, not by CPC-region mismatch.
+        parts.push(`<span class="vpn-sum-chip">🎯 Using <strong>${escapeHtml(gwRegion)}</strong> RDP gateway</span>`);
+    }
+    if (ispText) {
+        parts.push(`<span class="vpn-sum-chip">🏢 ${escapeHtml(ispText)}</span>`);
+    }
+
+    el.className = 'map-vpn-summary';
+    el.innerHTML = parts.join(' ');
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+
+// ── TLS Inspection Overlay ──
+function updateMapTlsOverlay(lookup) {
+    const tls = lookup['L-TCP-06'] || lookup['C-TCP-06'];
+    const arrow2 = document.querySelector('.map-g-arrow2'); // ISP → AFD path
+    const ispCard = document.getElementById('map-isp');
+
+    // Clean up any previous TLS badges
+    document.querySelectorAll('.tls-intercept-label').forEach(el => el.remove());
+
+    if (tls && tls.status !== 'Passed' && tls.status !== 'NotRun' && tls.status !== 'Pending' && tls.status !== 'Skipped') {
+        // Add TLS intercept warning on the connection path
+        if (arrow2 && !arrow2.querySelector('.tls-intercept-label')) {
+            const lbl = document.createElement('span');
+            lbl.className = 'tls-intercept-label';
+            lbl.textContent = '🔓 TLS Intercepted';
+            arrow2.appendChild(lbl);
+        }
+
+        // Highlight the ISP card border to show this is where interception occurs
+        if (ispCard) ispCard.classList.add('tls-intercepted');
+    } else {
+        if (ispCard) ispCard.classList.remove('tls-intercepted');
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Network Path (traceroute) visualisation — L-TCP-10
+// ───────────────────────────────────────────────────────────
+//  L-TCP-10 collects per-hop ICMP traceroute data to the key
+//  W365/AVD endpoints but the dashboard previously only mined it
+//  for CGNAT hops (app.js findCgnHopsInTraceroute). This renders
+//  the same data as an expandable per-target hop list under the
+//  connectivity map so the path is actually visible.
+//
+//  The parser keys off the EXACT box-drawing format the scanner
+//  emits in RunNetworkPathTrace():
+//     ║  Traceroute: <role>
+//     ║  Target:     <host>
+//     ║  Resolved:   <ip>          (or "✗ DNS failed" / "✗ No IPv4")
+//     ║  ⚠ Routed via: <proxy>      (optional GSA/SASE indicator)
+//     ║  <ttl> <ip|*> <rtt|*> <hostname>
+//     ║  → Target reached at hop N  (or "→ Stopped…" / "→ … not reached")
+//  Blocks are delimited by ╔ (start) and ╚ (end).
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Parse an L-TCP-10 result's detailedInfo into an array of target traces:
+ *   [{ role, host, resolvedIp, routedVia, reached, terminal, hops:[
+ *       { ttl, ip, rttMs (number|null), hostname, timeout (bool) }, ... ] }]
+ * Returns [] when there's nothing parseable.
+ */
+function parseTracerouteHops(traceResult) {
+    if (!traceResult || !traceResult.detailedInfo) return [];
+    const lines = traceResult.detailedInfo.split('\n');
+    const targets = [];
+    let cur = null;
+
+    const pushCur = () => { if (cur) { targets.push(cur); cur = null; } };
+
+    for (const raw of lines) {
+        const line = raw.replace(/\r$/, '');
+        // Block boundaries
+        if (/^╔/.test(line)) { pushCur(); cur = { role: '', host: '', resolvedIp: '', routedVia: '', reached: false, terminal: '', hops: [] }; continue; }
+        if (/^╚/.test(line)) { pushCur(); continue; }
+        if (!cur) continue;
+
+        // Metadata lines (strip the leading "║" gutter first)
+        const body = line.replace(/^║\s?/, '');
+        let m;
+        if ((m = body.match(/^\s*Traceroute:\s*(.+)$/))) { cur.role = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*Target:\s*(.+)$/)))     { cur.host = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*Resolved:\s*(.+)$/)))   { cur.resolvedIp = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*✗\s*(DNS failed.*|No IPv4.*)$/))) { cur.terminal = m[1].trim(); continue; }
+        if ((m = body.match(/^\s*⚠\s*Routed via:\s*(.+)$/)))      { cur.routedVia = m[1].trim(); continue; }
+        // Terminal status line. Only treat a "→" line as the terminal when it
+        // carries a real status phrase — the DNS Chain block also uses "→" for
+        // CNAME continuations (e.g. "→ a-0016.a-msedge.net") which must NOT be
+        // mistaken for the trace's outcome.
+        if ((m = body.match(/^\s*→\s*(.+)$/))) {
+            const txt = m[1].trim();
+            if (/reached|stopped|not reached|hops|ICMP|blocked|timeout/i.test(txt)) {
+                cur.terminal = txt;
+                // "Target reached at hop N" → success. Must NOT match the
+                // failure phrase "Target not reached within N hops".
+                if (/reached/i.test(txt) && !/not\s+reached/i.test(txt)) cur.reached = true;
+            }
+            continue;
+        }
+        // Hop rows: "<ttl> <ip|*> <rtt|*> [hostname]"
+        if ((m = body.match(/^\s*(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/))) {
+            const ttl = parseInt(m[1], 10);
+            const ip = m[2];
+            const rttRaw = m[3];
+            const hostname = (m[4] || '').trim();
+            const timeout = ip === '*' || rttRaw === '*';
+            let rttMs = null;
+            if (!timeout) {
+                const rm = rttRaw.match(/([\d.]+)\s*ms/i);
+                if (rm) rttMs = parseFloat(rm[1]);
+            }
+            cur.hops.push({ ttl, ip: timeout ? '*' : ip, rttMs, hostname, timeout });
+        }
+    }
+    pushCur();
+    // Drop any block that captured no usable info at all
+    return targets.filter(t => t.role || t.host || t.hops.length);
+}
+
+/** Colour class for a per-hop ICMP RTT (ms). */
+function traceHopClass(ms) {
+    if (ms == null) return 'trace-hop-timeout';
+    if (ms < 40) return 'trace-hop-good';
+    if (ms < 120) return 'trace-hop-warn';
+    return 'trace-hop-bad';
+}
+
+// Authoritative reverse-DNS suffixes for Microsoft's global network (AS8075)
+// and the Azure/M365 edge. msft.net and msn.net (e.g. *.ntwk.msn.net) are both
+// Microsoft's WAN/backbone router naming; the rest are Microsoft-operated
+// service domains. Matching one of these (or a hop IP that equals the resolved
+// Microsoft target) is a deterministic signal — not a heuristic guess — so the
+// tag is safe to assert.
+const MSFT_BACKBONE_RE = /(^|\.)(msft\.net|msn\.net)$/i;
+const MSFT_EDGE_RE = /(^|\.)(microsoft\.com|microsoftonline\.com|azure\.com|azure-dns\.(?:com|net|info|org)|cloudapp\.azure\.com|windows\.net|cloud\.microsoft|msedge\.net|a-msedge\.net|trafficmanager\.net|office\.com|office\.net)$/i;
+
+/**
+ * Classify a hop's membership in Microsoft's network.
+ * Returns 'backbone' (msft.net / AS8075 WAN), 'edge' (Microsoft service domain
+ * or the resolved destination IP), or null. Deterministic — based on rDNS
+ * suffix or an exact match to the already-resolved Microsoft target IP.
+ */
+function microsoftHopKind(hop, target) {
+    if (!hop || hop.timeout) return null;
+    const host = (hop.hostname || '').trim();
+    if (host && MSFT_BACKBONE_RE.test(host)) return 'backbone';
+    if (host && MSFT_EDGE_RE.test(host)) return 'edge';
+    if (target && target.resolvedIp && hop.ip && hop.ip === target.resolvedIp) return 'edge';
+    return null;
+}
+
+/** Format an RTT (ms) for display: "<1 ms" below 1ms, else rounded "N ms". */
+function formatHopRtt(ms) {
+    if (ms == null) return '—';
+    return ms < 1 ? '<1 ms' : `${Math.round(ms)} ms`;
+}
+
+/** Render one target trace block as HTML. */
+function renderTraceTarget(t) {
+    const realHops = t.hops.filter(h => !h.timeout && h.rttMs != null);
+    const maxRtt = realHops.reduce((mx, h) => Math.max(mx, h.rttMs), 0) || 1;
+    // Index of the first hop that enters Microsoft's network (entry point).
+    const msftEntryIdx = t.hops.findIndex(h => microsoftHopKind(h, t) != null);
+
+    // End-to-end latency: inside Microsoft's network (AS8075) the intermediate
+    // routers commonly de-prioritise / drop ICMP TTL-expired replies, so the
+    // per-hop ladder goes dark and the ONLY latency you can actually observe is
+    // to the deepest hop that still answered — effectively the end-to-end RTT to
+    // (or near) the endpoint. Surface that number explicitly rather than letting
+    // it hide at the bottom of a list of timeouts.
+    const deepest = realHops.length ? realHops[realHops.length - 1] : null;
+    const endToEndMs = deepest ? deepest.rttMs : null;
+    const deepestIdx = deepest ? t.hops.lastIndexOf(deepest) : -1;
+    // The path "goes dark inside Microsoft" when we entered AS8075 and at least
+    // one hop at/after that entry stopped replying (the common case that leaves
+    // only an end-to-end number visible).
+    const darkInsideMsft = msftEntryIdx >= 0 &&
+        t.hops.slice(msftEntryIdx).some(h => h.timeout);
+    const deepestInMsft = deepest != null && microsoftHopKind(deepest, t) != null;
+    // Only surface an "end-to-end" figure when the deepest reply is meaningful —
+    // i.e. the endpoint was reached, or the deepest responding hop is inside
+    // Microsoft's network. Otherwise (e.g. a proxied path that dies at the local
+    // router) the deepest reply is just a near hop and "end-to-end" would mislead.
+    const showE2e = endToEndMs != null && (t.reached || deepestInMsft || darkInsideMsft);
+
+    const statusChip = t.reached
+        ? '<span class="trace-chip trace-chip-ok">✓ reached</span>'
+        : (t.terminal && /blocked|not reached|Stopped|DNS failed|No IPv4/i.test(t.terminal)
+            ? '<span class="trace-chip trace-chip-warn">⚠ incomplete</span>'
+            : '');
+
+    // Prominent end-to-end latency pill (shown only when meaningful — see above).
+    const e2eChip = showE2e
+        ? `<span class="trace-chip trace-chip-e2e" title="Deepest hop that replied — effectively the end-to-end latency, since hops inside Microsoft's network stop answering traceroute">⇄ End-to-end ~${escapeHtml(formatHopRtt(endToEndMs))}</span>`
+        : '';
+
+    const meta = [];
+    if (t.resolvedIp) meta.push(`<span class="trace-meta-ip">${escapeHtml(t.resolvedIp)}</span>`);
+    if (t.host) meta.push(`<span class="trace-meta-host">${escapeHtml(t.host)}</span>`);
+
+    const routed = t.routedVia
+        ? `<div class="trace-routed">⚠ Routed via ${escapeHtml(t.routedVia)} — not direct</div>`
+        : '';
+
+    // Explain the end-to-end figure when the path goes dark inside Microsoft's
+    // network — this is expected behaviour, not a fault.
+    const e2eNote = showE2e
+        ? `<div class="trace-e2e-note">⇄ <strong>End-to-end ~${escapeHtml(formatHopRtt(endToEndMs))}</strong> — inside Microsoft's network (AS8075) intermediate hops don't answer traceroute, so this is the latency to the deepest visible point rather than a per-hop breakdown.</div>`
+        : '';
+
+    let hopsHtml;
+    if (!t.hops.length) {
+        hopsHtml = `<div class="trace-empty">${escapeHtml(t.terminal || 'No hops recorded (ICMP likely blocked)')}</div>`;
+    } else {
+        hopsHtml = t.hops.map((h, i) => {
+            const cls = traceHopClass(h.timeout ? null : h.rttMs);
+            const rttText = h.timeout ? '—' : (h.rttMs < 1 ? '<1 ms' : `${Math.round(h.rttMs)} ms`);
+            const barPct = h.timeout || h.rttMs == null ? 0 : Math.max(6, Math.round((h.rttMs / maxRtt) * 100));
+            const msftKind = microsoftHopKind(h, t);
+            const isEntry = i === msftEntryIdx;
+            const isDeepest = i === deepestIdx;
+            const msftTag = msftKind
+                ? `<span class="trace-hop-asn trace-hop-asn-${msftKind}" title="${msftKind === 'backbone'
+                        ? 'Microsoft global network backbone (AS8075)'
+                        : 'Microsoft / Azure edge (AS8075)'}">${msftKind === 'backbone' ? 'AS8075 · msft.net' : 'Microsoft'}</span>`
+                : '';
+            const label = h.timeout
+                ? '<span class="trace-hop-star">* no reply</span>'
+                : `<span class="trace-hop-ip">${escapeHtml(h.ip)}</span>` +
+                  (h.hostname ? `<span class="trace-hop-host">${escapeHtml(h.hostname)}</span>` : '') +
+                  msftTag;
+            const rowCls = `trace-hop ${cls}` + (msftKind ? ' trace-hop-msft' : '') +
+                (isEntry ? ' trace-hop-msft-entry' : '') + ((isDeepest && showE2e) ? ' trace-hop-e2e' : '');
+            const entryMark = isEntry
+                ? '<span class="trace-hop-entry-flag" title="Traffic enters Microsoft\'s network here">↳ enters Microsoft network</span>'
+                : '';
+            const e2eMark = (isDeepest && showE2e)
+                ? '<span class="trace-hop-e2e-flag" title="Deepest hop that replied — beyond here Microsoft\'s network stops answering traceroute, so this is the end-to-end latency">⇄ end-to-end latency</span>'
+                : '';
+            return `<div class="${rowCls}">` +
+                `<span class="trace-hop-ttl">${h.ttl}</span>` +
+                `<span class="trace-hop-body">${label}${entryMark}${e2eMark}</span>` +
+                `<span class="trace-hop-bar"><span class="trace-hop-bar-fill" style="width:${barPct}%"></span></span>` +
+                `<span class="trace-hop-rtt">${rttText}</span>` +
+                `</div>`;
+        }).join('');
+    }
+
+    return `<div class="trace-target">` +
+        `<div class="trace-target-head">` +
+            `<span class="trace-target-role">${escapeHtml(t.role || t.host || 'Target')}</span>` +
+            statusChip +
+            e2eChip +
+            `<span class="trace-target-meta">${meta.join(' · ')}</span>` +
+        `</div>` +
+        routed +
+        e2eNote +
+        `<div class="trace-hops">${hopsHtml}</div>` +
+    `</div>`;
+}
+
+/** Populate and show/hide the Network Path panel from L-TCP-10 data. */
+function updateMapTraceroute(lookup) {
+    const panel = document.getElementById('map-traceroute');
+    const body = document.getElementById('map-trace-body');
+    if (!panel || !body) return;
+
+    const trace = lookup['L-TCP-10'];
+    if (!trace || trace.status === 'NotRun' || trace.status === 'Pending' || !trace.detailedInfo) {
+        panel.classList.add('hidden');
+        return;
+    }
+
+    const targets = parseTracerouteHops(trace);
+    if (!targets.length) { panel.classList.add('hidden'); return; }
+
+    const totalHops = targets.reduce((n, t) => n + t.hops.filter(h => !h.timeout).length, 0);
+    const reachedCount = targets.filter(t => t.reached).length;
+    setText('map-trace-summary', `${reachedCount}/${targets.length} reached · ${totalHops} hops`);
+
+    // Re-render content without disturbing the user's expand/collapse choice.
+    body.innerHTML = targets.map(renderTraceTarget).join('');
+    panel.classList.remove('hidden');
+}
+
+/** Toggle the Network Path panel open/closed (wired from the header button). */
+function toggleMapTraceroute() {
+    const body = document.getElementById('map-trace-body');
+    const btn = document.getElementById('map-trace-toggle');
+    const chev = document.getElementById('map-trace-chevron');
+    if (!body || !btn) return;
+    const willOpen = body.classList.contains('hidden');
+    body.classList.toggle('hidden', !willOpen);
+    btn.setAttribute('aria-expanded', String(willOpen));
+    if (chev) chev.textContent = willOpen ? '▾' : '▸';
+}
+
+// Generic collapse/expand for result sections (the four test categories plus
+// the Cloud PC / Live Connection diagnostics panels). Sections are collapsed
+// by default; the status badge stays in the header so pass/fail is readable
+// without expanding. Used by both click and keyboard (Enter/Space) handlers.
+function toggleSection(headerEl, ev) {
+    if (ev && ev.type === 'keydown') {
+        const k = ev.key;
+        if (k !== 'Enter' && k !== ' ' && k !== 'Spacebar') return;
+        ev.preventDefault();
+    }
+    const section = headerEl.closest('.category, .live-diagnostics-section');
+    if (!section) return;
+    const collapsed = section.classList.toggle('collapsed');
+    headerEl.setAttribute('aria-expanded', String(!collapsed));
+}

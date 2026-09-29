@@ -1,0 +1,386 @@
+/**
+ * UI rendering and DOM manipulation for the connectivity diagnostics page.
+ */
+
+/**
+ * Enrich a result value string with a country flag if a 2-letter ISO code is found.
+ * Looks for patterns like ", XX (" or ", XX" at end where XX is a country code.
+ * Returns an HTML string (safe — the text portion is escaped).
+ */
+function enrichResultWithFlag(text) {
+    if (!text) return '';
+    const escaped = escapeHtml(text);
+    // Match 2-letter country code before parenthetical or at end: ", FR (" or ", GB"
+    const m = text.match(/,\s*([A-Z]{2})\s*(?:\(|$)/);
+    if (m) {
+        const code = m[1].toLowerCase();
+        const flagHtml = `<img src="https://flagcdn.com/20x15/${code}.png" alt="${m[1]}" width="20" height="15" class="country-flag" onerror="this.style.display='none'">`;
+        // Insert flag before the country code
+        const insertPos = escaped.indexOf(m[0]);
+        if (insertPos >= 0) {
+            return escaped.substring(0, insertPos + 2) + flagHtml + ' ' + escaped.substring(insertPos + 2);
+        }
+    }
+    return escaped;
+}
+
+const STATUS_ICONS = {
+    'Passed': '\u2714',
+    'Warning': '\u26A0',
+    'Failed': '\u2718',
+    'Error': '\u2718',
+    'Running': '\u27F3',
+    'NotRun': '\u2014',
+    'Skipped': '\u2014',
+    'Pending': '\u231B',
+    'Info': '\u2139'
+};
+
+const STATUS_CLASSES = {
+    'Passed': 'passed',
+    'Warning': 'warning',
+    'Failed': 'failed',
+    'Error': 'error',
+    'Running': 'running',
+    'NotRun': 'not-run',
+    'Skipped': 'skipped',
+    'Pending': 'pending',
+    'Info': 'info'
+};
+
+/**
+ * Render all test definitions into the category containers (initial state).
+ */
+function renderTestList() {
+    const containers = {
+        endpoint: document.getElementById('tests-endpoint'),
+        local: document.getElementById('tests-local'),
+        tcp: document.getElementById('tests-tcp'),
+        udp: document.getElementById('tests-udp'),
+        cloud: document.getElementById('tests-cloud'),
+        cloudpc: document.getElementById('tests-cloudpc')
+    };
+
+    // Clear
+    Object.values(containers).forEach(c => c.innerHTML = '');
+
+    for (const test of ALL_TESTS) {
+        const container = containers[test.category];
+        if (!container) continue;   // Skip if category container missing
+        const el = createTestElement(test, {
+            status: test.source === 'local' || test.source === 'cloudpc' ? 'Pending' : 'NotRun',
+            resultValue: test.source === 'cloudpc' ? 'Requires Cloud PC Scanner' : test.source === 'local' ? 'Requires Local Scanner' : 'Not tested',
+            detailedInfo: '',
+            duration: 0
+        });
+        container.appendChild(el);
+    }
+}
+
+/**
+ * Create a DOM element for a single test result.
+ */
+function createTestElement(test, result) {
+    const div = document.createElement('div');
+    div.className = 'test-item';
+    div.id = `test-${test.id}`;
+    div.dataset.status = 'not-run';
+
+    const statusClass = STATUS_CLASSES[result.status] || 'not-run';
+    const statusIcon = STATUS_ICONS[result.status] || '\u2014';
+    const statusLabel = result.status || 'NotRun';
+
+    const sourceBadge = test.source === 'browser'
+        ? '<span class="test-source-badge browser">Browser</span>'
+        : test.source === 'cloudpc'
+            ? '<span class="test-source-badge cloudpc">Cloud PC</span>'
+            : '<span class="test-source-badge local">Local</span>';
+
+    const nameSafe  = escapeHtml(test.name);
+    const descSafe  = escapeHtml(test.description);
+    const idSafe    = escapeHtml(String(test.id));
+    const statusLabelSafe = escapeHtml(statusLabel);
+    const durationSafe = Number.isFinite(Number(result.duration)) ? Number(result.duration) : 0;
+
+    div.innerHTML = `
+        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabelSafe}"><span aria-hidden="true">${statusIcon}</span></div>
+        <div class="test-info">
+            <div class="test-name">
+                ${nameSafe}
+                ${sourceBadge}
+            </div>
+            <div class="test-description">${descSafe}</div>
+            ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
+            ${result.detailedInfo ? `<div class="test-details" id="details-${idSafe}">${escapeHtml(result.detailedInfo)}</div>` : ''}
+            ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
+        </div>
+        <div class="test-meta">
+            ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
+        </div>
+    `;
+
+    // Wire details toggle via addEventListener (avoids putting test.id in an inline
+    // JS string context, which would be an XSS foothold if the id came from an
+    // imported scanner JSON or share link).
+    const expandBtn = div.querySelector('.test-expand');
+    if (expandBtn) expandBtn.addEventListener('click', () => toggleDetails(test.id));
+
+    return div;
+}
+
+/**
+ * Update a single test's UI after it completes.
+ */
+function updateTestUI(testId, result) {
+    const el = document.getElementById(`test-${testId}`);
+    if (!el) {
+        if (typeof ilog === 'function') ilog('updateTestUI: NO element found for test-' + testId);
+        return;
+    }
+    if (typeof ilog === 'function') ilog('updateTestUI: FOUND element test-' + testId + ', status=' + result.status + ', val=' + (result.resultValue || '').substring(0,60));
+
+    const test = ALL_TESTS.find(t => t.id === testId) || { id: testId, name: result.name || testId, source: 'local', description: '' };
+
+    const statusClass = STATUS_CLASSES[result.status] || 'not-run';
+    const statusIcon = STATUS_ICONS[result.status] || '\u2014';
+    const statusLabel = result.status || 'NotRun';
+
+    const sourceBadge = test.source === 'browser'
+        ? '<span class="test-source-badge browser">Browser</span>'
+        : test.source === 'cloudpc'
+            ? '<span class="test-source-badge cloudpc">Cloud PC</span>'
+            : '<span class="test-source-badge local">Local</span>';
+
+    // Tag with data-status for CSS filter
+    el.dataset.status = statusClass;
+
+    const nameSafe  = escapeHtml(test.name);
+    const descSafe  = escapeHtml(test.description);
+    const idSafe    = escapeHtml(String(testId));
+    const statusLabelSafe = escapeHtml(statusLabel);
+    const durationSafe = Number.isFinite(Number(result.duration)) ? Number(result.duration) : 0;
+
+    el.innerHTML = `
+        <div class="test-status-icon ${statusClass}" role="img" aria-label="${statusLabelSafe}"><span aria-hidden="true">${statusIcon}</span></div>
+        <div class="test-info">
+            <div class="test-name">
+                ${nameSafe}
+                ${sourceBadge}
+            </div>
+            <div class="test-description">${descSafe}</div>
+            ${result.resultValue ? `<div class="test-result-value">${enrichResultWithFlag(result.resultValue)}</div>` : ''}
+            ${result.detailedInfo ? `<div class="test-details" id="details-${idSafe}">${escapeHtml(result.detailedInfo)}</div>` : ''}
+            ${result.remediationUrl && safeUrl(result.remediationUrl) ? `<div class="test-remediation"><a href="${safeUrl(result.remediationUrl)}" target="_blank">📖 View documentation</a></div>` : ''}
+            ${result.remediationText ? `<div class="test-remediation-text">${escapeHtml(result.remediationText)}</div>` : ''}
+        </div>
+        <div class="test-meta">
+            ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
+        </div>
+    `;
+
+    const expandBtn = el.querySelector('.test-expand');
+    if (expandBtn) expandBtn.addEventListener('click', () => toggleDetails(testId));
+}
+
+/**
+ * Set a test to "Running" state.
+ */
+function setTestRunning(testId) {
+    updateTestUI(testId, {
+        status: 'Running',
+        resultValue: 'Running...',
+        detailedInfo: '',
+        duration: 0
+    });
+}
+
+/**
+ * Update the summary bar.
+ */
+function updateSummary(results) {
+    const bar = document.getElementById('summary-bar');
+    bar.classList.remove('hidden');
+    const overview = document.getElementById('results-overview');
+    if (overview) overview.classList.remove('hidden');
+
+    const allResults = [...results];
+    // Count pending (local-only tests not yet imported)
+    const localOnlyTests = ALL_TESTS.filter(t => t.source === 'local');
+    const importedIds = results.map(r => r.id);
+    const pending = localOnlyTests.filter(t => !importedIds.includes(t.id));
+    const skipped = results.filter(r => r.status === 'Skipped').length;
+
+    document.getElementById('summary-total').textContent = results.length + pending.length;
+    document.getElementById('summary-passed').textContent = results.filter(r => r.status === 'Passed').length;
+    document.getElementById('summary-warnings').textContent = results.filter(r => r.status === 'Warning').length;
+    document.getElementById('summary-failed').textContent = results.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+    // Show number of pending OR skipped in the 'Needs Local Scan' slot
+    const pendingEl = document.getElementById('summary-pending');
+    const pendingLabel = pendingEl.parentElement.querySelector('.summary-label');
+    if (pending.length > 0) {
+        pendingEl.textContent = pending.length;
+        pendingLabel.textContent = 'Needs Local Scan';
+    } else if (skipped > 0) {
+        pendingEl.textContent = skipped;
+        pendingLabel.textContent = 'Skipped';
+    } else {
+        pendingEl.textContent = '0';
+        pendingLabel.textContent = 'Needs Local Scan';
+    }
+}
+
+/**
+ * Update progress bar with current test info.
+ */
+function updateProgress(current, total, testName) {
+    const container = document.getElementById('progress-container');
+    container.classList.remove('hidden');
+
+    const fill = document.getElementById('progress-fill');
+    const pct = Math.round((current / total) * 100);
+    fill.style.width = `${pct}%`;
+
+    // Update header elements
+    let label = container.querySelector('.progress-label');
+    let count = container.querySelector('.progress-count');
+    let nameEl = container.querySelector('.progress-test-name');
+
+    // If the new layout elements don't exist yet, create them
+    if (!label) {
+        const header = document.createElement('div');
+        header.className = 'progress-header';
+        label = document.createElement('span');
+        label.className = 'progress-label';
+        count = document.createElement('span');
+        count.className = 'progress-count';
+        header.appendChild(label);
+        header.appendChild(count);
+        container.insertBefore(header, container.firstChild);
+
+        nameEl = document.createElement('div');
+        nameEl.className = 'progress-test-name';
+        container.appendChild(nameEl);
+    }
+
+    label.textContent = 'Running Tests…';
+    count.textContent = `${current} / ${total} (${pct}%)`;
+    if (testName) {
+        nameEl.textContent = `▸ ${testName}`;
+    }
+}
+
+function hideProgress() {
+    document.getElementById('progress-container').classList.add('hidden');
+}
+
+/**
+ * Show or hide the download banner.
+ * @param {number} [pendingCount] number of local-only tests still awaiting the scanner
+ */
+function showDownloadBanner(pendingCount) {
+    const countEl = document.getElementById('download-banner-count');
+    if (countEl && typeof pendingCount === 'number' && pendingCount > 0) {
+        countEl.textContent = pendingCount === 1
+            ? '1 more check'
+            : `${pendingCount} more checks`;
+    }
+    document.getElementById('download-banner').classList.remove('hidden');
+}
+
+function hideDownloadBanner() {
+    document.getElementById('download-banner').classList.add('hidden');
+}
+
+/**
+ * Update category badges.
+ */
+function updateCategoryBadges(results) {
+    const categories = { endpoint: [], local: [], tcp: [], udp: [], cloud: [], cloudpc: [] };
+    results.forEach(r => {
+        if (categories[r.category]) categories[r.category].push(r);
+    });
+
+    for (const [cat, catResults] of Object.entries(categories)) {
+        const badge = document.getElementById(`badge-${cat}`);
+        if (!badge) continue;
+
+        if (catResults.length === 0) {
+            badge.textContent = '';
+            badge.style.background = '';
+            badge.style.color = '';
+            continue;
+        }
+
+        const failed = catResults.filter(r => r.status === 'Failed' || r.status === 'Error').length;
+        const warned = catResults.filter(r => r.status === 'Warning').length;
+        const passed = catResults.filter(r => r.status === 'Passed').length;
+
+        const skipped = catResults.filter(r => r.status === 'Skipped').length;
+
+        // Once the Local Scanner has actually run (any local test produced a
+        // real result rather than the "Pending / Requires Local Scanner"
+        // placeholder), the "Requires Local Scanner" header tag is redundant —
+        // hide it so it doesn't contradict the "N passed" badge next to it.
+        if (cat === 'local') {
+            const hasRun = catResults.some(r =>
+                r.status && r.status !== 'Pending' && r.status !== 'NotRun');
+            const tag = document.querySelector('#cat-local .source-tag.local-only');
+            if (tag) tag.classList.toggle('hidden', hasRun);
+        }
+
+        if (failed > 0) {
+            badge.textContent = `${failed} failed`;
+            badge.style.background = 'var(--red-bg)';
+            badge.style.color = 'var(--red)';
+        } else if (warned > 0) {
+            badge.textContent = `${warned} warning${warned > 1 ? 's' : ''}`;
+            badge.style.background = 'var(--yellow-bg)';
+            badge.style.color = '#92400e';
+        } else if (passed > 0) {
+            badge.textContent = `${passed} passed`;
+            badge.style.background = 'var(--green-bg)';
+            badge.style.color = 'var(--green)';
+        } else if (skipped > 0) {
+            badge.textContent = `${skipped} skipped`;
+            badge.style.background = 'var(--bg-surface)';
+            badge.style.color = 'var(--text-muted)';
+        }
+    }
+}
+
+/**
+ * Toggle details panel for a test.
+ */
+function toggleDetails(testId) {
+    const details = document.getElementById(`details-${testId}`);
+    if (!details) return;
+    const nowExpanded = details.classList.toggle('expanded');
+    // Keep the toggle button's aria-expanded in sync so screen readers
+    // announce the current state on subsequent focus.
+    const btn = document.querySelector(`.test-expand[aria-controls="details-${testId}"]`);
+    if (btn) btn.setAttribute('aria-expanded', nowExpanded ? 'true' : 'false');
+}
+
+/**
+ * Escape HTML entities.
+ */
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+/**
+ * Sanitise a URL for use in href attributes — only allow https:// scheme.
+ * Returns the URL if safe, or empty string if not.
+ */
+function safeUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:' ? parsed.href : '';
+    } catch {
+        return '';
+    }
+}

@@ -1,0 +1,125 @@
+name: Build and Release Hybrid Scanner
+
+# Parallel to build-scanner.yml, kept separate so tagging on the main branch
+# (v1.14.11 etc.) never accidentally publishes a hybrid build, and vice versa.
+# Triggered only by tags that end in "-hybrid" (e.g. v0.1.0-hybrid).
+on:
+  push:
+    tags:
+      - 'v*-hybrid'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish self-contained exe (Hybrid Edition)
+        run: |
+          dotnet publish src/W365LocalScanner/W365LocalScanner.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:PublishTrimmed=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o publish
+        shell: pwsh
+
+      - name: Sign exe with Azure Trusted Signing
+        if: vars.TRUSTED_SIGNING_ACCOUNT != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.TRUSTED_SIGNING_PROFILE }}
+          files-folder: publish
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Compute SHA256 checksum
+        id: checksum
+        run: |
+          $hash = (Get-FileHash publish/W365LocalScanner-Hybrid.exe -Algorithm SHA256).Hash
+          Write-Output "sha256=$hash" >> $env:GITHUB_OUTPUT
+          Write-Output "SHA256: $hash"
+        shell: pwsh
+
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: publish/W365LocalScanner-Hybrid.exe
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: W365LocalScanner-Hybrid
+          path: publish/W365LocalScanner-Hybrid.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: publish/W365LocalScanner-Hybrid.exe
+          generate_release_notes: true
+          prerelease: true
+          body: |
+            ## Windows 365 / AVD Local Connectivity Scanner — **Hybrid Edition**
+
+            Separate release stream targeting **AVD Hybrid session hosts**
+            (on-prem servers Azure Arc-onboarded — Azure Local, Azure Stack HCI,
+            or BYO hardware).
+
+            Download `W365LocalScanner-Hybrid.exe` and run it **elevated** on
+            the session host. The scanner auto-detects Arc-onboarded machines
+            via the `himds` service and reads Arc HIMDS metadata (127.0.0.1:40342).
+            You can also force hybrid mode with `--avd-hybrid`.
+
+            Results open in the hybrid dashboard at:
+            `https://paulcollinge.github.io/W365ConnectivityTool/hybrid/`
+
+            ### What's different from the main scanner
+            - Skips Azure fabric checks (168.63.129.16 / 169.254.169.254 —
+              unroutable from an on-prem host)
+            - Adds an Arc control-plane endpoint group in C-EP-02
+              (`gbl.his.arc.azure.com`, `*.his.arc.azure.com`,
+              `*.guestconfiguration.azure.com`, `guestnotificationservice.azure.com`,
+              `pas.windows.net`, `management.azure.com`,
+              regional `*.login.microsoft.com`)
+            - New `C-ARC-01` Arc Agent Health check (himds / GCArcService /
+              ExtensionService status, agent version, heartbeat freshness)
+            - New `C-HY-02` Session Host Time Sync check (Kerberos-sensitive
+              clock skew — hybrid AD sign-in fails silently outside ±5 min)
+
+            ### Verify integrity
+            **SHA256:** `${{ steps.checksum.outputs.sha256 }}`
+
+            ```powershell
+            (Get-FileHash W365LocalScanner-Hybrid.exe -Algorithm SHA256).Hash
+            ```
+
+            ### Verify build provenance
+            ```bash
+            gh attestation verify W365LocalScanner-Hybrid.exe --repo PaulCollinge/W365ConnectivityTool
+            ```
+
+            **Note:** This is a preview build for hybrid AVD scenarios. The
+            main `W365LocalScanner.exe` release stream is unaffected.
