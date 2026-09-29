@@ -2450,7 +2450,7 @@ async function sendResultsToIT() {
     const total    = exportResults.length;
 
     const machineName = _importedMachineName || 'Unknown Device';
-    const dateStr     = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const dateStr     = new Date().toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
     const filename    = `W365-Diagnostics-${machineName.replace(/[^a-zA-Z0-9_-]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`;
 
     // Build status label for subject line
