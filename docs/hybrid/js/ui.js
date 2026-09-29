@@ -3,19 +3,19 @@
  */
 
 /**
- * Enrich a result value string with a country flag if a 2-letter ISO code is found.
- * Looks for patterns like ", XX (" or ", XX" at end where XX is a country code.
+ * Enrich a result value string with a flag if a 2-letter ISO code is found.
+ * Looks for patterns like ", XX (" or ", XX" at end where XX is an ISO code.
  * Returns an HTML string (safe — the text portion is escaped).
  */
 function enrichResultWithFlag(text) {
     if (!text) return '';
     const escaped = escapeHtml(text);
-    // Match 2-letter country code before parenthetical or at end: ", FR (" or ", GB"
+    // Match a 2-letter ISO code before parenthetical or at end: ", FR (" or ", GB"
     const m = text.match(/,\s*([A-Z]{2})\s*(?:\(|$)/);
     if (m) {
         const code = m[1].toLowerCase();
         const flagHtml = `<img src="https://flagcdn.com/20x15/${code}.png" alt="${m[1]}" width="20" height="15" class="country-flag" onerror="this.style.display='none'">`;
-        // Insert flag before the country code
+        // Insert the flag before the ISO code
         const insertPos = escaped.indexOf(m[0]);
         if (insertPos >= 0) {
             return escaped.substring(0, insertPos + 2) + flagHtml + ' ' + escaped.substring(insertPos + 2);

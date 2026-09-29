@@ -51,7 +51,7 @@ not flatten it.
 
 | Endpoint | Side | Determined by | VPN/SWG steering? |
 |---|---|---|---|
-| RD Gateway (`rdgateway-cNNN-<REGION>-rN.wvd.microsoft.com`) | **Client** entry point | Client-side DNS → Traffic Manager geo-DNS returning the nearest regional gateway to the *resolver's egress IP* | **Yes** — VPN egress country picks the gateway region. East-US-2 CPC + UK-egress VPN ⇒ UK RDGW (legitimate, not a bug). |
+| RD Gateway (`rdgateway-cNNN-<REGION>-rN.wvd.microsoft.com`) | **Client** entry point | Client-side DNS → Traffic Manager geo-DNS returning the nearest regional gateway to the *resolver's egress IP* | **Yes** — VPN egress country/region determines the gateway region. East-US-2 CPC + UK-egress VPN ⇒ UK RDGW (legitimate, not a bug). |
 | TURN relay (`world.relay.avd.microsoft.com`) | **Server** side (media relay for the VM) | CPC-side DNS returns the CPC's own region's TURN | **No, when the scanner runs on the CPC** — see "Azure platform DNS" below. So TURN region == CPC region is the expected green state. |
 | AFD Edge (`*.wvd.microsoft.com`, anycast) | **Client** side | Anycast BGP from the client's egress | **Yes** — VPN changes which PoP terminates. |
 | Client-resolved DNS timings | **Client** side | Resolver the client is using | **Yes** |
@@ -181,7 +181,7 @@ these:
 - **Findings labelled with a specific technical cause must be deterministic
   about that cause; otherwise rename the finding to what it actually
   detects.** Example: "different HTTP and STUN egress IPs in the same
-  country" is most commonly produced by IPv4/IPv6 dual-stack (HTTP via v6,
+  country/region" is most commonly produced by IPv4/IPv6 dual-stack (HTTP via v6,
   STUN via v4), and is **not** a deterministic signal of CGNAT — CGNAT
   subscribers don't expose `100.64.0.0/10` addresses externally anyway. The
   honest deterministic signal for CGNAT is traceroute hops in
