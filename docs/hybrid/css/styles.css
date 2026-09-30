@@ -1499,8 +1499,24 @@ main {
 .test-categories[data-filter="warning"] .test-item:not([data-status="warning"])                              { display: none; }
 .test-categories[data-filter="passed"]  .test-item:not([data-status="passed"])                               { display: none; }
 .test-categories[data-filter="pending"] .test-item:not([data-status="pending"]):not([data-status="not-run"]) { display: none; }
+/* Same filter rules for the Cloud PC / AVD Hybrid / Live diagnostics sections
+   that sit outside #test-results. Mirrored by setResultFilter in app.js. */
+.live-diagnostics-section[data-filter="failed"]  .test-item:not([data-status="failed"]):not([data-status="error"])   { display: none; }
+.live-diagnostics-section[data-filter="warning"] .test-item:not([data-status="warning"])                              { display: none; }
+.live-diagnostics-section[data-filter="passed"]  .test-item:not([data-status="passed"])                               { display: none; }
+.live-diagnostics-section[data-filter="pending"] .test-item:not([data-status="pending"]):not([data-status="not-run"]) { display: none; }
 /* Hide empty category sections when filtered */
 .test-categories[data-filter]:not([data-filter="all"]) .category:not(:has(.test-item:not([style*="display: none"]))) { opacity: 0.35; }
+
+/* Flash highlight applied by section-badge click-to-scroll (ui.js). Draws
+   the user's attention to the test we just scrolled to for a second or so. */
+@keyframes flash-highlight-anim {
+    0%   { background: transparent; box-shadow: 0 0 0 0 var(--yellow-border, #f59e0b); }
+    30%  { background: color-mix(in srgb, var(--yellow-bg, #fde68a) 60%, transparent);
+           box-shadow: 0 0 0 4px color-mix(in srgb, var(--yellow-border, #f59e0b) 45%, transparent); }
+    100% { background: transparent; box-shadow: 0 0 0 0 var(--yellow-border, #f59e0b); }
+}
+.test-item.flash-highlight { animation: flash-highlight-anim 1.4s ease-out; }
 
 /* ════════════════════════════════════════
    TEST CATEGORIES

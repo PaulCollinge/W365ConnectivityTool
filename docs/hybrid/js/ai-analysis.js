@@ -1190,7 +1190,7 @@ function runAnalysisEngine(results) {
                                     'ca':'ca','kr':'kr'};
                 const dnsRegion = dnsRegionHints[0].replace(/\d+$/, '');
                 const dnsCC = DNS_CC_MAP[dnsRegion] || dnsRegion;
-                // Simple mismatch: DNS region code doesn't match user country/region
+                // Simple mismatch: DNS region code doesn't match user country
                 const isMismatch = dnsCC !== userCC &&
                     !(dnsCC === 'eu' && ['gb','de','fr','nl','ie','be','at','ch','se','no','dk','fi','es','it','pt','pl','cz'].includes(userCC));
                 if (isMismatch) {
