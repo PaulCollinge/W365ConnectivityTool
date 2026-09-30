@@ -1977,14 +1977,82 @@ class Program
     }
 
     /// <summary>
-    /// Creates an HttpClient that forwards default proxy credentials (NTLM/Kerberos).
-    /// Use this instead of bare "new HttpClient" so tests work behind authenticated proxies.
+    /// Creates an HttpClient that forwards default proxy credentials (NTLM/Kerberos)
+    /// ONLY when the system actually has a proxy configured. Setting
+    /// DefaultProxyCredentials unconditionally used to be the default here, but on
+    /// a Windows-Hello-for-Business enrolled machine that can trigger the OS to
+    /// warm up the credential provider (which prompts for the smartcard PIN) even
+    /// when no proxy is present. Guarding on actual proxy configuration removes
+    /// that possibility entirely on the (much more common) direct-egress path
+    /// while preserving proxy auth for customers who need it.
     /// </summary>
     static HttpClient CreateProxyAwareHttpClient(TimeSpan timeout, HttpClientHandler? customHandler = null)
     {
         var handler = customHandler ?? new HttpClientHandler();
-        handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
+        // Defensive: never auto-enumerate the CurrentUser cert store during a
+        // TLS CertificateRequest. The Manual default already implies this in
+        // modern .NET, but explicit is one line and can't be regressed by a
+        // future refactor.
+        handler.ClientCertificateOptions = ClientCertificateOption.Manual;
+
+        // Only surface Kerberos/NTLM credentials to a proxy if one is actually
+        // configured. WebRequest.DefaultWebProxy is populated by the system
+        // proxy chain (WPAD, PAC, static configuration); if the effective
+        // proxy for a canonical Microsoft endpoint is direct, no proxy auth
+        // will ever be attempted anyway — so setting DefaultProxyCredentials
+        // in that case only creates opportunities for the OS to eagerly warm
+        // credential providers we don't want to touch.
+        if (HasEffectiveProxy())
+        {
+            handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
+        }
         return new HttpClient(handler) { Timeout = timeout };
+    }
+
+    /// <summary>
+    /// Returns true when the system proxy chain resolves any non-direct proxy
+    /// for a canonical Microsoft endpoint. Cheap, cached for the lifetime of
+    /// the process — proxy config doesn't change mid-scan.
+    /// </summary>
+    static bool? _effectiveProxyCached = null;
+    static bool HasEffectiveProxy()
+    {
+        if (_effectiveProxyCached.HasValue) return _effectiveProxyCached.Value;
+        try
+        {
+            var proxy = System.Net.WebRequest.GetSystemWebProxy();
+            var probe = new Uri("https://login.microsoftonline.com/");
+            var resolved = proxy.GetProxy(probe);
+            _effectiveProxyCached = resolved != null && resolved != probe;
+        }
+        catch { _effectiveProxyCached = false; }
+        return _effectiveProxyCached.Value;
+    }
+
+    /// <summary>
+    /// Builds SslClientAuthenticationOptions that will NEVER cause the .NET
+    /// runtime to enumerate the local certificate store in response to a TLS
+    /// CertificateRequest message. Every raw SslStream in this scanner must
+    /// use these options — without them, hosts that support mutual TLS auth
+    /// (rdweb.wvd.microsoft.com, TURN relays, some gateways) will trigger a
+    /// Windows-Hello PIN dialog on any client with a smartcard-backed cert,
+    /// even though we never actually want to present a client certificate.
+    /// </summary>
+    static System.Net.Security.SslClientAuthenticationOptions SafeSslOptions(string host,
+        System.Net.Security.RemoteCertificateValidationCallback? serverValidation = null)
+    {
+        var opts = new System.Net.Security.SslClientAuthenticationOptions
+        {
+            TargetHost = host,
+            // Empty collection + selection callback returning null = the
+            // runtime skips the CurrentUser\My enumeration entirely and
+            // responds to CertificateRequest with an empty cert list.
+            ClientCertificates = new System.Security.Cryptography.X509Certificates.X509CertificateCollection(),
+            LocalCertificateSelectionCallback = (_, _, _, _, _) => null!,
+        };
+        if (serverValidation != null)
+            opts.RemoteCertificateValidationCallback = serverValidation;
+        return opts;
     }
 
     /// <summary>
@@ -5186,7 +5254,7 @@ class Program
             });
 
             using var tlsCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, tlsCts.Token);
+            await ssl.AuthenticateAsClientAsync(SafeSslOptions(host), tlsCts.Token);
             sb.Insert(0, $"Host: {host}:{port}\n\n");
 
             // Build and validate the certificate chain
@@ -7371,7 +7439,7 @@ class Program
             });
 
             using var turnTlsCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, turnTlsCts.Token);
+            await ssl.AuthenticateAsClientAsync(SafeSslOptions(host), turnTlsCts.Token);
             result.ResultValue = intercepted ? "TLS inspection detected on TURN relay" : "No TLS inspection on TURN relay";
             result.Status = intercepted ? "Warning" : "Passed";
             result.DetailedInfo = sb.ToString().Trim();
@@ -9003,7 +9071,7 @@ class Program
                     });
 
                     using var tlsCts = new CancellationTokenSource(10000);
-                    await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = host }, tlsCts.Token);
+                    await ssl.AuthenticateAsClientAsync(SafeSslOptions(host), tlsCts.Token);
                     sb.AppendLine($"  TLS:     {ssl.SslProtocol}");
                     checked_++;
 
@@ -9703,7 +9771,7 @@ class Program
                         }
                         return true;
                     });
-                    await ssl.AuthenticateAsClientAsync(host);
+                    await ssl.AuthenticateAsClientAsync(SafeSslOptions(host));
                 }
                 catch { /* TLS check failed, rely on other signals */ }
 
@@ -10030,7 +10098,7 @@ class Program
                         using var tcp = new TcpClient();
                         await tcp.ConnectAsync(gwIp, 443);
                         using var ssl = new SslStream(tcp.GetStream(), false, (_, _, _, _) => true);
-                        await ssl.AuthenticateAsClientAsync(discoveredGateway);
+                        await ssl.AuthenticateAsClientAsync(SafeSslOptions(discoveredGateway));
                         var cert = ssl.RemoteCertificate as X509Certificate2;
                         if (cert != null)
                         {
@@ -11666,12 +11734,26 @@ class Program
 
             result.ResultValue = $"{passed}/{total} {hostLabel} endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
-            // Count any soft endpoints that failed UNEXPECTEDLY (i.e. not the
-            // Azure Guest Agent's SYSTEM-only lockdown, which produces WSAEACCES
-            // and is the designed behaviour on every Azure VM / Cloud PC).
+            // Count soft endpoints that failed UNEXPECTEDLY. Two soft endpoints
+            // exist today:
+            //   1. 168.63.129.16 (wireserver) — the *expected* failure mode from
+            //      user-mode is WSAEACCES (WFP block); anything else here means
+            //      something non-standard is going on and IS worth surfacing.
+            //   2. *.prod.warm.ingest.monitor.core.windows.net — declared soft
+            //      precisely BECAUSE it's a known-noisy probe (regions without a
+            //      warm-ingest cluster return NXDOMAIN; some cluster nodes drop
+            //      unauthenticated TCP SYN; the whole point of marking it soft is
+            //      that its failure does not indicate a real firewall block).
+            // The wireserver "unexpected" case is real actionable signal, so it
+            // still flips the verdict to Warning. The warm-ingest case is not —
+            // Jan (Sep 2026) rightly pointed out that "25/25 reachable" +
+            // "Warning" is contradictory when the ONLY soft-fail was warm-ingest
+            // DNS NXDOMAIN in a region (swedencentral) that has no warm-ingest
+            // cluster. Only wireserver unexpected failures set Warning now.
             var softFailed = results.Count(r =>
             {
-                if (!IsSoft(r.ep) || r.ok) return false;
+                if (r.ok) return false;
+                if (r.ep.host != "168.63.129.16") return false;
                 var l = (r.err ?? "").ToLowerInvariant();
                 bool expected = l.Contains("forbidden") || l.Contains("access permissions") || l.Contains("10013");
                 return !expected;

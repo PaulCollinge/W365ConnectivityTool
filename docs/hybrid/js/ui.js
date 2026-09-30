@@ -345,6 +345,53 @@ function updateCategoryBadges(results) {
             badge.style.background = 'var(--bg-surface)';
             badge.style.color = 'var(--text-muted)';
         }
+
+        // Make the badge actionable: clicking it applies the matching filter
+        // AND scrolls to the first test in that section with a matching
+        // status. Fixes Jan's "clicking 1 warning does nothing" bug (Sep 2026).
+        // Data attributes rather than inline state so a repeat call doesn't
+        // stack multiple listeners.
+        const targetFilter = failed > 0 ? 'failed' : warned > 0 ? 'warning' : passed > 0 ? 'passed' : null;
+        const sectionEl = badge.closest('.live-diagnostics-section, .category');
+        if (targetFilter && sectionEl) {
+            badge.style.cursor = 'pointer';
+            badge.setAttribute('role', 'button');
+            badge.setAttribute('tabindex', '0');
+            badge.setAttribute('title', `Filter to ${targetFilter} in this section`);
+            badge.dataset.targetFilter = targetFilter;
+            badge.dataset.targetSection = sectionEl.id || '';
+            // Bind the click once — replace any prior binding so subsequent
+            // rerenders don't duplicate.
+            badge.onclick = (ev) => {
+                ev.stopPropagation();
+                const f = badge.dataset.targetFilter;
+                if (typeof setResultFilter === 'function') setResultFilter(f);
+                // Find the first matching test item inside the section and scroll it into view
+                const first = sectionEl.querySelector(`.test-item[data-status="${f}"]`)
+                           || (f === 'failed' ? sectionEl.querySelector(`.test-item[data-status="error"]`) : null);
+                if (first) {
+                    first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    first.classList.add('flash-highlight');
+                    setTimeout(() => first.classList.remove('flash-highlight'), 1500);
+                    // If the row has an expand/collapse control, open it so the
+                    // user immediately sees WHY it's flagged.
+                    const expandBtn = first.querySelector('.test-expand');
+                    const isCollapsed = expandBtn && expandBtn.getAttribute('aria-expanded') !== 'true';
+                    if (isCollapsed) expandBtn.click();
+                }
+            };
+            badge.onkeydown = (ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); badge.click(); }
+            };
+        } else {
+            // No status to jump to — clear any prior clickable affordances so
+            // the badge doesn't lie about being interactive.
+            badge.style.cursor = '';
+            badge.removeAttribute('role');
+            badge.removeAttribute('tabindex');
+            badge.onclick = null;
+            badge.onkeydown = null;
+        }
     }
 }
 

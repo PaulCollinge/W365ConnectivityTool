@@ -402,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check for ?mode=cloudpc URL parameter (set by scanner exe)
     const urlMode = new URLSearchParams(window.location.search).get('mode');
-    if (urlMode === 'cloudpc' || urlMode === 'avd') {
+    if (urlMode === 'cloudpc' || urlMode === 'avd' || urlMode === 'avd-arc') {
         hostType = urlMode;
         const toggle = document.getElementById('cpc-mode-toggle');
         if (toggle) toggle.checked = true;
@@ -411,6 +411,29 @@ document.addEventListener('DOMContentLoaded', () => {
         if (sel) sel.value = hostType;
         ilog(`CPC mode enabled via URL param: mode=${urlMode}`);
         try { localStorage.setItem('w365-last-mode', urlMode); } catch (e) {}
+    }
+
+    // On the hybrid dashboard the default host type is 'avd-arc'. When the
+    // user opens /hybrid/ fresh (no URL param, no imported scan, no sticky
+    // preference), this ensures the label reads "AVD Hybrid Session Host"
+    // instead of the fallback "Cloud PC (W365)" which was Jan's very first
+    // observation (Sep 2026): "When running the tool from the hybrid URL,
+    // it starts in W365 mode, should probably be Hybrid mode to avoid
+    // mistakes." Detection: check either the URL path (public deploy under
+    // /hybrid/) or the presence of the "Hybrid Preview" pill in the DOM
+    // (works when the hybrid folder is served from a webroot for local dev
+    // or a preview URL where /hybrid/ isn't in the path).
+    const isHybridDashboard = window.location.pathname.includes('/hybrid/')
+        || Array.from(document.querySelectorAll('.preview-pill')).some(p => /hybrid/i.test(p.textContent));
+    if (hostType === null && isHybridDashboard) {
+        hostType = 'avd-arc';
+        const sel = document.getElementById('host-type-select');
+        if (sel) sel.value = hostType;
+        // Refresh every host-type-aware label so the toggle text, section
+        // subtitles etc. all read "AVD Hybrid" without waiting for the user
+        // to interact with anything.
+        if (typeof updateHostTypeLabels === 'function') updateHostTypeLabels();
+        ilog('Hybrid dashboard: defaulting hostType to avd-arc');
     }
 
     // Consume the early-CPC bootstrap hint: if the inline <head> script set
@@ -422,7 +445,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // almost certainly still applies.
     if (document.documentElement.classList.contains('early-cpc-mode') && !cloudPcMode) {
         const earlyHost = document.documentElement.getAttribute('data-early-host');
-        if (earlyHost === 'cloudpc' || earlyHost === 'avd') {
+        if (earlyHost === 'cloudpc' || earlyHost === 'avd' || earlyHost === 'avd-arc') {
             hostType = earlyHost;
             const toggle = document.getElementById('cpc-mode-toggle');
             if (toggle) toggle.checked = true;
@@ -645,7 +668,11 @@ function updateHostTypeLabels() {
     const cpcSectionTitle = document.querySelector('.cloudpc-header .live-title');
     if (cpcSectionTitle) cpcSectionTitle.textContent = `${label} Diagnostics`;
     const cpcSectionSub = document.querySelector('.cloudpc-header .live-subtitle');
-    if (cpcSectionSub) cpcSectionSub.textContent = `Connectivity tests run from within the ${label} (Azure VM)`;
+    if (cpcSectionSub) {
+        cpcSectionSub.textContent = hostType === 'avd-arc'
+            ? `Connectivity tests run from within the ${label} (on-prem, Azure Arc-onboarded)`
+            : `Connectivity tests run from within the ${label} (Azure VM)`;
+    }
     // CPC diagnostics info bar
     const cpcInfoBar = document.querySelector('#cloudpc-info-bar span:last-child');
     if (cpcInfoBar) cpcInfoBar.innerHTML = `Run this tool on your ${label}, then drag the <code>W365ScanResults.json</code> file here to see end-to-end results, or&nbsp;<button class="info-bar-link" onclick="document.getElementById('file-import').click()">browse to import it</button>.`;
@@ -2943,6 +2970,17 @@ function setResultFilter(filter) {
     if (!grid) return;
 
     grid.dataset.filter = filter;
+
+    // The CPC diagnostics and Live diagnostics sections live OUTSIDE
+    // #test-results but their tests also carry data-status. Mirror the
+    // filter onto them so the SHOW: Warning button actually filters the
+    // Cloud PC / AVD Hybrid section too — otherwise clicking Warning
+    // silently narrows only the client-side grid (which is hidden in CPC
+    // mode anyway), producing the "filter does nothing" bug Jan reported.
+    for (const sectionId of ['cloudpc-diagnostics-section', 'live-diagnostics-section']) {
+        const section = document.getElementById(sectionId);
+        if (section) section.dataset.filter = filter;
+    }
 
     // When narrowing to a status filter, expand every collapsed section so the
     // matching items are actually visible (collapsed sections hide their body).
