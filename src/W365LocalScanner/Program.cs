@@ -273,9 +273,26 @@ class Program
         return null;
     }
 
+    // Legacy conhost / CMD often defaults to codepage 437/850/1252 even when
+    // the .NET runtime has Console.OutputEncoding set to UTF-8 — that setting
+    // only controls how the runtime encodes strings, not how the console
+    // decodes the bytes it receives. On such consoles, our UTF-8 box-drawing
+    // characters (═, ─, ║, —) come out as mojibake (â"€, â€"). Setting the
+    // active console codepage to 65001 (UTF-8) here makes the same output
+    // render correctly regardless of the shell (cmd.exe, PowerShell, Windows
+    // Terminal, SSH). The call is a no-op if the codepage is already 65001,
+    // and best-effort — failure doesn't affect anything else.
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleOutputCP(uint wCodePageID);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCP(uint wCodePageID);
+
     static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
+        try { _ = SetConsoleOutputCP(65001); _ = SetConsoleCP(65001); }
+        catch { /* best-effort — legacy consoles will still work, just with mojibake for box-drawing chars */ }
 
         var outputPath = "W365ScanResults.json";
         if (args.Length > 0 && !args[0].StartsWith("-"))
