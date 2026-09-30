@@ -1520,15 +1520,15 @@ function showAnalysisPanel(findings, qualityScore) {
 
     const renderFinding = (f) => {
         const remHtml = f.remediation
-            ? `<div class="analysis-remediation"><strong>Recommendation:</strong> ${escapeHtml(f.remediation)}</div>`
+            ? `<div class="analysis-remediation"><strong>Recommendation:</strong> ${bidiIsolateHtml(f.remediation)}</div>`
             : '';
         return `
             <div class="analysis-finding analysis-finding-${f.severity}">
                 <div class="analysis-finding-header">
                     ${sevIcon(f.severity)}
-                    <span class="analysis-finding-title">${escapeHtml(f.title)}</span>
+                    <span class="analysis-finding-title">${bidiIsolateHtml(f.title)}</span>
                 </div>
-                <div class="analysis-finding-detail">${escapeHtml(f.detail)}</div>
+                <div class="analysis-finding-detail">${bidiIsolateHtml(f.detail)}</div>
                 ${remHtml}
             </div>`;
     };
@@ -1617,6 +1617,7 @@ function showAnalysisPanel(findings, qualityScore) {
         </div>`;
 
     document.body.appendChild(overlay);
+    applyAutomaticTextDirection(overlay);
 
     // Animate in
     requestAnimationFrame(() => {
@@ -1716,13 +1717,14 @@ function showPromptModal(prompt) {
                 Clipboard access was blocked. Select all text below (Ctrl+A), copy it (Ctrl+C),
                 then paste it into <a href="https://copilot.microsoft.com/" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Microsoft Copilot</a>.
             </p>
-            <textarea readonly style="flex:1;margin:0 24px 16px;padding:12px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--r-sm);font-family:monospace;font-size:12px;resize:none;box-sizing:border-box"></textarea>
+            <textarea readonly dir="auto" style="flex:1;margin:0 24px 16px;padding:12px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--r-sm);font-family:monospace;font-size:12px;resize:none;box-sizing:border-box"></textarea>
             <div class="analysis-footer">
                 <button class="btn btn-ai" onclick="window.open('https://copilot.microsoft.com/','_blank','noopener,noreferrer');this.closest('.analysis-overlay').remove()">Open Copilot</button>
             </div>
         </div>`;
 
     document.body.appendChild(overlay);
+    applyAutomaticTextDirection(overlay);
     // Populate the textarea via .value so the browser's text node handling
     // guarantees safety regardless of prompt content. Previously we used
     // innerHTML interpolation with a partial < -> &lt; escape which missed

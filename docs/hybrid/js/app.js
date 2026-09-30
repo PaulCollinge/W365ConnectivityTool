@@ -47,6 +47,7 @@ window.addEventListener('unhandledrejection', function(event) {
 let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
+let _importedScanTimestampRaw = ''; // original machine-readable timestamp for round trips
 let _importedMachineName = '';     // machine name from imported scanner data
 let cloudPcMode = false;           // true when user toggles Cloud PC Mode
 let hostType = null;               // 'cloudpc', 'avd', 'avd-arc' (hybrid), or null (determines labels)
@@ -1153,11 +1154,17 @@ async function decodeCompressedHash(raw) {
         return new TextDecoder().decode(decompressed);
     })();
 
-    const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('DecompressionStream timed out after 10s')), 10000)
-    );
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('DecompressionStream timed out after 10s')), 10000);
+    });
 
-    const json = await Promise.race([decompressPromise, timeoutPromise]);
+    let json;
+    try {
+        json = await Promise.race([decompressPromise, timeoutPromise]);
+    } finally {
+        clearTimeout(timeoutId);
+    }
     ilog('Decompressed: ' + bytes.length + ' → ' + json.length + ' chars');
     console.log(`Auto-import (compressed): decompressed ${bytes.length} → ${json.length} bytes`);
     let parsed = JSON.parse(json);
@@ -1190,8 +1197,13 @@ function decodeUncompressedHash(raw) {
     let base64 = raw.replace(/-/g, '+').replace(/_/g, '/');
     const pad = (4 - (base64.length % 4)) % 4;
     if (pad > 0) base64 += '='.repeat(pad);
-    const json = atob(base64);
-    console.log(`Auto-import (uncompressed): decoded ${json.length} chars`);
+    const binaryStr = atob(base64);
+    if (binaryStr.length > MAX_DECOMPRESSED_HASH_BYTES) {
+        throw new Error(`Share link too large: ${binaryStr.length} bytes exceeds ${MAX_DECOMPRESSED_HASH_BYTES} limit`);
+    }
+    const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
+    const json = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    console.log(`Auto-import (uncompressed): decoded ${bytes.length} bytes to ${json.length} chars`);
     return JSON.parse(json);
 }
 
@@ -1200,6 +1212,27 @@ const VALID_IMPORT_STATUSES = new Set(['Passed', 'Failed', 'Warning', 'Error', '
 const MAX_IMPORT_RESULTS = 2000;
 const MAX_IMPORT_STRING_LEN = 200000; // 200 KB per field — detailedInfo can be large but not unbounded
 const MAX_LOCAL_IMPORT_BYTES = 25 * 1024 * 1024; // Allows long Watch timelines while bounding file.text() and JSON.parse()
+
+function truncateUnicode(text, maxCodeUnits) {
+    if (text.length <= maxCodeUnits) return text;
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+        const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text);
+        let end = 0;
+        for (const part of segments) {
+            const nextEnd = part.index + part.segment.length;
+            if (nextEnd > maxCodeUnits) break;
+            end = nextEnd;
+        }
+        return text.slice(0, end);
+    }
+    let end = maxCodeUnits;
+    if (end > 0
+        && /[\uD800-\uDBFF]/.test(text[end - 1])
+        && /[\uDC00-\uDFFF]/.test(text[end])) {
+        end--;
+    }
+    return text.slice(0, end);
+}
 
 async function parseLocalJsonFile(file) {
     if (!file || typeof file.size !== 'number') throw new Error('No readable file was selected.');
@@ -1222,7 +1255,7 @@ function sanitizeImportedResult(lr) {
     const clampStr = (v, max = MAX_IMPORT_STRING_LEN) => {
         if (v === null || v === undefined) return '';
         const s = typeof v === 'string' ? v : String(v);
-        return s.length > max ? s.slice(0, max) : s;
+        return truncateUnicode(s, max);
     };
 
     let status = typeof lr.status === 'string' ? lr.status : 'Passed';
@@ -1389,14 +1422,21 @@ function processImportedData(data) {
     document.documentElement.classList.remove('awaiting-scanner-import');
 
     // Remember when the scanner data was captured
-    if (data.timestamp) {
-        try { _importedScanTimestamp = new Date(data.timestamp).toLocaleString(); } catch { _importedScanTimestamp = String(data.timestamp); }
+    const importedTimestamp = data.scannerTimestamp || data.timestamp;
+    _importedScanTimestampRaw = '';
+    _importedScanTimestamp = '';
+    if (importedTimestamp) {
+        _importedScanTimestampRaw = truncateUnicode(String(importedTimestamp), 100);
+        const parsedTimestamp = new Date(_importedScanTimestampRaw);
+        _importedScanTimestamp = Number.isNaN(parsedTimestamp.getTime())
+            ? _importedScanTimestampRaw
+            : parsedTimestamp.toLocaleString();
     }
 
     // Remember machine name from imported data
-    if (data.machineName) {
-        _importedMachineName = String(data.machineName);
-    }
+    _importedMachineName = data.machineName
+        ? truncateUnicode(String(data.machineName), 256)
+        : '';
 
     // Legacy ID mapping: older scanner builds used L-CS-* IDs for cloud tests.
     // Remap them to the current numeric IDs so they match ALL_TESTS.
@@ -1503,13 +1543,14 @@ function processImportedData(data) {
     updateExportButton();
     const info = document.getElementById('info-banner');
     info.classList.remove('hidden');
-    const machineName = data.machineName ? escapeHtml(String(data.machineName)) : '';
-    const scanTime = data.timestamp ? escapeHtml(new Date(data.timestamp).toLocaleString()) : '';
+    const machineName = data.machineName ? bidiIsolateHtml(String(data.machineName)) : '';
+    const azureRegion = data.azureRegion ? bidiIsolateHtml(String(data.azureRegion)) : '';
+    const scanTime = importedTimestamp ? bidiIsolateHtml(_importedScanTimestamp) : '';
     const importLabel = isCloudPcImport ? `${hostLabelShort()} scan` : 'local scan';
     info.querySelector('.info-text').innerHTML =
         `<strong>Imported ${importedCount} ${importLabel} results.</strong> ` +
         (machineName ? `Machine: ${machineName}. ` : '') +
-        (data.azureRegion ? `Azure Region: ${escapeHtml(data.azureRegion)}. ` : '') +
+        (azureRegion ? `Azure Region: ${azureRegion}. ` : '') +
         (scanTime ? `Scanned: ${scanTime}. ` : '') +
         'Combined results are shown below.';
 
@@ -1903,6 +1944,7 @@ async function generateExportText() {
     lines.push('  Windows 365 Connectivity Diagnostics — Text Report');
     lines.push(divider);
     lines.push(`  Generated:  ${new Date().toLocaleString()}`);
+    if (_importedMachineName) lines.push(`  Device:     ${_importedMachineName}`);
     lines.push(`  Timezone:   ${env.timezone || 'Unknown'} (UTC offset ${-env.timezoneOffsetMinutes / 60}h)`);
     lines.push(`  Locale:     ${env.locale || 'Unknown'}`);
     lines.push(`  Platform:   ${env.platform || 'Unknown'}${env.mobile ? ' (mobile)' : ''}`);
@@ -2466,6 +2508,30 @@ function updateExportButton() {
 // ═══════════════════════════════════════════════════════════════════
 //  Send Results to IT (Web Share API with file attachment, fallback to download + mailto)
 // ═══════════════════════════════════════════════════════════════════
+function safeFilenameComponent(value, fallback) {
+    const text = truncateUnicode(String(value || '')
+        .replace(/[\u0000-\u001F<>:"/\\|?*]/g, '_')
+        .replace(/[. ]+$/g, ''), 80)
+        .replace(/[. ]+$/g, '');
+    return text || fallback;
+}
+
+function utf8ToBase64(value) {
+    const bytes = new TextEncoder().encode(String(value));
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+}
+
+function encodeRfc5987Value(value) {
+    const wellFormed = new TextDecoder().decode(new TextEncoder().encode(String(value)));
+    return encodeURIComponent(wellFormed)
+        .replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 async function sendResultsToIT() {
     if (allResults.length === 0) return;
 
@@ -2478,7 +2544,7 @@ async function sendResultsToIT() {
 
     const machineName = _importedMachineName || 'Unknown Device';
     const dateStr     = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-    const filename    = `W365-Diagnostics-${machineName.replace(/[^a-zA-Z0-9_-]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`;
+    const filename    = `W365-Diagnostics-${safeFilenameComponent(machineName, 'Unknown_Device')}-${new Date().toISOString().slice(0, 10)}.json`;
 
     // Build status label for subject line
     let statusLabel = 'All Tests Passed';
@@ -2510,7 +2576,7 @@ async function sendResultsToIT() {
         userAgent: navigator.userAgent,
         environment: collectEnvironmentSnapshot(),
         analysisSummary: buildKeyFindingsSummary(allResults).jsonObject,
-        scannerTimestamp: _importedScanTimestamp || null,
+        scannerTimestamp: _importedScanTimestampRaw || null,
         results: exportResults.map(r => ({
             id: r.id, name: r.name, category: r.category, source: r.source,
             status: r.status, resultValue: r.resultValue || '',
@@ -2518,8 +2584,8 @@ async function sendResultsToIT() {
             remediationUrl: r.remediationUrl || '', remediationText: r.remediationText || ''
         }))
     };
-    const jsonBlob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
-    const file = new File([jsonBlob], filename, { type: 'application/json' });
+    const jsonBlob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json;charset=utf-8' });
+    const file = new File([jsonBlob], filename, { type: 'application/json;charset=utf-8' });
 
     // Try Web Share API first (Edge/Chrome on Windows — auto-attaches file to Outlook/Teams/etc)
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -2543,7 +2609,9 @@ async function sendResultsToIT() {
     const boundary = `----=_W365_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
     // Encode subject as RFC 2047 to allow the en-dash and other non-ASCII chars.
-    const subjectHeader = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(titleText)))}?=`;
+    const subjectHeader = `=?UTF-8?B?${utf8ToBase64(titleText)}?=`;
+    const asciiFilename = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+    const encodedFilename = encodeRfc5987Value(filename);
 
     // Body: convert LF -> CRLF and use quoted-printable-safe 8bit (UTF-8 declared in headers).
     const bodyCrlf = bodyText.replace(/\r?\n/g, '\r\n');
@@ -2565,8 +2633,8 @@ async function sendResultsToIT() {
         bodyCrlf,
         ``,
         `--${boundary}`,
-        `Content-Type: application/json; name="${filename}"`,
-        `Content-Disposition: attachment; filename="${filename}"`,
+        `Content-Type: application/json; name="${asciiFilename}"; name*=UTF-8''${encodedFilename}`,
+        `Content-Disposition: attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`,
         `Content-Transfer-Encoding: base64`,
         ``,
         wrappedB64,
@@ -2575,7 +2643,7 @@ async function sendResultsToIT() {
         ``
     ].join('\r\n');
 
-    const emlBlob = new Blob([eml], { type: 'message/rfc822' });
+    const emlBlob = new Blob([eml], { type: 'message/rfc822;charset=utf-8' });
     const emlName = filename.replace(/\.json$/, '.eml');
     const url = URL.createObjectURL(emlBlob);
     const a = document.createElement('a');
@@ -2656,7 +2724,7 @@ function exportCsvReport() {
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
-    a.download = `W365-Diagnostics-${machineName.replace(/[^a-zA-Z0-9_-]/g, '_')}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `W365-Diagnostics-${safeFilenameComponent(machineName, 'Unknown')}-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2668,10 +2736,11 @@ function exportJsonReport() {
     const exportResults = dedupeResultsById(allResults);
     const output = {
         timestamp: new Date().toISOString(),
+        machineName: _importedMachineName || null,
         userAgent: navigator.userAgent,
         environment: (typeof collectEnvironmentSnapshot === 'function') ? collectEnvironmentSnapshot() : null,
         analysisSummary: buildKeyFindingsSummary(allResults).jsonObject,
-        scannerTimestamp: _importedScanTimestamp || null,
+        scannerTimestamp: _importedScanTimestampRaw || null,
         results: exportResults.map(r => ({
             id: r.id,
             name: r.name,
@@ -2690,7 +2759,8 @@ function exportJsonReport() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `W365-Diagnostics-${new Date().toISOString().slice(0, 10)}.json`;
+    const machinePart = _importedMachineName ? `-${safeFilenameComponent(_importedMachineName, 'Unknown')}` : '';
+    a.download = `W365-Diagnostics${machinePart}-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2725,13 +2795,18 @@ async function copyShareLink() {
                     v: r.resultValue || ''
                 };
                 let d = r.detailedInfo || '';
-                if (d.length > MAX_DETAIL) d = d.substring(0, MAX_DETAIL) + '…[truncated]';
+                if (d.length > MAX_DETAIL) d = truncateUnicode(d, MAX_DETAIL) + '…[truncated]';
                 if (d) obj.d = d;
                 if (r.duration) obj.t = r.duration;
                 return obj;
             });
 
-        const payload = { _f: 2, ts: new Date().toISOString(), r: compactResults };
+        const payload = {
+            _f: 2,
+            ts: _importedScanTimestampRaw || new Date().toISOString(),
+            r: compactResults
+        };
+        if (_importedMachineName) payload.mn = truncateUnicode(_importedMachineName, 120);
         const json = JSON.stringify(payload);
 
         // Compress with deflate-raw
@@ -2876,8 +2951,6 @@ function renderComparison(baselineResults, baselineMachine, baselineDate) {
     const gridEl  = document.getElementById('compare-grid');
     if (!panel || !gridEl) return;
 
-    const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
     // Status severity rank: lower = better
     const rank = status => ({ Passed: 0, Info: 1, Warning: 2, Failed: 3, Error: 3 }[status] ?? 4);
 
@@ -2909,7 +2982,7 @@ function renderComparison(baselineResults, baselineMachine, baselineDate) {
 
     // Meta line
     const currentMachine = _importedMachineName || 'Current';
-    metaEl.textContent = `Baseline: ${baselineMachine} (${baselineDate})  →  Current: ${currentMachine}`;
+    metaEl.innerHTML = `Baseline: ${bidiIsolateHtml(baselineMachine)} (${bidiIsolateHtml(baselineDate)})  →  Current: ${bidiIsolateHtml(currentMachine)}`;
 
     // Summary chips
     summaryEl.innerHTML = [
@@ -2933,14 +3006,15 @@ function renderComparison(baselineResults, baselineMachine, baselineDate) {
                 ? `<span class="compare-badge regressed">↑ Worse</span>`
                 : `<span class="compare-badge unchanged">—</span>`;
         return `<div class="compare-row row-${change}">
-            <span class="compare-name">${esc(before.name)}</span>
-            <span class="compare-val">${statusIcon(before.status)} ${esc(before.resultValue)}</span>
-            <span class="compare-val">${statusIcon(after.status)} ${esc(after.resultValue)}</span>
+            <span class="compare-name">${bidiIsolateHtml(before.name)}</span>
+            <span class="compare-val">${statusIcon(before.status)} ${bidiIsolateHtml(before.resultValue)}</span>
+            <span class="compare-val">${statusIcon(after.status)} ${bidiIsolateHtml(after.resultValue)}</span>
             ${badgeHtml}
         </div>`;
     }).join('');
 
     gridEl.innerHTML = headerRow + dataRows;
+    applyAutomaticTextDirection(panel);
     panel.classList.remove('hidden');
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -3090,12 +3164,13 @@ function updateRemediationPanel() {
             <span class="rem-badge ${badgeCls}">${badgeText}</span>
             <span class="rem-test-id">${idSafe}</span>
             <div class="rem-body">
-                <span class="rem-test-name">${esc(r.name || r.id)}</span>
-                <span class="rem-text">${esc(r.remediationText)}</span>
+                <span class="rem-test-name">${bidiIsolateHtml(r.name || r.id)}</span>
+                <span class="rem-text">${bidiIsolateHtml(r.remediationText)}</span>
             </div>
             <span class="rem-arrow">→</span>
         </li>`;
     }).join('');
+    applyAutomaticTextDirection(panel);
 
     // Wire click + keyboard activation via addEventListener so the raw test id
     // never enters an inline JS string context (which would be an XSS foothold
@@ -3329,7 +3404,7 @@ async function updateKeyFindings(results) {
     if (!panel || !content) return;
 
     const r = id => results.find(x => x.id === id);
-    const esc = s => s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : '';
+    const esc = s => s ? bidiIsolateHtml(s) : '';
     const hasAny = results.some(x => x.status && x.status !== 'NotRun' && x.status !== 'Pending');
     if (!hasAny) return;
 
@@ -4043,5 +4118,6 @@ async function updateKeyFindings(results) {
     }
 
     content.innerHTML = topHtml + bandHtml + confirmedHtml;
+    applyAutomaticTextDirection(panel);
     panel.classList.remove('hidden');
 }
