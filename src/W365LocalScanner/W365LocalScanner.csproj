@@ -10,15 +10,15 @@
     <AssemblyName>W365LocalScanner-Hybrid</AssemblyName>
     <RootNamespace>W365LocalScanner</RootNamespace>
     
-    <!-- Assembly metadata — improves SmartScreen trust signals -->
-    <Product>Windows 365 Local Connectivity Scanner — Hybrid Edition</Product>
+    <!-- Assembly metadata â€” improves SmartScreen trust signals -->
+    <Product>Windows 365 Local Connectivity Scanner â€” Hybrid Edition</Product>
     <Company>Microsoft</Company>
     <Authors>Paul Collinge</Authors>
     <Description>Local connectivity diagnostics tool for Windows 365, Azure Virtual Desktop, and AVD Hybrid (Azure Arc-onboarded on-prem session hosts). Runs network tests requiring OS-level access and exports results to the hybrid web dashboard. Separate release stream from the main W365LocalScanner.exe.</Description>
-    <Copyright>Copyright © Microsoft 2025-2026</Copyright>
-    <Version>0.1.0</Version>
-    <FileVersion>0.1.0.0</FileVersion>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <Copyright>Copyright Â© Microsoft 2025-2026</Copyright>
+    <Version>0.1.1</Version>
+    <FileVersion>0.1.1.0</FileVersion>
+    <AssemblyVersion>0.1.1.0</AssemblyVersion>
     <NeutralLanguage>en</NeutralLanguage>
     
     <!-- Application icon -->
