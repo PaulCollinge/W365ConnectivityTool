@@ -176,7 +176,7 @@ function _resolveCountryCodeInner(locationStr) {
 }
 
 /**
- * Create a small flag <img> element for a 2-letter ISO code.
+ * Create a small flag <img> element for a 2-letter country code.
  * Uses flagcdn.com (free, no key required, CDN-backed).
  */
 function createFlagImg(code) {
@@ -192,7 +192,7 @@ function createFlagImg(code) {
 }
 
 /**
- * Set text on an element, prepending a flag image if a 2-letter code is found.
+ * Set text on an element, prepending a country flag image if a 2-letter code is found.
  */
 function setFlaggedText(elementId, text) {
     const el = document.getElementById(elementId);
@@ -209,7 +209,7 @@ function setFlaggedText(elementId, text) {
 }
 
 /**
- * Set badge content with an optional flag image.
+ * Set badge content with optional country flag image.
  */
 function setFlaggedBadge(elementId, text, cssClass, locationStr) {
     const el = document.getElementById(elementId);
@@ -772,7 +772,7 @@ function updateMapIspCard(lookup) {
     setText('map-isp-detail2', asInfo);
 
     // Show egress city from IP GeoIP (not GPS), so satellite/aircraft WiFi shows network
-    // egress country/region (e.g. US) rather than the GPS-cached departure city (e.g. UK).
+    // egress country (e.g. US) rather than the GPS-cached departure city (e.g. UK).
     // Priority: result 27 egress location → L-TCP-09 location → browser ISP → GPS fallback.
     let egressCity = '';
     let egressDistanceKm = null;
@@ -1703,15 +1703,15 @@ function latencyClassLine(ms, type) {
 
 // ═══════════════════════════════════════════════════════════
 //  Service proximity detection
-//  Groups countries/regions into broad geographic regions so that
+//  Groups countries into broad geographic regions so that
 //  load-balanced routing within the same continent (e.g. UK
 //  user → Paris AFD) is not flagged, but cross-continent
 //  routing (e.g. UK user → US East) is clearly flagged.
 // ═══════════════════════════════════════════════════════════
 
 /**
- * Map 2-letter country/region codes to broad geographic regions.
- * Countries/regions in the same region are expected to share service infrastructure.
+ * Map 2-letter country codes to broad geographic regions.
+ * Countries in the same region are expected to share service infrastructure.
  */
 const REGION_GROUPS = {
     // Western & Northern Europe
@@ -1802,9 +1802,9 @@ function checkServiceProximity(userCountryCode, serviceLocationStr, userCoords, 
     const serviceCC = resolveCountryCode(serviceLocationStr || '').toLowerCase();
     if (!userCC || !serviceCC) return null;
 
-    // Same country/region
+    // Same country
     if (userCC === serviceCC) {
-        return { level: 'near', label: '✔ Same country/region', cssClass: 'proximity-near' };
+        return { level: 'near', label: '✔ Same country', cssClass: 'proximity-near' };
     }
 
     const userRegion = REGION_GROUPS[userCC];
@@ -1844,7 +1844,7 @@ function getUserLocationContext(lookup) {
 
 /**
  * Get approximate coordinates for a service location string by matching
- * against known Azure region names/coordinates, AFD PoP codes, or country/region centroids.
+ * against known Azure region names/coordinates, AFD PoP codes, or country centroids.
  */
 function getServiceCoords(locationStr) {
     if (!locationStr) return null;

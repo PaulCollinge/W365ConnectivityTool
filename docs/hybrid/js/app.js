@@ -223,7 +223,7 @@ function reconcileEgressGeoIpAgainstAfdPop() {
         // Headline: the ISP test appends a " · {city}, {country}" egress suffix
         // (e.g. "AS17071 UBS AG · Unknown, CH"). That location is the same
         // unreliable IP-registry value, so replace the suffix with the true
-        // AFD-edge breakout rather than leaving the wrong country/region in the title.
+        // AFD-edge breakout rather than leaving the wrong country in the title.
         if (typeof isp.resultValue === 'string' && / \u00b7 /.test(isp.resultValue)) {
             isp.resultValue = isp.resultValue.replace(/ \u00b7 .*$/, ` \u00b7 egress ${popCity} (IP-geo unreliable)`);
         }
@@ -403,7 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check for ?mode=cloudpc URL parameter (set by scanner exe)
     const urlMode = new URLSearchParams(window.location.search).get('mode');
-    if (urlMode === 'cloudpc' || urlMode === 'avd') {
+    if (urlMode === 'cloudpc' || urlMode === 'avd' || urlMode === 'avd-arc') {
         hostType = urlMode;
         const toggle = document.getElementById('cpc-mode-toggle');
         if (toggle) toggle.checked = true;
@@ -412,6 +412,29 @@ document.addEventListener('DOMContentLoaded', () => {
         if (sel) sel.value = hostType;
         ilog(`CPC mode enabled via URL param: mode=${urlMode}`);
         try { localStorage.setItem('w365-last-mode', urlMode); } catch (e) {}
+    }
+
+    // On the hybrid dashboard the default host type is 'avd-arc'. When the
+    // user opens /hybrid/ fresh (no URL param, no imported scan, no sticky
+    // preference), this ensures the label reads "AVD Hybrid Session Host"
+    // instead of the fallback "Cloud PC (W365)" which was Jan's very first
+    // observation (Sep 2026): "When running the tool from the hybrid URL,
+    // it starts in W365 mode, should probably be Hybrid mode to avoid
+    // mistakes." Detection: check either the URL path (public deploy under
+    // /hybrid/) or the presence of the "Hybrid Preview" pill in the DOM
+    // (works when the hybrid folder is served from a webroot for local dev
+    // or a preview URL where /hybrid/ isn't in the path).
+    const isHybridDashboard = window.location.pathname.includes('/hybrid/')
+        || Array.from(document.querySelectorAll('.preview-pill')).some(p => /hybrid/i.test(p.textContent));
+    if (hostType === null && isHybridDashboard) {
+        hostType = 'avd-arc';
+        const sel = document.getElementById('host-type-select');
+        if (sel) sel.value = hostType;
+        // Refresh every host-type-aware label so the toggle text, section
+        // subtitles etc. all read "AVD Hybrid" without waiting for the user
+        // to interact with anything.
+        if (typeof updateHostTypeLabels === 'function') updateHostTypeLabels();
+        ilog('Hybrid dashboard: defaulting hostType to avd-arc');
     }
 
     // Consume the early-CPC bootstrap hint: if the inline <head> script set
@@ -423,7 +446,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // almost certainly still applies.
     if (document.documentElement.classList.contains('early-cpc-mode') && !cloudPcMode) {
         const earlyHost = document.documentElement.getAttribute('data-early-host');
-        if (earlyHost === 'cloudpc' || earlyHost === 'avd') {
+        if (earlyHost === 'cloudpc' || earlyHost === 'avd' || earlyHost === 'avd-arc') {
             hostType = earlyHost;
             const toggle = document.getElementById('cpc-mode-toggle');
             if (toggle) toggle.checked = true;
@@ -646,7 +669,11 @@ function updateHostTypeLabels() {
     const cpcSectionTitle = document.querySelector('.cloudpc-header .live-title');
     if (cpcSectionTitle) cpcSectionTitle.textContent = `${label} Diagnostics`;
     const cpcSectionSub = document.querySelector('.cloudpc-header .live-subtitle');
-    if (cpcSectionSub) cpcSectionSub.textContent = `Connectivity tests run from within the ${label} (Azure VM)`;
+    if (cpcSectionSub) {
+        cpcSectionSub.textContent = hostType === 'avd-arc'
+            ? `Connectivity tests run from within the ${label} (on-prem, Azure Arc-onboarded)`
+            : `Connectivity tests run from within the ${label} (Azure VM)`;
+    }
     // CPC diagnostics info bar
     const cpcInfoBar = document.querySelector('#cloudpc-info-bar span:last-child');
     if (cpcInfoBar) cpcInfoBar.innerHTML = `Run this tool on your ${label}, then drag the <code>W365ScanResults.json</code> file here to see end-to-end results, or&nbsp;<button class="info-bar-link" onclick="document.getElementById('file-import').click()">browse to import it</button>.`;
@@ -2135,8 +2162,8 @@ async function generateExportText() {
     // Classify why HTTP and STUN egress IPs differ. Order of evidence:
     //   1. Traceroute (L-TCP-10) hops in 100.64.0.0/10  → CGNAT confirmed
     //   2. IPv4 vs IPv6                                 → dual-stack (no fault)
-    //   3. Different country/region codes on GeoIP      → split-path / proxy
-    //   4. Same country/region, same family, no CGN evidence → different egress paths
+    //   3. Different countries on GeoIP                 → split-path / proxy
+    //   4. Same country, same family, no CGN evidence   → different egress paths
     let reportStunCountry = '';
     let reportStunCity = '';
     let reportHttpCountry = freshLoc?.country || '';
@@ -2155,7 +2182,7 @@ async function generateExportText() {
                 reportStunCity = geoData.city || '';
             }
         } catch (e) { /* GeoIP lookup failed */ }
-        // Different country/region codes = proxy / split-path
+        // Different countries = proxy / split-path
         if (reportStunCountry && reportHttpCountry &&
             reportStunCountry.toUpperCase() !== reportHttpCountry.toUpperCase()) {
             reportIsSplitPath = true;
@@ -2221,7 +2248,7 @@ async function generateExportText() {
 
     // 7. TURN (UDP) Security Report
     // CGNAT in this section is keyed off traceroute evidence only — the old
-    // "different IPs, same country/region" heuristic mis-classified dual-stack and
+    // "different IPs, same country" heuristic mis-classified dual-stack and
     // multi-egress ISP customers as CGNAT.
     const reportIsCgnat = reportCgnHops.length > 0;
 
@@ -2516,7 +2543,7 @@ async function sendResultsToIT() {
     const total    = exportResults.length;
 
     const machineName = _importedMachineName || 'Unknown Device';
-    const dateStr     = new Date().toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+    const dateStr     = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     const filename    = `W365-Diagnostics-${safeFilenameComponent(machineName, 'Unknown_Device')}-${new Date().toISOString().slice(0, 10)}.json`;
 
     // Build status label for subject line
@@ -3017,6 +3044,17 @@ function setResultFilter(filter) {
     if (!grid) return;
 
     grid.dataset.filter = filter;
+
+    // The CPC diagnostics and Live diagnostics sections live OUTSIDE
+    // #test-results but their tests also carry data-status. Mirror the
+    // filter onto them so the SHOW: Warning button actually filters the
+    // Cloud PC / AVD Hybrid section too — otherwise clicking Warning
+    // silently narrows only the client-side grid (which is hidden in CPC
+    // mode anyway), producing the "filter does nothing" bug Jan reported.
+    for (const sectionId of ['cloudpc-diagnostics-section', 'live-diagnostics-section']) {
+        const section = document.getElementById(sectionId);
+        if (section) section.dataset.filter = filter;
+    }
 
     // When narrowing to a status filter, expand every collapsed section so the
     // matching items are actually visible (collapsed sections hide their body).
@@ -3681,8 +3719,8 @@ async function updateKeyFindings(results) {
                     // Order of evidence from strongest to weakest:
                     //   1. Traceroute hops in 100.64.0.0/10 → CGNAT confirmed
                     //   2. IPv4 vs IPv6 → dual-stack (informational only)
-                    //   3. Same country/region, same family, no CGN evidence → different egress paths
-                    //   4. Different country/region codes → split-path proxy
+                    //   3. Same country, same family, no CGN evidence → different egress paths
+                    //   4. Different countries → split-path proxy
                     const cgnHops = findCgnHopsInTraceroute(results);
                     const dualStack = (isIpv6(httpEgressIp) && isIpv4(stunReflexiveIp))
                                    || (isIpv4(httpEgressIp) && isIpv6(stunReflexiveIp));
@@ -3703,14 +3741,14 @@ async function updateKeyFindings(results) {
                             `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg) || 'IPv6'}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg) || 'IPv4'})`);
                     } else if (stunCountry && httpCountry &&
                                stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                        // Same country/region, same family, no CGN hops, no SWG vendor.
+                        // Same country, same family, no CGN hops, no SWG vendor.
                         // Most often: separate v4 egress points within one ISP, or a load-balanced
                         // dual-WAN setup. NOT enough evidence to call this CGNAT.
                         add('kf-info', 'Different egress paths',
-                            'HTTP and UDP traffic exit via different IPs in the same country or region',
+                            'HTTP and UDP traffic exit via different IPs in the same country',
                             `HTTP: ${esc(httpEgressIp)} · UDP: ${esc(stunReflexiveIp)}. No CGN hops in traceroute and no proxy/SWG vendor identified — likely two egress paths within your ISP. Not CGNAT.`);
                     } else if (stunCountry && httpCountry) {
-                        // Different country/region codes — split-path proxy
+                        // Different countries — split-path proxy
                         add('kf-error', 'Split Routing',
                             `\u{1F53A} TCP/UDP taking different paths — HTTP proxy or SWG likely`,
                             `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
