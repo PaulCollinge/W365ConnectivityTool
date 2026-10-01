@@ -135,4 +135,49 @@ public sealed class EgressTransitionTrackerTests
         Assert.AreEqual(0, warnings);
         Assert.AreEqual(pool.Length - 1, poolDiscoveries);
     }
+
+    [DataTestMethod]
+    [DataRow("â€”", "—")]
+    [DataRow("âœ“", "✓")]
+    [DataRow("â•â• Registry â•â•", "══ Registry ══")]
+    [DataRow("AVD-HYBRID Ã¢â‚¬â€ westeurope", "AVD-HYBRID — westeurope")]
+    public void MojibakeRepairRestoresUtf8Characters(string input, string expected)
+    {
+        Assert.AreEqual(expected, TextEncodingRepair.Repair(input));
+    }
+
+    [TestMethod]
+    public void MojibakeRepairPreservesCorrectUnicode()
+    {
+        const string input = "══ Arc Control Plane ══ — ✓";
+
+        Assert.AreEqual(input, TextEncodingRepair.Repair(input));
+    }
+
+    [DataTestMethod]
+    [DataRow("Café Räume", "Café Räume")]
+    [DataRow("naïveté", "naïveté")]
+    [DataRow("Bosch GmbH — München", "Bosch GmbH — München")]
+    [DataRow("", "")]
+    public void MojibakeRepairDoesNotCorruptLegitimateExtendedText(string input, string expected)
+    {
+        Assert.AreEqual(expected, TextEncodingRepair.Repair(input));
+    }
+
+    [TestMethod]
+    public void MojibakeRepairHandlesEmptyString()
+    {
+        Assert.AreEqual(string.Empty, TextEncodingRepair.Repair(string.Empty));
+    }
+
+    [TestMethod]
+    public void MojibakeRepairIsIdempotent()
+    {
+        const string input = "â€”";
+        var once = TextEncodingRepair.Repair(input);
+        var twice = TextEncodingRepair.Repair(once);
+
+        Assert.AreEqual("—", once);
+        Assert.AreEqual(once, twice);
+    }
 }

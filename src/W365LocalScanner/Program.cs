@@ -450,6 +450,7 @@ class Program
         Console.OutputEncoding = Encoding.UTF8;
         try { _ = SetConsoleOutputCP(65001); _ = SetConsoleCP(65001); }
         catch { /* best-effort — legacy consoles will still work, just with mojibake for box-drawing chars */ }
+        Console.SetOut(new MojibakeRepairingTextWriter(Console.Out));
 
         var outputPath = "W365ScanResults.json";
         if (args.Length > 0 && !args[0].StartsWith("-"))
@@ -939,6 +940,9 @@ class Program
             results.Add(traceResult);
             WriteStatusLine(traceResult.Status, traceResult.Duration);
         }
+
+        foreach (var result in results)
+            TextEncodingRepair.Repair(result);
 
         Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.Cyan;
@@ -11391,6 +11395,77 @@ class Program
             // are not retried because they aren't transient. Timeout is the
             // only failure mode consistent with contention/cold-start.
             const int PerAttemptTimeoutMs = 8000;
+
+            // Always create a proxy-aware HttpClient for HTTP/HTTPS endpoints.
+            // We deliberately do NOT gate this on HasEffectiveProxy() because that
+            // helper probes a single canonical URL (login.microsoftonline.com) and
+            // a mixed PAC file can route *different* FQDNs to *different* proxies
+            // (or bypass only some) — a gate off one URL would send everything via
+            // raw TCP even when the Arc/AVD agent would have had to go via the
+            // proxy to reach some of the 25 targets. HttpClient resolves the system
+            // proxy per URL internally, so unproxied URLs still go direct here —
+            // the cost of this is one extra HTTP HEAD vs a bare TCP connect, which
+            // is actually a *stronger* reachability signal (proves application
+            // layer, not just port open).
+            //
+            // Credential forwarding to the proxy is still guarded inside
+            // CreateProxyAwareHttpClient (DefaultProxyCredentials is only set when
+            // HasEffectiveProxy() is true), so a direct-egress machine never has
+            // the OS warm up the credential provider.
+            //
+            // Context caveat: the scanner runs in the invoking user's security
+            // context, which on Windows uses the WinINET proxy chain. The Azure
+            // Connected Machine Agent (himds / gcarcservice / extensionservice)
+            // and the AVD RDAgent run as NT AUTHORITY\SYSTEM and typically use
+            // the WinHTTP proxy chain, which can be configured independently
+            // (netsh winhttp set proxy / HKLM Connections\WinHttpSettings).
+            // L-TCP-07 / the surrounding environment tests already read the
+            // WinHTTP registry; this test deliberately mirrors the user-mode
+            // view so the Hybrid dashboard can correlate "what the scanner saw"
+            // with "what a user-mode probe to the same endpoints would see".
+            using var endpointHttpClient = CreateProxyAwareHttpClient(
+                TimeSpan.FromMilliseconds(PerAttemptTimeoutMs));
+
+            // Per-URL system-proxy lookup. HttpClient does this internally for
+            // routing; we repeat it only so we can honestly label each result as
+            // "via <proxy>" or "direct" without lying about the path.
+            static Uri? ResolveSystemProxy(Uri uri)
+            {
+                try
+                {
+                    var proxy = System.Net.WebRequest.GetSystemWebProxy();
+                    var resolved = proxy.GetProxy(uri);
+                    return (resolved != null && resolved != uri) ? resolved : null;
+                }
+                catch { return null; }
+            }
+
+            // Strip any user:password@ prefix before logging a proxy URI so we
+            // never surface embedded credentials in diagnostic output. Uri.Host
+            // and Uri.Port don't include UserInfo, so an explicit rebuild is
+            // the safe formatter.
+            static string FormatProxySafe(Uri proxy) => $"{proxy.Scheme}://{proxy.Host}:{proxy.Port}";
+
+            // Heuristic: a 403/502/503 response came from the proxy (not the
+            // upstream server) when the response carries proxy-identifying
+            // headers. Catching this lets us report "proxy blocked" vs.
+            // "upstream returned non-2xx but was reachable" accurately.
+            static bool LooksLikeProxyGeneratedResponse(HttpResponseMessage response)
+            {
+                if (response.Headers.Contains("Via") ||
+                    response.Headers.Contains("Proxy-Agent") ||
+                    response.Headers.Contains("X-Proxy-Id") ||
+                    response.Headers.Contains("X-Squid-Error"))
+                    return true;
+                var server = response.Headers.Server?.ToString() ?? string.Empty;
+                return server.Contains("squid", StringComparison.OrdinalIgnoreCase) ||
+                       server.Contains("bluecoat", StringComparison.OrdinalIgnoreCase) ||
+                       server.Contains("netskope", StringComparison.OrdinalIgnoreCase) ||
+                       server.Contains("zscaler", StringComparison.OrdinalIgnoreCase) ||
+                       server.Contains("palo alto", StringComparison.OrdinalIgnoreCase) ||
+                       server.Contains("proxy", StringComparison.OrdinalIgnoreCase);
+            }
+
             async Task<(bool ok, long ms, string? err)> TryConnectAsync(string host, int port)
             {
                 using var tcp = new TcpClient();
@@ -11410,6 +11485,101 @@ class Program
                 {
                     return (false, 0L, ex.InnerException?.Message ?? ex.Message);
                 }
+            }
+
+            async Task<(bool ok, long ms, string? err)> TryHttpConnectAsync(string host, int port)
+            {
+                var scheme = port == 443 ? "https" : "http";
+                var uri = new Uri($"{scheme}://{host}/");
+                var proxyUri = ResolveSystemProxy(uri);
+                var routeLabel = proxyUri != null
+                    ? $"via {FormatProxySafe(proxyUri)}"
+                    : "direct";
+
+                // HEAD avoids transferring a response body for ~free. Fall back
+                // to GET only if the server returns 405 Method Not Allowed
+                // (which some endpoints do for HEAD).
+                using var request = new HttpRequestMessage(HttpMethod.Head, uri);
+                using var cts = new CancellationTokenSource(PerAttemptTimeoutMs);
+                var sw = Stopwatch.StartNew();
+                try
+                {
+                    using var response = await endpointHttpClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        cts.Token);
+
+                    if (response.StatusCode == HttpStatusCode.MethodNotAllowed)
+                    {
+                        using var getRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+                        using var getResponse = await endpointHttpClient.SendAsync(
+                            getRequest,
+                            HttpCompletionOption.ResponseHeadersRead,
+                            cts.Token);
+                        sw.Stop();
+                        return ClassifyHttpResponse(getResponse, sw.ElapsedMilliseconds, scheme, routeLabel, proxyUri != null);
+                    }
+
+                    sw.Stop();
+                    return ClassifyHttpResponse(response, sw.ElapsedMilliseconds, scheme, routeLabel, proxyUri != null);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Only fall back to direct TCP when the user-mode HTTP path
+                    // itself timed out AND there's no proxy in play. When a proxy
+                    // IS in play, a timeout is a real agent-affecting failure and
+                    // we must surface it — a silent raw-TCP success here would
+                    // mislead the operator into thinking the endpoint is fine
+                    // when the SYSTEM-context agent (which uses the same proxy
+                    // chain via WinHTTP) will hit the same timeout.
+                    if (proxyUri != null)
+                        return (false, 0L, $"HTTP {routeLabel} timeout ({PerAttemptTimeoutMs / 1000}s) — proxy did not respond; the Arc/AVD agent uses the same proxy chain and will likely fail the same way");
+                    var direct = await TryConnectAsync(host, port);
+                    return direct.ok
+                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer timed out")
+                        : (false, 0L, $"HTTP direct timeout ({PerAttemptTimeoutMs / 1000}s); direct TCP: {direct.err}");
+                }
+                catch (Exception ex)
+                {
+                    var httpError = ex.InnerException?.Message ?? ex.Message;
+                    if (proxyUri != null)
+                        return (false, 0L, $"HTTP {routeLabel} failed: {httpError}");
+                    var direct = await TryConnectAsync(host, port);
+                    return direct.ok
+                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer: {httpError}")
+                        : (false, 0L, $"HTTP direct failed: {httpError}; direct TCP: {direct.err}");
+                }
+            }
+
+            static (bool ok, long ms, string? err) ClassifyHttpResponse(
+                HttpResponseMessage response,
+                long elapsedMs,
+                string scheme,
+                string routeLabel,
+                bool viaProxy)
+            {
+                var status = (int)response.StatusCode;
+
+                if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
+                {
+                    return (false, 0L,
+                        $"Proxy demanded authentication ({status}) {routeLabel} — the scanner's user credentials were not accepted. SYSTEM-context agents using the same proxy will also fail unless the proxy allows machine identity or anonymous access to Microsoft FQDNs.");
+                }
+
+                // The response reached us, which proves the TCP + TLS/HTTP path
+                // to the endpoint works. Only treat 4xx/5xx as a REACHABILITY
+                // failure when the response was clearly generated by a proxy
+                // (not the upstream server) — proxies emit their own block
+                // pages with identifying headers.
+                if (viaProxy && status >= 400 && LooksLikeProxyGeneratedResponse(response))
+                {
+                    var reason = response.ReasonPhrase ?? string.Empty;
+                    return (false, 0L,
+                        $"Proxy block page ({status} {reason}) {routeLabel} — the proxy refused to tunnel this host. The Arc/AVD agent will also fail against this endpoint.");
+                }
+
+                return (true, elapsedMs,
+                    $"via-http:{scheme.ToUpperInvariant()} {status} {routeLabel}");
             }
 
             static bool IsWarmIngestHost(string host) =>
@@ -11479,7 +11649,9 @@ class Program
                 bool warmIngest = IsWarmIngestHost(ep.host);
                 var attempt = warmIngest
                     ? await TryConnectAnyAddressAsync(ep.host, ep.port)
-                    : await TryConnectAsync(ep.host, ep.port);
+                    : ep.port is 80 or 443
+                        ? await TryHttpConnectAsync(ep.host, ep.port)
+                        : await TryConnectAsync(ep.host, ep.port);
                 // Retry once â€” always for the flaky warm-ingest host, or on
                 // timeout only for everything else (other socket errors like
                 // ConnectionRefused aren't transient and don't warrant a retry).
@@ -11487,7 +11659,9 @@ class Program
                 {
                     var retry = warmIngest
                         ? await TryConnectAnyAddressAsync(ep.host, ep.port)
-                        : await TryConnectAsync(ep.host, ep.port);
+                        : ep.port is 80 or 443
+                            ? await TryHttpConnectAsync(ep.host, ep.port)
+                            : await TryConnectAsync(ep.host, ep.port);
                     if (retry.ok) attempt = retry;
                 }
                 return attempt;
@@ -11652,6 +11826,27 @@ class Program
             int passed = 0, total = 0;
             string? currentGroup = null;
 
+            // Transparency banner on hybrid-mode runs: the scanner is a user-mode
+            // process and resolves the system proxy via WinINET (via WebRequest.
+            // GetSystemWebProxy). The Azure Connected Machine Agent (himds,
+            // gcarcservice, extensionservice) and the AVD RDAgent run as
+            // NT AUTHORITY\SYSTEM and consume the WinHTTP proxy chain, which
+            // can be configured independently. When the two differ (common in
+            // enterprises that set a per-user PAC via GPO but leave WinHTTP on
+            // "direct"), the scanner's user-mode verdict will not match the
+            // agent's SYSTEM-mode behaviour. L-TCP-07 reads WinHTTP from the
+            // registry — cross-reference it to tell whether a 0/25 scanner
+            // verdict matches reality for the agent.
+            if (isHybrid)
+            {
+                sb.AppendLine("Context: scanner runs as the invoking user and consults the WinINET");
+                sb.AppendLine("proxy chain. The Arc/AVD agents run as NT AUTHORITY\\SYSTEM and use");
+                sb.AppendLine("the WinHTTP proxy chain, which can be configured independently");
+                sb.AppendLine("(check `netsh winhttp show proxy` or L-TCP-07). A 0/25 verdict here");
+                sb.AppendLine("may not reflect the agent's path when the two proxies differ.");
+                sb.AppendLine();
+            }
+
             // Map wildcard-exemplar hosts to the wildcard FQDN they represent so
             // the detail mirrors the official required-FQDN table. The exemplar
             // host used to probe each wildcard rule is an implementation detail
@@ -11693,6 +11888,10 @@ class Program
                     else if (r.err != null && r.err.StartsWith("addr:"))
                     {
                         sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("addr:".Length)})");
+                    }
+                    else if (r.err != null && r.err.StartsWith("via-http:"))
+                    {
+                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("via-http:".Length)})");
                     }
                     else
                     {
