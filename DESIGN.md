@@ -188,6 +188,19 @@ these:
   `100.64.0.0/10`. If the underlying check isn't specific to the named cause,
   rename to a neutral description ("different egress paths") and let the
   user investigate. Mis-naming trains users to distrust the whole tool.
+- **The browser STUN probe (B-UDP-01) is not the RDP path.** It targets
+  `stun.azure.com` (20.202.0.0/16), which is not a Windows 365 range. SWGs —
+  notably Microsoft Global Secure Access — commonly forward it while correctly
+  bypassing the W365 TURN range (measured: GSA egressed `stun.azure.com` via
+  `AzureCloud.westus2` for both a UK laptop and a Poland Central Cloud PC,
+  while TURN went direct). A difference between its reflexive IP and the HTTP
+  egress is therefore informational, never a session-quality issue. Use the
+  TURN-relay reflexive IP (B-UDP-03 / C-UDP-05) for the RDP-relevant UDP path,
+  and attribute the split to a forwarder only from the scanner's structured
+  "agent running" lines. Do not assume Microsoft-owned (AS8075) egress is the
+  host's own: GSA egress is Microsoft-owned too. Compare country/region codes only when
+  both sides come from the same GeoIP provider, and pair HTTP/STUN results
+  from the same source prefix.
 - **Mode flags are not provenance flags.** `cloudPcMode` is set whenever a
   CPC JSON is imported, regardless of where the browser is running. It must
   not be used to decide whether a card represents host data — only the

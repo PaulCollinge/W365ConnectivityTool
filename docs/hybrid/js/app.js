@@ -1625,6 +1625,68 @@ function findCgnHopsInTraceroute(results) {
     return hops;
 }
 
+// ─── HTTP vs UDP egress-split helpers ────────────────────────────────
+// B-UDP-01 probes stun.azure.com (20.202.0.0/16), which is NOT a Windows 365
+// range. SWG agents — notably Microsoft Global Secure Access — commonly forward
+// it through their tunnel while correctly bypassing the W365 TURN range, so a
+// mismatch between its reflexive IP and the HTTP egress describes the SWG
+// forwarding profile, not the RDP path. B-UDP-03 (C-UDP-05 when imported from a
+// Cloud PC) probes the TURN relay itself and is the RDP-relevant UDP egress.
+function extractTurnReflexiveIp(results, ids = ['B-UDP-03', 'C-UDP-05']) {
+    const t = results.find(x => ids.includes(x.id) && x.status === 'Passed');
+    const m = t?.detailedInfo?.match(/Reflexive address:\s*(\S+):\d+/);
+    return m ? m[1] : '';
+}
+
+// Only the scanner's structured "agent running" lines are trusted: remediation
+// prose elsewhere names vendors as examples ("an SWG (e.g. Global Secure Access,
+// Zscaler)"), which would mis-attribute the forwarder.
+const SWG_FORWARDING_AGENTS = [
+    [/globalsecureaccess|global secure access/i, 'Global Secure Access'],
+    [/zscaler|zsatunnel/i, 'Zscaler'],
+    [/netskope|stagentsvc/i, 'Netskope'],
+    [/warp-svc|cloudflare warp/i, 'Cloudflare WARP'],
+    [/acumbrellaagent|cisco umbrella/i, 'Cisco Umbrella'],
+    [/forcepoint|fa_scheduler/i, 'Forcepoint'],
+    [/\biboss\b/i, 'iboss'],
+];
+function detectSwgForwardingAgent(results) {
+    const ids = new Set(['L-TCP-07', 'C-TCP-07', 'L-UDP-05', 'L-LE-17', 'C-LE-05']);
+    const evidence = results
+        .filter(x => ids.has(x.id) && x.detailedInfo)
+        .flatMap(x => x.detailedInfo.split('\n'))
+        .filter(l => /process running:|SWG\/ZTNA agent running|\[running\b/i.test(l));
+    for (const line of evidence) {
+        const hit = SWG_FORWARDING_AGENTS.find(([re]) => re.test(line));
+        if (hit) return hit[1];
+    }
+    return '';
+}
+
+// Both sides of an egress comparison must come from the same GeoIP provider,
+// otherwise a name-vs-code (or GPS vs IP) mismatch reads as a different
+// country/region. Memoised per IP; failures are not cached.
+const _ipGeoCache = new Map();
+function lookupIpGeo(ip) {
+    if (!ip) return Promise.resolve({});
+    if (!_ipGeoCache.has(ip)) {
+        _ipGeoCache.set(ip, fetch(`https://ipinfo.io/${ip}/json`, {
+            signal: AbortSignal.timeout(5000), cache: 'no-store'
+        }).then(r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.json();
+        }).catch(() => {
+            _ipGeoCache.delete(ip);
+            return {};
+        }));
+    }
+    return _ipGeoCache.get(ip);
+}
+
+function formatGeoLabel(city, country) {
+    return [city, country].filter(Boolean).join(', ') || 'unknown';
+}
+
 // Helper: extract VPN/SWG names from resultValue "VPN detected (Name) — ..." or detailedInfo
 function extractVpnNames(tests) {    const names = new Set();
     for (const t of tests) {
@@ -2118,29 +2180,30 @@ async function generateExportText() {
     const tcpVpn = r('L-TCP-07');
 
     // Classify why HTTP and STUN egress IPs differ. Order of evidence:
-    //   1. Traceroute (L-TCP-10) hops in 100.64.0.0/10  → CGNAT confirmed
-    //   2. IPv4 vs IPv6                                 → dual-stack (no fault)
-    //   3. Different countries on GeoIP                 → split-path / proxy
-    //   4. Same country, same family, no CGN evidence   → different egress paths
+    //   1. IPv4 vs IPv6                                 → dual-stack (no fault)
+    //   2. Traceroute (L-TCP-10) hops in 100.64.0.0/10  → CGNAT confirmed
+    //   3. W365 TURN reflexive ≠ stun.azure.com reflexive → SWG forwards non-W365 UDP
+    //   4. Different country/region codes on GeoIP      → split-path (informational:
+    //      stun.azure.com is not a W365 range)
+    //   5. Same country/region, same family, no CGN evidence → different egress paths
     let reportStunCountry = '';
     let reportStunCity = '';
-    let reportHttpCountry = freshLoc?.country || '';
-    let reportHttpCity = freshLoc?.source === 'browser' ? (freshLoc?.city || '') : '';
+    let reportHttpCountry = '';
+    let reportHttpCity = '';
     let reportIsSplitPath = false;
     let reportIsDualStack = false;
     let reportCgnHops = [];
+    const reportTurnIp = extractTurnReflexiveIp(allResults, ['B-UDP-03']);
+    const reportSwgAgent = detectSwgForwardingAgent(allResults);
+    let reportTurnSplit = false;
     if (reportHttpIp && reportStunIp && reportHttpIp !== reportStunIp) {
-        try {
-            const geoResp = await fetch(`https://ipinfo.io/${reportStunIp}/json`, {
-                signal: AbortSignal.timeout(5000), cache: 'no-store'
-            });
-            if (geoResp.ok) {
-                const geoData = await geoResp.json();
-                reportStunCountry = geoData.country || '';
-                reportStunCity = geoData.city || '';
-            }
-        } catch (e) { /* GeoIP lookup failed */ }
-        // Different countries = proxy / split-path
+        const [stunGeo, httpGeo] = await Promise.all([lookupIpGeo(reportStunIp), lookupIpGeo(reportHttpIp)]);
+        reportStunCountry = stunGeo.country || '';
+        reportStunCity = stunGeo.city || '';
+        reportHttpCountry = httpGeo.country || '';
+        reportHttpCity = httpGeo.city || '';
+        reportTurnSplit = !!reportTurnIp && reportTurnIp !== reportStunIp
+            && isIpv6(reportTurnIp) === isIpv6(reportStunIp);
         if (reportStunCountry && reportHttpCountry &&
             reportStunCountry.toUpperCase() !== reportHttpCountry.toUpperCase()) {
             reportIsSplitPath = true;
@@ -2149,7 +2212,7 @@ async function generateExportText() {
         reportIsDualStack = (isIpv6(reportHttpIp) && isIpv4(reportStunIp))
                          || (isIpv4(reportHttpIp) && isIpv6(reportStunIp));
         // Definitive CGNAT signal: traceroute hops in 100.64.0.0/10
-        reportCgnHops = findCgnHopsInTraceroute(results);
+        reportCgnHops = findCgnHopsInTraceroute(allResults);
     }
 
     if (tcpTls || tcpDns || tcpVpn || (reportHttpIp && reportStunIp)) {
@@ -2182,17 +2245,23 @@ async function generateExportText() {
             }
         }
         if (reportHttpIp && reportStunIp) {
+            const httpLabel = formatGeoLabel(reportHttpCity, reportHttpCountry);
+            const stunLabel = formatGeoLabel(reportStunCity, reportStunCountry);
             if (reportHttpIp === reportStunIp) {
                 lines.push(`    ✓ Split-path:         No proxy / split-path routing detected`);
-            } else if (reportIsSplitPath) {
-                lines.push(`    ⚠ Split-path:         Proxy / split-path routing detected`);
-                lines.push(`                          HTTP: ${reportHttpIp} [${reportHttpCity}, ${reportHttpCountry}]`);
-                lines.push(`                          STUN: ${reportStunIp} [${reportStunCity}, ${reportStunCountry}]`);
             } else if (reportIsDualStack) {
                 lines.push(`    ✓ Dual-stack:         IPv4 + IPv6 in use (HTTP via one, STUN via the other) — normal`);
                 lines.push(`                          HTTP: ${reportHttpIp}  ·  STUN: ${reportStunIp}`);
             } else if (reportCgnHops.length > 0) {
                 lines.push(`    ⚠ CGNAT confirmed:    Traceroute shows CGN hop(s): ${reportCgnHops.join(', ')}`);
+            } else if (reportTurnSplit) {
+                lines.push(`    ℹ Split-path:         stun.azure.com egresses differently from the W365 TURN relay path${reportSwgAgent ? ` (${reportSwgAgent} forwarding)` : ''}`);
+                lines.push(`                          HTTP: ${reportHttpIp} [${httpLabel}]  ·  W365 TURN: ${reportTurnIp}  ·  stun.azure.com: ${reportStunIp} [${stunLabel}]`);
+                lines.push(`                          stun.azure.com is not a Windows 365 range — the RDP path is unaffected by this split`);
+            } else if (reportIsSplitPath) {
+                lines.push(`    ℹ Split-path:         HTTP and UDP STUN exit in different countries/regions${reportSwgAgent ? ` (${reportSwgAgent} forwarding likely)` : ''}`);
+                lines.push(`                          HTTP: ${reportHttpIp} [${httpLabel}]  ·  STUN: ${reportStunIp} [${stunLabel}]`);
+                lines.push(`                          stun.azure.com is not a Windows 365 range — see TURN relay and Proxy/VPN/SWG results for the RDP path`);
             } else {
                 lines.push(`    ℹ Different egress:   HTTP and UDP exit via different IPs — no CGN hops or proxy detected`);
                 lines.push(`                          HTTP: ${reportHttpIp}  ·  STUN: ${reportStunIp}`);
@@ -2243,7 +2312,7 @@ async function generateExportText() {
         reportNatLine = `    ${nIcon} NAT Type:         ${nLabel} [${nsrc}]`;
     }
 
-    if (reportNatLine || turnTls || turnVpn || reportIsSplitPath || reportIsCgnat) {
+    if (reportNatLine || turnTls || turnVpn || reportIsCgnat) {
         lines.push(`  UDP-based RDP Path Optimisation:`);
         if (reportNatLine) lines.push(reportNatLine);
         if (turnTls) {
@@ -2259,9 +2328,6 @@ async function generateExportText() {
                 const icon = turnVpn.status === 'Passed' ? '✓' : '⚠';
                 lines.push(`    ${icon} Proxy/VPN/SWG:    ${turnVpn.resultValue}`);
             }
-        }
-        if (reportIsSplitPath) {
-            lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
         }
         if (reportIsCgnat) {
             const natR = r('B-UDP-02');
@@ -2280,9 +2346,6 @@ async function generateExportText() {
                 lines.push(`                          RDP Shortpath may fall back to TURN relay`);
             }
         }
-    } else if (reportIsSplitPath) {
-        lines.push(`  UDP-based RDP Path Optimisation:`);
-        lines.push(`    ✓ UDP bypasses HTTP proxy (direct egress via ${reportStunIp})`);
     } else {
         lines.push(`  UDP-based RDP Path Optimisation:  (requires Local Scanner or STUN test)`);
     }
@@ -3554,20 +3617,26 @@ async function updateKeyFindings(results) {
     // ── 6b. Split-path Routing (HTTP TCP egress vs STUN UDP egress) ──
     {
         let httpEgressIp = '', httpCountry = '', httpCity = '';
-        // In Cloud PC mode, B-LE-01 is remapped to C-LE-01 — try both
-        const locResult = r('B-LE-01') || r('C-LE-01');
+        // Pair HTTP and STUN from the same machine: B-* is this browser, C-* is the
+        // Cloud PC (imported B-* entries are remapped to C-*). The scanner's own
+        // C-UDP-03 is the TURN probe and carries no "Reflexive IP:" line.
+        const sourcePairs = [
+            [r('B-LE-01'), r('B-UDP-01'), 'B-UDP-03'],
+            [r('C-LE-01'), results.find(x => x.id === 'C-UDP-03' && x.detailedInfo?.includes('Reflexive IP:')), 'C-UDP-05']
+        ];
+        const [locResult, stunResult, turnId] = sourcePairs.find(([l, s]) => l?.detailedInfo && s?.detailedInfo)
+            || [r('B-LE-01') || r('C-LE-01'), null, ''];
         if (locResult?.detailedInfo) {
             const mIp = locResult.detailedInfo.match(/Public IP:\s*(\S+)/);
             if (mIp) httpEgressIp = mIp[1];
-            const rvParts = (locResult.resultValue || '').split(',').map(s => s.trim());
+            // Fallback only — ipinfo is preferred below so both sides share a provider.
+            // C-LE-01 with IMDS reads "Poland Central (Warsaw, PL)": use the parenthesised part.
+            const rv = (locResult.resultValue || '').replace(/^[^(]*\(([^)]*)\).*$/, '$1');
+            const rvParts = rv.split(',').map(s => s.trim());
             if (rvParts.length >= 2) httpCountry = rvParts[rvParts.length - 1];
             if (rvParts.length >= 3) httpCity = rvParts[0];
         }
         let stunReflexiveIp = '';
-        // In Cloud PC mode, B-UDP-01 is remapped to C-UDP-03 — but the scanner
-        // also uses C-UDP-03 for TURN relay (no Reflexive IP). Match the right one.
-        const stunResult = r('B-UDP-01')
-            || results.find(x => x.id === 'C-UDP-03' && x.detailedInfo?.includes('Reflexive IP:'));
         if (stunResult?.detailedInfo) {
             const m = stunResult.detailedInfo.match(/Reflexive IP:\s*(\S+)/);
             if (m) stunReflexiveIp = m[1];
@@ -3576,23 +3645,20 @@ async function updateKeyFindings(results) {
             if (httpEgressIp === stunReflexiveIp) {
                 // Same IP — no split-path (don't show, it's noise when everything is fine)
             } else {
-                // IPs differ — GeoIP both IPs to understand the split
-                let stunCountry = '', stunCity = '', stunOrg = '';
-                let httpOrg = '';
-                try {
-                    const [stunGeo, httpGeo] = await Promise.all([
-                        fetch(`https://ipinfo.io/${stunReflexiveIp}/json`, {
-                            signal: AbortSignal.timeout(5000), cache: 'no-store'
-                        }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
-                        fetch(`https://ipinfo.io/${httpEgressIp}/json`, {
-                            signal: AbortSignal.timeout(5000), cache: 'no-store'
-                        }).then(r => r.ok ? r.json() : {}).catch(() => ({}))
-                    ]);
-                    stunCountry = stunGeo.country || '';
-                    stunCity = stunGeo.city || '';
-                    stunOrg = stunGeo.org || '';
-                    httpOrg = httpGeo.org || '';
-                } catch { /* GeoIP lookup failed */ }
+                // IPs differ — GeoIP both IPs from the same provider so country/region codes are comparable
+                const [stunGeo, httpGeo] = await Promise.all([
+                    lookupIpGeo(stunReflexiveIp), lookupIpGeo(httpEgressIp)
+                ]);
+                const stunCountry = stunGeo.country || '';
+                const stunCity = stunGeo.city || '';
+                const stunOrg = stunGeo.org || '';
+                const httpOrg = httpGeo.org || '';
+                if (httpGeo.country) {
+                    httpCountry = httpGeo.country;
+                    httpCity = httpGeo.city || '';
+                }
+                const httpLoc = formatGeoLabel(httpCity, httpCountry);
+                const stunLoc = formatGeoLabel(stunCity, stunCountry);
 
                 const stunOrgLower = stunOrg.toLowerCase();
                 const httpOrgLower = httpOrg.toLowerCase();
@@ -3629,61 +3695,73 @@ async function updateKeyFindings(results) {
                     stunProvider = null;
                 }
 
-                if (httpProvider && !stunProvider) {
+                const cgnHops = findCgnHopsInTraceroute(results);
+                const dualStack = (isIpv6(httpEgressIp) && isIpv4(stunReflexiveIp))
+                               || (isIpv4(httpEgressIp) && isIpv6(stunReflexiveIp));
+                const turnReflexiveIp = extractTurnReflexiveIp(results, [turnId]);
+                const turnSplit = !!turnReflexiveIp && turnReflexiveIp !== stunReflexiveIp
+                    && isIpv6(turnReflexiveIp) === isIpv6(stunReflexiveIp);
+                const swgAgent = detectSwgForwardingAgent(results);
+                const stunNote = 'stun.azure.com is not a Windows 365 range — RDP/TURN routing is assessed by the TURN Relay and Proxy/VPN/SWG checks.';
+
+                // Order of evidence, strongest first. B-UDP-01 probes stun.azure.com, which
+                // RDP does not use, so no branch here is a session-quality issue on its own:
+                //   1. Traceroute hops in 100.64.0.0/10 → CGNAT confirmed
+                //   2. IPv4 vs IPv6 → dual-stack
+                //   3. W365 TURN reflexive ≠ stun.azure.com reflexive → SWG forwards non-W365 UDP
+                //   4. Known proxy/SWG org or running agent → attribute the split
+                //   5. Same / different country/region → neutral "different egress paths"
+                if (cgnHops.length > 0) {
+                    const natVal = (natType?.resultValue || '').toLowerCase();
+                    if (natVal.includes('symmetric')) {
+                        add('kf-issue', 'CGNAT', 'Carrier-Grade NAT confirmed — Symmetric NAT',
+                            `Traceroute shows CGN hop(s): ${esc(cgnHops.join(', '))}. STUN hole-punching unavailable; RDP Shortpath will use TURN relay.`);
+                    } else {
+                        add('kf-info', 'CGNAT', 'Carrier-Grade NAT detected — NAT traversal still possible',
+                            `Traceroute shows CGN hop(s): ${esc(cgnHops.join(', '))}. NAT mapping is Cone — Shortpath should work.`);
+                    }
+                } else if (dualStack) {
+                    // The most common cause of "different IPs" — browser used IPv6 for HTTP,
+                    // STUN used IPv4 for UDP. Not CGNAT, not a problem.
+                    add('kf-pass', 'Dual-stack network', 'IPv4 + IPv6 in use ' + tag('pass', 'Normal'),
+                        `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg) || 'IPv6'}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg) || 'IPv4'})`);
+                } else if (turnSplit) {
+                    const rdpUdpDirect = turnReflexiveIp === httpEgressIp;
+                    add('kf-info', 'Split Routing',
+                        (swgAgent
+                            ? `${esc(swgAgent)} forwards stun.azure.com — W365 TURN path bypasses it`
+                            : 'stun.azure.com takes a different path from the W365 TURN relay')
+                        + (rdpUdpDirect ? ' ' + tag('pass', 'RDP UDP unaffected') : ''),
+                        `HTTP: ${esc(httpEgressIp)} [${esc(httpLoc)}] · W365 TURN: ${esc(turnReflexiveIp)} · stun.azure.com: ${esc(stunReflexiveIp)} [${esc(stunLoc)}] (${esc(stunOrg || 'unknown org')}). stun.azure.com is not a Windows 365 range.`);
+                } else if (httpProvider && !stunProvider) {
                     // SWG proxies HTTP only — UDP goes direct. Good for RDP Shortpath.
                     add('kf-pass', 'Split Routing',
                         `${esc(httpProvider)} proxies HTTP — UDP bypasses proxy ` + tag('pass', 'RDP Shortpath OK'),
                         `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg)}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
-                } else if (stunProvider) {
-                    // UDP tunneled through a different provider
+                } else if (swgAgent || stunProvider) {
                     add('kf-info', 'Split Routing',
-                        `UDP traffic routed via ${esc(stunProvider)}`,
-                        `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg || 'direct')}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg)})`);
+                        swgAgent
+                            ? `HTTP and UDP STUN exit via different paths — ${esc(swgAgent)} forwarding likely`
+                            : `UDP STUN routed via ${esc(stunProvider)}`,
+                        `HTTP: ${esc(httpEgressIp)} [${esc(httpLoc)}] (${esc(httpOrg || 'direct')}) · STUN: ${esc(stunReflexiveIp)} [${esc(stunLoc)}] (${esc(stunOrg || 'unknown org')}). ${stunNote}`);
+                } else if (stunCountry && httpCountry &&
+                           stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
+                    // Same country/region, same family, no CGN hops, no SWG vendor.
+                    // Most often: separate v4 egress points within one network, or a
+                    // load-balanced dual-WAN setup. NOT enough evidence to call this CGNAT.
+                    add('kf-info', 'Different egress paths',
+                        'HTTP and UDP traffic exit via different IPs in the same country or region',
+                        `HTTP: ${esc(httpEgressIp)} · UDP: ${esc(stunReflexiveIp)}. No CGN hops in traceroute and no proxy/SWG vendor identified — likely two egress paths within the same network. Not CGNAT.`);
+                } else if (stunCountry && httpCountry) {
+                    add('kf-info', 'Different egress paths',
+                        'HTTP and UDP STUN exit in different countries/regions',
+                        `HTTP: ${esc(httpEgressIp)} [${esc(httpLoc)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunLoc)}]. A proxy, SWG or VPN is likely steering one of them. ${stunNote}`);
                 } else {
-                    // No SWG vendor identified — work out what the difference actually is.
-                    // Order of evidence from strongest to weakest:
-                    //   1. Traceroute hops in 100.64.0.0/10 → CGNAT confirmed
-                    //   2. IPv4 vs IPv6 → dual-stack (informational only)
-                    //   3. Same country, same family, no CGN evidence → different egress paths
-                    //   4. Different countries → split-path proxy
-                    const cgnHops = findCgnHopsInTraceroute(results);
-                    const dualStack = (isIpv6(httpEgressIp) && isIpv4(stunReflexiveIp))
-                                   || (isIpv4(httpEgressIp) && isIpv6(stunReflexiveIp));
-
-                    if (cgnHops.length > 0) {
-                        const natVal = (natType?.resultValue || '').toLowerCase();
-                        if (natVal.includes('symmetric')) {
-                            add('kf-issue', 'CGNAT', 'Carrier-Grade NAT confirmed — Symmetric NAT',
-                                `Traceroute shows CGN hop(s): ${esc(cgnHops.join(', '))}. STUN hole-punching unavailable; RDP Shortpath will use TURN relay.`);
-                        } else {
-                            add('kf-info', 'CGNAT', 'Carrier-Grade NAT detected — NAT traversal still possible',
-                                `Traceroute shows CGN hop(s): ${esc(cgnHops.join(', '))}. NAT mapping is Cone — Shortpath should work.`);
-                        }
-                    } else if (dualStack) {
-                        // The most common cause of "different IPs" — browser used IPv6 for HTTP,
-                        // STUN used IPv4 for UDP. Not CGNAT, not a problem.
-                        add('kf-pass', 'Dual-stack network', 'IPv4 + IPv6 in use ' + tag('pass', 'Normal'),
-                            `HTTP: ${esc(httpEgressIp)} (${esc(httpOrg) || 'IPv6'}) · UDP: ${esc(stunReflexiveIp)} (${esc(stunOrg) || 'IPv4'})`);
-                    } else if (stunCountry && httpCountry &&
-                               stunCountry.toUpperCase() === httpCountry.toUpperCase()) {
-                        // Same country, same family, no CGN hops, no SWG vendor.
-                        // Most often: separate v4 egress points within one ISP, or a load-balanced
-                        // dual-WAN setup. NOT enough evidence to call this CGNAT.
-                        add('kf-info', 'Different egress paths',
-                            'HTTP and UDP traffic exit via different IPs in the same country',
-                            `HTTP: ${esc(httpEgressIp)} · UDP: ${esc(stunReflexiveIp)}. No CGN hops in traceroute and no proxy/SWG vendor identified — likely two egress paths within your ISP. Not CGNAT.`);
-                    } else if (stunCountry && httpCountry) {
-                        // Different countries — split-path proxy
-                        add('kf-error', 'Split Routing',
-                            `\u{1F53A} TCP/UDP taking different paths — HTTP proxy or SWG likely`,
-                            `HTTP: ${esc(httpEgressIp)} [${esc(httpCity)}, ${esc(httpCountry)}] · STUN: ${esc(stunReflexiveIp)} [${esc(stunCity)}, ${esc(stunCountry)}]`);
-                    } else {
-                        // GeoIP incomplete — report what we know without CGNAT speculation
-                        const orgHint = stunOrg ? ` (${esc(stunOrg)})` : '';
-                        add('kf-info', 'Different egress IPs',
-                            'HTTP and UDP traffic exit via different IPs (GeoIP incomplete)',
-                            `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}${orgHint}`);
-                    }
+                    // GeoIP incomplete — report what we know without CGNAT speculation
+                    const orgHint = stunOrg ? ` (${esc(stunOrg)})` : '';
+                    add('kf-info', 'Different egress IPs',
+                        'HTTP and UDP traffic exit via different IPs (GeoIP incomplete)',
+                        `HTTP: ${esc(httpEgressIp)} · STUN: ${esc(stunReflexiveIp)}${orgHint}`);
                 }
             }
         }
