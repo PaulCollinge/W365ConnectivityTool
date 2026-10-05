@@ -1499,7 +1499,7 @@ async function testNatType(test) {
                 // enterprise-standard Shortpath path, not a degradation. So this is
                 // a PASS, not a warning. Point users at L-UDP-05 (single-socket
                 // two-server test) for the authoritative NAT-type classification.
-                natType = 'STUN OK — UDP confirmed (multiple egress paths; exact NAT type via scanner L-UDP-05)';
+                natType = 'STUN OK — UDP confirmed (multiple egress paths; run the Local Scanner for the exact NAT type)';
                 status = 'Passed';
             }
 
