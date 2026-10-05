@@ -48,6 +48,63 @@ const STATUS_CLASSES = {
     'Info': 'info'
 };
 
+// Dynamic scanner and environment values can contain text from any script.
+// Apply automatic base direction only to those values; the English UI chrome
+// remains explicitly left-to-right.
+const AUTO_DIRECTION_SELECTOR = [
+    '.test-result-value',
+    '.test-details',
+    '.test-remediation-text',
+    '.satellite-banner-detail',
+    '.device-detail',
+    '.map-card-detail',
+    '.map-card-badge',
+    '.map-wifi-badge',
+    '.map-vpn-badge',
+    '.map-path-pill',
+    '.map-vpn-summary',
+    '.trace-target-role',
+    '.trace-target-meta',
+    '.trace-routed',
+    '.trace-empty',
+    '.trace-hop-host',
+    '.compare-meta',
+    '.compare-name',
+    '.compare-val',
+    '.rem-test-name',
+    '.rem-text',
+    '.kf-desc',
+    '.kf-fix',
+    '.kf-row-val',
+    '.watch-meta .v',
+    '.watch-verdict > div',
+    '.wt-now > span',
+    '.wfind .h',
+    '.wfind .d',
+    '.analysis-finding-title',
+    '.analysis-finding-detail',
+    '.analysis-remediation',
+    'textarea[readonly]'
+].join(',');
+
+function applyAutomaticTextDirection(root = document) {
+    if (!root) return;
+    const elements = [];
+    if (typeof root.matches === 'function' && root.matches(AUTO_DIRECTION_SELECTOR)) {
+        elements.push(root);
+    }
+    if (typeof root.querySelectorAll === 'function') {
+        elements.push(...root.querySelectorAll(AUTO_DIRECTION_SELECTOR));
+    }
+    elements.forEach(el => el.setAttribute('dir', 'auto'));
+}
+
+function bidiIsolateHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = String(text ?? '');
+    return `<bdi dir="auto">${div.innerHTML}</bdi>`;
+}
+
 /**
  * Render all test definitions into the category containers (initial state).
  */
@@ -119,6 +176,8 @@ function createTestElement(test, result) {
         </div>
     `;
 
+    applyAutomaticTextDirection(div);
+
     // Wire details toggle via addEventListener (avoids putting test.id in an inline
     // JS string context, which would be an XSS foothold if the id came from an
     // imported scanner JSON or share link).
@@ -177,6 +236,8 @@ function updateTestUI(testId, result) {
             ${result.detailedInfo ? `<button class="test-expand" type="button" aria-expanded="false" aria-controls="details-${idSafe}">Details</button>` : ''}
         </div>
     `;
+
+    applyAutomaticTextDirection(el);
 
     const expandBtn = el.querySelector('.test-expand');
     if (expandBtn) expandBtn.addEventListener('click', () => toggleDetails(testId));

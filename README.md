@@ -143,6 +143,9 @@ dotnet publish src/W365LocalScanner/W365LocalScanner.csproj -c Release -r win-x6
 - The preview UI and documentation are currently available in **English**; the product does not expose a language selector or fallback chain.
 - The web dashboard derives locale metadata and human-readable dates/times from the browser or operating-system regional settings.
 - ISO dates used in filenames, diagnostic output, and machine-readable data remain culture-invariant for interoperability.
+- Scanner JSON, dashboard imports and exports, email attachments, CSV output, and share links preserve Unicode text as UTF-8, including complex scripts, supplementary characters, emoji, and combining sequences.
+- Imported diagnostic values use automatic bidirectional paragraph flow while the English navigation and layout remain left-to-right.
+- The dashboard has no editable free-text field, linguistic search, or user-visible alphabetic sort. Its controls use file selection, fixed status filters, and numeric, chronological, severity, or deterministic technical ordering, so IME editing and locale-aware collation checks are not applicable.
 
 ## References
 
