@@ -883,14 +883,11 @@ function setEgressDistanceBadge(distKm) {
 
 // ── AFD Edge Card ──
 function updateMapAfdCard(lookup) {
-    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'] || lookup['C-TCP-04'];
-    // Dual-side latency: client probe (B-TCP-02 from this device's browser)
-    // and Cloud PC probe (C-TCP-04 from the CPC scanner). When merged from
-    // an end-to-end import these are independent measurements over different
-    // network paths and we render both side-by-side; otherwise single pill.
+    const reach = lookup['L-TCP-04'] || lookup['B-TCP-02'];
+    // AFD gateway discovery is a client-side concern. C-TCP-04 runs from the
+    // session host and remains useful for its separate RD Gateway/service data,
+    // but it must not create a Cloud PC status or latency on the AFD card.
     const clientLat = lookup['B-TCP-02'];
-    const cpcLat = lookup['C-TCP-04'];
-    const latency = clientLat || cpcLat;
     const gwUsed = lookup['L-TCP-09'] || lookup['C-TCP-09'];
 
     let status = 'NotRun';
@@ -937,19 +934,7 @@ function updateMapAfdCard(lookup) {
         if (el) el.classList.add('hidden');
     }
 
-    // Latency badge — render dual when both sides are present.
-    // C-TCP-04 is a multi-probe test (4 endpoints), so its `duration` field is
-    // the wall-clock for ALL probes serially, not the AFD edge RTT. Pull the
-    // AFD-edge HTTPS time out of the structured detailedInfo block instead,
-    // and disallow the duration fallback so we never accidentally render the
-    // ~300ms total as the AFD latency. B-TCP-02 is single-probe, its
-    // resultValue carries the ms number directly, so the simple path is fine.
-    const cpcAfdMs = extractMs(cpcLat, {
-        section: /\[Gateway Discovery \(AFD\)\]/i,
-        prefer: 'https',
-        allowDuration: false
-    });
-    setDualLatencyBadge('map-afd-badge', extractMs(clientLat, { allowDuration: true }), cpcAfdMs, true);
+    setDualLatencyBadge('map-afd-badge', extractMs(clientLat, { allowDuration: true }), null, true);
 
     setAccentStatus('map-afd-accent', status);
 }
@@ -1615,7 +1600,7 @@ function updateMapLatencyLabels(lookup) {
     setLL('map-lat-gw', gwMs, 'gw');
 
     // AFD Edge: B-TCP-02 "Latency: avg Nms" or resultValue "— Nms"
-    const afd02 = lookup['B-TCP-02'] || lookup['C-TCP-04'];
+    const afd02 = lookup['B-TCP-02'];
     let afdMs = null;
     if (afd02 && afd02.detailedInfo) {
         const latLine = afd02.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
@@ -1669,8 +1654,9 @@ function updateMapLatencyLabels(lookup) {
     // ── CPC mode latency labels (Cloud PC → gateway services) ──
     const isCpcMode = (typeof cloudPcMode !== 'undefined' && cloudPcMode);
     if (isCpcMode) {
-        // CPC RD Gateway: C-TCP-04 (mapped from B-TCP-02) — "Latency: avg Nms"
-        const cpcGw = lookup['C-TCP-04'] || lookup['B-TCP-02'];
+        // CPC RD Gateway: C-TCP-04 scanner result. The browser AFD probe is
+        // deliberately not used as a session-host gateway measurement.
+        const cpcGw = lookup['C-TCP-04'];
         let cpcGwMs = null;
         if (cpcGw && cpcGw.detailedInfo) {
             const latLine = cpcGw.detailedInfo.split('\n').find(l => l.trim().startsWith('Latency:'));
