@@ -60,7 +60,6 @@ const BROWSER_TO_CPC_ID = {
     'B-LE-01': 'C-LE-01',
     'B-LE-02': 'C-LE-02',
     'B-LE-03': 'C-LE-03',
-    'B-TCP-02': 'C-TCP-04',
     'B-TCP-03': 'C-TCP-05',
     'B-TCP-04': 'C-TCP-09',
     'B-UDP-01': 'C-UDP-03',
@@ -779,7 +778,8 @@ async function runAllBrowserTests() {
     const mapContainer = document.getElementById('connectivity-map');
     if (mapContainer) mapContainer.classList.add('hidden');
 
-    const browserTests = ALL_TESTS.filter(t => t.source === 'browser' && t.run);
+    const browserTests = ALL_TESTS.filter(t =>
+        t.source === 'browser' && t.run && (!cloudPcMode || t.id !== 'B-TCP-02'));
     const total = browserTests.length;
     let completed = 0;
 
@@ -3456,7 +3456,7 @@ async function updateKeyFindings(results) {
     }
 
     // ── 3. AFD Edge PoP ──
-    const afd = r('B-TCP-02') || r('C-TCP-04');
+    const afd = r('B-TCP-02');
     let afdPop = '';
     let afdLat = '';
     if (gw09 && gw09.detailedInfo) {
