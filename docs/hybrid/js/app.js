@@ -3564,7 +3564,19 @@ async function updateKeyFindings(results) {
     }
 
     // ── 5. TURN Relay ──
-    const turn04 = r('L-UDP-04') || r('C-UDP-04');
+    // In live Cloud PC mode the browser NAT test (B-UDP-02) is stored under
+    // C-UDP-04, so only a genuine relay-location result may populate this row.
+    const isBrowserNatResult = t => /NAT Type/i.test(t?.name || '');
+    const turn04 = [r('L-UDP-04'), r('C-UDP-04')].find(t => t && !isBrowserNatResult(t));
+    const turnProbe = r('B-UDP-03') || r('C-UDP-05');
+    if (!(turn04 && turn04.status !== 'Skipped' && turn04.resultValue)
+        && turnProbe && ['Passed', 'Warning', 'Failed', 'Error'].includes(turnProbe.status)) {
+        if (turnProbe.status === 'Passed') {
+            add('kf-pass', 'TURN Relay', 'UDP 3478 reachable');
+        } else {
+            add('kf-issue', 'TURN Relay', 'No response on UDP 3478 — confirm with the Local Scanner');
+        }
+    }
     if (turn04 && turn04.status !== 'Skipped' && turn04.resultValue) {
         const turnLoc = turn04.resultValue;
         const turn03 = r('L-UDP-03') || r('C-UDP-03');
@@ -3585,7 +3597,7 @@ async function updateKeyFindings(results) {
     }
 
     // ── 6. NAT Type & Shortpath ──
-    const natType = r('L-UDP-05') || r('B-UDP-02');
+    const natType = r('L-UDP-05') || r('B-UDP-02') || [r('C-UDP-04')].find(t => t && isBrowserNatResult(t));
     if (natType && natType.status !== 'NotRun' && natType.status !== 'Pending') {
         const val = (natType.resultValue || '').toLowerCase();
         const src = r('L-UDP-05') ? 'Scanner' : 'Browser';
