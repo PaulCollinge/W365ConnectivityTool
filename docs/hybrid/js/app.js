@@ -4054,7 +4054,21 @@ async function updateKeyFindings(results) {
         }
     }
 
-    // ── 12. RDP Client Version ──
+    // ── 12. Arc / AVD agent download path ──
+    const arcDownload = r('C-ARC-02');
+    if (arcDownload && arcDownload.status !== 'NotRun' && arcDownload.status !== 'Pending' && arcDownload.status !== 'Skipped') {
+        if (arcDownload.status === 'Passed') {
+            add('kf-pass', 'Agent Downloads', esc(arcDownload.resultValue));
+        } else if (arcDownload.status === 'Warning') {
+            add('kf-issue', 'Agent Downloads', esc(arcDownload.resultValue),
+                'Payloads downloaded, but TLS inspection or prior extension errors were detected');
+        } else {
+            add('kf-error', 'Agent Downloads', esc(arcDownload.resultValue),
+                'Proxy, TLS trust, redirect, or payload filtering is preventing agent delivery');
+        }
+    }
+
+    // ── 13. RDP Client Version ──
     const rdpClient = r('L-LE-13');
     if (rdpClient && rdpClient.status !== 'NotRun' && rdpClient.status !== 'Pending') {
         if (rdpClient.status === 'Passed') {
