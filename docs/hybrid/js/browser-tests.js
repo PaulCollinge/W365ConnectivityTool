@@ -293,7 +293,7 @@ const ALL_TESTS = [
     },
     {
         id: 'C-ARC-02', name: 'Arc / AVD Agent Download Path',
-        description: 'AVD Hybrid only — follows the official Arc and AVD installer redirects, downloads bounded payload samples, detects proxy blocks and TLS inspection, validates Local Machine trust for SYSTEM agents, and checks CloudDeviceExtension logs.',
+        description: 'AVD Hybrid only — applies Arc proxy.url, machine HTTPS_PROXY, and service bypass precedence to the Arc path; probes official Arc and AVD installer payloads; detects proxy blocks and TLS inspection; validates Local Machine trust; and checks CloudDeviceExtension logs.',
         category: 'cloudpc', source: 'cloudpc'
     },
     {
