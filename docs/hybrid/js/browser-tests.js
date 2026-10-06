@@ -283,7 +283,7 @@ const ALL_TESTS = [
     // Note: C-EP-01 was removed in v1.10.1 — it duplicated a subset of C-EP-02.
     {
         id: 'C-EP-02', name: 'Required Endpoints',
-        description: 'Tests all required FQDNs for the detected host type — Cloud PC, AVD session host, or AVD Hybrid Arc control plane (marketplace, monitoring, activation, CRL/OCSP, IoT provisioning / Arc endpoints as applicable)',
+        description: 'Tests required FQDNs for the detected host type. On AVD Hybrid hosts, Arc endpoints use agent proxy precedence and service bypass, classify Private Link DNS/routes, and sample the regional notification allowlist; AVD endpoints retain their separate user-context route.',
         category: 'cloudpc', source: 'cloudpc'
     },
     {
