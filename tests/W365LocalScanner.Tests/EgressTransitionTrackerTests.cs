@@ -235,4 +235,60 @@ public sealed class EgressTransitionTrackerTests
         Assert.IsFalse(AgentDownloadAssessment.LooksLikeMsi(executable));
         Assert.IsFalse(AgentDownloadAssessment.LooksLikeMsi([]));
     }
+
+    [TestMethod]
+    public void ArcProxyConfigurationUsesDocumentedPrecedence()
+    {
+        var agentConfigured = ArcProxyConfiguration.Create(
+            "http://agent-proxy.contoso.com:8080",
+            null,
+            "http://machine-proxy.contoso.com:8080");
+        var machineConfigured = ArcProxyConfiguration.Create(
+            null,
+            null,
+            "http://machine-proxy.contoso.com:8080");
+        var direct = ArcProxyConfiguration.Create(null, null, null);
+        var endpoint = new Uri("https://gbl.his.arc.azure.com/agent.msi");
+
+        Assert.AreEqual("agent proxy.url", agentConfigured.SourceDescription);
+        Assert.AreEqual("agent-proxy.contoso.com", agentConfigured.Resolve(endpoint).ProxyUri?.Host);
+        Assert.AreEqual("machine HTTPS_PROXY", machineConfigured.SourceDescription);
+        Assert.AreEqual("machine-proxy.contoso.com", machineConfigured.Resolve(endpoint).ProxyUri?.Host);
+        Assert.AreEqual("direct", direct.SourceDescription);
+        Assert.IsFalse(direct.Resolve(endpoint).UseProxy);
+    }
+
+    [DataTestMethod]
+    [DataRow("Arc", "https://gbl.his.arc.azure.com/agent.msi", true)]
+    [DataRow("ARM, Arc", "https://westeurope.guestconfiguration.azure.com/extension", true)]
+    [DataRow("ARM", "https://management.azure.com/subscriptions", true)]
+    [DataRow("AAD", "https://login.microsoftonline.com/tenant/oauth2", true)]
+    [DataRow("ArcData", "https://sql.westeurope.arcdataservices.com/path", true)]
+    [DataRow("Arc", "https://aka.ms/AzureConnectedMachineAgent", false)]
+    [DataRow("Arc", "https://example.com/his.arc.azure.com/path", false)]
+    public void ArcProxyConfigurationAppliesServiceBypass(
+        string bypass,
+        string endpoint,
+        bool expected)
+    {
+        var configuration = ArcProxyConfiguration.Create(
+            "http://proxy.contoso.com:8080",
+            bypass,
+            null);
+
+        Assert.AreEqual(expected, configuration.ShouldBypass(new Uri(endpoint)));
+        Assert.AreEqual(!expected, configuration.Resolve(new Uri(endpoint)).UseProxy);
+    }
+
+    [TestMethod]
+    public void ArcProxyConfigurationRedactsCredentials()
+    {
+        var configuration = ArcProxyConfiguration.Create(
+            "http://secret-user:secret-password@proxy.contoso.com:8080",
+            null,
+            null);
+
+        Assert.AreEqual("http://proxy.contoso.com:8080", configuration.AgentProxyDisplay);
+        Assert.IsFalse(configuration.AgentProxyDisplay!.Contains("secret", StringComparison.Ordinal));
+    }
 }

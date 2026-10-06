@@ -2231,7 +2231,7 @@ class Program
             // These self-report as "Not applicable" on Azure-VM Cloud PCs and AVD
             // session hosts, so they cost nothing when the host isn't hybrid.
             new("C-ARC-01", "Arc Agent Health", "Azure Connected Machine Agent state, version and heartbeat freshness", "cloudpc-env", RunHybridArcAgentHealth),
-            new("C-ARC-02", "Arc / AVD Agent Download Path", "Downloads bounded samples of the official Arc and AVD agent installers through the effective proxy and validates redirects, TLS chains, payload delivery, and extension logs", "cloudpc-env", RunHybridAgentDownloadPath),
+            new("C-ARC-02", "Arc / AVD Agent Download Path", "Downloads bounded samples of the official Arc and AVD agent installers, applying the Arc agent's documented proxy precedence and bypass settings, and validates redirects, TLS chains, payload delivery, and extension logs", "cloudpc-env", RunHybridAgentDownloadPath),
             new("C-HY-02", "Session Host Time Sync", "Confirms clock skew is inside the Kerberos tolerance for hybrid AD auth", "cloudpc-env", RunHybridTimeSync),
 
             // â”€â”€ Azure Fabric (WireServer + IMDS) â”€â”€
@@ -12131,16 +12131,21 @@ class Program
         const int MaxPayloadBytes = 64 * 1024;
         var targets = new[]
         {
-            ("Azure Connected Machine Agent", "https://aka.ms/AzureConnectedMachineAgent"),
-            ("Azure Virtual Desktop Agent", "https://go.microsoft.com/fwlink/?linkid=2310011"),
-            ("Azure Virtual Desktop Agent Bootloader", "https://go.microsoft.com/fwlink/?linkid=2311028"),
+            ("Azure Connected Machine Agent", "https://aka.ms/AzureConnectedMachineAgent", true),
+            ("Azure Virtual Desktop Agent", "https://go.microsoft.com/fwlink/?linkid=2310011", false),
+            ("Azure Virtual Desktop Agent Bootloader", "https://go.microsoft.com/fwlink/?linkid=2311028", false),
         };
 
         var sb = new StringBuilder();
         var failures = new List<string>();
         var warnings = new List<string>();
+        var arcProxy = await ReadArcProxyConfiguration();
 
-        foreach (var (label, initialUrl) in targets)
+        sb.AppendLine("══ Azure Connected Machine agent proxy configuration ══");
+        AppendArcProxyConfiguration(sb, arcProxy, failures, warnings);
+        sb.AppendLine();
+
+        foreach (var (label, initialUrl, useArcAgentRoute) in targets)
         {
             sb.AppendLine($"══ {label} ══");
             var current = new Uri(initialUrl);
@@ -12174,22 +12179,46 @@ class Program
                         return errors == SslPolicyErrors.None;
                     }
                 };
-                if (HasEffectiveProxy())
-                    handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
 
-                var proxy = WebRequest.GetSystemWebProxy();
                 Uri? proxyUri = null;
-                try
+                string routeDescription;
+                if (useArcAgentRoute && arcProxy.AgentConfigurationAvailable)
                 {
-                    var resolved = proxy.GetProxy(current);
-                    if (resolved != null && resolved != current) proxyUri = resolved;
+                    var route = arcProxy.Resolve(current);
+                    proxyUri = route.ProxyUri;
+                    routeDescription = route.Description;
+                    if (route.UseProxy)
+                    {
+                        handler.Proxy = new WebProxy(proxyUri!)
+                        {
+                            Credentials = CredentialCache.DefaultCredentials
+                        };
+                    }
+                    else
+                    {
+                        handler.UseProxy = false;
+                    }
                 }
-                catch { /* route is reported as unknown below */ }
+                else
+                {
+                    var proxy = WebRequest.GetSystemWebProxy();
+                    try
+                    {
+                        var resolved = proxy.GetProxy(current);
+                        if (resolved != null && resolved != current) proxyUri = resolved;
+                    }
+                    catch { /* route is reported as unknown below */ }
+                    if (HasEffectiveProxy())
+                        handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
+                    routeDescription = useArcAgentRoute
+                        ? "invoking-user proxy fallback; Arc agent configuration could not be read"
+                        : "invoking-user proxy settings; AVD service context may differ";
+                }
 
                 sb.AppendLine($"GET {current}");
                 sb.AppendLine(proxyUri == null
-                    ? "  Route: direct according to invoking-user proxy settings"
-                    : $"  Route: proxy {proxyUri.Scheme}://{proxyUri.Host}:{proxyUri.Port}");
+                    ? $"  Route: direct ({routeDescription})"
+                    : $"  Route: proxy {ArcProxyConfiguration.FormatProxyForDisplay(proxyUri)} ({routeDescription})");
 
                 try
                 {
@@ -12333,16 +12362,18 @@ class Program
         }
 
         sb.AppendLine();
-        sb.AppendLine("Context: the live requests use the invoking user's effective proxy and trust context.");
-        sb.AppendLine("Arc and AVD agents run as NT AUTHORITY\\SYSTEM and normally use WinHTTP.");
+        sb.AppendLine("Context: Arc requests use agent proxy.url first, then machine HTTPS_PROXY, then direct,");
+        sb.AppendLine("including the Arc service bypass where configured. They do not fall back to Windows/WinHTTP.");
+        sb.AppendLine("AVD requests use the invoking user's effective proxy because the AVD service route is separate.");
+        sb.AppendLine("CloudDeviceExtension and other extensions might not inherit the Arc agent-specific proxy.");
         sb.AppendLine("A TLS-inspection root found only in Current User, not Local Machine, is treated as a failure");
-        sb.AppendLine("because SYSTEM services are unlikely to trust it. Cross-check C-TCP-07 for WinHTTP differences.");
+        sb.AppendLine("because SYSTEM services are unlikely to trust it.");
 
         if (failures.Count > 0)
         {
             result.Status = "Failed";
             result.ResultValue = $"{failures.Count} agent download path failure(s)";
-            result.RemediationText = "Bypass TLS inspection for the failed Microsoft download/CDN endpoints, allow MSI payloads and redirects, ensure proxy authentication works for SYSTEM/WinHTTP, and install the inspection root in Local Machine only if inspection is supported.";
+            result.RemediationText = "Review 'azcmagent show', proxy.url, proxy.bypass, and machine HTTPS_PROXY; bypass TLS inspection for failed Microsoft download/CDN endpoints; allow MSI payloads and redirects; and ensure the SYSTEM services can use the required route.";
         }
         else if (warnings.Count > 0)
         {
@@ -12359,6 +12390,129 @@ class Program
         result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-azure-virtual-desktop-hybrid";
         result.DetailedInfo = sb.ToString().Trim();
         return result;
+    }
+
+    static async Task<ArcProxyConfiguration> ReadArcProxyConfiguration()
+    {
+        string agentPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "AzureConnectedMachineAgent",
+            "azcmagent.exe");
+        string? machineHttpsProxy = Environment.GetEnvironmentVariable(
+            "HTTPS_PROXY",
+            EnvironmentVariableTarget.Machine);
+
+        if (!File.Exists(agentPath))
+            return ArcProxyConfiguration.Unavailable(machineHttpsProxy, "azcmagent.exe was not found");
+
+        var proxyUrl = await RunAzcmagentConfigGet(agentPath, "proxy.url");
+        var proxyBypass = await RunAzcmagentConfigGet(agentPath, "proxy.bypass");
+        if (!proxyUrl.Succeeded || !proxyBypass.Succeeded)
+        {
+            string detail = string.Join("; ", new[] { proxyUrl.Error, proxyBypass.Error }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+            return ArcProxyConfiguration.Unavailable(
+                machineHttpsProxy,
+                string.IsNullOrWhiteSpace(detail) ? "azcmagent config query failed" : detail);
+        }
+
+        return ArcProxyConfiguration.Create(
+            NormalizeAzcmagentConfigValue(proxyUrl.Output),
+            NormalizeAzcmagentConfigValue(proxyBypass.Output),
+            machineHttpsProxy);
+    }
+
+    static async Task<(bool Succeeded, string? Output, string? Error)> RunAzcmagentConfigGet(
+        string agentPath,
+        string property)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = agentPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            psi.ArgumentList.Add("config");
+            psi.ArgumentList.Add("get");
+            psi.ArgumentList.Add(property);
+
+            using var process = Process.Start(psi);
+            if (process == null)
+                return (false, null, $"Could not start azcmagent for {property}");
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await process.WaitForExitAsync(cts.Token);
+            string stdout = await stdoutTask;
+            string stderr = await stderrTask;
+            return process.ExitCode == 0
+                ? (true, stdout, null)
+                : (false, null, $"{property}: {RedactProxyCredentials(stderr.Trim())}");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, null, $"{property}: azcmagent query timed out");
+        }
+        catch (Exception ex)
+        {
+            return (false, null, $"{property}: {ex.Message}");
+        }
+    }
+
+    static string? NormalizeAzcmagentConfigValue(string? value)
+    {
+        string normalized = value?.Trim().Trim('"') ?? string.Empty;
+        return normalized.Length == 0
+            || normalized.Equals("null", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("<not set>", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : normalized;
+    }
+
+    static string RedactProxyCredentials(string value)
+    {
+        return Regex.Replace(
+            value,
+            @"(?i)(https?://)[^/\s@]+@",
+            "$1<redacted>@");
+    }
+
+    static void AppendArcProxyConfiguration(
+        StringBuilder sb,
+        ArcProxyConfiguration configuration,
+        List<string> failures,
+        List<string> warnings)
+    {
+        if (!configuration.AgentConfigurationAvailable)
+        {
+            warnings.Add("Arc agent proxy configuration could not be verified");
+            sb.AppendLine($"⚠ Configuration unavailable: {configuration.Error}");
+            sb.AppendLine("The Arc download probe will use the invoking-user route and is not agent-faithful.");
+            return;
+        }
+
+        sb.AppendLine($"Agent proxy.url: {configuration.AgentProxyDisplay ?? "(not configured)"}");
+        sb.AppendLine($"Agent proxy.bypass: {configuration.ProxyBypass ?? "(not configured)"}");
+        sb.AppendLine($"Machine HTTPS_PROXY: {configuration.MachineProxyDisplay ?? "(not configured)"}");
+        sb.AppendLine($"Effective Arc proxy source: {configuration.SourceDescription}");
+        if (configuration.HasInvalidEffectiveProxy)
+        {
+            failures.Add("Arc effective proxy URL is invalid");
+            sb.AppendLine("⚠ The selected Arc proxy value is not a valid absolute HTTP/HTTPS URL.");
+        }
+        if (!string.IsNullOrWhiteSpace(configuration.AgentProxyUrl)
+            && !string.IsNullOrWhiteSpace(configuration.MachineHttpsProxy)
+            && !configuration.AgentProxyUrl.Equals(
+                configuration.MachineHttpsProxy,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            sb.AppendLine("⚠ Agent proxy.url overrides a different machine HTTPS_PROXY value.");
+        }
     }
 
     static void AppendCertificateDiagnostics(
@@ -13780,6 +13934,127 @@ internal static class AgentDownloadAssessment
         ReadOnlySpan<byte> compoundFileSignature = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
         return sample.StartsWith(compoundFileSignature);
     }
+}
+
+internal sealed record ArcProxyRoute(bool UseProxy, Uri? ProxyUri, string Description);
+
+internal sealed class ArcProxyConfiguration
+{
+    internal bool AgentConfigurationAvailable { get; }
+    internal string? AgentProxyUrl { get; }
+    internal string? ProxyBypass { get; }
+    internal string? MachineHttpsProxy { get; }
+    internal string? Error { get; }
+
+    internal string? AgentProxyDisplay => FormatProxyForDisplay(AgentProxyUrl);
+    internal string? MachineProxyDisplay => FormatProxyForDisplay(MachineHttpsProxy);
+    internal bool HasInvalidEffectiveProxy =>
+        EffectiveProxyValue != null && EffectiveProxyUri == null;
+    internal string SourceDescription => AgentProxyUrl != null
+        ? "agent proxy.url"
+        : MachineHttpsProxy != null
+            ? "machine HTTPS_PROXY"
+            : "direct";
+
+    private string? EffectiveProxyValue => AgentProxyUrl ?? MachineHttpsProxy;
+    private Uri? EffectiveProxyUri => TryGetProxyUri(EffectiveProxyValue);
+
+    private ArcProxyConfiguration(
+        bool agentConfigurationAvailable,
+        string? agentProxyUrl,
+        string? proxyBypass,
+        string? machineHttpsProxy,
+        string? error)
+    {
+        AgentConfigurationAvailable = agentConfigurationAvailable;
+        AgentProxyUrl = Normalize(agentProxyUrl);
+        ProxyBypass = Normalize(proxyBypass);
+        MachineHttpsProxy = Normalize(machineHttpsProxy);
+        Error = error;
+    }
+
+    internal static ArcProxyConfiguration Create(
+        string? agentProxyUrl,
+        string? proxyBypass,
+        string? machineHttpsProxy) =>
+        new(true, agentProxyUrl, proxyBypass, machineHttpsProxy, null);
+
+    internal static ArcProxyConfiguration Unavailable(string? machineHttpsProxy, string error) =>
+        new(false, null, null, machineHttpsProxy, error);
+
+    internal ArcProxyRoute Resolve(Uri endpoint)
+    {
+        if (ShouldBypass(endpoint))
+            return new(false, null, $"Arc proxy.bypass applies to {endpoint.Host}");
+
+        Uri? proxyUri = EffectiveProxyUri;
+        if (proxyUri != null)
+            return new(true, proxyUri, SourceDescription);
+
+        return new(false, null, HasInvalidEffectiveProxy
+            ? $"{SourceDescription} is invalid; direct probe used"
+            : "Arc agent effective route");
+    }
+
+    internal bool ShouldBypass(Uri endpoint)
+    {
+        if (EffectiveProxyValue == null || string.IsNullOrWhiteSpace(ProxyBypass))
+            return false;
+
+        return ProxyBypass.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(service => ServiceBypassesHost(service, endpoint.Host));
+    }
+
+    internal static string FormatProxyForDisplay(Uri proxyUri)
+    {
+        var builder = new UriBuilder(proxyUri)
+        {
+            UserName = string.Empty,
+            Password = string.Empty,
+            Path = string.Empty,
+            Query = string.Empty,
+            Fragment = string.Empty
+        };
+        return builder.Uri.GetLeftPart(UriPartial.Authority);
+    }
+
+    private static string? FormatProxyForDisplay(string? value) =>
+        TryGetProxyUri(value) is { } uri ? FormatProxyForDisplay(uri) : value;
+
+    private static Uri? TryGetProxyUri(string? value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+            return null;
+        return uri.Scheme is "http" or "https" && !string.IsNullOrWhiteSpace(uri.Host)
+            ? uri
+            : null;
+    }
+
+    private static bool ServiceBypassesHost(string service, string host) =>
+        service.ToUpperInvariant() switch
+        {
+            "AAD" => HostMatches(host, "login.windows.net")
+                || HostMatches(host, "login.microsoftonline.com")
+                || HostMatches(host, "pas.windows.net"),
+            "ARM" => HostMatches(host, "management.azure.com"),
+            "ARC" => HostMatches(host, "his.arc.azure.com")
+                || HostMatches(host, "guestconfiguration.azure.com"),
+            "ARCDATA" => host.EndsWith(".arcdataservices.com", StringComparison.OrdinalIgnoreCase),
+            "AMA" => HostMatches(host, "global.handler.control.monitor.azure.com")
+                || host.EndsWith(".handler.control.monitor.azure.com", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".ods.opinsights.azure.com", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".monitoring.azure.com", StringComparison.OrdinalIgnoreCase)
+                || host.Contains(".ingest.monitor.azure.com", StringComparison.OrdinalIgnoreCase)
+                || HostMatches(host, "management.azure.com"),
+            _ => false
+        };
+
+    private static bool HostMatches(string host, string suffix) =>
+        host.Equals(suffix, StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith($".{suffix}", StringComparison.OrdinalIgnoreCase);
+
+    private static string? Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
 // â”€â”€ Session Watch timeline models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
