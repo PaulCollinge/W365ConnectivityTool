@@ -2250,7 +2250,7 @@ class Program
             // â”€â”€ Cloud PC Endpoint & Speed â”€â”€
             // Note: C-EP-01 was removed in v1.10.1 â€” it duplicated a subset of C-EP-02
             // (Session Host Required Endpoints), which is the authoritative list.
-            new("C-EP-02", "Session Host Required Endpoints", "Tests all required FQDNs for AVD/W365 session hosts", "cloudpc-env", RunCpcRequiredEndpoints),
+            new("C-EP-02", "Session Host Required Endpoints", "Tests required AVD/W365 endpoints and, on Hybrid hosts, applies Arc agent proxy precedence, service bypass, Private Link DNS classification, and regional notification discovery", "cloudpc-env", RunCpcRequiredEndpoints),
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
         };
 
@@ -10676,8 +10676,8 @@ class Program
                     "(AVD Hybrid), so those IPs are unroutable by design and no fabric\n" +
                     "health can be inferred from a probe here.\n\n" +
                     "Instead, C-EP-02 (Session Host Required Endpoints) exercises the Arc\n" +
-                    "control plane over the public internet â€” that's the actual reachability\n" +
-                    "path an Arc-onboarded host uses for goal-state, extensions and heartbeat."
+                    "agent's configured route, including private endpoints, agent proxy\n" +
+                    "precedence, and service-based bypass settings."
             };
         }
         if (_azureVmRegion != null) return null; // in Azure â€” run the real test
@@ -11173,6 +11173,9 @@ class Program
     {
         var isCpc = _hostType == "cloudpc";
         var isHybrid = IsHybridHost();
+        var arcProxy = isHybrid ? await ReadArcProxyConfiguration() : null;
+        var privateLinkWarnings = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var privateLinkNotes = new System.Collections.Concurrent.ConcurrentBag<string>();
         // Cloud PC and AVD session hosts share the same required-endpoint list,
         // but "Session Host" is an AVD term â€” on a Cloud PC we call the machine
         // the "Cloud PC" itself. Use a single hostLabel to keep the test name,
@@ -11316,6 +11319,8 @@ class Program
                     "Arc extension management (*.guestconfiguration.azure.com)", arcGroup));
                 endpoints.Add(("guestnotificationservice.azure.com", 443,
                     "Arc notification service (extensions + connectivity)", arcGroup));
+                endpoints.Add(("login.microsoftonline.com", 443,
+                    "Global Microsoft Entra token endpoint used by the Arc agent", arcGroup));
                 endpoints.Add(("management.azure.com", 443,
                     "Azure Resource Manager (connect/disconnect + goal-state)", arcGroup));
                 endpoints.Add(("pas.windows.net", 443,
@@ -11323,7 +11328,8 @@ class Program
                 // Regional Entra token endpoint: prefer the actual Arc-projected
                 // region when HIMDS gave us one, else a common canary. This proves
                 // *.login.microsoft.com resolves and connects.
-                var arcRegionCompact = (_arcMetadata?.Location ?? "eastus").Replace(" ", "").ToLowerInvariant();
+                var arcLocation = _arcMetadata?.Location;
+                var arcRegionCompact = (arcLocation ?? "eastus").Replace(" ", "").ToLowerInvariant();
                 endpoints.Add(($"{arcRegionCompact}.login.microsoft.com", 443,
                     "Regional Entra token endpoint (*.login.microsoft.com)", arcGroup));
 
@@ -11336,6 +11342,32 @@ class Program
                     "Arc agent installer download (install/upgrade time only)", arcOptional));
                 endpoints.Add(("dc.services.visualstudio.com", 443,
                     "Arc agent telemetry (not used by agent v1.24+)", arcOptional));
+
+                if (!string.IsNullOrWhiteSpace(arcLocation))
+                {
+                    var notificationDiscovery = await DiscoverArcNotificationHosts(
+                        arcProxy,
+                        arcRegionCompact);
+                    if (notificationDiscovery.Hosts.Count > 0)
+                    {
+                        foreach (var host in notificationDiscovery.Hosts)
+                        {
+                            endpoints.Add((host, 443,
+                                $"Arc regional notification endpoint (representative from {notificationDiscovery.TotalHosts} advertised hosts)",
+                                arcOptional));
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(notificationDiscovery.Error))
+                    {
+                        privateLinkNotes.Add(
+                            $"Could not enumerate regional Arc notification endpoints: {notificationDiscovery.Error}");
+                    }
+                }
+                else
+                {
+                    privateLinkNotes.Add(
+                        "Arc region metadata was unavailable; regional notification discovery was skipped.");
+                }
             }
 
             // â”€â”€ W365-specific registration endpoints â”€â”€
@@ -11414,16 +11446,10 @@ class Program
             // HasEffectiveProxy() is true), so a direct-egress machine never has
             // the OS warm up the credential provider.
             //
-            // Context caveat: the scanner runs in the invoking user's security
-            // context, which on Windows uses the WinINET proxy chain. The Azure
-            // Connected Machine Agent (himds / gcarcservice / extensionservice)
-            // and the AVD RDAgent run as NT AUTHORITY\SYSTEM and typically use
-            // the WinHTTP proxy chain, which can be configured independently
-            // (netsh winhttp set proxy / HKLM Connections\WinHttpSettings).
-            // L-TCP-07 / the surrounding environment tests already read the
-            // WinHTTP registry; this test deliberately mirrors the user-mode
-            // view so the Hybrid dashboard can correlate "what the scanner saw"
-            // with "what a user-mode probe to the same endpoints would see".
+            // AVD endpoints use the invoking user's effective proxy path. On a
+            // hybrid host, Arc endpoints instead use the Connected Machine
+            // agent's documented precedence: proxy.url, machine HTTPS_PROXY,
+            // then direct, with service-based proxy.bypass applied per URL.
             using var endpointHttpClient = CreateProxyAwareHttpClient(
                 TimeSpan.FromMilliseconds(PerAttemptTimeoutMs));
 
@@ -11488,14 +11514,84 @@ class Program
                 }
             }
 
-            async Task<(bool ok, long ms, string? err)> TryHttpConnectAsync(string host, int port)
+            async Task<(bool ok, long ms, string? err)> TryHttpConnectAsync(
+                (string host, int port, string purpose, string group) endpoint)
             {
+                var (host, port, _, group) = endpoint;
                 var scheme = port == 443 ? "https" : "http";
                 var uri = new Uri($"{scheme}://{host}/");
-                var proxyUri = ResolveSystemProxy(uri);
-                var routeLabel = proxyUri != null
-                    ? $"via {FormatProxySafe(proxyUri)}"
-                    : "direct";
+                bool useArcAgentRoute = isHybrid
+                    && group.StartsWith("Arc ", StringComparison.Ordinal);
+                Uri? proxyUri;
+                string routeLabel;
+                HttpClient client = endpointHttpClient;
+                HttpClient? ownedClient = null;
+
+                if (useArcAgentRoute && arcProxy?.AgentConfigurationAvailable == true)
+                {
+                    if (arcProxy.HasInvalidEffectiveProxy)
+                        return (false, 0L, $"Arc {arcProxy.SourceDescription} is not a valid HTTP/HTTPS proxy URL");
+
+                    var route = arcProxy.Resolve(uri);
+                    proxyUri = route.ProxyUri;
+                    routeLabel = route.UseProxy
+                        ? $"via {ArcProxyConfiguration.FormatProxyForDisplay(proxyUri!)} ({route.Description})"
+                        : $"direct ({route.Description})";
+                    var handler = new HttpClientHandler
+                    {
+                        AutomaticDecompression = DecompressionMethods.All
+                    };
+                    if (route.UseProxy)
+                    {
+                        handler.Proxy = new WebProxy(proxyUri!)
+                        {
+                            Credentials = CredentialCache.DefaultCredentials
+                        };
+                    }
+                    else
+                    {
+                        handler.UseProxy = false;
+                    }
+                    ownedClient = CreateProxyAwareHttpClient(
+                        TimeSpan.FromMilliseconds(PerAttemptTimeoutMs),
+                        handler);
+                    client = ownedClient;
+                }
+                else
+                {
+                    proxyUri = ResolveSystemProxy(uri);
+                    routeLabel = proxyUri != null
+                        ? $"via {FormatProxySafe(proxyUri)}"
+                        : "direct";
+                    if (useArcAgentRoute)
+                    {
+                        routeLabel += " (invoking-user fallback; Arc agent configuration unavailable)";
+                        privateLinkNotes.Add(
+                            "Arc agent proxy configuration was unavailable; Arc endpoints used the invoking-user route.");
+                    }
+                }
+
+                string? dnsDetail = null;
+                if (useArcAgentRoute && ArcProxyConfiguration.IsPrivateLinkCapableHost(host))
+                {
+                    try
+                    {
+                        var addresses = await Dns.GetHostAddressesAsync(host);
+                        var assessment = ArcPrivateLinkAssessment.Assess(addresses);
+                        dnsDetail = assessment.Description;
+                        string? warning = assessment.GetRouteWarning(
+                            proxyUri != null,
+                            arcProxy?.ShouldBypass(uri) == true);
+                        if (warning != null)
+                            privateLinkWarnings.Add($"{host}: {warning}");
+                    }
+                    catch (Exception ex)
+                    {
+                        dnsDetail = $"local DNS unresolved ({ex.Message})";
+                        privateLinkWarnings.Add(
+                            $"{host}: local DNS did not resolve the Private Link-capable endpoint.");
+                    }
+                }
 
                 // HEAD avoids transferring a response body for ~free. Fall back
                 // to GET only if the server returns 405 Method Not Allowed
@@ -11505,7 +11601,7 @@ class Program
                 var sw = Stopwatch.StartNew();
                 try
                 {
-                    using var response = await endpointHttpClient.SendAsync(
+                    using var response = await client.SendAsync(
                         request,
                         HttpCompletionOption.ResponseHeadersRead,
                         cts.Token);
@@ -11513,16 +11609,26 @@ class Program
                     if (response.StatusCode == HttpStatusCode.MethodNotAllowed)
                     {
                         using var getRequest = new HttpRequestMessage(HttpMethod.Get, uri);
-                        using var getResponse = await endpointHttpClient.SendAsync(
+                        using var getResponse = await client.SendAsync(
                             getRequest,
                             HttpCompletionOption.ResponseHeadersRead,
                             cts.Token);
                         sw.Stop();
-                        return ClassifyHttpResponse(getResponse, sw.ElapsedMilliseconds, scheme, routeLabel, proxyUri != null);
+                        return ClassifyHttpResponse(
+                            getResponse,
+                            sw.ElapsedMilliseconds,
+                            scheme,
+                            AppendDnsDetail(routeLabel, dnsDetail),
+                            proxyUri != null);
                     }
 
                     sw.Stop();
-                    return ClassifyHttpResponse(response, sw.ElapsedMilliseconds, scheme, routeLabel, proxyUri != null);
+                    return ClassifyHttpResponse(
+                        response,
+                        sw.ElapsedMilliseconds,
+                        scheme,
+                        AppendDnsDetail(routeLabel, dnsDetail),
+                        proxyUri != null);
                 }
                 catch (OperationCanceledException)
                 {
@@ -11531,26 +11637,32 @@ class Program
                     // IS in play, a timeout is a real agent-affecting failure and
                     // we must surface it — a silent raw-TCP success here would
                     // mislead the operator into thinking the endpoint is fine
-                    // when the SYSTEM-context agent (which uses the same proxy
-                    // chain via WinHTTP) will hit the same timeout.
+                    // when the selected agent or user route itself is timing out.
                     if (proxyUri != null)
-                        return (false, 0L, $"HTTP {routeLabel} timeout ({PerAttemptTimeoutMs / 1000}s) — proxy did not respond; the Arc/AVD agent uses the same proxy chain and will likely fail the same way");
+                        return (false, 0L, $"HTTP {AppendDnsDetail(routeLabel, dnsDetail)} timeout ({PerAttemptTimeoutMs / 1000}s) — selected proxy did not respond");
                     var direct = await TryConnectAsync(host, port);
                     return direct.ok
-                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer timed out")
-                        : (false, 0L, $"HTTP direct timeout ({PerAttemptTimeoutMs / 1000}s); direct TCP: {direct.err}");
+                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer timed out; {dnsDetail}")
+                        : (false, 0L, $"HTTP {AppendDnsDetail("direct", dnsDetail)} timeout ({PerAttemptTimeoutMs / 1000}s); direct TCP: {direct.err}");
                 }
                 catch (Exception ex)
                 {
                     var httpError = ex.InnerException?.Message ?? ex.Message;
                     if (proxyUri != null)
-                        return (false, 0L, $"HTTP {routeLabel} failed: {httpError}");
+                        return (false, 0L, $"HTTP {AppendDnsDetail(routeLabel, dnsDetail)} failed: {httpError}");
                     var direct = await TryConnectAsync(host, port);
                     return direct.ok
-                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer: {httpError}")
-                        : (false, 0L, $"HTTP direct failed: {httpError}; direct TCP: {direct.err}");
+                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer: {httpError}; {dnsDetail}")
+                        : (false, 0L, $"HTTP {AppendDnsDetail("direct", dnsDetail)} failed: {httpError}; direct TCP: {direct.err}");
+                }
+                finally
+                {
+                    ownedClient?.Dispose();
                 }
             }
+
+            static string AppendDnsDetail(string route, string? dnsDetail) =>
+                string.IsNullOrWhiteSpace(dnsDetail) ? route : $"{route}; DNS: {dnsDetail}";
 
             static (bool ok, long ms, string? err) ClassifyHttpResponse(
                 HttpResponseMessage response,
@@ -11564,7 +11676,7 @@ class Program
                 if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
                 {
                     return (false, 0L,
-                        $"Proxy demanded authentication ({status}) {routeLabel} — the scanner's user credentials were not accepted. SYSTEM-context agents using the same proxy will also fail unless the proxy allows machine identity or anonymous access to Microsoft FQDNs.");
+                        $"Proxy demanded authentication ({status}) {routeLabel} — the scanner user's credentials were not accepted; SYSTEM services might have different credentials.");
                 }
 
                 // The response reached us, which proves the TCP + TLS/HTTP path
@@ -11576,7 +11688,7 @@ class Program
                 {
                     var reason = response.ReasonPhrase ?? string.Empty;
                     return (false, 0L,
-                        $"Proxy block page ({status} {reason}) {routeLabel} — the proxy refused to tunnel this host. The Arc/AVD agent will also fail against this endpoint.");
+                        $"Proxy block page ({status} {reason}) {routeLabel} — the selected proxy refused this host.");
                 }
 
                 return (true, elapsedMs,
@@ -11651,7 +11763,7 @@ class Program
                 var attempt = warmIngest
                     ? await TryConnectAnyAddressAsync(ep.host, ep.port)
                     : ep.port is 80 or 443
-                        ? await TryHttpConnectAsync(ep.host, ep.port)
+                        ? await TryHttpConnectAsync(ep)
                         : await TryConnectAsync(ep.host, ep.port);
                 // Retry once â€” always for the flaky warm-ingest host, or on
                 // timeout only for everything else (other socket errors like
@@ -11661,7 +11773,7 @@ class Program
                     var retry = warmIngest
                         ? await TryConnectAnyAddressAsync(ep.host, ep.port)
                         : ep.port is 80 or 443
-                            ? await TryHttpConnectAsync(ep.host, ep.port)
+                            ? await TryHttpConnectAsync(ep)
                             : await TryConnectAsync(ep.host, ep.port);
                     if (retry.ok) attempt = retry;
                 }
@@ -11794,6 +11906,8 @@ class Program
             // flip the whole endpoint check to Failed.
             bool IsSoft((string host, int port, string purpose, string group) e)
                 => e.host == "168.63.129.16" || IsWarmIngestHost(e.host);
+            static bool IsOptional((string host, int port, string purpose, string group) e) =>
+                e.group.Contains("Optional", StringComparison.OrdinalIgnoreCase);
             string SoftNote((string host, int port, string purpose, string group) e, string? err)
             {
                 if (IsWarmIngestHost(e.host))
@@ -11827,24 +11941,23 @@ class Program
             int passed = 0, total = 0;
             string? currentGroup = null;
 
-            // Transparency banner on hybrid-mode runs: the scanner is a user-mode
-            // process and resolves the system proxy via WinINET (via WebRequest.
-            // GetSystemWebProxy). The Azure Connected Machine Agent (himds,
-            // gcarcservice, extensionservice) and the AVD RDAgent run as
-            // NT AUTHORITY\SYSTEM and consume the WinHTTP proxy chain, which
-            // can be configured independently. When the two differ (common in
-            // enterprises that set a per-user PAC via GPO but leave WinHTTP on
-            // "direct"), the scanner's user-mode verdict will not match the
-            // agent's SYSTEM-mode behaviour. L-TCP-07 reads WinHTTP from the
-            // registry — cross-reference it to tell whether a 0/25 scanner
-            // verdict matches reality for the agent.
             if (isHybrid)
             {
-                sb.AppendLine("Context: scanner runs as the invoking user and consults the WinINET");
-                sb.AppendLine("proxy chain. The Arc/AVD agents run as NT AUTHORITY\\SYSTEM and use");
-                sb.AppendLine("the WinHTTP proxy chain, which can be configured independently");
-                sb.AppendLine("(check `netsh winhttp show proxy` or L-TCP-07). A 0/25 verdict here");
-                sb.AppendLine("may not reflect the agent's path when the two proxies differ.");
+                sb.AppendLine("Context: Arc endpoints use agent proxy.url first, then machine HTTPS_PROXY,");
+                sb.AppendLine("then direct, with service-based proxy.bypass applied per endpoint.");
+                sb.AppendLine("Private Link-capable Arc endpoints include local DNS and private/public");
+                sb.AppendLine("address classification. AVD endpoints use the invoking user's proxy path.");
+                sb.AppendLine("AVD user-context routing can differ from RDAgent SYSTEM/WinHTTP routing;");
+                sb.AppendLine("cross-check C-TCP-07. Proxy authentication uses the scanner user's credentials.");
+                if (arcProxy?.AgentConfigurationAvailable == true)
+                {
+                    sb.AppendLine($"Arc effective proxy source: {arcProxy.SourceDescription}");
+                    sb.AppendLine($"Arc proxy.bypass: {arcProxy.ProxyBypass ?? "(not configured)"}");
+                }
+                else
+                {
+                    sb.AppendLine($"Arc configuration unavailable: {arcProxy?.Error ?? "not queried"}");
+                }
                 sb.AppendLine();
             }
 
@@ -11898,7 +12011,7 @@ class Program
                     {
                         sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
                     }
-                    if (!soft) passed++;
+                    if (!soft && !IsOptional(r.ep)) passed++;
                 }
                 else if (soft)
                 {
@@ -11918,7 +12031,7 @@ class Program
                 {
                     sb.AppendLine($"  \u2718 {disp}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
                 }
-                if (!soft) total++;
+                if (!soft && !IsOptional(r.ep)) total++;
             }
 
             // Note untestable wildcard entries
@@ -11932,7 +12045,25 @@ class Program
             sb.AppendLine("  \u2139 *eh.servicebus.windows.net:443 \u2014 Event Hub diagnostic settings (optional)");
             sb.AppendLine("  Ensure these wildcard rules are configured in your firewall/proxy.");
 
-            result.ResultValue = $"{passed}/{total} {hostLabel} endpoints reachable";
+            var routeWarnings = privateLinkWarnings
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var routeNotes = privateLinkNotes
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (routeWarnings.Length > 0 || routeNotes.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("══ Arc routing / Private Link findings ══");
+                foreach (var warning in routeWarnings)
+                    sb.AppendLine($"  ⚠ {warning}");
+                foreach (var note in routeNotes)
+                    sb.AppendLine($"  ℹ {note}");
+            }
+
+            result.ResultValue = $"{passed}/{total} required {hostLabel} endpoints reachable";
             result.DetailedInfo = sb.ToString().Trim();
             // Count soft endpoints that failed UNEXPECTEDLY. Two soft endpoints
             // exist today:
@@ -11959,10 +12090,16 @@ class Program
                 return !expected;
             });
             if (passed < total - 2) result.Status = "Failed";
-            else if (passed < total || softFailed > 0) result.Status = "Warning";
+            else if (passed < total || softFailed > 0 || routeWarnings.Length > 0) result.Status = "Warning";
             else result.Status = "Passed";
             if (result.Status != "Passed")
-                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
+            {
+                bool hasArcFailure = results.Any(item =>
+                    !item.ok && item.ep.group.StartsWith("Arc ", StringComparison.Ordinal));
+                result.RemediationUrl = isHybrid && (hasArcFailure || routeWarnings.Length > 0)
+                    ? "https://learn.microsoft.com/azure/azure-arc/servers/private-link-security"
+                    : "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
+            }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
@@ -11983,9 +12120,11 @@ class Program
     // On an on-prem AVD session host (Azure Local / Azure Stack HCI or BYO
     // hardware Arc-onboarded), the Azure Guest Agent is absent and no
     // 168.63.129.16 / 169.254.169.254 route exists. Health/goal-state flows
-    // instead over the public internet via the Azure Connected Machine Agent
-    // (himds + gcarcservice + extensionservice) to *.his.arc.azure.com /
-    // *.guestconfiguration.azure.com. These tests surface the on-prem-only
+    // instead via the Azure Connected Machine Agent (himds + gcarcservice +
+    // extensionservice). Arc private link scopes can route *.his.arc.azure.com
+    // and *.guestconfiguration.azure.com over private endpoints while Entra,
+    // notification, and other dependencies remain public. These tests surface
+    // the on-prem-only
     // failure modes and short-circuit to "Not applicable" on Azure VMs so they
     // cost nothing in the normal Cloud PC / cloud AVD path.
 
@@ -12392,6 +12531,82 @@ class Program
         return result;
     }
 
+    static async Task<ArcNotificationDiscovery> DiscoverArcNotificationHosts(
+        ArcProxyConfiguration? configuration,
+        string region)
+    {
+        var uri = new Uri(
+            $"https://guestnotificationservice.azure.com/urls/allowlist?api-version=2020-01-01&location={Uri.EscapeDataString(region)}");
+        try
+        {
+            var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.All
+            };
+            if (configuration?.AgentConfigurationAvailable == true)
+            {
+                if (configuration.HasInvalidEffectiveProxy)
+                    return new([], 0, "Arc effective proxy URL is invalid");
+                var route = configuration.Resolve(uri);
+                if (route.UseProxy)
+                {
+                    handler.Proxy = new WebProxy(route.ProxyUri!)
+                    {
+                        Credentials = CredentialCache.DefaultCredentials
+                    };
+                }
+                else
+                {
+                    handler.UseProxy = false;
+                }
+            }
+            else if (HasEffectiveProxy())
+            {
+                handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
+            }
+
+            using var client = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(15), handler);
+            using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead);
+            if (!response.IsSuccessStatusCode)
+                return new([], 0, $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return new([], 0, "allowlist response was not a JSON array");
+            var advertised = document.RootElement
+                .EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString())
+                .Where(host => !string.IsNullOrWhiteSpace(host))
+                .Select(host => host!)
+                .ToArray();
+            var validHosts = advertised
+                .Where(host => Uri.CheckHostName(host) == UriHostNameType.Dns
+                    && host.EndsWith(".servicebus.windows.net", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var representatives = validHosts
+                .Where(host => host.StartsWith("azgn-", StringComparison.OrdinalIgnoreCase))
+                .Take(3)
+                .ToArray();
+            if (representatives.Length == 0)
+                representatives = validHosts.Take(3).ToArray();
+
+            return representatives.Length > 0
+                ? new(representatives, validHosts.Length, null)
+                : new([], validHosts.Length, "allowlist returned no valid Service Bus hostnames");
+        }
+        catch (TaskCanceledException)
+        {
+            return new([], 0, "allowlist request timed out");
+        }
+        catch (Exception ex)
+        {
+            return new([], 0, ex.InnerException?.Message ?? ex.Message);
+        }
+    }
+
     static async Task<ArcProxyConfiguration> ReadArcProxyConfiguration()
     {
         string agentPath = Path.Combine(
@@ -12476,10 +12691,7 @@ class Program
 
     static string RedactProxyCredentials(string value)
     {
-        return Regex.Replace(
-            value,
-            @"(?i)(https?://)[^/\s@]+@",
-            "$1<redacted>@");
+        return ArcProxyConfiguration.RedactProxyValue(value);
     }
 
     static void AppendArcProxyConfiguration(
@@ -13938,6 +14150,89 @@ internal static class AgentDownloadAssessment
 
 internal sealed record ArcProxyRoute(bool UseProxy, Uri? ProxyUri, string Description);
 
+internal sealed record ArcNotificationDiscovery(
+    IReadOnlyList<string> Hosts,
+    int TotalHosts,
+    string? Error);
+
+internal sealed class ArcPrivateLinkAssessment
+{
+    internal IReadOnlyList<IPAddress> Addresses { get; }
+    internal bool HasPrivateAddresses { get; }
+    internal bool HasPublicAddresses { get; }
+    internal bool HasUnroutableAddresses { get; }
+    internal string Description { get; }
+
+    private ArcPrivateLinkAssessment(
+        IReadOnlyList<IPAddress> addresses,
+        bool hasPrivateAddresses,
+        bool hasPublicAddresses,
+        bool hasUnroutableAddresses)
+    {
+        Addresses = addresses;
+        HasPrivateAddresses = hasPrivateAddresses;
+        HasPublicAddresses = hasPublicAddresses;
+        HasUnroutableAddresses = hasUnroutableAddresses;
+        string classification = hasUnroutableAddresses
+            ? "contains unroutable/possible sinkhole addresses"
+            : hasPrivateAddresses && hasPublicAddresses
+            ? "mixed private/public"
+            : hasPrivateAddresses
+                ? "private-only"
+                : hasPublicAddresses
+                    ? "public-only"
+                    : "no usable addresses";
+        Description = $"{classification} [{string.Join(", ", addresses.Take(6))}]";
+    }
+
+    internal static ArcPrivateLinkAssessment Assess(IEnumerable<IPAddress> addresses)
+    {
+        var unique = addresses.Distinct().ToArray();
+        bool hasUnroutable = unique.Any(IsUnroutable);
+        bool hasPrivate = unique.Any(address => !IsUnroutable(address) && IsPrivate(address));
+        bool hasPublic = unique.Any(address => !IsUnroutable(address) && !IsPrivate(address));
+        return new(unique, hasPrivate, hasPublic, hasUnroutable);
+    }
+
+    internal string? GetRouteWarning(bool viaProxy, bool expectsPrivateRoute)
+    {
+        if (HasUnroutableAddresses)
+            return "DNS returned loopback or link-local addresses, indicating a possible DNS sinkhole.";
+        if (HasPrivateAddresses && HasPublicAddresses)
+            return "DNS returned mixed private and public addresses for an Arc Private Link-capable endpoint.";
+        if (HasPrivateAddresses && viaProxy)
+            return "DNS resolved a private endpoint, but the selected Arc route sends it through a proxy.";
+        if (expectsPrivateRoute && !HasPrivateAddresses)
+            return "Arc proxy.bypass expects a direct/private route, but DNS returned no private address.";
+        return null;
+    }
+
+    private static bool IsPrivate(IPAddress address)
+    {
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+            return address.IsIPv6SiteLocal || (address.GetAddressBytes()[0] & 0xFE) == 0xFC;
+        if (address.AddressFamily != AddressFamily.InterNetwork)
+            return false;
+
+        byte[] bytes = address.GetAddressBytes();
+        return bytes[0] == 10
+            || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
+            || (bytes[0] == 192 && bytes[1] == 168);
+    }
+
+    private static bool IsUnroutable(IPAddress address)
+    {
+        if (IPAddress.IsLoopback(address))
+            return true;
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+            return address.IsIPv6LinkLocal || address.Equals(IPAddress.IPv6None);
+        if (address.AddressFamily != AddressFamily.InterNetwork)
+            return true;
+        byte[] bytes = address.GetAddressBytes();
+        return bytes[0] == 0 || (bytes[0] == 169 && bytes[1] == 254);
+    }
+}
+
 internal sealed class ArcProxyConfiguration
 {
     internal bool AgentConfigurationAvailable { get; }
@@ -14005,6 +14300,10 @@ internal sealed class ArcProxyConfiguration
             .Any(service => ServiceBypassesHost(service, endpoint.Host));
     }
 
+    internal static bool IsPrivateLinkCapableHost(string host) =>
+        HostMatches(host, "his.arc.azure.com")
+        || HostMatches(host, "guestconfiguration.azure.com");
+
     internal static string FormatProxyForDisplay(Uri proxyUri)
     {
         var builder = new UriBuilder(proxyUri)
@@ -14019,7 +14318,15 @@ internal sealed class ArcProxyConfiguration
     }
 
     private static string? FormatProxyForDisplay(string? value) =>
-        TryGetProxyUri(value) is { } uri ? FormatProxyForDisplay(uri) : value;
+        TryGetProxyUri(value) is { } uri
+            ? FormatProxyForDisplay(uri)
+            : value == null ? null : RedactProxyValue(value);
+
+    internal static string RedactProxyValue(string value) =>
+        Regex.Replace(
+            value,
+            @"(?i)(https?://)?[^/\s@:]+:[^/\s@]+@",
+            "$1<redacted>@");
 
     private static Uri? TryGetProxyUri(string? value)
     {

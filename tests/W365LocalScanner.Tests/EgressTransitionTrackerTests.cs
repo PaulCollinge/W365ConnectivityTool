@@ -291,4 +291,97 @@ public sealed class EgressTransitionTrackerTests
         Assert.AreEqual("http://proxy.contoso.com:8080", configuration.AgentProxyDisplay);
         Assert.IsFalse(configuration.AgentProxyDisplay!.Contains("secret", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void ArcProxyConfigurationRedactsMalformedProxyCredentials()
+    {
+        var configuration = ArcProxyConfiguration.Create(
+            "secret-user:secret-password@proxy.contoso.com:8080",
+            null,
+            null);
+
+        Assert.AreEqual("<redacted>@proxy.contoso.com:8080", configuration.AgentProxyDisplay);
+        Assert.IsFalse(configuration.AgentProxyDisplay!.Contains("secret", StringComparison.Ordinal));
+    }
+
+    [DataTestMethod]
+    [DataRow("gbl.his.arc.azure.com", true)]
+    [DataRow("westeurope.his.arc.azure.com", true)]
+    [DataRow("agentserviceapi.guestconfiguration.azure.com", true)]
+    [DataRow("guestnotificationservice.azure.com", false)]
+    [DataRow("management.azure.com", false)]
+    [DataRow("his.arc.azure.com.example.com", false)]
+    public void ArcProxyConfigurationIdentifiesPrivateLinkCapableHosts(
+        string host,
+        bool expected)
+    {
+        Assert.AreEqual(expected, ArcProxyConfiguration.IsPrivateLinkCapableHost(host));
+    }
+
+    [TestMethod]
+    public void ArcPrivateLinkAssessmentAcceptsPrivateDirectRoute()
+    {
+        var assessment = ArcPrivateLinkAssessment.Assess(
+            [System.Net.IPAddress.Parse("10.20.30.40")]);
+
+        Assert.IsTrue(assessment.HasPrivateAddresses);
+        Assert.IsFalse(assessment.HasPublicAddresses);
+        Assert.IsNull(assessment.GetRouteWarning(viaProxy: false, expectsPrivateRoute: true));
+        StringAssert.Contains(assessment.Description, "private-only");
+    }
+
+    [TestMethod]
+    public void ArcPrivateLinkAssessmentWarnsWhenPrivateAddressUsesProxy()
+    {
+        var assessment = ArcPrivateLinkAssessment.Assess(
+            [System.Net.IPAddress.Parse("172.20.1.5")]);
+
+        StringAssert.Contains(
+            assessment.GetRouteWarning(viaProxy: true, expectsPrivateRoute: false),
+            "through a proxy");
+    }
+
+    [TestMethod]
+    public void ArcPrivateLinkAssessmentWarnsWhenBypassResolvesPublicly()
+    {
+        var assessment = ArcPrivateLinkAssessment.Assess(
+            [System.Net.IPAddress.Parse("20.40.60.80")]);
+
+        StringAssert.Contains(
+            assessment.GetRouteWarning(viaProxy: false, expectsPrivateRoute: true),
+            "no private address");
+    }
+
+    [TestMethod]
+    public void ArcPrivateLinkAssessmentWarnsOnSplitDnsAnswers()
+    {
+        var assessment = ArcPrivateLinkAssessment.Assess(
+            [
+                System.Net.IPAddress.Parse("10.20.30.40"),
+                System.Net.IPAddress.Parse("20.40.60.80")
+            ]);
+
+        Assert.IsTrue(assessment.HasPrivateAddresses);
+        Assert.IsTrue(assessment.HasPublicAddresses);
+        StringAssert.Contains(
+            assessment.GetRouteWarning(viaProxy: false, expectsPrivateRoute: false),
+            "mixed private and public");
+    }
+
+    [DataTestMethod]
+    [DataRow("127.0.0.1")]
+    [DataRow("169.254.10.20")]
+    [DataRow("::1")]
+    [DataRow("fe80::1")]
+    public void ArcPrivateLinkAssessmentRejectsSinkholeAddresses(string address)
+    {
+        var assessment = ArcPrivateLinkAssessment.Assess(
+            [System.Net.IPAddress.Parse(address)]);
+
+        Assert.IsTrue(assessment.HasUnroutableAddresses);
+        Assert.IsFalse(assessment.HasPrivateAddresses);
+        StringAssert.Contains(
+            assessment.GetRouteWarning(viaProxy: false, expectsPrivateRoute: true),
+            "possible DNS sinkhole");
+    }
 }
