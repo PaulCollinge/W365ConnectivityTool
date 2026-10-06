@@ -292,6 +292,11 @@ const ALL_TESTS = [
         category: 'cloudpc', source: 'cloudpc'
     },
     {
+        id: 'C-ARC-02', name: 'Arc / AVD Agent Download Path',
+        description: 'AVD Hybrid only — follows the official Arc and AVD installer redirects, downloads bounded payload samples, detects proxy blocks and TLS inspection, validates Local Machine trust for SYSTEM agents, and checks CloudDeviceExtension logs.',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
         id: 'C-HY-02', name: 'Session Host Time Sync',
         description: 'AVD Hybrid only — Kerberos-sensitive clock skew check via w32tm. Hybrid AD sign-in fails silently once skew exceeds ±5 min; this surfaces the problem early.',
         category: 'cloudpc', source: 'cloudpc'

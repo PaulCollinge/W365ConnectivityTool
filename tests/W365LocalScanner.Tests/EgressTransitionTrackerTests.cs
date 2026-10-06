@@ -1,4 +1,5 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Text;
 
 namespace W365LocalScanner.Tests;
 
@@ -179,5 +180,59 @@ public sealed class EgressTransitionTrackerTests
 
         Assert.AreEqual("—", once);
         Assert.AreEqual(once, twice);
+    }
+
+    [TestMethod]
+    public void AgentDownloadAssessmentFailsBlockedOrUntrustedPayloads()
+    {
+        Assert.AreEqual(
+            AgentDownloadVerdict.Failed,
+            AgentDownloadAssessment.Assess(false, true, false, true, false));
+        Assert.AreEqual(
+            AgentDownloadVerdict.Failed,
+            AgentDownloadAssessment.Assess(true, false, false, true, false));
+        Assert.AreEqual(
+            AgentDownloadVerdict.Failed,
+            AgentDownloadAssessment.Assess(true, true, false, true, true));
+        Assert.AreEqual(
+            AgentDownloadVerdict.Failed,
+            AgentDownloadAssessment.Assess(true, true, true, false, false));
+    }
+
+    [TestMethod]
+    public void AgentDownloadAssessmentDistinguishesInspectionFromCleanTls()
+    {
+        Assert.AreEqual(
+            AgentDownloadVerdict.Warning,
+            AgentDownloadAssessment.Assess(true, true, true, true, false));
+        Assert.AreEqual(
+            AgentDownloadVerdict.Passed,
+            AgentDownloadAssessment.Assess(true, true, false, true, false));
+    }
+
+    [DataTestMethod]
+    [DataRow("text/html", "MZ", true)]
+    [DataRow("application/octet-stream", "<!DOCTYPE html><title>Blocked</title>", true)]
+    [DataRow("application/octet-stream", "<html><body>Proxy block</body></html>", true)]
+    [DataRow("application/octet-stream", "MZ\u0090\0", false)]
+    public void AgentDownloadAssessmentRecognizesHtmlBlockPages(
+        string contentType,
+        string sample,
+        bool expected)
+    {
+        Assert.AreEqual(
+            expected,
+            AgentDownloadAssessment.LooksLikeHtml(Encoding.UTF8.GetBytes(sample), contentType));
+    }
+
+    [TestMethod]
+    public void AgentDownloadAssessmentRecognizesWindowsInstallerPayload()
+    {
+        byte[] msi = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00];
+        byte[] executable = [0x4D, 0x5A, 0x90, 0x00];
+
+        Assert.IsTrue(AgentDownloadAssessment.LooksLikeMsi(msi));
+        Assert.IsFalse(AgentDownloadAssessment.LooksLikeMsi(executable));
+        Assert.IsFalse(AgentDownloadAssessment.LooksLikeMsi([]));
     }
 }

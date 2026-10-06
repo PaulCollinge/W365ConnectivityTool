@@ -2231,6 +2231,7 @@ class Program
             // These self-report as "Not applicable" on Azure-VM Cloud PCs and AVD
             // session hosts, so they cost nothing when the host isn't hybrid.
             new("C-ARC-01", "Arc Agent Health", "Azure Connected Machine Agent state, version and heartbeat freshness", "cloudpc-env", RunHybridArcAgentHealth),
+            new("C-ARC-02", "Arc / AVD Agent Download Path", "Downloads bounded samples of the official Arc and AVD agent installers through the effective proxy and validates redirects, TLS chains, payload delivery, and extension logs", "cloudpc-env", RunHybridAgentDownloadPath),
             new("C-HY-02", "Session Host Time Sync", "Confirms clock skew is inside the Kerberos tolerance for hybrid AD auth", "cloudpc-env", RunHybridTimeSync),
 
             // â”€â”€ Azure Fabric (WireServer + IMDS) â”€â”€
@@ -12105,6 +12106,383 @@ class Program
         return result;
     }
 
+    /// <summary>
+    /// C-ARC-02: exercises the actual Microsoft installer delivery path rather than
+    /// treating a successful HEAD request to a hostname as proof that a proxy will
+    /// allow MSI content. Only the first 64 KiB is read and nothing is written.
+    /// </summary>
+    static async Task<TestResult> RunHybridAgentDownloadPath()
+    {
+        var result = new TestResult
+        {
+            Id = "C-ARC-02",
+            Name = "Arc / AVD Agent Download Path",
+            Category = "cloudpc-env"
+        };
+        if (!IsHybridHost())
+        {
+            result.Status = "Skipped";
+            result.ResultValue = "Not applicable — this host is not Arc-onboarded";
+            result.DetailedInfo = "This test only runs on AVD Hybrid session hosts.";
+            return result;
+        }
+
+        const int MaxRedirects = 8;
+        const int MaxPayloadBytes = 64 * 1024;
+        var targets = new[]
+        {
+            ("Azure Connected Machine Agent", "https://aka.ms/AzureConnectedMachineAgent"),
+            ("Azure Virtual Desktop Agent", "https://go.microsoft.com/fwlink/?linkid=2310011"),
+            ("Azure Virtual Desktop Agent Bootloader", "https://go.microsoft.com/fwlink/?linkid=2311028"),
+        };
+
+        var sb = new StringBuilder();
+        var failures = new List<string>();
+        var warnings = new List<string>();
+
+        foreach (var (label, initialUrl) in targets)
+        {
+            sb.AppendLine($"══ {label} ══");
+            var current = new Uri(initialUrl);
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool completed = false;
+
+            for (int redirect = 0; redirect <= MaxRedirects; redirect++)
+            {
+                if (!visited.Add(current.AbsoluteUri))
+                {
+                    failures.Add($"{label}: redirect loop");
+                    sb.AppendLine($"✘ Redirect loop at {current}");
+                    break;
+                }
+
+                X509Certificate2? leaf = null;
+                X509Chain? observedChain = null;
+                SslPolicyErrors policyErrors = SslPolicyErrors.None;
+                var handler = new HttpClientHandler
+                {
+                    AllowAutoRedirect = false,
+                    AutomaticDecompression = DecompressionMethods.All,
+                    ClientCertificateOptions = ClientCertificateOption.Manual,
+                    ServerCertificateCustomValidationCallback = (_, certificate, chain, errors) =>
+                    {
+                        leaf?.Dispose();
+                        observedChain?.Dispose();
+                        leaf = certificate == null ? null : new X509Certificate2(certificate);
+                        observedChain = certificate == null ? null : BuildCertificateChain(certificate);
+                        policyErrors = errors;
+                        return errors == SslPolicyErrors.None;
+                    }
+                };
+                if (HasEffectiveProxy())
+                    handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
+
+                var proxy = WebRequest.GetSystemWebProxy();
+                Uri? proxyUri = null;
+                try
+                {
+                    var resolved = proxy.GetProxy(current);
+                    if (resolved != null && resolved != current) proxyUri = resolved;
+                }
+                catch { /* route is reported as unknown below */ }
+
+                sb.AppendLine($"GET {current}");
+                sb.AppendLine(proxyUri == null
+                    ? "  Route: direct according to invoking-user proxy settings"
+                    : $"  Route: proxy {proxyUri.Scheme}://{proxyUri.Host}:{proxyUri.Port}");
+
+                try
+                {
+                    using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+                    using var request = new HttpRequestMessage(HttpMethod.Get, current);
+                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, MaxPayloadBytes - 1);
+                    request.Headers.UserAgent.ParseAdd("W365ConnectivityTool-AgentDownloadProbe/0.1");
+
+                    using var response = await client.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead);
+
+                    AppendCertificateDiagnostics(sb, leaf, observedChain, policyErrors, label, failures, warnings);
+
+                    if ((int)response.StatusCode is >= 300 and <= 399)
+                    {
+                        if (response.Headers.Location == null)
+                        {
+                            failures.Add($"{label}: redirect without Location header");
+                            sb.AppendLine($"  ✘ HTTP {(int)response.StatusCode} without a Location header");
+                            break;
+                        }
+                        current = response.Headers.Location.IsAbsoluteUri
+                            ? response.Headers.Location
+                            : new Uri(current, response.Headers.Location);
+                        sb.AppendLine($"  ↪ HTTP {(int)response.StatusCode} → {current}");
+                        continue;
+                    }
+
+                    if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
+                    {
+                        failures.Add($"{label}: proxy authentication required");
+                        sb.AppendLine("  ✘ HTTP 407 Proxy Authentication Required");
+                        break;
+                    }
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        failures.Add($"{label}: HTTP {(int)response.StatusCode}");
+                        sb.AppendLine($"  ✘ HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+                        break;
+                    }
+
+                    await using var stream = await response.Content.ReadAsStreamAsync();
+                    var sample = new byte[MaxPayloadBytes];
+                    int totalRead = 0;
+                    while (totalRead < sample.Length)
+                    {
+                        int read = await stream.ReadAsync(sample.AsMemory(totalRead, sample.Length - totalRead));
+                        if (read == 0) break;
+                        totalRead += read;
+                    }
+
+                    var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+                    var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
+                        ?? response.Content.Headers.ContentDisposition?.FileName
+                        ?? Path.GetFileName(current.LocalPath);
+                    var payloadSample = sample[..totalRead];
+                    bool htmlBlockPage = AgentDownloadAssessment.LooksLikeHtml(payloadSample, contentType);
+                    bool validMsi = AgentDownloadAssessment.LooksLikeMsi(payloadSample);
+                    var assessment = AgentDownloadAssessment.Assess(
+                        payloadReceived: totalRead > 0 && validMsi,
+                        tlsTrusted: policyErrors == SslPolicyErrors.None,
+                        tlsInspected: IsTlsInspected(observedChain),
+                        inspectionRootTrustedBySystem: IsChainRootInLocalMachineStore(observedChain),
+                        proxyBlockPage: htmlBlockPage);
+
+                    sb.AppendLine($"  HTTP {(int)response.StatusCode}; {totalRead:N0} bytes sampled; content-type {contentType}");
+                    if (!string.IsNullOrWhiteSpace(fileName)) sb.AppendLine($"  Payload: {fileName.Trim('"')}");
+
+                    if (htmlBlockPage)
+                    {
+                        failures.Add($"{label}: HTML/proxy block page returned instead of installer payload");
+                        sb.AppendLine("  ✘ Response looks like HTML rather than an installer payload");
+                    }
+                    else if (!validMsi)
+                    {
+                        failures.Add($"{label}: response did not contain an MSI payload");
+                        sb.AppendLine("  ✘ Response does not start with the expected Windows Installer compound-file signature");
+                    }
+                    else if (assessment == AgentDownloadVerdict.Failed)
+                    {
+                        failures.Add($"{label}: payload or TLS validation failed");
+                        sb.AppendLine("  ✘ Payload/TLS validation failed");
+                    }
+                    else if (assessment == AgentDownloadVerdict.Warning)
+                    {
+                        warnings.Add($"{label}: reachable but TLS-inspected");
+                        sb.AppendLine("  ⚠ Payload is downloadable, but TLS inspection was detected");
+                    }
+                    else
+                    {
+                        sb.AppendLine("  ✔ Installer payload sample downloaded successfully");
+                    }
+
+                    completed = totalRead > 0 && validMsi && !htmlBlockPage;
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    AppendCertificateDiagnostics(sb, leaf, observedChain, policyErrors, label, failures, warnings);
+                    failures.Add($"{label}: {ex.Message}");
+                    sb.AppendLine($"  ✘ HTTPS request failed: {ex.Message}");
+                    break;
+                }
+                catch (TaskCanceledException)
+                {
+                    failures.Add($"{label}: download timed out");
+                    sb.AppendLine("  ✘ Download timed out after 20 seconds");
+                    break;
+                }
+                finally
+                {
+                    leaf?.Dispose();
+                    observedChain?.Dispose();
+                }
+            }
+
+            if (!completed && !failures.Any(f => f.StartsWith(label, StringComparison.Ordinal)))
+                failures.Add($"{label}: redirect limit exceeded");
+            sb.AppendLine();
+        }
+
+        var logRoot = CloudDeviceExtensionLogRoot();
+        var logFindings = FindCloudDeviceExtensionNetworkErrors(logRoot);
+        sb.AppendLine("══ CloudDeviceExtension log evidence ══");
+        if (!Directory.Exists(logRoot))
+        {
+            warnings.Add("CloudDeviceExtension logs are not present");
+            sb.AppendLine($"Log directory not present: {logRoot}");
+            sb.AppendLine("The live payload probes succeeded, but no installed-extension history was available to inspect.");
+        }
+        else if (logFindings.Count == 0)
+        {
+            sb.AppendLine("No recent proxy, TLS, certificate, or download failures were found in the local extension logs.");
+        }
+        else
+        {
+            warnings.Add("CloudDeviceExtension logs contain network/download errors");
+            foreach (var finding in logFindings) sb.AppendLine($"⚠ {finding}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Context: the live requests use the invoking user's effective proxy and trust context.");
+        sb.AppendLine("Arc and AVD agents run as NT AUTHORITY\\SYSTEM and normally use WinHTTP.");
+        sb.AppendLine("A TLS-inspection root found only in Current User, not Local Machine, is treated as a failure");
+        sb.AppendLine("because SYSTEM services are unlikely to trust it. Cross-check C-TCP-07 for WinHTTP differences.");
+
+        if (failures.Count > 0)
+        {
+            result.Status = "Failed";
+            result.ResultValue = $"{failures.Count} agent download path failure(s)";
+            result.RemediationText = "Bypass TLS inspection for the failed Microsoft download/CDN endpoints, allow MSI payloads and redirects, ensure proxy authentication works for SYSTEM/WinHTTP, and install the inspection root in Local Machine only if inspection is supported.";
+        }
+        else if (warnings.Count > 0)
+        {
+            result.Status = "Warning";
+            result.ResultValue = $"Downloads succeeded with {warnings.Count} inspection/log warning(s)";
+            result.RemediationText = "The payloads are currently downloadable, but TLS inspection or prior CloudDeviceExtension errors were detected. Prefer an inspection bypass for Arc/AVD extension delivery and verify the extension reaches Succeeded state.";
+        }
+        else
+        {
+            result.Status = "Passed";
+            result.ResultValue = "Arc and AVD agent payload samples downloaded without TLS inspection";
+        }
+
+        result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-azure-virtual-desktop-hybrid";
+        result.DetailedInfo = sb.ToString().Trim();
+        return result;
+    }
+
+    static void AppendCertificateDiagnostics(
+        StringBuilder sb,
+        X509Certificate2? leaf,
+        X509Chain? chain,
+        SslPolicyErrors errors,
+        string label,
+        List<string> failures,
+        List<string> warnings)
+    {
+        if (leaf == null) return;
+        var root = chain?.ChainElements.Count > 0 ? chain.ChainElements[^1].Certificate : null;
+        bool inspected = IsTlsInspected(chain);
+        bool systemTrusted = IsChainRootInLocalMachineStore(chain);
+
+        sb.AppendLine($"  TLS leaf: {leaf.Subject}");
+        sb.AppendLine($"  TLS issuer: {leaf.Issuer}");
+        if (root != null) sb.AppendLine($"  TLS root: {root.Subject} ({root.Thumbprint})");
+        sb.AppendLine($"  TLS policy: {errors}; inspection: {(inspected ? "detected" : "not detected")}; LocalMachine trust: {(systemTrusted ? "yes" : "no")}");
+
+        if (errors != SslPolicyErrors.None)
+            failures.Add($"{label}: TLS validation failed ({errors})");
+        else if (inspected && !systemTrusted)
+            failures.Add($"{label}: inspection root is not trusted by Local Machine/SYSTEM");
+        else if (inspected)
+            warnings.Add($"{label}: corporate TLS inspection detected");
+    }
+
+    static bool IsTlsInspected(X509Chain? chain)
+    {
+        if (chain == null || chain.ChainElements.Count == 0) return false;
+        var root = chain.ChainElements[^1].Certificate;
+        return !KnownMicrosoftRootCaThumbprints.Contains(root.Thumbprint);
+    }
+
+    static X509Chain BuildCertificateChain(X509Certificate2 certificate)
+    {
+        var chain = new X509Chain();
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+        chain.Build(certificate);
+        return chain;
+    }
+
+    static bool IsChainRootInLocalMachineStore(X509Chain? chain)
+    {
+        if (chain == null || chain.ChainElements.Count == 0) return false;
+        var thumbprint = chain.ChainElements[^1].Certificate.Thumbprint;
+        try
+        {
+            using var store = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
+            store.Open(OpenFlags.ReadOnly);
+            return store.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, validOnly: false).Count > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static string CloudDeviceExtensionLogRoot() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        "GuestConfig", "extension_logs", "Microsoft.AzureVirtualDesktop.CloudDeviceExtension");
+
+    static List<string> FindCloudDeviceExtensionNetworkErrors(string root)
+    {
+        var findings = new List<string>();
+        if (!Directory.Exists(root)) return findings;
+
+        try
+        {
+            var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .Take(5);
+            var networkTerms = new Regex(
+                @"proxy|407|certificate|trust|tls|ssl|download|msi|http|timeout",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var errorTerms = new Regex(
+                @"\bfail(?:ed|ure)?\b|\berror\b|\bexception\b|\bfatal\b|\bdenied\b|\btimeout\b|0x[0-9a-f]+",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+            foreach (var file in files)
+            {
+                foreach (var line in ReadLastLines(file, 500))
+                {
+                    if (!networkTerms.IsMatch(line) || !errorTerms.IsMatch(line)) continue;
+                    findings.Add($"{Path.GetFileName(file)}: {Truncate(RedactSensitiveLogText(line.Trim()), 240)}");
+                    if (findings.Count == 12) return findings;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            findings.Add($"Could not inspect extension logs: {ex.Message}");
+        }
+        return findings;
+    }
+
+    static string RedactSensitiveLogText(string value)
+    {
+        value = Regex.Replace(
+            value,
+            @"(?i)\b(authorization|registrationtoken|token|password|secret)\b\s*[:=]\s*[""']?[^""'\s,;]+",
+            "$1=<redacted>");
+        return Regex.Replace(
+            value,
+            @"(?i)(https?://[^\s?]+)\?[^\s]+",
+            "$1?<redacted>");
+    }
+
+    static IEnumerable<string> ReadLastLines(string path, int capacity)
+    {
+        var queue = new Queue<string>(capacity);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+        while (reader.ReadLine() is { } line)
+        {
+            if (queue.Count == capacity) queue.Dequeue();
+            queue.Enqueue(line);
+        }
+        return queue;
+    }
+
     /// <summary>C-HY-02: Session Host Time Sync — Kerberos-sensitive clock check for hybrid AD auth.</summary>
     static async Task<TestResult> RunHybridTimeSync()
     {
@@ -13362,6 +13740,46 @@ class ArcMetadata
 
     [JsonPropertyName("agentVersion")]
     public string? AgentVersion { get; set; }
+}
+
+internal enum AgentDownloadVerdict
+{
+    Passed,
+    Warning,
+    Failed
+}
+
+internal static class AgentDownloadAssessment
+{
+    internal static AgentDownloadVerdict Assess(
+        bool payloadReceived,
+        bool tlsTrusted,
+        bool tlsInspected,
+        bool inspectionRootTrustedBySystem,
+        bool proxyBlockPage)
+    {
+        if (!payloadReceived || !tlsTrusted || proxyBlockPage)
+            return AgentDownloadVerdict.Failed;
+        if (tlsInspected && !inspectionRootTrustedBySystem)
+            return AgentDownloadVerdict.Failed;
+        return tlsInspected ? AgentDownloadVerdict.Warning : AgentDownloadVerdict.Passed;
+    }
+
+    internal static bool LooksLikeHtml(ReadOnlySpan<byte> sample, string contentType)
+    {
+        if (contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (sample.IsEmpty) return false;
+        var prefix = Encoding.UTF8.GetString(sample[..Math.Min(sample.Length, 512)]).TrimStart();
+        return prefix.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase)
+            || prefix.StartsWith("<html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool LooksLikeMsi(ReadOnlySpan<byte> sample)
+    {
+        ReadOnlySpan<byte> compoundFileSignature = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        return sample.StartsWith(compoundFileSignature);
+    }
 }
 
 // â”€â”€ Session Watch timeline models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
