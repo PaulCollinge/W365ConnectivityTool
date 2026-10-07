@@ -4463,28 +4463,69 @@ class Program
             string serviceRegion = "";
             string afdPop = "";
             var issues = new List<string>();
+            var winHttpProxy = WinHttpProxyConfiguration.Read();
+            bool authoritativeServiceRoute = winHttpProxy.Available || !IsHybridHost();
 
             var cookieContainer = new System.Net.CookieContainer();
-            using var httpHandler = new HttpClientHandler
+            var httpHandler = new HttpClientHandler
             {
                 ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
                 AllowAutoRedirect = false,
                 CookieContainer = cookieContainer,
                 UseCookies = true
             };
+            if (winHttpProxy.Available)
+            {
+                if (winHttpProxy.IsDirect)
+                {
+                    httpHandler.UseProxy = false;
+                }
+                else
+                {
+                    winHttpProxy.Credentials = CredentialCache.DefaultCredentials;
+                    httpHandler.Proxy = winHttpProxy;
+                }
+            }
             using var http = CreateProxyAwareHttpClient(TimeSpan.FromSeconds(10), httpHandler);
+
+            bool RequestUsesProxy(Uri uri)
+            {
+                if (winHttpProxy.Available)
+                    return winHttpProxy.Resolve(uri).UseProxy;
+                try
+                {
+                    var proxy = WebRequest.GetSystemWebProxy();
+                    var resolved = proxy.GetProxy(uri);
+                    return resolved != null && resolved != uri;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
 
             // â”€â”€ Step 1: Query AFD to discover the actual RDP gateway â”€â”€
             var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
             sb.AppendLine($"  {afdHost}:443  [Gateway Discovery (AFD)]");
+            var afdUri = new Uri($"https://{afdHost}/");
+            bool afdViaProxy = RequestUsesProxy(afdUri);
             try
             {
-                var afdIps = await Dns.GetHostAddressesAsync(afdHost);
-                sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", afdIps.Select(a => a.ToString()))}");
-                sb.AppendLine($"    â†’ AFD edge IP (routes to nearest regional gateway)");
+                try
+                {
+                    var afdIps = await Dns.GetHostAddressesAsync(afdHost);
+                    sb.AppendLine($"    âœ“ Local DNS â†’ {string.Join(", ", afdIps.Select(a => a.ToString()))}");
+                    sb.AppendLine($"    â†’ AFD edge IP (routes to nearest regional gateway)");
+                }
+                catch (Exception ex)
+                {
+                    if (!afdViaProxy)
+                        throw;
+                    sb.AppendLine($"    â„¹ Local DNS unavailable ({ex.Message}); proxy resolves the destination");
+                }
 
                 var sw = Stopwatch.StartNew();
-                var afdResp = await http.GetAsync($"https://{afdHost}/");
+                var afdResp = await http.GetAsync(afdUri);
                 sw.Stop();
                 sb.AppendLine($"    âœ“ HTTPS {(int)afdResp.StatusCode} in {sw.ElapsedMilliseconds}ms");
                 afdOk = true;
@@ -4548,15 +4589,27 @@ class Program
             if (!string.IsNullOrEmpty(discoveredGateway))
             {
                 sb.AppendLine($"  {discoveredGateway}:443  [RDP Gateway]");
+                var gatewayUri = new Uri($"https://{discoveredGateway}/");
+                bool gatewayViaProxy = RequestUsesProxy(gatewayUri);
                 try
                 {
-                    var gwIps = await Dns.GetHostAddressesAsync(discoveredGateway);
-                    sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", gwIps.Select(a => a.ToString()))}");
+                    IPAddress[] gwIps = [];
+                    try
+                    {
+                        gwIps = await Dns.GetHostAddressesAsync(discoveredGateway);
+                        sb.AppendLine($"    âœ“ Local DNS â†’ {string.Join(", ", gwIps.Select(a => a.ToString()))}");
 
-                    bool inRange = gwIps.Any(ip => IsInW365Range(ip));
-                    sb.AppendLine(inRange
-                        ? $"    â†’ IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) âœ“"
-                        : $"    â†’ IP NOT in expected W365 ranges");
+                        bool inRange = gwIps.Any(ip => IsInW365Range(ip));
+                        sb.AppendLine(inRange
+                            ? $"    â†’ IP in W365 range (40.64.144.0/20 or 51.5.0.0/16) âœ“"
+                            : $"    â†’ IP NOT in expected W365 ranges");
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!gatewayViaProxy)
+                            throw;
+                        sb.AppendLine($"    â„¹ Local DNS unavailable ({ex.Message}); proxy resolves the destination");
+                    }
 
                     // Region identification: prefer FQDN, supplement with Service Tags
                     var gwRegionCode = ExtractRegionFromGatewayFqdn(discoveredGateway);
@@ -4577,15 +4630,22 @@ class Program
                         sb.AppendLine($"    â†’ Gateway region: {gwRegionName}");
                     }
 
-                    using var tcp = new TcpClient();
-                    var sw = Stopwatch.StartNew();
-                    using var cts = new CancellationTokenSource(5000);
-                    await tcp.ConnectAsync(discoveredGateway, 443, cts.Token);
-                    sw.Stop();
-                    sb.AppendLine($"    âœ“ TCP connected in {sw.ElapsedMilliseconds}ms");
+                    if (!gatewayViaProxy)
+                    {
+                        using var tcp = new TcpClient();
+                        var sw = Stopwatch.StartNew();
+                        using var cts = new CancellationTokenSource(5000);
+                        await tcp.ConnectAsync(discoveredGateway, 443, cts.Token);
+                        sw.Stop();
+                        sb.AppendLine($"    âœ“ Direct TCP connected in {sw.ElapsedMilliseconds}ms");
+                    }
+                    else
+                    {
+                        sb.AppendLine("    â„¹ Raw direct TCP not tested because the service route uses a proxy");
+                    }
 
                     var sw2 = Stopwatch.StartNew();
-                    var gwResp = await http.GetAsync($"https://{discoveredGateway}/");
+                    var gwResp = await http.GetAsync(gatewayUri);
                     sw2.Stop();
                     sb.AppendLine($"    âœ“ HTTPS {(int)gwResp.StatusCode} in {sw2.ElapsedMilliseconds}ms");
                     gatewayOk = true;
@@ -4609,47 +4669,60 @@ class Program
             foreach (var (host, port, role) in serviceEndpoints)
             {
                 sb.AppendLine($"  {host}:{port}  [{role}]");
+                var serviceUri = new Uri($"https://{host}/");
+                bool serviceViaProxy = RequestUsesProxy(serviceUri);
                 try
                 {
                     var addresses = await Dns.GetHostAddressesAsync(host);
-                    sb.AppendLine($"    âœ“ DNS â†’ {string.Join(", ", addresses.Select(a => a.ToString()))}");
+                    sb.AppendLine($"    âœ“ Local DNS â†’ {string.Join(", ", addresses.Select(a => a.ToString()))}");
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    âœ— DNS failed: {ex.Message}");
-                    issues.Add($"{host} ({role}): DNS resolution failed");
-                    sb.AppendLine();
-                    continue;
+                    if (!serviceViaProxy)
+                    {
+                        sb.AppendLine($"    âœ— Local DNS failed: {ex.Message}");
+                        issues.Add($"{host} ({role}): local DNS resolution failed on a direct service route");
+                        sb.AppendLine();
+                        continue;
+                    }
+                    sb.AppendLine($"    â„¹ Local DNS unavailable ({ex.Message}); proxy resolves the destination");
                 }
 
-                try
+                if (!serviceViaProxy)
                 {
-                    using var tcp = new TcpClient();
-                    var sw = Stopwatch.StartNew();
-                    using var cts = new CancellationTokenSource(5000);
-                    await tcp.ConnectAsync(host, port, cts.Token);
-                    sw.Stop();
-                    sb.AppendLine($"    âœ“ TCP connected in {sw.ElapsedMilliseconds}ms");
+                    try
+                    {
+                        using var tcp = new TcpClient();
+                        var sw = Stopwatch.StartNew();
+                        using var cts = new CancellationTokenSource(5000);
+                        await tcp.ConnectAsync(host, port, cts.Token);
+                        sw.Stop();
+                        sb.AppendLine($"    âœ“ Direct TCP connected in {sw.ElapsedMilliseconds}ms");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        sb.AppendLine($"    âœ— Direct TCP timed out (5s)");
+                        issues.Add($"{host} ({role}): direct TCP port {port} blocked");
+                        sb.AppendLine();
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"    âœ— Direct TCP failed: {ex.InnerException?.Message ?? ex.Message}");
+                        issues.Add($"{host} ({role}): direct TCP port {port} refused");
+                        sb.AppendLine();
+                        continue;
+                    }
                 }
-                catch (OperationCanceledException)
+                else
                 {
-                    sb.AppendLine($"    âœ— TCP timed out (5s)");
-                    issues.Add($"{host} ({role}): TCP port {port} blocked");
-                    sb.AppendLine();
-                    continue;
-                }
-                catch (Exception ex)
-                {
-                    sb.AppendLine($"    âœ— TCP failed: {ex.InnerException?.Message ?? ex.Message}");
-                    issues.Add($"{host} ({role}): TCP port {port} refused");
-                    sb.AppendLine();
-                    continue;
+                    sb.AppendLine("    â„¹ Raw direct TCP not tested because the service route uses a proxy");
                 }
 
                 try
                 {
                     var sw2 = Stopwatch.StartNew();
-                    var response = await http.GetAsync($"https://{host}/");
+                    var response = await http.GetAsync(serviceUri);
                     sw2.Stop();
                     sb.AppendLine($"    âœ“ HTTPS {(int)response.StatusCode} in {sw2.ElapsedMilliseconds}ms");
                     passed++;
@@ -4685,6 +4758,12 @@ class Program
                 foreach (var issue in issues)
                     sb.AppendLine($"  âš  {issue}");
             }
+            if (!authoritativeServiceRoute)
+            {
+                sb.AppendLine();
+                sb.AppendLine("âš  Machine WinHTTP route could not be read. Results use the invoking-user");
+                sb.AppendLine("  fallback route and are inconclusive for RDAgent/session-host services.");
+            }
 
             // Total endpoints: AFD + discovered gateway (if found) + 3 service endpoints
             int totalExpected = serviceEndpoints.Length + 1 + (string.IsNullOrEmpty(discoveredGateway) ? 0 : 1);
@@ -4705,7 +4784,8 @@ class Program
                 result.ResultValue = $"AFD UNREACHABLE â€” cannot discover gateway â€” {passed}/{totalExpected} OK";
 
             result.DetailedInfo = sb.ToString().Trim();
-            result.Status = gatewayOk && passed == totalExpected ? "Passed"
+            result.Status = !authoritativeServiceRoute ? "Warning"
+                          : gatewayOk && passed == totalExpected ? "Passed"
                           : afdOk && gatewayOk ? "Warning"
                           : afdOk ? "Warning"
                           : "Failed";
@@ -5052,6 +5132,11 @@ class Program
         {
             var sb = new StringBuilder();
             var issues = new List<string>();
+            var winHttpProxy = WinHttpProxyConfiguration.Read();
+
+            bool ProxyResolves(string host) =>
+                winHttpProxy.Available
+                && winHttpProxy.Resolve(new Uri($"https://{host}/")).UseProxy;
 
             // â”€â”€ Part 1: AFD endpoint (gateway discovery service) â”€â”€
             var afdHost = "afdfp-rdgateway-r1.wvd.microsoft.com";
@@ -5094,8 +5179,16 @@ class Program
             }
             catch (Exception ex)
             {
-                sb.AppendLine($"  âœ— Failed: {ex.Message}");
-                issues.Add($"AFD CNAME chain failed: {ex.Message}");
+                if (ProxyResolves(afdHost))
+                {
+                    sb.AppendLine($"  â„¹ Local DNS unavailable ({ex.Message}); machine WinHTTP proxy resolves this destination.");
+                    sb.AppendLine("  CNAME-chain inspection is not applicable to the proxy-side DNS result.");
+                }
+                else
+                {
+                    sb.AppendLine($"  âœ— Failed: {ex.Message}");
+                    issues.Add($"AFD CNAME chain failed: {ex.Message}");
+                }
             }
 
             sb.AppendLine();
@@ -5152,8 +5245,16 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"  âœ— Failed: {ex.Message}");
-                    issues.Add($"Gateway CNAME chain failed: {ex.Message}");
+                    if (ProxyResolves(gwHost))
+                    {
+                        sb.AppendLine($"  â„¹ Local DNS unavailable ({ex.Message}); machine WinHTTP proxy resolves this destination.");
+                        sb.AppendLine("  CNAME-chain inspection is not applicable to the proxy-side DNS result.");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  âœ— Failed: {ex.Message}");
+                        issues.Add($"Gateway CNAME chain failed: {ex.Message}");
+                    }
                 }
             }
             else
@@ -9702,7 +9803,9 @@ class Program
                 sb.AppendLine("âš  Could not discover RDP gateway from AFD â€” checking rdweb only\n");
 
             int passed = 0;
+            int proxyResolved = 0;
             var issues = new List<string>();
+            var winHttpProxy = WinHttpProxyConfiguration.Read();
 
             // Known Microsoft/Azure public IP first-octet ranges
             var knownAzureFirstOctets = new HashSet<byte> { 13, 20, 40, 51, 52, 65, 104, 131, 132, 134, 137, 138, 157, 168, 191, 204 };
@@ -9718,8 +9821,18 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"    âœ— DNS resolution failed: {ex.Message}");
-                    issues.Add($"{host}: DNS resolution failed");
+                    bool delegatedToProxy = winHttpProxy.Available
+                        && winHttpProxy.Resolve(new Uri($"https://{host}/")).UseProxy;
+                    if (delegatedToProxy)
+                    {
+                        sb.AppendLine($"    â„¹ Local DNS unavailable ({ex.Message}); machine WinHTTP proxy resolves the destination");
+                        proxyResolved++;
+                    }
+                    else
+                    {
+                        sb.AppendLine($"    âœ— DNS resolution failed: {ex.Message}");
+                        issues.Add($"{host}: DNS resolution failed");
+                    }
                     sb.AppendLine();
                     continue;
                 }
@@ -9844,7 +9957,9 @@ class Program
             }
 
             result.ResultValue = issues.Count == 0
-                ? $"All {endpoints.Count} endpoints resolve to legitimate Microsoft IPs"
+                ? proxyResolved > 0
+                    ? $"{passed} endpoint(s) validated locally; {proxyResolved} use proxy-side DNS"
+                    : $"All {endpoints.Count} endpoints resolve to legitimate Microsoft IPs"
                 : $"{issues.Count} potential DNS issue(s) detected";
             result.DetailedInfo = sb.ToString().Trim();
             result.Status = issues.Any(i => i.Contains("loopback") || i.Contains("link-local")) ? "Failed"
@@ -11169,6 +11284,7 @@ class Program
         var isCpc = _hostType == "cloudpc";
         var isHybrid = IsHybridHost();
         var arcProxy = isHybrid ? await ReadArcProxyConfiguration() : null;
+        var winHttpProxy = WinHttpProxyConfiguration.Read();
         var privateLinkWarnings = new System.Collections.Concurrent.ConcurrentBag<string>();
         var privateLinkNotes = new System.Collections.Concurrent.ConcurrentBag<string>();
         // Cloud PC and AVD session hosts share the same required-endpoint list,
@@ -11441,10 +11557,13 @@ class Program
             // HasEffectiveProxy() is true), so a direct-egress machine never has
             // the OS warm up the credential provider.
             //
-            // AVD endpoints use the invoking user's effective proxy path. On a
-            // hybrid host, Arc endpoints instead use the Connected Machine
-            // agent's documented precedence: proxy.url, machine HTTPS_PROXY,
-            // then direct, with service-based proxy.bypass applied per URL.
+            // AVD session-host services use the machine WinHTTP route. Arc
+            // endpoints instead use the Connected Machine agent's documented
+            // precedence: proxy.url, machine HTTPS_PROXY, then direct, with
+            // service-based proxy.bypass applied per URL. If either service
+            // route cannot be read, the invoking-user route is only fallback
+            // evidence and a failed fallback must not be called a confirmed
+            // endpoint block.
             using var endpointHttpClient = CreateProxyAwareHttpClient(
                 TimeSpan.FromMilliseconds(PerAttemptTimeoutMs));
 
@@ -11488,7 +11607,7 @@ class Program
                        server.Contains("proxy", StringComparison.OrdinalIgnoreCase);
             }
 
-            async Task<(bool ok, long ms, string? err)> TryConnectAsync(string host, int port)
+            async Task<(bool ok, long ms, string? err, bool authoritative)> TryConnectAsync(string host, int port)
             {
                 using var tcp = new TcpClient();
                 using var cts = new CancellationTokenSource(PerAttemptTimeoutMs);
@@ -11497,19 +11616,19 @@ class Program
                 {
                     await tcp.ConnectAsync(host, port, cts.Token);
                     sw.Stop();
-                    return (true, sw.ElapsedMilliseconds, null);
+                    return (true, sw.ElapsedMilliseconds, null, true);
                 }
                 catch (OperationCanceledException)
                 {
-                    return (false, 0L, $"Timeout ({PerAttemptTimeoutMs / 1000}s)");
+                    return (false, 0L, $"Timeout ({PerAttemptTimeoutMs / 1000}s)", true);
                 }
                 catch (Exception ex)
                 {
-                    return (false, 0L, ex.InnerException?.Message ?? ex.Message);
+                    return (false, 0L, ex.InnerException?.Message ?? ex.Message, true);
                 }
             }
 
-            async Task<(bool ok, long ms, string? err)> TryHttpConnectAsync(
+            async Task<(bool ok, long ms, string? err, bool authoritative)> TryHttpConnectAsync(
                 (string host, int port, string purpose, string group) endpoint)
             {
                 var (host, port, _, group) = endpoint;
@@ -11519,16 +11638,46 @@ class Program
                     && group.StartsWith("Arc ", StringComparison.Ordinal);
                 Uri? proxyUri;
                 string routeLabel;
+                bool authoritative;
                 HttpClient client = endpointHttpClient;
                 HttpClient? ownedClient = null;
 
                 if (useArcAgentRoute && arcProxy?.AgentConfigurationAvailable == true)
                 {
                     if (arcProxy.HasInvalidEffectiveProxy)
-                        return (false, 0L, $"Arc {arcProxy.SourceDescription} is not a valid HTTP/HTTPS proxy URL");
+                        return (false, 0L, $"Arc {arcProxy.SourceDescription} is not a valid HTTP/HTTPS proxy URL", true);
 
                     var route = arcProxy.Resolve(uri);
                     proxyUri = route.ProxyUri;
+                    authoritative = true;
+                    routeLabel = route.UseProxy
+                        ? $"via {ArcProxyConfiguration.FormatProxyForDisplay(proxyUri!)} ({route.Description})"
+                        : $"direct ({route.Description})";
+                    var handler = new HttpClientHandler
+                    {
+                        AutomaticDecompression = DecompressionMethods.All
+                    };
+                    if (route.UseProxy)
+                    {
+                        handler.Proxy = new WebProxy(proxyUri!)
+                        {
+                            Credentials = CredentialCache.DefaultCredentials
+                        };
+                    }
+                    else
+                    {
+                        handler.UseProxy = false;
+                    }
+                    ownedClient = CreateProxyAwareHttpClient(
+                        TimeSpan.FromMilliseconds(PerAttemptTimeoutMs),
+                        handler);
+                    client = ownedClient;
+                }
+                else if (!useArcAgentRoute && winHttpProxy.Available)
+                {
+                    var route = winHttpProxy.Resolve(uri);
+                    proxyUri = route.ProxyUri;
+                    authoritative = true;
                     routeLabel = route.UseProxy
                         ? $"via {ArcProxyConfiguration.FormatProxyForDisplay(proxyUri!)} ({route.Description})"
                         : $"direct ({route.Description})";
@@ -11555,14 +11704,19 @@ class Program
                 else
                 {
                     proxyUri = ResolveSystemProxy(uri);
+                    authoritative = !isHybrid;
                     routeLabel = proxyUri != null
                         ? $"via {FormatProxySafe(proxyUri)}"
                         : "direct";
                     if (useArcAgentRoute)
                     {
-                        routeLabel += " (invoking-user fallback; Arc agent configuration unavailable)";
+                        routeLabel += " (non-authoritative invoking-user fallback; Arc agent configuration unavailable)";
                         privateLinkNotes.Add(
-                            "Arc agent proxy configuration was unavailable; Arc endpoints used the invoking-user route.");
+                            "Arc agent proxy configuration was unavailable; Arc endpoint fallback probes are not service-route verdicts.");
+                    }
+                    else if (isHybrid)
+                    {
+                        routeLabel += " (non-authoritative invoking-user fallback; machine WinHTTP route unavailable)";
                     }
                 }
 
@@ -11583,8 +11737,16 @@ class Program
                     catch (Exception ex)
                     {
                         dnsDetail = $"local DNS unresolved ({ex.Message})";
-                        privateLinkWarnings.Add(
-                            $"{host}: local DNS did not resolve the Private Link-capable endpoint.");
+                        if (proxyUri == null)
+                        {
+                            privateLinkWarnings.Add(
+                                $"{host}: local DNS did not resolve a Private Link-capable endpoint selected for direct access.");
+                        }
+                        else
+                        {
+                            privateLinkNotes.Add(
+                                $"{host}: local DNS did not resolve, but the selected proxy performs destination resolution.");
+                        }
                     }
                 }
 
@@ -11609,21 +11771,23 @@ class Program
                             HttpCompletionOption.ResponseHeadersRead,
                             cts.Token);
                         sw.Stop();
-                        return ClassifyHttpResponse(
+                        var classified = ClassifyHttpResponse(
                             getResponse,
                             sw.ElapsedMilliseconds,
                             scheme,
                             AppendDnsDetail(routeLabel, dnsDetail),
                             proxyUri != null);
+                        return (classified.ok, classified.ms, classified.err, authoritative);
                     }
 
                     sw.Stop();
-                    return ClassifyHttpResponse(
+                    var result = ClassifyHttpResponse(
                         response,
                         sw.ElapsedMilliseconds,
                         scheme,
                         AppendDnsDetail(routeLabel, dnsDetail),
                         proxyUri != null);
+                    return (result.ok, result.ms, result.err, authoritative);
                 }
                 catch (OperationCanceledException)
                 {
@@ -11634,21 +11798,21 @@ class Program
                     // mislead the operator into thinking the endpoint is fine
                     // when the selected agent or user route itself is timing out.
                     if (proxyUri != null)
-                        return (false, 0L, $"HTTP {AppendDnsDetail(routeLabel, dnsDetail)} timeout ({PerAttemptTimeoutMs / 1000}s) — selected proxy did not respond");
+                        return (false, 0L, $"HTTP {AppendDnsDetail(routeLabel, dnsDetail)} timeout ({PerAttemptTimeoutMs / 1000}s) — selected proxy did not respond", authoritative);
                     var direct = await TryConnectAsync(host, port);
                     return direct.ok
-                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer timed out; {dnsDetail}")
-                        : (false, 0L, $"HTTP {AppendDnsDetail("direct", dnsDetail)} timeout ({PerAttemptTimeoutMs / 1000}s); direct TCP: {direct.err}");
+                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer timed out; {dnsDetail}", authoritative)
+                        : (false, 0L, $"HTTP {AppendDnsDetail("direct", dnsDetail)} timeout ({PerAttemptTimeoutMs / 1000}s); direct TCP: {direct.err}", authoritative);
                 }
                 catch (Exception ex)
                 {
                     var httpError = ex.InnerException?.Message ?? ex.Message;
                     if (proxyUri != null)
-                        return (false, 0L, $"HTTP {AppendDnsDetail(routeLabel, dnsDetail)} failed: {httpError}");
+                        return (false, 0L, $"HTTP {AppendDnsDetail(routeLabel, dnsDetail)} failed: {httpError}", authoritative);
                     var direct = await TryConnectAsync(host, port);
                     return direct.ok
-                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer: {httpError}; {dnsDetail}")
-                        : (false, 0L, $"HTTP {AppendDnsDetail("direct", dnsDetail)} failed: {httpError}; direct TCP: {direct.err}");
+                        ? (true, direct.ms, $"direct TCP ok ({direct.ms}ms) — HTTP layer: {httpError}; {dnsDetail}", authoritative)
+                        : (false, 0L, $"HTTP {AppendDnsDetail("direct", dnsDetail)} failed: {httpError}; direct TCP: {direct.err}", authoritative);
                 }
                 finally
                 {
@@ -11714,12 +11878,12 @@ class Program
             // in parallel, succeeding if any single one connects. That removes
             // the luck-of-the-draw element within a single run instead of
             // needing a re-roll on a later script invocation.
-            async Task<(bool ok, long ms, string? err)> TryConnectAnyAddressAsync(string host, int port)
+            async Task<(bool ok, long ms, string? err, bool authoritative)> TryConnectAnyAddressAsync(string host, int port)
             {
                 IPAddress[] addrs;
                 try { addrs = await System.Net.Dns.GetHostAddressesAsync(host); }
-                catch (Exception ex) { return (false, 0L, $"DNS resolution failed: {ex.Message}"); }
-                if (addrs.Length == 0) return (false, 0L, "DNS resolution returned no addresses");
+                catch (Exception ex) { return (false, 0L, $"DNS resolution failed: {ex.Message}", true); }
+                if (addrs.Length == 0) return (false, 0L, "DNS resolution returned no addresses", true);
 
                 var sw = Stopwatch.StartNew();
                 var attempts = addrs.Select(async addr =>
@@ -11747,12 +11911,12 @@ class Program
                 if (winner.ok)
                 {
                     var suffix = addrs.Length > 1 ? $" (1 of {addrs.Length} backend addresses)" : "";
-                    return (true, sw.ElapsedMilliseconds, $"addr:{winner.addr}{suffix}");
+                    return (true, sw.ElapsedMilliseconds, $"addr:{winner.addr}{suffix}", true);
                 }
-                return (false, 0L, string.Join("; ", all.Select(a => $"{a.addr}={a.err}")));
+                return (false, 0L, string.Join("; ", all.Select(a => $"{a.addr}={a.err}")), true);
             }
 
-            async Task<(bool ok, long ms, string? err)> ProbeEndpointAsync((string host, int port, string purpose, string group) ep)
+            async Task<(bool ok, long ms, string? err, bool authoritative)> ProbeEndpointAsync((string host, int port, string purpose, string group) ep)
             {
                 bool warmIngest = IsWarmIngestHost(ep.host);
                 var attempt = warmIngest
@@ -11782,7 +11946,7 @@ class Program
                 try
                 {
                     var attempt = await ProbeEndpointAsync(ep);
-                    return (ep, ok: attempt.ok, ms: attempt.ms, err: attempt.err);
+                    return (ep, ok: attempt.ok, ms: attempt.ms, err: attempt.err, authoritative: attempt.authoritative);
                 }
                 finally { semaphore.Release(); }
             }).ToArray();
@@ -11819,7 +11983,8 @@ class Program
                 if (canaryWinner.res.ok)
                 {
                     results[i] = (r.ep, ok: true, ms: canaryWinner.res.ms,
-                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) â€” every local-region cluster address refused the probe");
+                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) â€” every local-region cluster address refused the probe",
+                        authoritative: true);
                 }
             }
 
@@ -11864,7 +12029,7 @@ class Program
                     var r = results[i];
                     if (r.ep.host == "168.63.129.16" && !r.ok)
                     {
-                        results[i] = (r.ep, ok: true, ms: 0L, err: "via-agent:" + agentDetail);
+                        results[i] = (r.ep, ok: true, ms: 0L, err: "via-agent:" + agentDetail, authoritative: true);
                     }
                 }
             }
@@ -11934,6 +12099,7 @@ class Program
             // Group and format output
             var sb = new StringBuilder();
             int passed = 0, total = 0;
+            int fallbackPassed = 0, fallbackFailed = 0;
             string? currentGroup = null;
 
             if (isHybrid)
@@ -11941,9 +12107,9 @@ class Program
                 sb.AppendLine("Context: Arc endpoints use agent proxy.url first, then machine HTTPS_PROXY,");
                 sb.AppendLine("then direct, with service-based proxy.bypass applied per endpoint.");
                 sb.AppendLine("Private Link-capable Arc endpoints include local DNS and private/public");
-                sb.AppendLine("address classification. AVD endpoints use the invoking user's proxy path.");
-                sb.AppendLine("AVD user-context routing can differ from RDAgent SYSTEM/WinHTTP routing;");
-                sb.AppendLine("cross-check C-TCP-07. Proxy authentication uses the scanner user's credentials.");
+                sb.AppendLine("address classification. AVD endpoints use the machine WinHTTP route.");
+                sb.AppendLine("When a service route cannot be read, an invoking-user fallback is shown");
+                sb.AppendLine("as inconclusive and is excluded from the service-route pass/fail count.");
                 if (arcProxy?.AgentConfigurationAvailable == true)
                 {
                     sb.AppendLine($"Arc effective proxy source: {arcProxy.SourceDescription}");
@@ -11953,6 +12119,9 @@ class Program
                 {
                     sb.AppendLine($"Arc configuration unavailable: {arcProxy?.Error ?? "not queried"}");
                 }
+                sb.AppendLine(winHttpProxy.Available
+                    ? $"AVD machine route: {(winHttpProxy.IsDirect ? "WinHTTP direct" : $"WinHTTP proxy {winHttpProxy.ProxyValue}")}"
+                    : $"AVD machine route unavailable: {winHttpProxy.Error}");
                 sb.AppendLine();
             }
 
@@ -11983,30 +12152,37 @@ class Program
                 }
                 var disp = Display(r.ep.host);
                 var soft = IsSoft(r.ep);
+                var required = !soft && !IsOptional(r.ep);
                 if (r.ok)
                 {
+                    var glyph = r.authoritative ? "\u2714" : "\u2139";
+                    var confidence = r.authoritative ? "" : " (fallback route only; service route unverified)";
                     if (soft && r.err != null && r.err.StartsWith("via-agent:"))
                     {
                         var detail = r.err.Substring("via-agent:".Length);
-                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} (verified via guest-agent heartbeat: {detail})");
+                        sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} (verified via guest-agent heartbeat: {detail}){confidence}");
                     }
                     else if (r.err != null && r.err.StartsWith("via-canary:"))
                     {
-                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} (wildcard verified {r.err.Substring("via-canary:".Length)})");
+                        sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} (wildcard verified {r.err.Substring("via-canary:".Length)}){confidence}");
                     }
                     else if (r.err != null && r.err.StartsWith("addr:"))
                     {
-                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("addr:".Length)})");
+                        sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("addr:".Length)}){confidence}");
                     }
                     else if (r.err != null && r.err.StartsWith("via-http:"))
                     {
-                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("via-http:".Length)})");
+                        sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("via-http:".Length)}){confidence}");
                     }
                     else
                     {
-                        sb.AppendLine($"  \u2714 {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms)");
+                        sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms){confidence}");
                     }
-                    if (!soft && !IsOptional(r.ep)) passed++;
+                    if (required)
+                    {
+                        if (r.authoritative) passed++;
+                        else fallbackPassed++;
+                    }
                 }
                 else if (soft)
                 {
@@ -12022,11 +12198,16 @@ class Program
                     var note = SoftNote(r.ep, r.err);
                     if (!string.IsNullOrEmpty(note)) sb.AppendLine($"      note: {note}");
                 }
+                else if (!r.authoritative)
+                {
+                    sb.AppendLine($"  \u26A0 {disp}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 inconclusive service-route check; fallback probe failed: {r.err}");
+                    if (required) fallbackFailed++;
+                }
                 else
                 {
                     sb.AppendLine($"  \u2718 {disp}:{r.ep.port} \u2014 {r.ep.purpose} \u2014 {r.err}");
                 }
-                if (!soft && !IsOptional(r.ep)) total++;
+                if (required && r.authoritative) total++;
             }
 
             // Note untestable wildcard entries
@@ -12058,7 +12239,13 @@ class Program
                     sb.AppendLine($"  ℹ {note}");
             }
 
-            result.ResultValue = $"{passed}/{total} required {hostLabel} endpoints reachable";
+            result.ResultValue = $"{passed}/{total} required {hostLabel} endpoints reachable on verified service routes";
+            if (fallbackPassed + fallbackFailed > 0)
+            {
+                result.ResultValue +=
+                    $"; {fallbackPassed + fallbackFailed} fallback result(s) inconclusive " +
+                    $"({fallbackPassed} reachable, {fallbackFailed} failed)";
+            }
             result.DetailedInfo = sb.ToString().Trim();
             // Count soft endpoints that failed UNEXPECTEDLY. Two soft endpoints
             // exist today:
@@ -12085,12 +12272,17 @@ class Program
                 return !expected;
             });
             if (passed < total - 2) result.Status = "Failed";
-            else if (passed < total || softFailed > 0 || routeWarnings.Length > 0) result.Status = "Warning";
+            else if (passed < total
+                || fallbackPassed + fallbackFailed > 0
+                || softFailed > 0
+                || routeWarnings.Length > 0) result.Status = "Warning";
             else result.Status = "Passed";
             if (result.Status != "Passed")
             {
                 bool hasArcFailure = results.Any(item =>
-                    !item.ok && item.ep.group.StartsWith("Arc ", StringComparison.Ordinal));
+                    !item.ok
+                    && item.authoritative
+                    && item.ep.group.StartsWith("Arc ", StringComparison.Ordinal));
                 result.RemediationUrl = isHybrid && (hasArcFailure || routeWarnings.Length > 0)
                     ? "https://learn.microsoft.com/azure/azure-arc/servers/private-link-security"
                     : "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
@@ -12273,7 +12465,9 @@ class Program
         var sb = new StringBuilder();
         var failures = new List<string>();
         var warnings = new List<string>();
+        var inconclusive = new List<string>();
         var arcProxy = await ReadArcProxyConfiguration();
+        var winHttpProxy = WinHttpProxyConfiguration.Read();
 
         sb.AppendLine("══ Azure Connected Machine agent proxy configuration ══");
         AppendArcProxyConfiguration(sb, arcProxy, failures, warnings);
@@ -12285,12 +12479,16 @@ class Program
             var current = new Uri(initialUrl);
             var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             bool completed = false;
+            bool targetRouteAuthoritative = useArcAgentRoute
+                ? arcProxy.AgentConfigurationAvailable
+                : winHttpProxy.Available;
+            var targetFailures = targetRouteAuthoritative ? failures : inconclusive;
 
             for (int redirect = 0; redirect <= MaxRedirects; redirect++)
             {
                 if (!visited.Add(current.AbsoluteUri))
                 {
-                    failures.Add($"{label}: redirect loop");
+                    targetFailures.Add($"{label}: redirect loop");
                     sb.AppendLine($"✘ Redirect loop at {current}");
                     break;
                 }
@@ -12333,6 +12531,23 @@ class Program
                         handler.UseProxy = false;
                     }
                 }
+                else if (!useArcAgentRoute && winHttpProxy.Available)
+                {
+                    var route = winHttpProxy.Resolve(current);
+                    proxyUri = route.ProxyUri;
+                    routeDescription = route.Description;
+                    if (route.UseProxy)
+                    {
+                        handler.Proxy = new WebProxy(proxyUri!)
+                        {
+                            Credentials = CredentialCache.DefaultCredentials
+                        };
+                    }
+                    else
+                    {
+                        handler.UseProxy = false;
+                    }
+                }
                 else
                 {
                     var proxy = WebRequest.GetSystemWebProxy();
@@ -12345,8 +12560,8 @@ class Program
                     if (HasEffectiveProxy())
                         handler.DefaultProxyCredentials = CredentialCache.DefaultCredentials;
                     routeDescription = useArcAgentRoute
-                        ? "invoking-user proxy fallback; Arc agent configuration could not be read"
-                        : "invoking-user proxy settings; AVD service context may differ";
+                        ? "non-authoritative invoking-user fallback; Arc agent configuration could not be read"
+                        : "non-authoritative invoking-user fallback; machine WinHTTP route could not be read";
                 }
 
                 sb.AppendLine($"GET {current}");
@@ -12365,13 +12580,13 @@ class Program
                         request,
                         HttpCompletionOption.ResponseHeadersRead);
 
-                    AppendCertificateDiagnostics(sb, leaf, observedChain, policyErrors, label, failures, warnings);
+                    AppendCertificateDiagnostics(sb, leaf, observedChain, policyErrors, label, targetFailures, warnings);
 
                     if ((int)response.StatusCode is >= 300 and <= 399)
                     {
                         if (response.Headers.Location == null)
                         {
-                            failures.Add($"{label}: redirect without Location header");
+                            targetFailures.Add($"{label}: redirect without Location header");
                             sb.AppendLine($"  ✘ HTTP {(int)response.StatusCode} without a Location header");
                             break;
                         }
@@ -12384,14 +12599,14 @@ class Program
 
                     if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
                     {
-                        failures.Add($"{label}: proxy authentication required");
+                        targetFailures.Add($"{label}: proxy authentication required");
                         sb.AppendLine("  ✘ HTTP 407 Proxy Authentication Required");
                         break;
                     }
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        failures.Add($"{label}: HTTP {(int)response.StatusCode}");
+                        targetFailures.Add($"{label}: HTTP {(int)response.StatusCode}");
                         sb.AppendLine($"  ✘ HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
                         break;
                     }
@@ -12425,17 +12640,17 @@ class Program
 
                     if (htmlBlockPage)
                     {
-                        failures.Add($"{label}: HTML/proxy block page returned instead of installer payload");
+                        targetFailures.Add($"{label}: HTML/proxy block page returned instead of installer payload");
                         sb.AppendLine("  ✘ Response looks like HTML rather than an installer payload");
                     }
                     else if (!validMsi)
                     {
-                        failures.Add($"{label}: response did not contain an MSI payload");
+                        targetFailures.Add($"{label}: response did not contain an MSI payload");
                         sb.AppendLine("  ✘ Response does not start with the expected Windows Installer compound-file signature");
                     }
                     else if (assessment == AgentDownloadVerdict.Failed)
                     {
-                        failures.Add($"{label}: payload or TLS validation failed");
+                        targetFailures.Add($"{label}: payload or TLS validation failed");
                         sb.AppendLine("  ✘ Payload/TLS validation failed");
                     }
                     else if (assessment == AgentDownloadVerdict.Warning)
@@ -12453,14 +12668,14 @@ class Program
                 }
                 catch (HttpRequestException ex)
                 {
-                    AppendCertificateDiagnostics(sb, leaf, observedChain, policyErrors, label, failures, warnings);
-                    failures.Add($"{label}: {ex.Message}");
+                    AppendCertificateDiagnostics(sb, leaf, observedChain, policyErrors, label, targetFailures, warnings);
+                    targetFailures.Add($"{label}: {ex.Message}");
                     sb.AppendLine($"  ✘ HTTPS request failed: {ex.Message}");
                     break;
                 }
                 catch (TaskCanceledException)
                 {
-                    failures.Add($"{label}: download timed out");
+                    targetFailures.Add($"{label}: download timed out");
                     sb.AppendLine("  ✘ Download timed out after 20 seconds");
                     break;
                 }
@@ -12471,8 +12686,8 @@ class Program
                 }
             }
 
-            if (!completed && !failures.Any(f => f.StartsWith(label, StringComparison.Ordinal)))
-                failures.Add($"{label}: redirect limit exceeded");
+            if (!completed && !targetFailures.Any(f => f.StartsWith(label, StringComparison.Ordinal)))
+                targetFailures.Add($"{label}: redirect limit exceeded");
             sb.AppendLine();
         }
 
@@ -12483,7 +12698,7 @@ class Program
         {
             warnings.Add("CloudDeviceExtension logs are not present");
             sb.AppendLine($"Log directory not present: {logRoot}");
-            sb.AppendLine("The live payload probes succeeded, but no installed-extension history was available to inspect.");
+            sb.AppendLine("No installed-extension history was available to corroborate the live route probes.");
         }
         else if (logFindings.Count == 0)
         {
@@ -12498,7 +12713,9 @@ class Program
         sb.AppendLine();
         sb.AppendLine("Context: Arc requests use agent proxy.url first, then machine HTTPS_PROXY, then direct,");
         sb.AppendLine("including the Arc service bypass where configured. They do not fall back to Windows/WinHTTP.");
-        sb.AppendLine("AVD requests use the invoking user's effective proxy because the AVD service route is separate.");
+        sb.AppendLine("AVD requests use the machine WinHTTP route used by session-host services.");
+        sb.AppendLine("If a service route cannot be read, the invoking-user fallback is non-authoritative:");
+        sb.AppendLine("a fallback success is useful evidence, but a fallback failure is not reported as blocked.");
         sb.AppendLine("CloudDeviceExtension and other extensions might not inherit the Arc agent-specific proxy.");
         sb.AppendLine("A TLS-inspection root found only in Current User, not Local Machine, is treated as a failure");
         sb.AppendLine("because SYSTEM services are unlikely to trust it.");
@@ -12506,8 +12723,14 @@ class Program
         if (failures.Count > 0)
         {
             result.Status = "Failed";
-            result.ResultValue = $"{failures.Count} agent download path failure(s)";
+            result.ResultValue = $"{failures.Count} confirmed service-route agent download failure(s)";
             result.RemediationText = "Review 'azcmagent show', proxy.url, proxy.bypass, and machine HTTPS_PROXY; bypass TLS inspection for failed Microsoft download/CDN endpoints; allow MSI payloads and redirects; and ensure the SYSTEM services can use the required route.";
+        }
+        else if (inconclusive.Count > 0)
+        {
+            result.Status = "Warning";
+            result.ResultValue = $"{inconclusive.Count} agent download result(s) inconclusive because the service route could not be verified";
+            result.RemediationText = "Run the scanner elevated so it can read the Arc and machine WinHTTP routes, or validate the downloads in SYSTEM/service context. User-proxy fallback failures are not proof that the agent path is blocked.";
         }
         else if (warnings.Count > 0)
         {
