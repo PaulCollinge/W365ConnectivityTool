@@ -963,9 +963,15 @@ function runAnalysisEngine(results) {
             hostEp.resultValue,
             'Review the detailed endpoint results and allow the required AVD and Azure Arc FQDNs through DNS, firewall, and proxy policy.'));
     } else if (hostEp && hostEp.status === 'Warning') {
-        findings.push(finding(SEV.WARNING, `${hostEp.name || 'Session Host Required Endpoints'} have connectivity issues`,
+        const routeUnverified = /inconclusive|fallback result/i.test(hostEp.resultValue || '');
+        findings.push(finding(SEV.WARNING,
+            routeUnverified
+                ? `${hostEp.name || 'Session Host Required Endpoints'} service route not fully verified`
+                : `${hostEp.name || 'Session Host Required Endpoints'} have connectivity issues`,
             hostEp.resultValue,
-            'Review the detailed endpoint results for partial or intermittent failures.'));
+            routeUnverified
+                ? 'Review the machine WinHTTP and Arc agent proxy details. Fallback-route failures are not confirmed endpoint blocks.'
+                : 'Review the detailed endpoint results for partial or intermittent failures.'));
     }
 
     const agentDownloads = r('C-ARC-02');
@@ -974,9 +980,13 @@ function runAnalysisEngine(results) {
             agentDownloads.resultValue,
             'Allow the documented Arc and AVD agent download and redirect endpoints through the service-context proxy path.'));
     } else if (agentDownloads && agentDownloads.status === 'Warning') {
-        findings.push(finding(SEV.WARNING, 'Arc / AVD agent download issues',
+        const routeUnverified = /inconclusive|service route could not be verified/i.test(agentDownloads.resultValue || '');
+        findings.push(finding(SEV.WARNING,
+            routeUnverified ? 'Arc / AVD agent download service route not verified' : 'Arc / AVD agent download issues',
             agentDownloads.resultValue,
-            'Review the detailed download, TLS trust, and extension-log evidence.'));
+            routeUnverified
+                ? 'Run the scanner elevated or validate in SYSTEM/service context. User-proxy fallback failures are not confirmed service-path blocks.'
+                : 'Review the detailed download, TLS trust, and extension-log evidence.'));
     }
 
     // ── 19. DNS performance ──

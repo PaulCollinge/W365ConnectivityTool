@@ -4040,8 +4040,11 @@ async function updateKeyFindings(results) {
         if (ep02.status === 'Passed') {
             add('kf-pass', ep02Label, esc(ep02.resultValue));
         } else if (ep02.status === 'Warning') {
+            const routeUnverified = /inconclusive|fallback result/i.test(ep02.resultValue || '');
             add('kf-issue', ep02Label, esc(ep02.resultValue),
-                'Some non-critical endpoints unreachable — check detailed results');
+                routeUnverified
+                    ? 'Service route could not be fully verified; fallback failures are not confirmed blocks'
+                    : 'Some non-critical endpoints unreachable — check detailed results');
         } else {
             // Extract failed endpoint names from detailedInfo
             const failedLines = (ep02.detailedInfo || '').split('\n')
@@ -4060,8 +4063,11 @@ async function updateKeyFindings(results) {
         if (arcDownload.status === 'Passed') {
             add('kf-pass', 'Agent Downloads', esc(arcDownload.resultValue));
         } else if (arcDownload.status === 'Warning') {
+            const routeUnverified = /inconclusive|service route could not be verified/i.test(arcDownload.resultValue || '');
             add('kf-issue', 'Agent Downloads', esc(arcDownload.resultValue),
-                'Payloads downloaded, but TLS inspection or prior extension errors were detected');
+                routeUnverified
+                    ? 'Service-context route unavailable; user-proxy fallback failures are not confirmed blocks'
+                    : 'Payloads downloaded, but TLS inspection or prior extension errors were detected');
         } else {
             add('kf-error', 'Agent Downloads', esc(arcDownload.resultValue),
                 'Proxy, TLS trust, redirect, or payload filtering is preventing agent delivery');
