@@ -957,6 +957,28 @@ function runAnalysisEngine(results) {
             'Review the detailed endpoint list for timeouts or slow responses. Partial failures can cause intermittent login or session issues.'));
     }
 
+    const hostEp = r('C-EP-02');
+    if (hostEp && (hostEp.status === 'Failed' || hostEp.status === 'Error')) {
+        findings.push(finding(SEV.CRITICAL, `${hostEp.name || 'Session Host Required Endpoints'} unreachable`,
+            hostEp.resultValue,
+            'Review the detailed endpoint results and allow the required AVD and Azure Arc FQDNs through DNS, firewall, and proxy policy.'));
+    } else if (hostEp && hostEp.status === 'Warning') {
+        findings.push(finding(SEV.WARNING, `${hostEp.name || 'Session Host Required Endpoints'} have connectivity issues`,
+            hostEp.resultValue,
+            'Review the detailed endpoint results for partial or intermittent failures.'));
+    }
+
+    const agentDownloads = r('C-ARC-02');
+    if (agentDownloads && (agentDownloads.status === 'Failed' || agentDownloads.status === 'Error')) {
+        findings.push(finding(SEV.CRITICAL, 'Arc / AVD agent downloads blocked',
+            agentDownloads.resultValue,
+            'Allow the documented Arc and AVD agent download and redirect endpoints through the service-context proxy path.'));
+    } else if (agentDownloads && agentDownloads.status === 'Warning') {
+        findings.push(finding(SEV.WARNING, 'Arc / AVD agent download issues',
+            agentDownloads.resultValue,
+            'Review the detailed download, TLS trust, and extension-log evidence.'));
+    }
+
     // ── 19. DNS performance ──
     // Prefer L-TCP-03 (scanner — pure DNS timing); fall back to B-TCP-03 (browser — DNS+TCP+TLS combined)
     const dns = r('L-TCP-03') || r('B-TCP-03');

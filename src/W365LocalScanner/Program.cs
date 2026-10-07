@@ -11208,7 +11208,7 @@ class Program
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
             endpoints.Add(("prod-r1.windows.cloud.microsoft", 443,
                 "Service traffic", requiredGroup));
-            endpoints.Add(("shprf.sh.service.windows.cloud.microsoft", 443,
+            endpoints.Add(("c1.westeurope.pe.agent.deviceplatform.service.windows.cloud.microsoft", 443,
                 "Service traffic", requiredGroup));
             endpoints.Add(("sash.cloudpc.windows.static.microsoft", 443,
                 "Service traffic", requiredGroup));
@@ -11964,7 +11964,7 @@ class Program
             {
                 "rdweb.wvd.microsoft.com" => "*.wvd.microsoft.com",
                 "prod-r1.windows.cloud.microsoft" => "*.windows.cloud.microsoft",
-                "shprf.sh.service.windows.cloud.microsoft" => "*.service.windows.cloud.microsoft",
+                "c1.westeurope.pe.agent.deviceplatform.service.windows.cloud.microsoft" => "*.service.windows.cloud.microsoft",
                 "sash.cloudpc.windows.static.microsoft" => "*.windows.static.microsoft",
                 "eusaikpublish.microsoftaik.azure.net" => "*.microsoftaik.azure.net",
                 "eus.aikcertaia.microsoft.com" => "*.aikcertaia.microsoft.com",
@@ -12862,6 +12862,7 @@ class Program
         {
             var sb = new StringBuilder();
             string? source = null;
+            int? leapIndicator = null;
             double? skewSeconds = null;
 
             var psi = new ProcessStartInfo("w32tm", "/query /status")
@@ -12882,6 +12883,12 @@ class Program
                         var l = line.Trim();
                         if (l.StartsWith("Source:", StringComparison.OrdinalIgnoreCase))
                             source = l.Substring("Source:".Length).Trim();
+                        else if (l.StartsWith("Leap Indicator:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var match = Regex.Match(l, @"Leap Indicator:\s*(\d+)");
+                            if (match.Success && int.TryParse(match.Groups[1].Value, out var value))
+                                leapIndicator = value;
+                        }
                     }
                     sb.AppendLine(stdout.Trim());
                 }
@@ -12941,10 +12948,15 @@ class Program
                 result.Status = "Passed";
                 result.ResultValue = $"Time sync healthy (skew {skewSeconds.Value:+0.00;-0.00}s, source: {source ?? "unknown"})";
             }
+            else if (HybridTimeSyncAnalysis.HasSynchronizedSource(source, leapIndicator))
+            {
+                result.Status = "Passed";
+                result.ResultValue = $"Time synchronized via {source}; external skew probe unavailable";
+            }
             else
             {
                 result.Status = "Warning";
-                result.ResultValue = "Could not measure skew (time.windows.com unreachable?)";
+                result.ResultValue = "No synchronized Windows Time source detected";
             }
             result.DetailedInfo = sb.ToString().Trim();
             if (result.Status != "Passed")
