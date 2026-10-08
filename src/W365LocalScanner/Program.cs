@@ -2386,44 +2386,9 @@ class Program
                 var data = key.GetValue(valueName) as string;
                 if (string.IsNullOrEmpty(data)) continue;
 
-                string? name = null;
-                bool active = false;
-                string dir = "", action = "";
-                int protocol = 0; // 6=TCP, 17=UDP, 256=Any
-                string localPort = "Any";
-                string remotePort = "Any";
-                var remoteAddresses = new List<string>();
-
-                foreach (var part in data.Split('|'))
-                {
-                    if (part.StartsWith("Name=", StringComparison.OrdinalIgnoreCase))
-                        name = part[5..];
-                    else if (part.StartsWith("Active=", StringComparison.OrdinalIgnoreCase))
-                        active = part[7..].Equals("TRUE", StringComparison.OrdinalIgnoreCase);
-                    else if (part.StartsWith("Dir=", StringComparison.OrdinalIgnoreCase))
-                        dir = part[4..];
-                    else if (part.StartsWith("Action=", StringComparison.OrdinalIgnoreCase))
-                        action = part[7..];
-                    else if (part.StartsWith("Protocol=", StringComparison.OrdinalIgnoreCase))
-                        int.TryParse(part[9..], out protocol);
-                    else if (part.StartsWith("LPort=", StringComparison.OrdinalIgnoreCase))
-                        localPort = part[6..];
-                    else if (part.StartsWith("RPort=", StringComparison.OrdinalIgnoreCase))
-                        remotePort = part[6..];
-                    else if (part.StartsWith("RA4=", StringComparison.OrdinalIgnoreCase)
-                          || part.StartsWith("RA6=", StringComparison.OrdinalIgnoreCase))
-                        remoteAddresses.Add(part[4..]);
-                }
-
-                if (name != null && active)
-                    rules.Add(new FirewallRule(
-                        name,
-                        dir,
-                        action,
-                        protocol,
-                        localPort,
-                        remotePort,
-                        string.Join(',', remoteAddresses)));
+                var rule = FirewallRuleAnalysis.ParseRegistryRule(data);
+                if (rule.HasValue)
+                    rules.Add(rule.Value);
             }
         }
         catch { }
