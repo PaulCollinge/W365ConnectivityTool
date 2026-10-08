@@ -76,7 +76,7 @@ internal static class FirewallRuleAnalysis
             return bytes.Length switch
             {
                 4 => prefixLength >= 8 && bytes[0] == 127,
-                16 => prefixLength >= 127 && bytes.All(b => b == 0),
+                16 => prefixLength == 128 && IPAddress.IsLoopback(network),
                 _ => false
             };
         }
