@@ -6611,7 +6611,13 @@ class Program
             if (relayIps.Count == 0)
             {
                 result.Status = "Failed";
-                result.ResultValue = $"Could not resolve {host}";
+                result.ResultValue = $"Direct TURN DNS failed for {host} — UDP 3478 cannot be verified";
+                result.DetailedInfo =
+                    $"The session host could not resolve {host} locally. HTTP/HTTPS proxies cannot carry DNS or UDP 3478 for RDP Shortpath.\n\n" +
+                    "Required action: allow the session host to resolve world.relay.avd.microsoft.com using its direct DNS path, " +
+                    "then allow outbound UDP 3478 to the AVD TURN range 51.5.0.0/16. TCP 443 fallback can still establish a session, " +
+                    "but optimized UDP transport remains unavailable until this succeeds.";
+                result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
                 return result;
             }
 
@@ -7526,6 +7532,9 @@ class Program
             var sb = new StringBuilder();
             var issues = new List<string>();      // Confirmed to intercept UDP/TURN traffic
             var detected = new List<string>();    // Present on system but UDP/TURN bypasses them
+            bool serviceRangesVerified = false;
+            bool turnDnsResolved = false;
+            bool turnDirect = false;
 
             // Check for VPN adapters â€” then verify if TURN traffic actually routes through them
             var vpnAdapters = FindVpnAdapters();
@@ -7544,18 +7553,23 @@ class Program
 
                 // Routing table is the authoritative source for what's routed via VPN
                 var (caught, diverted) = ProbeAvdServiceRanges(vpnAdapters, sb);
+                serviceRangesVerified = true;
                 foreach (var range in caught)
                     issues.Add($"W365/AVD range {range} routes through VPN tunnel");
                 foreach (var range in diverted)
                     issues.Add($"W365/AVD range {range} diverts via an unrecognised non-primary interface");
+            }
 
-                // Also show single-IP probe as informational context
-                bool turnDirect = false;
-                try
+            // Resolve one relay as route context. DNS success does not prove UDP
+            // reachability; L/C-UDP-03 performs the authoritative STUN probe.
+            try
+            {
+                var turnIps = Dns.GetHostAddresses("world.relay.avd.microsoft.com");
+                var turnIp = turnIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (turnIp != null)
                 {
-                    var turnIps = Dns.GetHostAddresses("world.relay.avd.microsoft.com");
-                    var turnIp = turnIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-                    if (turnIp != null)
+                    turnDnsResolved = true;
+                    if (vpnAdapters.Count > 0)
                     {
                         var (routedViaVpn, localIp, _) = CheckIfRoutedViaVpn(turnIp, vpnAdapters);
                         if (routedViaVpn)
@@ -7566,13 +7580,20 @@ class Program
                             turnDirect = true;
                         }
                     }
+                    else
+                    {
+                        sb.AppendLine($"\n  \u2139 TURN relay DNS resolved to {turnIp}; UDP reachability is tested separately");
+                    }
                 }
-                catch { /* DNS or probe failed â€” non-critical since routing table already checked */ }
-
-                // Summary: if VPN detected but all W365 ranges and TURN relay route direct
-                if (caught.Count == 0 && diverted.Count == 0 && turnDirect)
-                    sb.AppendLine("\n  \u2714 VPN is active but UDP/TURN traffic correctly bypasses it (split-tunnel)");
             }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"\n  \u26A0 TURN relay DNS unavailable: {ex.Message}");
+                sb.AppendLine("    HTTP/HTTPS proxy-side DNS cannot satisfy the direct DNS requirement for UDP Shortpath.");
+            }
+
+            if (vpnAdapters.Count > 0 && serviceRangesVerified && issues.Count == 0 && turnDirect)
+                sb.AppendLine("\n  \u2714 VPN is active but UDP/TURN traffic correctly bypasses it (split-tunnel)");
 
             // Check if UDP 3478 outbound is likely blocked by checking Windows Firewall registry
             try
@@ -7598,26 +7619,25 @@ class Program
             }
             catch { sb.AppendLine("Could not check Windows Firewall rules"); }
 
-            if (issues.Count == 0 && detected.Count == 0)
+            var names = detected
+                .Select(d => d.Contains(':') ? d[(d.IndexOf(':') + 1)..].Trim() : d)
+                .Select(n =>
+                {
+                    int parenthesis = n.IndexOf('(');
+                    return parenthesis > 0 ? n[..parenthesis].Trim() : n;
+                })
+                .ToList();
+            var outcome = HybridDiagnosticSemantics.AssessTurnRoute(
+                issues.Count,
+                detected.Count,
+                serviceRangesVerified,
+                turnDnsResolved,
+                string.Join(", ", names));
+            result.Status = outcome.Status;
+            result.ResultValue = outcome.Summary;
+            result.RemediationText = outcome.Remediation ?? "";
+            if (issues.Count > 0)
             {
-                result.ResultValue = "No UDP-blocking proxy/VPN detected";
-                result.Status = "Passed";
-            }
-            else if (issues.Count == 0 && detected.Count > 0)
-            {
-                // Include adapter names in the result value
-                var names = detected.Select(d => d.Contains(':') ? d.Substring(d.IndexOf(':') + 1).Trim() : d).ToList();
-                var shortNames = names.Select(n => {
-                    var pIdx = n.IndexOf('(');
-                    return pIdx > 0 ? n.Substring(0, pIdx).Trim() : n;
-                }).ToList();
-                result.ResultValue = $"VPN detected ({string.Join(", ", shortNames)}) â€” UDP/TURN correctly bypassed (split-tunnel)";
-                result.Status = "Passed";
-            }
-            else
-            {
-                result.ResultValue = $"{issues.Count} potential UDP blocker(s) detected";
-                result.Status = "Warning";
                 result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/rdp-shortpath?tabs=managed-networks";
                 if (detected.Count > 0)
                     sb.AppendLine($"\n  \u2139 Also present but not intercepting UDP: {string.Join("; ", detected)}");
@@ -10373,7 +10393,13 @@ class Program
     /// <summary>C-LE-01: Cloud PC Location â€” identifies Azure region and public IP.</summary>
     static async Task<TestResult> RunCpcLocation()
     {
-        var result = new TestResult { Id = "C-LE-01", Name = "Cloud PC Location", Category = "cloudpc-env" };
+        bool isHybrid = IsHybridHost();
+        var result = new TestResult
+        {
+            Id = "C-LE-01",
+            Name = isHybrid ? "Hybrid Session Host Location" : "Cloud PC Location",
+            Category = "cloudpc-env"
+        };
         try
         {
             var sb = new StringBuilder();
@@ -10385,7 +10411,20 @@ class Program
                 sb.AppendLine($"VM Name: {_azureVmName}");
 
             // Public IP via GeoIP
-            var geo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
+            JsonElement geo;
+            try
+            {
+                geo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex) when (isHybrid)
+            {
+                sb.AppendLine($"Public egress lookup unavailable: {ex.Message}");
+                sb.AppendLine("This lookup is optional and is commonly blocked by enterprise proxies.");
+                result.Status = "Info";
+                result.ResultValue = $"On-premises Arc host — projected Azure region {_arcMetadata?.Location ?? "unknown"}";
+                result.DetailedInfo = sb.ToString().Trim();
+                return result;
+            }
             string city = geo.TryGetProperty("city", out var c) ? c.GetString() ?? "" : "";
             string region = geo.TryGetProperty("region", out var rn) ? rn.GetString() ?? "" : "";
             string country = geo.TryGetProperty("country", out var co) ? co.GetString() ?? "" : "";
@@ -10408,7 +10447,7 @@ class Program
                 ? $"{_azureVmRegion} ({city}, {country})"
                 : $"{city}, {region}, {country}";
 
-            result.Status = "Passed";
+            result.Status = isHybrid ? "Info" : "Passed";
             result.ResultValue = locText;
             result.DetailedInfo = sb.ToString().Trim();
         }
@@ -10423,15 +10462,31 @@ class Program
         try
         {
             var sb = new StringBuilder();
-            var geo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
-            string org = geo.TryGetProperty("org", out var orgVal) ? orgVal.GetString() ?? "" : "";
-            string hostname = geo.TryGetProperty("hostname", out var hostVal) ? hostVal.GetString() ?? "" : "";
-            string ip = geo.TryGetProperty("ip", out var ipVal) ? ipVal.GetString() ?? "" : "";
+            string org = "";
+            string hostname = "";
+            string ip = "";
+            string? geoError = null;
+            try
+            {
+                var geo = await FetchGeoIpAsync("https://ipinfo.io/json", TimeSpan.FromSeconds(5));
+                org = geo.TryGetProperty("org", out var orgVal) ? orgVal.GetString() ?? "" : "";
+                hostname = geo.TryGetProperty("hostname", out var hostVal) ? hostVal.GetString() ?? "" : "";
+                ip = geo.TryGetProperty("ip", out var ipVal) ? ipVal.GetString() ?? "" : "";
+            }
+            catch (Exception ex)
+            {
+                geoError = ex.Message;
+            }
 
-            sb.AppendLine($"Public IP: {ip}");
-            sb.AppendLine($"Organisation: {org}");
+            sb.AppendLine($"Public IP: {(string.IsNullOrEmpty(ip) ? "unavailable" : ip)}");
+            sb.AppendLine($"Organisation: {(string.IsNullOrEmpty(org) ? "unavailable" : org)}");
             if (!string.IsNullOrEmpty(hostname))
                 sb.AppendLine($"Hostname: {hostname}");
+            if (geoError != null)
+            {
+                sb.AppendLine($"Public egress lookup: unavailable ({geoError})");
+                sb.AppendLine("This optional lookup can be blocked without affecting AVD or Arc connectivity.");
+            }
             sb.AppendLine();
 
             // Network adapters
@@ -10451,8 +10506,10 @@ class Program
             bool isMicrosoft = org.Contains("Microsoft", StringComparison.OrdinalIgnoreCase)
                 || org.Contains("Azure", StringComparison.OrdinalIgnoreCase);
 
-            result.Status = "Passed";
-            result.ResultValue = org;
+            result.Status = geoError == null ? "Passed" : "Info";
+            result.ResultValue = geoError == null
+                ? org
+                : "Local adapters collected; public egress lookup unavailable";
 
             // Classify network type for high-latency warnings
             var netType = ClassifyNetworkType(org);
@@ -10499,6 +10556,13 @@ class Program
     {
         var r = await RunTlsInspection();
         r.Id = "C-TCP-06"; r.Name = "TLS Inspection (Cloud PC)"; r.Category = "cloudpc-tcp";
+        if (r.Status == "Error" && HasEffectiveProxy())
+        {
+            r.Status = "Info";
+            r.ResultValue = "Direct TLS check inconclusive — local DNS unavailable on this proxy-routed host";
+            r.DetailedInfo = "The raw socket TLS check requires local DNS and cannot use proxy-side DNS. " +
+                "C-TCP-04, C-EP-02, and C-ARC-02 validate the service-specific HTTPS routes and certificate trust.";
+        }
         return r;
     }
 
@@ -10507,6 +10571,16 @@ class Program
     {
         var r = await RunProxyVpnDetection();
         r.Id = "C-TCP-07"; r.Name = "Proxy / VPN / SWG (Cloud PC)"; r.Category = "cloudpc-tcp";
+        if (IsHybridHost()
+            && r.Status == "Warning"
+            && r.DetailedInfo.Contains("Proxy CONNECT accepted", StringComparison.OrdinalIgnoreCase)
+            && r.DetailedInfo.Contains("No W365/AVD service traffic goes through the VPN tunnel", StringComparison.OrdinalIgnoreCase))
+        {
+            r.Status = "Info";
+            r.Name = "Hybrid Session Host Proxy / Route";
+            r.ResultValue = "Machine proxy accepted AVD HTTPS; AVD service ranges route direct";
+            r.RemediationText = "This is a valid split-route design. Confirm the separate direct DNS and UDP 3478 requirement in C-UDP-03.";
+        }
         return r;
     }
 
@@ -10523,6 +10597,22 @@ class Program
     {
         var r = await RunGatewayUsed();
         r.Id = "C-TCP-09"; r.Name = "Gateway Used (Cloud PC)"; r.Category = "cloudpc-tcp";
+        if (IsHybridHost())
+        {
+            r.Name = "Gateway Used (Hybrid Session Host)";
+            if (r.Status == "Warning"
+                && !string.IsNullOrWhiteSpace(_cachedGatewayHost)
+                && HasEffectiveProxy())
+            {
+                r.Status = "Info";
+                var regionCode = ExtractRegionFromGatewayFqdn(_cachedGatewayHost);
+                var gatewayLabel = regionCode == null
+                    ? _cachedGatewayHost
+                    : GetAzureRegionName(regionCode) ?? regionCode;
+                r.ResultValue = $"Gateway: {gatewayLabel}";
+                r.RemediationText = "The gateway was discovered successfully through the AVD service proxy. Local DNS details are unavailable and aren't treated as a gateway failure.";
+            }
+        }
         return r;
     }
 
@@ -10539,6 +10629,13 @@ class Program
     {
         var r = await RunTurnRelayLocation();
         r.Id = "C-UDP-04"; r.Name = "TURN Relay Location (Cloud PC)"; r.Category = "cloudpc-udp";
+        if (r.Status == "Error" && IsHybridHost())
+        {
+            r.Status = "Info";
+            r.Name = "TURN Relay Location (Hybrid Session Host)";
+            r.ResultValue = "TURN location unavailable because direct TURN DNS failed";
+            r.RemediationText = "Resolve the direct DNS issue reported by C-UDP-03; relay location is supplementary.";
+        }
         return r;
     }
 
@@ -11093,11 +11190,18 @@ class Program
     /// </summary>
     static async Task<TestResult> RunCpcRdpEgressInAzure()
     {
-        var result = new TestResult { Id = "C-NET-02", Name = "RDP Egress in Azure", Category = "cloudpc-tcp" };
+        bool isHybrid = IsHybridHost();
+        var result = new TestResult
+        {
+            Id = "C-NET-02",
+            Name = isHybrid ? "RDP Service Route Validation" : "RDP Egress in Azure",
+            Category = "cloudpc-tcp"
+        };
         try
         {
             var sb = new StringBuilder();
             var concerns = new List<string>();
+            int verifiedPaths = 0;
             var knownAzureFirstOctets = new HashSet<byte> { 13, 20, 40, 51, 52, 65, 104, 131, 132, 134, 137, 138, 157, 168, 191, 204 };
 
             // 1. Check RDP Gateway egress
@@ -11113,6 +11217,7 @@ class Program
                 var gwIp = gwIps.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                 if (gwIp != null)
                 {
+                    verifiedPaths++;
                     sb.AppendLine($"Gateway IP: {gwIp}");
                     bool isW365 = IsInW365Range(gwIp);
                     var gwRegion = LookupGatewayRegion(gwIp);
@@ -11166,6 +11271,7 @@ class Program
 
                 if (turnIp != null)
                 {
+                    verifiedPaths++;
                     sb.AppendLine($"TURN IP: {turnIp}");
                     bool isW365 = IsInW365Range(turnIp);
                     var turnRegion = LookupTurnRelayRegion(turnIp);
@@ -11220,20 +11326,16 @@ class Program
             }
 
             result.DetailedInfo = sb.ToString().Trim();
+            var outcome = HybridDiagnosticSemantics.AssessRdpEgress(
+                verifiedPaths,
+                concerns.Count,
+                isHybrid,
+                string.Join(", ", concerns));
+            result.Status = outcome.Status;
+            result.ResultValue = outcome.Summary;
+            result.RemediationText = outcome.Remediation ?? "";
             if (concerns.Count > 0)
-            {
-                result.Status = "Warning";
-                result.ResultValue = $"RDP traffic may egress outside Azure: {string.Join(", ", concerns)}";
-                result.RemediationText = "RDP traffic from the Cloud PC appears to be routed outside Azure via VPN/SWG. " +
-                    "Ensure that 40.64.144.0/20 (Gateway) and 51.5.0.0/16 (TURN) are excluded from VPN tunnel on the Cloud PC. " +
-                    "These ranges should route directly within the Azure network.";
                 result.RemediationUrl = "https://learn.microsoft.com/windows-365/enterprise/optimization-of-rdp#3-local-network-egress";
-            }
-            else
-            {
-                result.Status = "Passed";
-                result.ResultValue = "RDP traffic stays within Azure â€” no VPN/SWG routing detected";
-            }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
         return result;
@@ -11387,39 +11489,30 @@ class Program
             // via HIMDS we prefer that; otherwise a common canary region.
             if (isHybrid)
             {
-                var arcGroup = "Arc Control Plane";
-
-                endpoints.Add(("gbl.his.arc.azure.com", 443,
-                    "Arc hybrid-identity service — proves *.his.arc.azure.com wildcard rule (regional endpoints under this wildcard are discovered dynamically from this global endpoint at agent runtime)", arcGroup));
-                endpoints.Add(("agentserviceapi.guestconfiguration.azure.com", 443,
-                    "Arc extension management (*.guestconfiguration.azure.com)", arcGroup));
-                endpoints.Add(("guestnotificationservice.azure.com", 443,
-                    "Arc notification service (extensions + connectivity)", arcGroup));
-                endpoints.Add(("login.microsoftonline.com", 443,
-                    "Global Microsoft Entra token endpoint used by the Arc agent", arcGroup));
-                endpoints.Add(("management.azure.com", 443,
-                    "Azure Resource Manager (connect/disconnect + goal-state)", arcGroup));
-                endpoints.Add(("pas.windows.net", 443,
-                    "Microsoft Entra ID (PAS)", arcGroup));
-                // Regional Entra token endpoint: prefer the actual Arc-projected
-                // region when HIMDS gave us one, else a common canary. This proves
-                // *.login.microsoft.com resolves and connects.
                 var arcLocation = _arcMetadata?.Location;
                 var arcRegionCompact = (arcLocation ?? "eastus").Replace(" ", "").ToLowerInvariant();
-                endpoints.Add(($"{arcRegionCompact}.login.microsoft.com", 443,
-                    "Regional Entra token endpoint (*.login.microsoft.com)", arcGroup));
+                foreach (var endpoint in ArcEndpointCatalog.Build(
+                    arcProxy?.Gateway ?? new(false, null, null, null),
+                    arcRegionCompact))
+                {
+                    endpoints.Add((endpoint.Host, endpoint.Port, endpoint.Purpose, endpoint.Group));
+                }
 
                 // Optional / installation-time / older-agent endpoints. Kept
                 // visible in the report but grouped separately so a legitimately
                 // absent one (e.g. dc.services.visualstudio.com on agent 1.24+)
                 // doesn't flip the whole check.
                 var arcOptional = "Arc Optional";
-                endpoints.Add(("download.microsoft.com", 443,
-                    "Arc agent installer download (install/upgrade time only)", arcOptional));
+                if (arcProxy?.Gateway.IsGateway != true)
+                {
+                    endpoints.Add(("download.microsoft.com", 443,
+                        "Arc agent installer download (install/upgrade time only)", arcOptional));
+                }
                 endpoints.Add(("dc.services.visualstudio.com", 443,
                     "Arc agent telemetry (not used by agent v1.24+)", arcOptional));
 
-                if (!string.IsNullOrWhiteSpace(arcLocation))
+                if (arcProxy?.Gateway.IsGateway != true
+                    && !string.IsNullOrWhiteSpace(arcLocation))
                 {
                     var notificationDiscovery = await DiscoverArcNotificationHosts(
                         arcProxy,
@@ -12069,12 +12162,28 @@ class Program
 
             if (isHybrid)
             {
-                sb.AppendLine("Context: Arc endpoints use agent proxy.url first, then machine HTTPS_PROXY,");
-                sb.AppendLine("then direct, with service-based proxy.bypass applied per endpoint.");
+                if (arcProxy?.Gateway.IsGateway == true)
+                {
+                    sb.AppendLine("Context: Azure Arc Gateway mode detected. Arc checks use the documented");
+                    sb.AppendLine("reduced Gateway URL set and the agent's local Gateway proxy where available.");
+                    sb.AppendLine("Classic Arc endpoints that Gateway replaces are intentionally not tested.");
+                    sb.AppendLine($"Arc Gateway URL: {arcProxy.Gateway.GatewayUrl ?? "(not exposed by azcmagent; verify with 'azcmagent check')"}");
+                }
+                else
+                {
+                    sb.AppendLine("Context: Arc endpoints use agent proxy.url first, then machine HTTPS_PROXY,");
+                    sb.AppendLine("then direct, with service-based proxy.bypass applied per endpoint.");
+                }
                 sb.AppendLine("Private Link-capable Arc endpoints include local DNS and private/public");
                 sb.AppendLine("address classification. AVD endpoints use the machine WinHTTP route.");
                 sb.AppendLine("When a service route cannot be read, an invoking-user fallback is shown");
                 sb.AppendLine("as inconclusive and is excluded from the service-route pass/fail count.");
+                sb.AppendLine();
+                sb.AppendLine("Hybrid applicability:");
+                sb.AppendLine("  • login.microsoftonline.com:443 is tested below on the AVD and Arc service routes.");
+                sb.AppendLine("  • Direct TURN DNS and UDP 3478 to 51.5.0.0/16 are tested by C-UDP-03.");
+                sb.AppendLine("  • azkms.core.windows.net:1688 is Azure-VM activation only; on-prem Hybrid hosts use their configured enterprise activation method.");
+                sb.AppendLine("  • 168.63.129.16 and 169.254.169.254 are Azure fabric addresses and are not routable from on-prem Hybrid hosts.");
                 if (arcProxy?.AgentConfigurationAvailable == true)
                 {
                     sb.AppendLine($"Arc effective proxy source: {arcProxy.SourceDescription}");
@@ -12262,6 +12371,13 @@ class Program
     {
         var r = await RunBandwidthTest();
         r.Id = "C-LE-03"; r.Name = "CPC Connection Speed"; r.Category = "cloudpc-env";
+        if (r.Status == "Error" && IsHybridHost())
+        {
+            r.Status = "Info";
+            r.Name = "Hybrid Session Host Connection Speed";
+            r.ResultValue = "Optional bandwidth test unavailable through the enterprise proxy";
+            r.RemediationText = "No action is required for AVD/Arc connectivity. Use an approved internal speed-test endpoint if throughput measurement is needed.";
+        }
         return r;
     }
 
@@ -12676,8 +12792,16 @@ class Program
         }
 
         sb.AppendLine();
-        sb.AppendLine("Context: Arc requests use agent proxy.url first, then machine HTTPS_PROXY, then direct,");
-        sb.AppendLine("including the Arc service bypass where configured. They do not fall back to Windows/WinHTTP.");
+        if (arcProxy.Gateway.IsGateway)
+        {
+            sb.AppendLine("Context: Arc Gateway mode is active. Arc requests use the local Gateway proxy,");
+            sb.AppendLine("which reaches the configured *.gw.arc.azure.com endpoint through any upstream enterprise proxy.");
+        }
+        else
+        {
+            sb.AppendLine("Context: Arc requests use agent proxy.url first, then machine HTTPS_PROXY, then direct,");
+            sb.AppendLine("including the Arc service bypass where configured. They do not fall back to Windows/WinHTTP.");
+        }
         sb.AppendLine("AVD requests use the machine WinHTTP route used by session-host services.");
         sb.AppendLine("If a service route cannot be read, the invoking-user fallback is non-authoritative:");
         sb.AppendLine("a fallback success is useful evidence, but a fallback failure is not reported as blocked.");
@@ -12687,9 +12811,19 @@ class Program
 
         if (failures.Count > 0)
         {
+            var failedComponents = failures
+                .Select(failure =>
+                {
+                    int separator = failure.IndexOf(':');
+                    return separator > 0 ? failure[..separator] : failure;
+                })
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             result.Status = "Failed";
-            result.ResultValue = $"{failures.Count} confirmed service-route agent download failure(s)";
-            result.RemediationText = "Review 'azcmagent show', proxy.url, proxy.bypass, and machine HTTPS_PROXY; bypass TLS inspection for failed Microsoft download/CDN endpoints; allow MSI payloads and redirects; and ensure the SYSTEM services can use the required route.";
+            result.ResultValue = $"{string.Join(" and ", failedComponents)} blocked on the verified service route";
+            result.RemediationText = "Allow the failed Microsoft installer URL and every redirect destination through the route shown above. " +
+                "Arc downloads use the Arc agent/Gateway route; AVD agent and bootloader downloads use machine WinHTTP. " +
+                "Allow MSI payloads, bypass TLS inspection, and verify access in SYSTEM context.";
         }
         else if (inconclusive.Count > 0)
         {
@@ -12803,21 +12937,85 @@ class Program
         if (!File.Exists(agentPath))
             return ArcProxyConfiguration.Unavailable(machineHttpsProxy, "azcmagent.exe was not found");
 
-        var proxyUrl = await RunAzcmagentConfigGet(agentPath, "proxy.url");
-        var proxyBypass = await RunAzcmagentConfigGet(agentPath, "proxy.bypass");
+        var proxyUrlTask = RunAzcmagentConfigGet(agentPath, "proxy.url");
+        var proxyBypassTask = RunAzcmagentConfigGet(agentPath, "proxy.bypass");
+        var connectionTypeTask = RunAzcmagentConfigGet(agentPath, "connection.type");
+        var showTask = RunAzcmagentShowJson(agentPath);
+        await Task.WhenAll(proxyUrlTask, proxyBypassTask, connectionTypeTask, showTask);
+
+        var proxyUrl = await proxyUrlTask;
+        var proxyBypass = await proxyBypassTask;
+        var connectionType = await connectionTypeTask;
+        var show = await showTask;
+        var gateway = ArcGatewaySnapshot.Parse(
+            connectionType.Succeeded ? NormalizeAzcmagentConfigValue(connectionType.Output) : null,
+            show.Succeeded ? show.Output : null);
+
         if (!proxyUrl.Succeeded || !proxyBypass.Succeeded)
         {
             string detail = string.Join("; ", new[] { proxyUrl.Error, proxyBypass.Error }
                 .Where(value => !string.IsNullOrWhiteSpace(value)));
+            if (gateway.IsGateway && !string.IsNullOrWhiteSpace(gateway.LocalProxyUrl))
+            {
+                return ArcProxyConfiguration.Create(
+                    gateway.LocalProxyUrl,
+                    null,
+                    machineHttpsProxy,
+                    gateway);
+            }
             return ArcProxyConfiguration.Unavailable(
                 machineHttpsProxy,
-                string.IsNullOrWhiteSpace(detail) ? "azcmagent config query failed" : detail);
+                string.IsNullOrWhiteSpace(detail) ? "azcmagent config query failed" : detail,
+                gateway);
         }
 
         return ArcProxyConfiguration.Create(
-            NormalizeAzcmagentConfigValue(proxyUrl.Output),
+            gateway.IsGateway && !string.IsNullOrWhiteSpace(gateway.LocalProxyUrl)
+                ? gateway.LocalProxyUrl
+                : NormalizeAzcmagentConfigValue(proxyUrl.Output),
             NormalizeAzcmagentConfigValue(proxyBypass.Output),
-            machineHttpsProxy);
+            machineHttpsProxy,
+            gateway);
+    }
+
+    static async Task<(bool Succeeded, string? Output, string? Error)> RunAzcmagentShowJson(
+        string agentPath)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = agentPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            psi.ArgumentList.Add("show");
+            psi.ArgumentList.Add("-j");
+
+            using var process = Process.Start(psi);
+            if (process == null)
+                return (false, null, "Could not start 'azcmagent show'");
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await process.WaitForExitAsync(cts.Token);
+            string stdout = await stdoutTask;
+            string stderr = await stderrTask;
+            return process.ExitCode == 0
+                ? (true, stdout, null)
+                : (false, null, $"azcmagent show: {stderr.Trim()}");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, null, "azcmagent show timed out");
+        }
+        catch (Exception ex)
+        {
+            return (false, null, $"azcmagent show: {ex.Message}");
+        }
     }
 
     static async Task<(bool Succeeded, string? Output, string? Error)> RunAzcmagentConfigGet(
@@ -12895,6 +13093,13 @@ class Program
         sb.AppendLine($"Agent proxy.bypass: {configuration.ProxyBypass ?? "(not configured)"}");
         sb.AppendLine($"Machine HTTPS_PROXY: {configuration.MachineProxyDisplay ?? "(not configured)"}");
         sb.AppendLine($"Effective Arc proxy source: {configuration.SourceDescription}");
+        if (configuration.Gateway.IsGateway)
+        {
+            sb.AppendLine($"Connection type: Azure Arc Gateway");
+            sb.AppendLine($"Gateway URL: {configuration.Gateway.GatewayUrl ?? "(not exposed by azcmagent)"}");
+            sb.AppendLine($"Gateway local proxy: {configuration.Gateway.LocalProxyUrl ?? "(not exposed by azcmagent)"}");
+            sb.AppendLine($"Gateway upstream proxy: {ArcProxyConfiguration.FormatProxyForDisplay(configuration.Gateway.UpstreamProxyUrl) ?? "(not configured)"}");
+        }
         if (configuration.HasInvalidEffectiveProxy)
         {
             failures.Add("Arc effective proxy URL is invalid");
@@ -14435,13 +14640,18 @@ internal sealed class ArcProxyConfiguration
     internal string? ProxyBypass { get; }
     internal string? MachineHttpsProxy { get; }
     internal string? Error { get; }
+    internal ArcGatewaySnapshot Gateway { get; }
 
     internal string? AgentProxyDisplay => FormatProxyForDisplay(AgentProxyUrl);
     internal string? MachineProxyDisplay => FormatProxyForDisplay(MachineHttpsProxy);
     internal bool HasInvalidEffectiveProxy =>
         EffectiveProxyValue != null && EffectiveProxyUri == null;
     internal string SourceDescription => AgentProxyUrl != null
-        ? "agent proxy.url"
+        ? Gateway.IsGateway && AgentProxyUrl.Equals(
+            Gateway.LocalProxyUrl,
+            StringComparison.OrdinalIgnoreCase)
+            ? "Arc Gateway local proxy"
+            : "agent proxy.url"
         : MachineHttpsProxy != null
             ? "machine HTTPS_PROXY"
             : "direct";
@@ -14454,23 +14664,31 @@ internal sealed class ArcProxyConfiguration
         string? agentProxyUrl,
         string? proxyBypass,
         string? machineHttpsProxy,
-        string? error)
+        string? error,
+        ArcGatewaySnapshot gateway)
     {
         AgentConfigurationAvailable = agentConfigurationAvailable;
         AgentProxyUrl = Normalize(agentProxyUrl);
         ProxyBypass = Normalize(proxyBypass);
         MachineHttpsProxy = Normalize(machineHttpsProxy);
         Error = error;
+        Gateway = gateway;
     }
 
     internal static ArcProxyConfiguration Create(
         string? agentProxyUrl,
         string? proxyBypass,
-        string? machineHttpsProxy) =>
-        new(true, agentProxyUrl, proxyBypass, machineHttpsProxy, null);
+        string? machineHttpsProxy,
+        ArcGatewaySnapshot? gateway = null) =>
+        new(true, agentProxyUrl, proxyBypass, machineHttpsProxy, null,
+            gateway ?? new(false, null, null, null));
 
-    internal static ArcProxyConfiguration Unavailable(string? machineHttpsProxy, string error) =>
-        new(false, null, null, machineHttpsProxy, error);
+    internal static ArcProxyConfiguration Unavailable(
+        string? machineHttpsProxy,
+        string error,
+        ArcGatewaySnapshot? gateway = null) =>
+        new(false, null, null, machineHttpsProxy, error,
+            gateway ?? new(false, null, null, null));
 
     internal ArcProxyRoute Resolve(Uri endpoint)
     {
@@ -14512,7 +14730,7 @@ internal sealed class ArcProxyConfiguration
         return builder.Uri.GetLeftPart(UriPartial.Authority);
     }
 
-    private static string? FormatProxyForDisplay(string? value) =>
+    internal static string? FormatProxyForDisplay(string? value) =>
         TryGetProxyUri(value) is { } uri
             ? FormatProxyForDisplay(uri)
             : value == null ? null : RedactProxyValue(value);
