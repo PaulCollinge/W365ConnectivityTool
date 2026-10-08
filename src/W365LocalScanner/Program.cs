@@ -2370,14 +2370,11 @@ class Program
         catch { return null; }
     }
 
-    /// <summary>Parsed Windows Firewall rule from registry (locale-independent, no process spawning).</summary>
-    record struct FwRule(string Name, string Dir, string Action, int Protocol, string LocalPort);
-
     /// <summary>Read firewall rules from the Windows Firewall registry store.
     /// Avoids spawning powershell.exe which triggers Defender behavioural heuristics.</summary>
-    static List<FwRule> ReadFirewallRulesFromRegistry()
+    static List<FirewallRule> ReadFirewallRulesFromRegistry()
     {
-        var rules = new List<FwRule>();
+        var rules = new List<FirewallRule>();
         try
         {
             using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
@@ -2394,6 +2391,8 @@ class Program
                 string dir = "", action = "";
                 int protocol = 0; // 6=TCP, 17=UDP, 256=Any
                 string localPort = "Any";
+                string remotePort = "Any";
+                var remoteAddresses = new List<string>();
 
                 foreach (var part in data.Split('|'))
                 {
@@ -2409,32 +2408,26 @@ class Program
                         int.TryParse(part[9..], out protocol);
                     else if (part.StartsWith("LPort=", StringComparison.OrdinalIgnoreCase))
                         localPort = part[6..];
+                    else if (part.StartsWith("RPort=", StringComparison.OrdinalIgnoreCase))
+                        remotePort = part[6..];
+                    else if (part.StartsWith("RA4=", StringComparison.OrdinalIgnoreCase)
+                          || part.StartsWith("RA6=", StringComparison.OrdinalIgnoreCase))
+                        remoteAddresses.Add(part[4..]);
                 }
 
                 if (name != null && active)
-                    rules.Add(new FwRule(name, dir, action, protocol, localPort));
+                    rules.Add(new FirewallRule(
+                        name,
+                        dir,
+                        action,
+                        protocol,
+                        localPort,
+                        remotePort,
+                        string.Join(',', remoteAddresses)));
             }
         }
         catch { }
         return rules;
-    }
-
-    /// <summary>Check if a firewall rule's port field matches a given port number.</summary>
-    static bool FwPortMatches(string rulePort, int targetPort)
-    {
-        if (string.IsNullOrEmpty(rulePort) || rulePort.Equals("Any", StringComparison.OrdinalIgnoreCase))
-            return true;
-        foreach (var segment in rulePort.Split(','))
-        {
-            var s = segment.Trim();
-            if (s == targetPort.ToString()) return true;
-            // Handle ranges like "1000-2000"
-            var dash = s.IndexOf('-');
-            if (dash > 0 && int.TryParse(s[..dash], out var lo) && int.TryParse(s[(dash + 1)..], out var hi)
-                && targetPort >= lo && targetPort <= hi)
-                return true;
-        }
-        return false;
     }
 
     /// <summary>UPnP SSDP discovery result.</summary>
@@ -2914,8 +2907,9 @@ class Program
                 // Read firewall rules directly from registry — avoids spawning powershell.exe
                 var allRules = ReadFirewallRulesFromRegistry();
                 var outboundBlocks = allRules
-                    .Where(r => r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase)
-                             && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                    .Where(r => r.Direction.Equals("Out", StringComparison.OrdinalIgnoreCase)
+                             && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase)
+                             && !FirewallRuleAnalysis.IsLoopbackOnly(r))
                     .ToList();
 
                 foreach (var rule in outboundBlocks)
@@ -2924,7 +2918,7 @@ class Program
                     {
                         int protoNum = proto == "TCP" ? 6 : proto == "UDP" ? 17 : 0;
                         bool matchesProto = rule.Protocol == 256 || rule.Protocol == protoNum;
-                        bool matchesPort = FwPortMatches(rule.LocalPort, port);
+                        bool matchesPort = FirewallRuleAnalysis.PortMatches(rule.RemotePort, port);
 
                         if (matchesPort && matchesProto)
                         {
@@ -7224,10 +7218,11 @@ class Program
                 // Read firewall rules from registry — avoids spawning powershell.exe
                 var allRules = ReadFirewallRulesFromRegistry();
                 bool found3478Block = allRules.Any(r =>
-                    r.Dir.Equals("Out", StringComparison.OrdinalIgnoreCase) &&
+                    r.Direction.Equals("Out", StringComparison.OrdinalIgnoreCase) &&
                     r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase) &&
+                    !FirewallRuleAnalysis.IsLoopbackOnly(r) &&
                     (r.Protocol == 17 || r.Protocol == 256) && // UDP or Any
-                    FwPortMatches(r.LocalPort, 3478));
+                    FirewallRuleAnalysis.PortMatches(r.RemotePort, 3478));
 
                 if (found3478Block)
                 {
@@ -11470,7 +11465,7 @@ class Program
                 // Read firewall rules from registry — avoids spawning powershell.exe
                 var allRules = ReadFirewallRulesFromRegistry();
                 var inboundAllows = allRules
-                    .Where(r => r.Dir.Equals("In", StringComparison.OrdinalIgnoreCase)
+                    .Where(r => r.Direction.Equals("In", StringComparison.OrdinalIgnoreCase)
                              && r.Action.Equals("Allow", StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
@@ -11492,7 +11487,7 @@ class Program
                 // Also check specifically for port-based rule
                 var portRules = inboundAllows
                     .Where(r => (r.Protocol == 17 || r.Protocol == 256) && // UDP or Any
-                                FwPortMatches(r.LocalPort, configuredPort))
+                                FirewallRuleAnalysis.PortMatches(r.LocalPort, configuredPort))
                     .ToList();
 
                 if (portRules.Count > 0)
