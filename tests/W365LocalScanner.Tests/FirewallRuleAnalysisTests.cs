@@ -10,9 +10,26 @@ public sealed class FirewallRuleAnalysisTests
     {
         var rule = Rule(
             name: "codex_sandbox_offline_block_loopback_udp",
-            remoteAddresses: "127.0.0.0/8,::/127");
+            remoteAddresses: "127.0.0.0/8,::1/128");
 
         Assert.IsTrue(FirewallRuleAnalysis.IsLoopbackOnly(rule));
+    }
+
+    [DataTestMethod]
+    [DataRow("127.0.0.0/8")]
+    [DataRow("::1/128")]
+    [DataRow("127.0.0.1,::1")]
+    public void LoopbackAddressFormatsAreExcluded(string remoteAddresses)
+    {
+        Assert.IsTrue(FirewallRuleAnalysis.IsLoopbackOnly(Rule("loopback", remoteAddresses)));
+    }
+
+    [DataTestMethod]
+    [DataRow("::/0")]
+    [DataRow("2001:db8::1/128")]
+    public void ExternalIpv6AddressFormatsAreNotExcluded(string remoteAddresses)
+    {
+        Assert.IsFalse(FirewallRuleAnalysis.IsLoopbackOnly(Rule("external", remoteAddresses)));
     }
 
     [TestMethod]

@@ -16,9 +16,9 @@
     <Authors>Paul Collinge</Authors>
     <Description>Local connectivity diagnostics tool for Windows 365, Azure Virtual Desktop, and AVD Hybrid (Azure Arc-onboarded on-prem session hosts). Runs network tests requiring OS-level access and exports results to the hybrid web dashboard. Separate release stream from the main W365LocalScanner.exe.</Description>
     <Copyright>Copyright (c) Microsoft 2025-2026</Copyright>
-    <Version>0.1.8</Version>
-    <FileVersion>0.1.8.0</FileVersion>
-    <AssemblyVersion>0.1.8.0</AssemblyVersion>
+    <Version>0.1.9</Version>
+    <FileVersion>0.1.9.0</FileVersion>
+    <AssemblyVersion>0.1.9.0</AssemblyVersion>
     <NeutralLanguage>en</NeutralLanguage>
     
     <!-- Application icon -->
