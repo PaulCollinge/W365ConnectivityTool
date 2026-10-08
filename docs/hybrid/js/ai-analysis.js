@@ -976,9 +976,13 @@ function runAnalysisEngine(results) {
 
     const agentDownloads = r('C-ARC-02');
     if (agentDownloads && (agentDownloads.status === 'Failed' || agentDownloads.status === 'Error')) {
-        findings.push(finding(SEV.CRITICAL, 'Arc / AVD agent downloads blocked',
+        const avdBlocked = /Azure Virtual Desktop Agent/i.test(agentDownloads.resultValue || '');
+        findings.push(finding(SEV.CRITICAL,
+            avdBlocked ? 'AVD agent installation downloads blocked' : 'Arc / AVD agent downloads blocked',
             agentDownloads.resultValue,
-            'Allow the documented Arc and AVD agent download and redirect endpoints through the service-context proxy path.'));
+            avdBlocked
+                ? 'Allow the AVD agent and bootloader go.microsoft.com links plus every redirect destination through the machine WinHTTP proxy. Permit MSI payloads and validate in SYSTEM context.'
+                : 'Allow the documented Arc and AVD agent download and redirect endpoints through the service-context proxy path.'));
     } else if (agentDownloads && agentDownloads.status === 'Warning') {
         const routeUnverified = /inconclusive|service route could not be verified/i.test(agentDownloads.resultValue || '');
         findings.push(finding(SEV.WARNING,
@@ -1090,9 +1094,9 @@ function runAnalysisEngine(results) {
             'A VPN/SASE adapter is active, but the RDP gateway and excluded W365 routes use the Cloud PC direct interface.',
             null));
     } else if (cpcProxy && (cpcProxy.status === 'Warning' || cpcProxy.status === 'Failed')) {
-        findings.push(finding(SEV.WARNING, 'Proxy/VPN detected on Cloud PC',
+        findings.push(finding(SEV.WARNING, 'Proxy/VPN active on session host',
             cpcProxy.resultValue || 'A VPN, proxy, or SWG is active on the Cloud PC network path.',
-            'If this is Entra Private Access or Zscaler for general traffic, that is expected. Ensure RDP traffic to W365 gateways is excluded.'));
+            'A proxy is valid for AVD HTTPS service traffic when the machine WinHTTP route succeeds. It cannot carry direct TURN DNS or UDP 3478; verify C-UDP-03 separately.'));
     }
 
     // CPC-4: DNS hijacking on Cloud PC
