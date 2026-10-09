@@ -2231,7 +2231,7 @@ class Program
             // These self-report as "Not applicable" on Azure-VM Cloud PCs and AVD
             // session hosts, so they cost nothing when the host isn't hybrid.
             new("C-ARC-01", "Arc Agent Health", "Azure Connected Machine Agent state, version and heartbeat freshness", "cloudpc-env", RunHybridArcAgentHealth),
-            new("C-ARC-02", "Arc / AVD Agent Download Path", "Downloads bounded samples of the official Arc and AVD agent installers, applying the Arc agent's documented proxy precedence and bypass settings, and validates redirects, TLS chains, payload delivery, and extension logs", "cloudpc-env", RunHybridAgentDownloadPath),
+            new("C-ARC-02", "Arc Agent Download / Extension Evidence", "Downloads a bounded sample of the documented Arc agent installer through the Arc agent route and reviews local CloudDeviceExtension logs for corroborating deployment failures", "cloudpc-env", RunHybridAgentDownloadPath),
             new("C-HY-02", "Session Host Time Sync", "Confirms clock skew is inside the Kerberos tolerance for hybrid AD auth", "cloudpc-env", RunHybridTimeSync),
 
             // â”€â”€ Azure Fabric (WireServer + IMDS) â”€â”€
@@ -12514,7 +12514,7 @@ class Program
     }
 
     /// <summary>
-    /// C-ARC-02: exercises the actual Microsoft installer delivery path rather than
+    /// C-ARC-02: exercises the documented Arc installer delivery path rather than
     /// treating a successful HEAD request to a hostname as proof that a proxy will
     /// allow MSI content. Only the first 64 KiB is read and nothing is written.
     /// </summary>
@@ -12523,7 +12523,7 @@ class Program
         var result = new TestResult
         {
             Id = "C-ARC-02",
-            Name = "Arc / AVD Agent Download Path",
+            Name = "Arc Agent Download / Extension Evidence",
             Category = "cloudpc-env"
         };
         if (!IsHybridHost())
@@ -12536,12 +12536,7 @@ class Program
 
         const int MaxRedirects = 8;
         const int MaxPayloadBytes = 64 * 1024;
-        var targets = new[]
-        {
-            ("Azure Connected Machine Agent", "https://aka.ms/AzureConnectedMachineAgent", true),
-            ("Azure Virtual Desktop Agent", "https://go.microsoft.com/fwlink/?linkid=2310011", false),
-            ("Azure Virtual Desktop Agent Bootloader", "https://go.microsoft.com/fwlink/?linkid=2311028", false),
-        };
+        var targets = HybridAgentDownloadTargets();
 
         var sb = new StringBuilder();
         var failures = new List<string>();
@@ -12554,8 +12549,9 @@ class Program
         AppendArcProxyConfiguration(sb, arcProxy, failures, warnings);
         sb.AppendLine();
 
-        foreach (var (label, initialUrl, useArcAgentRoute) in targets)
+        foreach (var target in targets)
         {
+            var (label, initialUrl, useArcAgentRoute) = target;
             sb.AppendLine($"══ {label} ══");
             var current = new Uri(initialUrl);
             var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -12777,9 +12773,8 @@ class Program
         sb.AppendLine("══ CloudDeviceExtension log evidence ══");
         if (!Directory.Exists(logRoot))
         {
-            warnings.Add("CloudDeviceExtension logs are not present");
             sb.AppendLine($"Log directory not present: {logRoot}");
-            sb.AppendLine("No installed-extension history was available to corroborate the live route probes.");
+            sb.AppendLine("No installed-extension history is available. This is informational and is not treated as a deployment failure.");
         }
         else if (logFindings.Count == 0)
         {
@@ -12821,9 +12816,8 @@ class Program
                 .ToArray();
             result.Status = "Failed";
             result.ResultValue = $"{string.Join(" and ", failedComponents)} blocked on the verified service route";
-            result.RemediationText = "Allow the failed Microsoft installer URL and every redirect destination through the route shown above. " +
-                "Arc downloads use the Arc agent/Gateway route; AVD agent and bootloader downloads use machine WinHTTP. " +
-                "Allow MSI payloads, bypass TLS inspection, and verify access in SYSTEM context.";
+            result.RemediationText = "Allow the documented Arc installer URL and every redirect destination through the Arc agent/Gateway route shown above. " +
+                "Allow MSI payloads, bypass TLS inspection, and verify the native azcmagent check result.";
         }
         else if (inconclusive.Count > 0)
         {
@@ -12834,19 +12828,24 @@ class Program
         else if (warnings.Count > 0)
         {
             result.Status = "Warning";
-            result.ResultValue = $"Downloads succeeded with {warnings.Count} inspection/log warning(s)";
-            result.RemediationText = "The payloads are currently downloadable, but TLS inspection or prior CloudDeviceExtension errors were detected. Prefer an inspection bypass for Arc/AVD extension delivery and verify the extension reaches Succeeded state.";
+            result.ResultValue = $"Arc agent download succeeded with {warnings.Count} inspection/extension-log warning(s)";
+            result.RemediationText = "The Arc payload is currently downloadable, but TLS inspection or prior CloudDeviceExtension errors were detected. Prefer an inspection bypass and verify the extension reaches Succeeded state.";
         }
         else
         {
             result.Status = "Passed";
-            result.ResultValue = "Arc and AVD agent payload samples downloaded without TLS inspection";
+            result.ResultValue = "Arc agent payload sample downloaded without TLS inspection";
         }
 
         result.RemediationUrl = "https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-azure-virtual-desktop-hybrid";
         result.DetailedInfo = sb.ToString().Trim();
         return result;
     }
+
+    internal static IReadOnlyList<AgentDownloadTarget> HybridAgentDownloadTargets() =>
+    [
+        new("Azure Connected Machine Agent", "https://aka.ms/AzureConnectedMachineAgent", true)
+    ];
 
     static async Task<ArcNotificationDiscovery> DiscoverArcNotificationHosts(
         ArcProxyConfiguration? configuration,
