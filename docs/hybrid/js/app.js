@@ -47,6 +47,7 @@ window.addEventListener('unhandledrejection', function(event) {
 let allResults = [];
 let isRunning = false;
 let _importedScanTimestamp = '';   // when the imported scanner data was captured
+let _importedScannerVersion = '';  // scanner version from imported scanner data
 let _importedMachineName = '';     // machine name from imported scanner data
 let cloudPcMode = false;           // true when user toggles Cloud PC Mode
 let hostType = null;               // 'cloudpc', 'avd', 'avd-arc' (hybrid), or null (determines labels)
@@ -1392,6 +1393,9 @@ function processImportedData(data) {
     if (data.timestamp) {
         try { _importedScanTimestamp = new Date(data.timestamp).toLocaleString(); } catch { _importedScanTimestamp = String(data.timestamp); }
     }
+    _importedScannerVersion = typeof data.scannerVersion === 'string'
+        ? data.scannerVersion.slice(0, 100)
+        : '';
 
     // Remember machine name from imported data
     if (data.machineName) {
@@ -2511,6 +2515,7 @@ async function sendResultsToIT() {
         environment: collectEnvironmentSnapshot(),
         analysisSummary: buildKeyFindingsSummary(allResults).jsonObject,
         scannerTimestamp: _importedScanTimestamp || null,
+        scannerVersion: _importedScannerVersion || null,
         results: exportResults.map(r => ({
             id: r.id, name: r.name, category: r.category, source: r.source,
             status: r.status, resultValue: r.resultValue || '',
@@ -2672,6 +2677,7 @@ function exportJsonReport() {
         environment: (typeof collectEnvironmentSnapshot === 'function') ? collectEnvironmentSnapshot() : null,
         analysisSummary: buildKeyFindingsSummary(allResults).jsonObject,
         scannerTimestamp: _importedScanTimestamp || null,
+        scannerVersion: _importedScannerVersion || null,
         results: exportResults.map(r => ({
             id: r.id,
             name: r.name,
@@ -3128,6 +3134,7 @@ function saveResultsToHistory() {
         const entry = {
             timestamp: new Date().toISOString(),
             scannerTimestamp: _importedScanTimestamp || null,
+            scannerVersion: _importedScannerVersion || null,
             summary: {
                 total: allResults.length,
                 passed: allResults.filter(r => r.status === 'Passed').length,
