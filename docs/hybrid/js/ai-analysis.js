@@ -992,12 +992,22 @@ function runAnalysisEngine(results) {
     const agentDownloads = r('C-ARC-02');
     if (agentDownloads && (agentDownloads.status === 'Failed' || agentDownloads.status === 'Error')) {
         const avdBlocked = /Azure Virtual Desktop Agent/i.test(agentDownloads.resultValue || '');
-        findings.push(finding(SEV.CRITICAL,
-            avdBlocked ? 'AVD agent installation downloads blocked' : 'Arc / AVD agent downloads blocked',
-            agentDownloads.resultValue,
-            avdBlocked
-                ? 'Allow the AVD agent and bootloader go.microsoft.com links plus every redirect destination through the machine WinHTTP proxy. Permit MSI payloads and validate in SYSTEM context.'
-                : 'Allow the documented Arc and AVD agent download and redirect endpoints through the service-context proxy path.'));
+        const manualLinksOnly = avdBlocked &&
+            /go\.microsoft\.com\/fwlink/i.test(agentDownloads.detailedInfo || '') &&
+            /No installed-extension history was available/i.test(agentDownloads.detailedInfo || '');
+        if (manualLinksOnly) {
+            findings.push(finding(SEV.INFO,
+                'Manual AVD installer FWLinks blocked',
+                `${agentDownloads.resultValue}. These go.microsoft.com links are manual installer probes, not documented Hybrid session-host endpoint requirements, and no CloudDeviceExtension failure log was available to corroborate a deployment failure.`,
+                'Do not treat this result alone as a deployment blocker. Use the documented C-EP-02 endpoint result, the CloudDeviceExtension status/logs, and the native Arc checks as the authoritative evidence.'));
+        } else {
+            findings.push(finding(SEV.CRITICAL,
+                avdBlocked ? 'AVD agent installation downloads blocked' : 'Arc / AVD agent downloads blocked',
+                agentDownloads.resultValue,
+                avdBlocked
+                    ? 'Review the CloudDeviceExtension status and logs, then allow only the documented session-host endpoints and any confirmed extension download destinations.'
+                    : 'Allow the documented Arc and AVD agent download and redirect endpoints through the service-context proxy path.'));
+        }
     } else if (agentDownloads && agentDownloads.status === 'Warning') {
         const routeUnverified = /inconclusive|service route could not be verified/i.test(agentDownloads.resultValue || '');
         findings.push(finding(SEV.WARNING,
