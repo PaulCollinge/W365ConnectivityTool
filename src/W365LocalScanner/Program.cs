@@ -11352,6 +11352,9 @@ class Program
         var isHybrid = IsHybridHost();
         var arcProxy = isHybrid ? await ReadArcProxyConfiguration() : null;
         var winHttpProxy = WinHttpProxyConfiguration.Read();
+        var nativeAvdHealth = isHybrid
+            ? await AvdNativeHealthCollector.CollectAsync(winHttpProxy)
+            : AvdNativeHealthEvidence.Unavailable("Native AVD health evidence is collected only on Hybrid session hosts");
         var privateLinkWarnings = new System.Collections.Concurrent.ConcurrentBag<string>();
         var privateLinkNotes = new System.Collections.Concurrent.ConcurrentBag<string>();
         // Cloud PC and AVD session hosts share the same required-endpoint list,
@@ -11369,6 +11372,30 @@ class Program
         try
         {
             var endpoints = new List<(string host, int port, string purpose, string group)>();
+            var nativeHostStates = new Dictionary<string, (bool Accessible, string Source)>(
+                StringComparer.OrdinalIgnoreCase);
+            bool urlToolFresh = nativeAvdHealth.UrlTool?.Parsed == true
+                && nativeAvdHealth.UrlTool.IsFresh(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(90));
+            if (urlToolFresh)
+            {
+                var urlTool = nativeAvdHealth.UrlTool!;
+                foreach (var host in urlTool.AccessibleUrls)
+                    nativeHostStates[host] = (true, "Microsoft AVD Agent URL Tool");
+                foreach (var host in urlTool.InaccessibleUrls)
+                    nativeHostStates[host] = (false, "Microsoft AVD Agent URL Tool");
+            }
+            else
+            {
+                foreach (var state in nativeAvdHealth.Events.FreshFailures(
+                             DateTimeOffset.Now,
+                             TimeSpan.FromMinutes(90)))
+                {
+                    nativeHostStates[state.Host] = (false, "fresh WVD-Agent Event ID 3702");
+                }
+            }
+            var nativeWarmHosts = nativeHostStates.Keys
+                .Where(AvdUrlToolSnapshot.IsWarmIngestHost)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             // â”€â”€ AVD base endpoints (apply to both AVD and W365) â”€â”€
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
@@ -11425,6 +11452,9 @@ class Program
             //   projected region as a hint isn't useful here because ingestion
             //   clusters follow their own naming and can silently blackhole
             //   arbitrary regional probes (see the warm-ingest comments below).
+            foreach (var host in nativeWarmHosts.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+                endpoints.Add((host, 443, "Agent diagnostics (native AVD Agent health)", requiredGroup));
+
             string? monitorExemplar = null;
             if (!isHybrid)
             {
@@ -11440,9 +11470,11 @@ class Program
                     catch { /* NXDOMAIN â€” try next suffix */ }
                 }
             }
-            monitorExemplar ??= "eastus-0.prod.warm.ingest.monitor.core.windows.net";
+            monitorExemplar = AvdUrlToolSnapshot.SelectSyntheticWarmIngestExemplar(
+                monitorExemplar,
+                nativeWarmHosts);
             endpoints.Add((monitorExemplar, 443,
-                "Agent diagnostics", requiredGroup));
+                "Agent diagnostics wildcard transport", requiredGroup));
 
             // TCP 80 â€” Health monitoring and certificates.
             // Wireserver (168.63.129.16) is an Azure link-local IP with no route from an
@@ -11977,7 +12009,8 @@ class Program
             async Task<(bool ok, long ms, string? err, bool authoritative)> ProbeEndpointAsync((string host, int port, string purpose, string group) ep)
             {
                 bool warmIngest = IsWarmIngestHost(ep.host);
-                var attempt = warmIngest
+                bool nativeWarmIngest = warmIngest && nativeWarmHosts.Contains(ep.host);
+                var attempt = warmIngest && !nativeWarmIngest
                     ? await TryConnectAnyAddressAsync(ep.host, ep.port)
                     : ep.port is 80 or 443
                         ? await TryHttpConnectAsync(ep)
@@ -11987,7 +12020,7 @@ class Program
                 // ConnectionRefused aren't transient and don't warrant a retry).
                 if (!attempt.ok && (warmIngest || (attempt.err != null && attempt.err.StartsWith("Timeout"))))
                 {
-                    var retry = warmIngest
+                    var retry = warmIngest && !nativeWarmIngest
                         ? await TryConnectAnyAddressAsync(ep.host, ep.port)
                         : ep.port is 80 or 443
                             ? await TryHttpConnectAsync(ep)
@@ -11995,6 +12028,17 @@ class Program
                     if (retry.ok) attempt = retry;
                 }
                 return attempt;
+            }
+
+            static string DescribeEndpointProbe(long milliseconds, string? detail)
+            {
+                if (detail == null)
+                    return $"{milliseconds}ms";
+                if (detail.StartsWith("via-http:", StringComparison.Ordinal))
+                    return $"{milliseconds}ms, {detail["via-http:".Length..]}";
+                if (detail.StartsWith("addr:", StringComparison.Ordinal))
+                    return $"{milliseconds}ms, {detail["addr:".Length..]}";
+                return $"{milliseconds}ms, {detail}";
             }
 
             var semaphore = new SemaphoreSlim(6);
@@ -12026,7 +12070,7 @@ class Program
             for (int i = 0; i < results.Length; i++)
             {
                 var r = results[i];
-                if (r.ok || !IsWarmIngestHost(r.ep.host))
+                if (r.ok || !IsWarmIngestHost(r.ep.host) || nativeWarmHosts.Contains(r.ep.host))
                     continue;
 
                 var canaryCandidates = (from region in new[] { "eastus", "westus" }
@@ -12044,6 +12088,27 @@ class Program
                         err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) â€” every local-region cluster address refused the probe",
                         authoritative: true);
                 }
+            }
+
+            for (int i = 0; i < results.Length; i++)
+            {
+                var r = results[i];
+                if (!nativeHostStates.TryGetValue(r.ep.host, out var nativeState))
+                    continue;
+
+                var assessment = AvdEndpointAssessment.Assess(
+                    nativeState.Accessible,
+                    nativeState.Source,
+                    r.ok,
+                    r.ok ? DescribeEndpointProbe(r.ms, r.err) : r.err ?? "unknown transport error");
+                results[i] = (
+                    r.ep,
+                    ok: assessment.IsAccessible,
+                    ms: r.ms,
+                    err: assessment.IsAccessible
+                        ? $"via-native:{assessment.Detail}"
+                        : assessment.Detail,
+                    authoritative: true);
             }
 
             // For 168.63.129.16:80 the user-mode probe will legitimately be
@@ -12123,7 +12188,8 @@ class Program
             // real firewall block, so it is surfaced but does not by itself
             // flip the whole endpoint check to Failed.
             bool IsSoft((string host, int port, string purpose, string group) e)
-                => e.host == "168.63.129.16" || IsWarmIngestHost(e.host);
+                => e.host == "168.63.129.16"
+                    || (IsWarmIngestHost(e.host) && !nativeHostStates.ContainsKey(e.host));
             static bool IsOptional((string host, int port, string purpose, string group) e) =>
                 e.group.Contains("Optional", StringComparison.OrdinalIgnoreCase);
             string SoftNote((string host, int port, string purpose, string group) e, string? err)
@@ -12197,13 +12263,64 @@ class Program
                     ? $"AVD machine route: {(winHttpProxy.IsDirect ? "WinHTTP direct" : $"WinHTTP proxy {winHttpProxy.ProxyValue}")}"
                     : $"AVD machine route unavailable: {winHttpProxy.Error}");
                 sb.AppendLine();
+
+                sb.AppendLine("Native AVD Agent health evidence:");
+                if (nativeAvdHealth.UrlTool is { Parsed: true } nativeTool)
+                {
+                    sb.AppendLine($"  URL Tool: {nativeAvdHealth.UrlToolPath}");
+                    sb.AppendLine($"  Agent/tool version: {nativeAvdHealth.UrlToolVersion ?? "unknown"}");
+                    sb.AppendLine($"  UrlsAccessibleCheck: {nativeTool.Outcome ?? "outcome not reported"}");
+                    if (nativeTool.AcquiredAt.HasValue)
+                        sb.AppendLine($"  Acquired: {nativeTool.AcquiredAt.Value:O}");
+                    if (!urlToolFresh)
+                        sb.AppendLine("  URL Tool result is stale or has no acquisition time; it is informational only.");
+                }
+                else
+                {
+                    sb.AppendLine($"  URL Tool unavailable: {nativeAvdHealth.UrlToolError ?? "no parseable result"}");
+                }
+
+                var warmEventStates = nativeAvdHealth.Events.HostStates
+                    .Where(state => AvdUrlToolSnapshot.IsWarmIngestHost(state.Host))
+                    .ToArray();
+                foreach (var state in warmEventStates)
+                {
+                    var status = state.IsAccessible ? "accessible" : "NOT accessible";
+                    var persistence = !state.IsAccessible && state.FailureStartedAt.HasValue
+                        ? $"; continuously failing since at least {state.FailureStartedAt.Value:O}"
+                        : "";
+                    sb.AppendLine($"  WVD-Agent event: {state.Host} {status} at {state.LatestObservedAt:O}{persistence}");
+                }
+                if (nativeAvdHealth.EventLogError != null)
+                    sb.AppendLine($"  Event log unavailable: {nativeAvdHealth.EventLogError}");
+
+                foreach (var serviceProxy in nativeAvdHealth.ServiceProxies)
+                {
+                    if (!serviceProxy.QuerySucceeded)
+                    {
+                        sb.AppendLine($"  {serviceProxy.Account} proxy query unavailable: {serviceProxy.Error}");
+                    }
+                    else if (winHttpProxy.Available && !winHttpProxy.IsDirect)
+                    {
+                        sb.AppendLine(
+                            $"  {serviceProxy.Account} proxy: " +
+                            (serviceProxy.MatchesMachineProxy
+                                ? "matches the machine WinHTTP proxy"
+                                : "query succeeded, but a match to the machine WinHTTP proxy could not be confirmed"));
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  {serviceProxy.Account} proxy queried; machine WinHTTP comparison is unavailable");
+                    }
+                }
+                sb.AppendLine();
             }
 
             // Map wildcard-exemplar hosts to the wildcard FQDN they represent so
             // the detail mirrors the official required-FQDN table. The exemplar
             // host used to probe each wildcard rule is an implementation detail
             // and is hidden; real (non-wildcard) FQDNs are shown as-is.
-            static string Display(string host) => host switch
+            string Display(string host) => host switch
             {
                 "rdweb.wvd.microsoft.com" => "*.wvd.microsoft.com",
                 "prod-r1.windows.cloud.microsoft" => "*.windows.cloud.microsoft",
@@ -12212,6 +12329,7 @@ class Program
                 "eusaikpublish.microsoftaik.azure.net" => "*.microsoftaik.azure.net",
                 "eus.aikcertaia.microsoft.com" => "*.aikcertaia.microsoft.com",
                 _ when host.EndsWith(".prod.warm.ingest.monitor.core.windows.net", StringComparison.OrdinalIgnoreCase)
+                    && !nativeWarmHosts.Contains(host)
                     => "*.prod.warm.ingest.monitor.core.windows.net",
                 _ => host
             };
@@ -12247,6 +12365,10 @@ class Program
                     else if (r.err != null && r.err.StartsWith("via-http:"))
                     {
                         sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.ms}ms, {r.err.Substring("via-http:".Length)}){confidence}");
+                    }
+                    else if (r.err != null && r.err.StartsWith("via-native:"))
+                    {
+                        sb.AppendLine($"  {glyph} {disp}:{r.ep.port} \u2014 {r.ep.purpose} ({r.err.Substring("via-native:".Length)})");
                     }
                     else
                     {
@@ -12345,7 +12467,10 @@ class Program
                 bool expected = l.Contains("forbidden") || l.Contains("access permissions") || l.Contains("10013");
                 return !expected;
             });
-            if (passed < total - 2) result.Status = "Failed";
+            bool nativeAvdFailure = nativeHostStates.Any(item =>
+                !item.Value.Accessible
+                && AvdUrlToolSnapshot.IsWarmIngestHost(item.Key));
+            if (nativeAvdFailure || passed < total - 2) result.Status = "Failed";
             else if (passed < total
                 || fallbackPassed + fallbackFailed > 0
                 || softFailed > 0
