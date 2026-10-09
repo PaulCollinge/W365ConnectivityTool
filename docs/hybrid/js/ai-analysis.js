@@ -747,10 +747,17 @@ function runAnalysisEngine(results) {
     }
 
     // ── 10. TURN reachability ──
-    const turn = r('L-UDP-03');
+    const turn = r('C-UDP-03') || r('L-UDP-03');
+    const turnDnsUnavailable = turn &&
+        /DNS (?:failed|unavailable)|could not resolve|cannot be verified/i.test(
+            `${turn.resultValue || ''} ${turn.detailedInfo || ''}`);
     const turnUnreachable = turn && (turn.status === 'Failed' || turn.status === 'Error' ||
         (turn.status === 'Warning' && /unreachable|timed out|timeout|blocked/i.test(turn.resultValue || '')));
-    if (turnUnreachable) {
+    if (turnDnsUnavailable) {
+        findings.push(finding(SEV.WARNING, 'RDP Shortpath not verified — direct TURN DNS unavailable',
+            `${turn.resultValue}. The HTTPS proxy can resolve AVD service names, but it cannot provide the direct DNS and UDP 3478 path required by TURN.`,
+            'Allow the session host to resolve world.relay.avd.microsoft.com directly, then verify outbound UDP 3478 to 51.5.0.0/16.'));
+    } else if (turnUnreachable) {
         findings.push(finding(SEV.CRITICAL, 'RDP Shortpath unavailable — UDP 3478 blocked',
             `TURN relay on UDP 3478 did not respond, so RDP Shortpath (the low-latency UDP transport) cannot be established. RDP will fall back to TCP over the gateway, so a session can still be made — but the experience is significantly degraded: higher latency, poor resilience to packet loss, and choppy video/scrolling. For a good W365 experience this must be fixed. ${turn.resultValue}`,
             'Allow outbound UDP 3478 to turn.azure.com / the AVD TURN range (51.5.0.0/16) through all firewalls and network security appliances.'));
@@ -959,8 +966,16 @@ function runAnalysisEngine(results) {
 
     const hostEp = r('C-EP-02');
     if (hostEp && (hostEp.status === 'Failed' || hostEp.status === 'Error')) {
-        findings.push(finding(SEV.CRITICAL, `${hostEp.name || 'Session Host Required Endpoints'} unreachable`,
-            hostEp.resultValue,
+        const failedHosts = (hostEp.detailedInfo || '')
+            .split(/\r?\n/)
+            .filter(line => /^\s*[\u2718\u2717]/.test(line))
+            .map(line => line.replace(/^\s*[\u2718\u2717]\s*/, '').split(':443')[0].trim())
+            .filter(Boolean);
+        const failedDetail = failedHosts.length > 0
+            ? `${hostEp.resultValue}. Failed: ${[...new Set(failedHosts)].join(', ')}.`
+            : hostEp.resultValue;
+        findings.push(finding(SEV.CRITICAL, `${hostEp.name || 'Session Host Required Endpoints'} blocked or unavailable`,
+            failedDetail,
             'Review the detailed endpoint results and allow the required AVD and Azure Arc FQDNs through DNS, firewall, and proxy policy.'));
     } else if (hostEp && hostEp.status === 'Warning') {
         const routeUnverified = /inconclusive|fallback result/i.test(hostEp.resultValue || '');
