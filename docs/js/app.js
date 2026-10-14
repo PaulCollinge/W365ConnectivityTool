@@ -328,7 +328,7 @@ function formatDistanceKmMi(kilometers) {
 //   Existing tab → sends browser results back → New tab
 // Result: BOTH tabs end up with complete data (browser + local).
 const scannerChannel = new BroadcastChannel('w365-scanner-results');
-let isNewScannerTab = false; // true if this tab was opened by the scanner with ?zresults=
+let isNewScannerTab = false; // true if this tab was opened with scanner results
 
 scannerChannel.onmessage = (event) => {
     const msg = event.data;
@@ -883,7 +883,7 @@ async function runAllBrowserTests() {
     if (mapContainer) mapContainer.classList.remove('hidden');
 
     // If an L-EP-02 scanner result is already present (e.g. the scanner
-    // opened this tab with ?zresults=... before browser tests started),
+    // opened this tab with #zresults=... before browser tests started),
     // merge it into the freshly-created B-EP-01 card so the "run Local
     // Scanner to verify" note is replaced with the actual scanner result.
     mergeBrowserBlockedEndpointResult();
@@ -935,8 +935,8 @@ async function importLocalResults(event) {
 }
 
 // ── Auto-import from URL query param or hash ──
-// Scanner opens browser with ?zresults=COMPRESSED (query param survives Windows ShellExecute)
-// Also supports legacy #zresults= and #results= hash formats
+// Scanner and newly copied share links use #zresults=COMPRESSED so the payload
+// is not sent to the web server. Legacy ?zresults= and #results= remain supported.
 async function checkForAutoImport() {
     const params = new URLSearchParams(window.location.search);
     const hash = window.location.hash;
@@ -2857,9 +2857,11 @@ async function copyShareLink() {
         let b64 = btoa(String.fromCharCode(...compressed));
         b64 = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-        const shareUrl = `${location.origin}${location.pathname}?zresults=${b64}`;
+        // Keep diagnostics in the fragment. Query strings are sent to the
+        // host/proxy and can be rejected with HTTP 414 before the page loads.
+        const shareUrl = `${location.origin}${location.pathname}#zresults=${b64}`;
 
-        // Practical URL limit — proxies/servers often reject >8 KB
+        // Practical browser/clipboard limit
         if (shareUrl.length > 32000) {
             btn.innerHTML = 'Link too large — use Export instead';
             btn.disabled = false;

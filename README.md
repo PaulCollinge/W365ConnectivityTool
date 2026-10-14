@@ -57,10 +57,11 @@ gh attestation verify W365LocalScanner.exe --repo PaulCollinge/W365ConnectivityT
 
 ## Privacy
 
-- **No data leaves your machine** except to the endpoints being tested
-- Results are passed to the dashboard via the browser URL (stays local)
-- No telemetry, no tracking, no external servers
-- Dashboard runs entirely client-side on GitHub Pages
+- The project operates no backend and collects no first-party telemetry or tracking
+- Scanner and Session Watch results are processed locally and normally passed to the dashboard in URL fragments, which are not sent to GitHub Pages
+- The dashboard runs client-side, but deliberate connectivity tests and UI assets send standard request metadata to Microsoft, GitHub, and the third-party services listed below
+- Dashboard history keeps at most 10 diagnostic metric summaries in local storage with no time-based expiry; users can clear it
+- Exports, sharing, email drafts, and Copilot analysis are user-initiated. A copied share link embeds compact diagnostics in a `#zresults=` fragment; anyone with the link can read them, but browsers do not send the fragment to the host/CDN/proxy
 - Full source code is in this repo
 - Your public IP address is sent to third-party GeoIP providers (ipinfo.io, ipapi.co, ipwho.is, geojs.io, freeipapi.com) and a reverse-geocoder (Nominatim) to estimate approximate location for network-path analysis — see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)
 - Microsoft [Privacy Statement](https://privacy.microsoft.com/privacystatement)
