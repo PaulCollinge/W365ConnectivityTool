@@ -64,7 +64,6 @@ gh attestation verify W365LocalScanner.exe --repo PaulCollinge/W365ConnectivityT
 - Exports, sharing, email drafts, and Copilot analysis are user-initiated. A copied share link embeds compact diagnostics in a `#zresults=` fragment; anyone with the link can read them, but browsers do not send the fragment to the host/CDN/proxy
 - Full source code is in this repo
 - Your public IP address is sent to third-party GeoIP providers (ipinfo.io, ipapi.co, ipwho.is, geojs.io, freeipapi.com) and a reverse-geocoder (Nominatim) to estimate approximate location for network-path analysis — see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)
-- See the [Personal Data Flow Diagram](DATA-FLOW-DIAGRAM.svg) for trust boundaries, EU/EEA versus Rest of World flows, data types, stores, retention, and primary/secondary uses
 - Microsoft [Privacy Statement](https://privacy.microsoft.com/privacystatement)
 
 ## Project Structure
