@@ -46,6 +46,11 @@ async function loadProductionHelpers(url) {
         'function safeFilenameComponent',
         'async function sendResultsToIT'
     );
+    const shareLinkCode = section(
+        source,
+        'async function copyShareLink',
+        '//  Historical Comparison'
+    );
     const context = vm.createContext({
         atob,
         btoa,
@@ -72,8 +77,47 @@ async function loadProductionHelpers(url) {
         decoderCode,
         truncationCode,
         filenameCode,
+        shareLinkCode,
         ...context.helpers
     };
+}
+
+async function createShareUrl(url) {
+    const { shareLinkCode } = await loadProductionHelpers(url);
+    let copiedUrl = '';
+    const button = {
+        innerHTML: 'Copy Share Link',
+        disabled: false,
+        classList: { add() {}, remove() {} }
+    };
+    const context = vm.createContext({
+        allResults: sample.results,
+        _importedScanTimestampRaw: sample.timestamp,
+        _importedMachineName: sample.machineName,
+        btoa,
+        CompressionStream,
+        console,
+        document: { getElementById: () => button },
+        location: {
+            origin: 'https://example.test',
+            pathname: '/W365ConnectivityTool/'
+        },
+        navigator: {
+            clipboard: {
+                writeText: async value => { copiedUrl = value; }
+            }
+        },
+        setTimeout() {},
+        TextEncoder,
+        Uint8Array,
+        truncateUnicode(value, maxCodeUnits) {
+            return value.length <= maxCodeUnits ? value : value.slice(0, maxCodeUnits);
+        }
+    });
+
+    vm.runInContext(`${shareLinkCode}\nthis.copyShareLink = copyShareLink;`, context);
+    await context.copyShareLink();
+    return copiedUrl;
 }
 
 async function deflateRawBase64Url(value) {
@@ -105,6 +149,7 @@ test('standard and hybrid globalization helpers stay synchronized', async () => 
     assert.equal(standard.decoderCode, hybrid.decoderCode);
     assert.equal(standard.truncationCode, hybrid.truncationCode);
     assert.equal(standard.filenameCode, hybrid.filenameCode);
+    assert.equal(standard.shareLinkCode, hybrid.shareLinkCode);
 });
 
 for (const url of appUrls) {
@@ -161,5 +206,20 @@ for (const url of appUrls) {
         assert.equal(Buffer.from(helpers.utf8ToBase64(name), 'base64').toString('utf8'), name);
         assert.equal(decodeURIComponent(helpers.encodeRfc5987Value(name)), name);
         assert.equal(decodeURIComponent(helpers.encodeRfc5987Value('\uD800')), '\uFFFD');
+    });
+
+    test(`${url.pathname} keeps copied diagnostics out of the request URI`, async () => {
+        const helpers = await loadProductionHelpers(url);
+        const shareUrl = await createShareUrl(url);
+        const parsedUrl = new URL(shareUrl);
+
+        assert.equal(parsedUrl.search, '');
+        assert.ok(parsedUrl.hash.startsWith('#zresults='));
+
+        const decoded = await helpers.decodeCompressedHash(
+            parsedUrl.hash.slice('#zresults='.length)
+        );
+        assert.equal(decoded.machineName, sample.machineName);
+        assert.equal(decoded.results[0].resultValue, sample.results[0].resultValue);
     });
 }
