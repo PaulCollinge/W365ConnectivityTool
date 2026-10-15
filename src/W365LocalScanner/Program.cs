@@ -11396,6 +11396,36 @@ class Program
             var nativeWarmHosts = nativeHostStates.Keys
                 .Where(AvdUrlToolSnapshot.IsWarmIngestHost)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var avdPrivateLinkAssessments =
+                new Dictionary<string, AvdPrivateLinkAssessment>(StringComparer.OrdinalIgnoreCase);
+            if (isHybrid)
+            {
+                var avdDnsCandidates = nativeHostStates.Keys
+                    .Append("rdweb.wvd.microsoft.com")
+                    .Where(AvdPrivateLinkAssessment.IsCandidateHost)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var dnsAssessmentTasks = avdDnsCandidates.Select(async host =>
+                {
+                    try
+                    {
+                        var entry = await Dns.GetHostEntryAsync(host);
+                        return AvdPrivateLinkAssessment.Assess(
+                            host,
+                            entry.AddressList,
+                            entry.HostName);
+                    }
+                    catch
+                    {
+                        return null;
+                    }
+                });
+                foreach (var assessment in await Task.WhenAll(dnsAssessmentTasks))
+                {
+                    if (assessment != null)
+                        avdPrivateLinkAssessments[assessment.Host] = assessment;
+                }
+            }
 
             // â”€â”€ AVD base endpoints (apply to both AVD and W365) â”€â”€
             // Source: https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
@@ -11408,6 +11438,22 @@ class Program
             endpoints.Add(("wvdportalstorageblob.blob.core.windows.net", 443, "Azure portal support", requiredGroup));
             endpoints.Add(("aka.ms", 443, "Microsoft URL shortener", requiredGroup));
             endpoints.Add(("login.windows.net", 443, "Sign-in to Microsoft Online Services", optionalGroup));
+
+            foreach (var assessment in avdPrivateLinkAssessments.Values
+                         .Where(value => value.UsesPrivateRoute)
+                         .OrderBy(value => value.Host, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!endpoints.Any(endpoint =>
+                        endpoint.host.Equals(assessment.Host, StringComparison.OrdinalIgnoreCase)
+                        && endpoint.port == 443))
+                {
+                    endpoints.Add((
+                        assessment.Host,
+                        443,
+                        "AVD Private Link service endpoint (reported by the AVD Agent)",
+                        requiredGroup));
+                }
+            }
 
             // Wildcard service-traffic endpoints from the AVD/W365 required-FQDN
             // list. Each wildcard below has no canonical apex, so we probe a
@@ -11811,6 +11857,35 @@ class Program
                 }
 
                 string? dnsDetail = null;
+                if (!useArcAgentRoute
+                    && avdPrivateLinkAssessments.TryGetValue(host, out var avdPrivateLink))
+                {
+                    dnsDetail = $"AVD {avdPrivateLink.Description}";
+                    string? warning = avdPrivateLink.GetRouteWarning(proxyUri != null);
+                    if (warning != null)
+                        privateLinkWarnings.Add($"{host}: {warning}");
+
+                    if (avdPrivateLink.UsesPrivateRoute)
+                    {
+                        if (proxyUri == null)
+                        {
+                            privateLinkNotes.Add(
+                                $"{host}: AVD Private Link private DNS and a direct machine route were detected.");
+                        }
+                        else
+                        {
+                            var direct = await TryConnectAsync(host, port);
+                            dnsDetail += direct.ok
+                                ? $"; direct private TCP reachable in {direct.ms}ms"
+                                : $"; direct private TCP failed: {direct.err}";
+                            if (!direct.ok)
+                            {
+                                privateLinkWarnings.Add(
+                                    $"{host}: the private endpoint is not directly reachable ({direct.err}). Check VPN/ExpressRoute routing, NSGs, and firewalls.");
+                            }
+                        }
+                    }
+                }
                 if (useArcAgentRoute && ArcProxyConfiguration.IsPrivateLinkCapableHost(host))
                 {
                     try
@@ -12240,8 +12315,9 @@ class Program
                     sb.AppendLine("Context: Arc endpoints use agent proxy.url first, then machine HTTPS_PROXY,");
                     sb.AppendLine("then direct, with service-based proxy.bypass applied per endpoint.");
                 }
-                sb.AppendLine("Private Link-capable Arc endpoints include local DNS and private/public");
-                sb.AppendLine("address classification. AVD endpoints use the machine WinHTTP route.");
+                sb.AppendLine("Arc Private Link and AVD Private Link are assessed independently.");
+                sb.AppendLine("AVD Private Link activates only when an AVD service hostname resolves");
+                sb.AppendLine("private-only; public customers retain the existing machine WinHTTP route.");
                 sb.AppendLine("When a service route cannot be read, an invoking-user fallback is shown");
                 sb.AppendLine("as inconclusive and is excluded from the service-route pass/fail count.");
                 sb.AppendLine();
@@ -12262,6 +12338,22 @@ class Program
                 sb.AppendLine(winHttpProxy.Available
                     ? $"AVD machine route: {(winHttpProxy.IsDirect ? "WinHTTP direct" : $"WinHTTP proxy {winHttpProxy.ProxyValue}")}"
                     : $"AVD machine route unavailable: {winHttpProxy.Error}");
+                var detectedAvdPrivateLinks = avdPrivateLinkAssessments.Values
+                    .Where(value => value.UsesPrivateRoute)
+                    .OrderBy(value => value.Host, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (detectedAvdPrivateLinks.Length > 0)
+                {
+                    sb.AppendLine("AVD Private Link: private-only AVD service DNS detected");
+                    foreach (var assessment in detectedAvdPrivateLinks)
+                        sb.AppendLine($"  {assessment.Host}: {assessment.Description}");
+                    sb.AppendLine("  TCP 443 verifies orchestration only. The host-pool connection private endpoint also requires the TCP dynamic port range 1-65535.");
+                    sb.AppendLine("  UDP over Private Link requires the host-pool opt-in; otherwise TCP reverse connect is expected.");
+                }
+                else
+                {
+                    sb.AppendLine("AVD Private Link: not detected; existing public/proxy behavior is unchanged.");
+                }
                 sb.AppendLine();
 
                 sb.AppendLine("Native AVD Agent health evidence:");
@@ -12428,7 +12520,7 @@ class Program
             if (routeWarnings.Length > 0 || routeNotes.Length > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine("══ Arc routing / Private Link findings ══");
+                sb.AppendLine("══ Arc / AVD routing and Private Link findings ══");
                 foreach (var warning in routeWarnings)
                     sb.AppendLine($"  ⚠ {warning}");
                 foreach (var note in routeNotes)
@@ -12482,9 +12574,13 @@ class Program
                     !item.ok
                     && item.authoritative
                     && item.ep.group.StartsWith("Arc ", StringComparison.Ordinal));
-                result.RemediationUrl = isHybrid && (hasArcFailure || routeWarnings.Length > 0)
-                    ? "https://learn.microsoft.com/azure/azure-arc/servers/private-link-security"
-                    : "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
+                bool avdPrivateLinkDetected = avdPrivateLinkAssessments.Values.Any(
+                    assessment => assessment.UsesPrivateRoute);
+                result.RemediationUrl = avdPrivateLinkDetected
+                    ? "https://learn.microsoft.com/azure/virtual-desktop/private-link-overview"
+                    : isHybrid && (hasArcFailure || routeWarnings.Length > 0)
+                        ? "https://learn.microsoft.com/azure/azure-arc/servers/private-link-security"
+                        : "https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines";
             }
         }
         catch (Exception ex) { result.Status = "Error"; result.ResultValue = ex.Message; }
