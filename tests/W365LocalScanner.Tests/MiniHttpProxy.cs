@@ -10,7 +10,8 @@ internal enum ProxyPolicy
     Forward,
     BlockPage200,
     Deny403,
-    Blackhole
+    Blackhole,
+    RequireAuth
 }
 
 /// <summary>
@@ -84,12 +85,16 @@ internal sealed class MiniHttpProxy : IDisposable
             }
 
             var policy = _policy(host);
-            Requests.Enqueue($"{method} {host}:{port} {policy}");
+            bool sentCredentials = lines.Any(l => l.StartsWith("Proxy-Authorization:", StringComparison.OrdinalIgnoreCase));
+            Requests.Enqueue($"{method} {host}:{port} {policy}{(sentCredentials ? " +credentials" : "")}");
 
             switch (policy)
             {
                 case ProxyPolicy.Blackhole:
                     await Task.Delay(Timeout.Infinite, token);
+                    return;
+                case ProxyPolicy.RequireAuth:
+                    await WriteAsync(stream, Response("407 Proxy Authentication Required", "text/html", "<html>Proxy authentication required</html>", "Proxy-Authenticate: Negotiate\r\nProxy-Authenticate: NTLM\r\n"), token);
                     return;
                 case ProxyPolicy.Deny403:
                     await WriteAsync(stream, Response("403 Forbidden", "text/html", "<html>Forbidden by proxy policy</html>", "Via: 1.1 test-proxy\r\n"), token);

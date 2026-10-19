@@ -82,6 +82,12 @@ internal static class NativeCertificateRetrieval
         }
     }
 
+    internal static bool IsConnectionFailure(string? error) =>
+        error != null && (error.StartsWith("timed out", StringComparison.Ordinal)
+            || error.StartsWith("cannot connect", StringComparison.Ordinal)
+            || error.StartsWith("connection aborted", StringComparison.Ordinal)
+            || error.StartsWith("DNS name not resolved", StringComparison.Ordinal));
+
     internal static string DescribeError(int error)
     {
         uint code = unchecked((uint)error);

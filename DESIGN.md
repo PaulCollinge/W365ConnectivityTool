@@ -176,6 +176,13 @@ users to mistrust the tool. Specifically:
   `CryptRetrieveObjectByUrl`, wire-only): it applies WPAD/PAC that a static
   read of `netsh winhttp` cannot, so a static-route failure alone is not a
   block.
+- **Never let the scanner's user identity vouch for SYSTEM.** Revocation
+  probes send no proxy credentials, so a 407 surfaces. The cryptnet
+  cross-check runs as the signed-in user, so its success is reported as
+  "user context only" (Info), never as a pass for SYSTEM services.
+- **Pay each timeout once per host, not per URL.** A proxy that drops a host
+  drops every URL on it; memoise connection-level failures per host so a
+  hostile network cannot turn one test into minutes of apparent hang.
 - **Exemplar hostnames for wildcard rules rot.** Warm-ingest moved to
   `{region}-shared` and the old `eastus-0`/`westus-0` canaries became
   NXDOMAIN. DNS-validate every exemplar and canary at runtime, and probe them
