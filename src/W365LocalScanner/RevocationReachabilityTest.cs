@@ -32,9 +32,16 @@ partial class Program
         ["DigiCert", "Microsoft", "Baltimore", "GlobalSign", "Entrust"];
 
     static Task<TestResult> RunRevocationReachability() =>
-        RunRevocationReachability(WinHttpProxyConfiguration.Read());
+        RunRevocationReachability(WinHttpProxyConfiguration.Read(), NativeCertificateRetrieval.FetchAsync);
 
-    internal static async Task<TestResult> RunRevocationReachability(WinHttpProxyConfiguration winHttp)
+    /// <param name="winHttp">Machine WinHTTP route used for the primary probe.</param>
+    /// <param name="nativeFetch">
+    /// Windows-native (cryptnet) retrieval used to cross-check failures, or
+    /// null to skip it. Injectable so tests can simulate either outcome.
+    /// </param>
+    internal static async Task<TestResult> RunRevocationReachability(
+        WinHttpProxyConfiguration winHttp,
+        Func<Uri, int, Task<NativeFetchResult>>? nativeFetch)
     {
         var result = new TestResult
         {
@@ -226,6 +233,41 @@ partial class Program
                 }
             }
 
+            // A failure on the static WinHTTP route may only mean Windows
+            // reaches the URL another way (WPAD/PAC). Ask Windows' own
+            // certificate retrieval before reporting a block, so the result
+            // reflects what the chain engine experiences.
+            async Task<RevocationProbeResult> FetchWithCrossCheckAsync(
+                Uri uri,
+                byte[]? ocspRequest,
+                Func<int, string?, byte[], RevocationProbeResult> classify)
+            {
+                var routed = await FetchAsync(uri, ocspRequest, classify);
+                if (routed.Outcome == RevocationProbeOutcome.Valid || nativeFetch == null)
+                    return routed;
+
+                var nativeUri = ocspRequest == null ? uri : RevocationAnalysis.BuildOcspGetUri(uri, ocspRequest);
+                NativeFetchResult native;
+                await probeGate.WaitAsync();
+                try
+                {
+                    native = await nativeFetch(nativeUri, RevocationProbeTimeoutMs);
+                }
+                finally
+                {
+                    probeGate.Release();
+                }
+
+                if (!native.Success)
+                    return routed with { Detail = $"{routed.Detail}; Windows certificate retrieval (cryptnet) also failed: {native.Error}" };
+
+                var confirmed = classify(200, null, native.Body);
+                return confirmed.Outcome == RevocationProbeOutcome.Valid
+                    ? new(RevocationProbeOutcome.Valid,
+                        $"{confirmed.Detail} by Windows certificate retrieval (cryptnet, which applies WPAD/PAC); the static machine WinHTTP route failed: {routed.Detail}")
+                    : routed with { Detail = $"{routed.Detail}; Windows certificate retrieval (cryptnet) also returned non-revocation data: {confirmed.Detail}" };
+            }
+
             Task<RevocationProbeResult> Probe(RevocationTarget target, RevocationUrl url)
             {
                 var cacheKey = url.Kind switch
@@ -235,10 +277,10 @@ partial class Program
                 };
                 return probeCache.GetOrAdd(cacheKey, _ => new Lazy<Task<RevocationProbeResult>>(() => url.Kind switch
                 {
-                    RevocationUrlKind.Ocsp => FetchAsync(url.Uri,
+                    RevocationUrlKind.Ocsp => FetchWithCrossCheckAsync(url.Uri,
                         RevocationAnalysis.BuildOcspRequest(target.Subject, target.Issuer),
                         RevocationAnalysis.ClassifyOcspResponse),
-                    RevocationUrlKind.Crl => FetchAsync(url.Uri, null,
+                    RevocationUrlKind.Crl => FetchWithCrossCheckAsync(url.Uri, null,
                         (status, type, body) => RevocationAnalysis.ClassifyCrlResponse(status, type, body, target.Issuer.SubjectName)),
                     _ => FetchAsync(url.Uri, null,
                         (status, type, body) => RevocationAnalysis.ClassifyIssuerCertificateResponse(status, type, body, target.Issuer.SubjectName))
@@ -265,7 +307,7 @@ partial class Program
                     ? "Route: machine WinHTTP (direct). Windows downloads OCSP/CRL data for SYSTEM services (AVD agent, Windows Update, code-signing checks) on this route."
                     : $"Route: machine WinHTTP proxy {ArcProxyConfiguration.FormatProxyForDisplay(winHttp.ProxyValue)}. Windows downloads OCSP/CRL data for SYSTEM services (AVD agent, Windows Update, code-signing checks) on this route."
                 : $"Route: invoking-user proxy settings (machine WinHTTP route unavailable: {winHttp.Error}). Results are indicative only.");
-            sb.AppendLine($"Certificate chains collected: {captured.Count}/{hosts.Count} sampled endpoints. Responses are validated by content, so proxy block pages cannot pass.");
+            sb.AppendLine($"Certificate chains collected: {captured.Count}/{hosts.Count} sampled endpoints. Responses are validated by content, so proxy block pages cannot pass; failures are re-checked with Windows' own certificate retrieval (cryptnet, which applies WPAD/PAC) before being reported.");
 
             sb.AppendLine();
             sb.AppendLine("\u2550\u2550 Revocation endpoints by issuing CA \u2550\u2550");

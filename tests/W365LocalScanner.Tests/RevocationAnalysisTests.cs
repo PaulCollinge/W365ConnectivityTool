@@ -259,6 +259,27 @@ public sealed class RevocationAnalysisTests
         Assert.AreEqual("Info", RevocationAnalysis.Assess([], authoritativeRoute: true).Status);
     }
 
+    [DataTestMethod]
+    [DataRow("http://ocsp.digicert.com")]
+    [DataRow("http://ocsp.digicert.com/")]
+    public void OcspGetUriAppendsUrlEncodedBase64Once(string responder)
+    {
+        var request = new byte[] { 0xFB, 0xFF, 0xBF, 0x00 };
+
+        var uri = RevocationAnalysis.BuildOcspGetUri(new Uri(responder), request);
+
+        Assert.AreEqual("http://ocsp.digicert.com/%2B%2F%2B%2FAA%3D%3D", uri.AbsoluteUri);
+    }
+
+    [DataTestMethod]
+    [DataRow(unchecked((int)0x80190193), "HTTP 403")]
+    [DataRow(unchecked((int)0x80072EE2), "timed out")]
+    [DataRow(12007, "DNS name not resolved")]
+    public void NativeRetrievalErrorsAreDescribed(int error, string expected)
+    {
+        Assert.AreEqual(expected, NativeCertificateRetrieval.DescribeError(error));
+    }
+
     private static RevocationTier Tier(string issuer, params (RevocationUrl, RevocationProbeResult)[] probes) =>
         new(issuer, ["example.host"], probes);
 

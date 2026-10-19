@@ -171,7 +171,11 @@ users to mistrust the tool. Specifically:
   OCSP request must return an OCSPResponse and a CRL must parse with the
   expected issuer. Proxies return HTTP 200 block pages; status codes alone
   produce false passes. Report a silent drop separately from a fast deny —
-  Windows waits up to 15 s per unreachable revocation URL.
+  Windows waits up to 15 s per unreachable revocation URL. Before reporting
+  a failure, re-fetch with Windows' own retrieval (cryptnet
+  `CryptRetrieveObjectByUrl`, wire-only): it applies WPAD/PAC that a static
+  read of `netsh winhttp` cannot, so a static-route failure alone is not a
+  block.
 - **Exemplar hostnames for wildcard rules rot.** Warm-ingest moved to
   `{region}-shared` and the old `eastus-0`/`westus-0` canaries became
   NXDOMAIN. DNS-validate every exemplar and canary at runtime, and probe them
