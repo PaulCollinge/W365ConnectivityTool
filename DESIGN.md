@@ -161,6 +161,21 @@ users to mistrust the tool. Specifically:
 - Messages should be of the form *"X should work; if it doesn't, check
   A/B/C"* rather than *"X might fail; probably benign, ignore."* The former
   is actionable; the latter trains users to ignore real findings.
+- **Derive certificate revocation endpoints from live chains, never from a
+  hard-coded list** (C-PKI-01). Every sampled AVD/Arc chain — including the
+  Microsoft TLS G2 ones — passes through a DigiCert-issued cross-certificate,
+  so `ocsp/crl3/crl4.digicert.com` matter even though the AVD list calls
+  `*.digicert.com` optional, and `crl2/caissuers.microsoft.com` are not on the
+  AVD list at all. Probe them on the machine WinHTTP route (the route the
+  chain engine uses for SYSTEM services) and **validate by content**: a real
+  OCSP request must return an OCSPResponse and a CRL must parse with the
+  expected issuer. Proxies return HTTP 200 block pages; status codes alone
+  produce false passes. Report a silent drop separately from a fast deny —
+  Windows waits up to 15 s per unreachable revocation URL.
+- **Exemplar hostnames for wildcard rules rot.** Warm-ingest moved to
+  `{region}-shared` and the old `eastus-0`/`westus-0` canaries became
+  NXDOMAIN. DNS-validate every exemplar and canary at runtime, and probe them
+  through the same proxy route the agent uses.
 
 ---
 

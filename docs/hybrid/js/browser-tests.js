@@ -287,6 +287,11 @@ const ALL_TESTS = [
         category: 'cloudpc', source: 'cloudpc'
     },
     {
+        id: 'C-PKI-01', name: 'Certificate Revocation Endpoints',
+        description: 'Collects the certificate chains the AVD and Arc endpoints actually present, then verifies each chain\u2019s OCSP and CRL endpoints (e.g. oneocsp.microsoft.com, crl2.microsoft.com, ocsp/crl3/crl4.digicert.com) on the machine WinHTTP route. Responses are validated by content, so proxy block pages cannot pass.',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
         id: 'C-ARC-01', name: 'Arc Agent Health',
         description: 'AVD Hybrid only — Azure Connected Machine Agent (himds + GCArcService + ExtensionService) status, agent version, and heartbeat freshness. Reports "Not applicable" on non-Arc hosts.',
         category: 'cloudpc', source: 'cloudpc'
