@@ -471,8 +471,45 @@ internal static class RevocationAnalysis
                 remediation);
         }
 
+        // Every CA still has a verified method. If only unpublished backup
+        // locations failed (e.g. crl2.microsoft.com, listed second in the
+        // certificates after the published www.microsoft.com), Windows never
+        // needs them while the published hosts work: report, don't warn.
+        if (failedHosts.All(h => ClassifyAvdListing(h) == AvdListing.NotListed))
+        {
+            return new("Info",
+                $"All issuing CAs verifiable on the machine route; {failedHosts.Count} backup revocation host(s) not in the AVD endpoint list unreachable ({hostList}){userSuffix}",
+                $"{hostList} {(failedHosts.Count == 1 ? "is a backup location" : "are backup locations")} named in the certificates but not in the AVD endpoint list. " +
+                "Windows uses them only if the published certificate endpoints (oneocsp.microsoft.com, www.microsoft.com, *.digicert.com) fail, so no action is required; allowing them avoids slower fallbacks.");
+        }
+
         return new("Warning",
             $"{failedHosts.Count} revocation host(s) unreachable ({hostList}){userSuffix}; every issuing CA still has one method working on the machine route",
             remediation);
+    }
+
+    internal enum AvdListing
+    {
+        Required,
+        Optional,
+        NotListed
+    }
+
+    /// <summary>
+    /// Where a revocation host appears in the AVD session-host endpoint list:
+    /// https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint#session-host-virtual-machines
+    /// </summary>
+    internal static AvdListing ClassifyAvdListing(string host)
+    {
+        static bool Is(string host, string name) => host.Equals(name, StringComparison.OrdinalIgnoreCase);
+        static bool Under(string host, string domain) => host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
+
+        if (Is(host, "oneocsp.microsoft.com") || Is(host, "www.microsoft.com") || Is(host, "ctldl.windowsupdate.com")
+            || Is(host, "azcsprodeusaikpublish.blob.core.windows.net")
+            || Under(host, "aikcertaia.microsoft.com") || Under(host, "microsoftaik.azure.net"))
+            return AvdListing.Required;
+        if (Under(host, "digicert.com"))
+            return AvdListing.Optional;
+        return AvdListing.NotListed;
     }
 }

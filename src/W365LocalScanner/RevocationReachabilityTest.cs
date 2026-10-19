@@ -398,11 +398,17 @@ partial class Program
                 {
                     bool ok = host.All(p => p.Result.Outcome == RevocationProbeOutcome.Valid);
                     bool userOnly = !ok && host.All(p => p.Result.Outcome is RevocationProbeOutcome.Valid or RevocationProbeOutcome.UserContextOnly);
+                    var listing = RevocationAnalysis.ClassifyAvdListing(host.Key) switch
+                    {
+                        RevocationAnalysis.AvdListing.Required => "AVD required",
+                        RevocationAnalysis.AvdListing.Optional => "AVD optional (*.digicert.com)",
+                        _ => "not in AVD list; backup location"
+                    };
                     sb.AppendLine(ok
-                        ? $"  \u2714 {host.Key}"
+                        ? $"  \u2714 {host.Key} [{listing}]"
                         : userOnly
-                            ? $"  \u2139 {host.Key} \u2014 reachable only with the signed-in user's proxy context"
-                            : $"  \u2718 {host.Key} \u2014 unreachable on this route");
+                            ? $"  \u2139 {host.Key} [{listing}] \u2014 reachable only with the signed-in user's proxy context"
+                            : $"  \u2718 {host.Key} [{listing}] \u2014 unreachable on this route");
                 }
             }
 

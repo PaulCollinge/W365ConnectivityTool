@@ -173,20 +173,81 @@ public sealed class RevocationAnalysisTests
     }
 
     [TestMethod]
-    public void BlockedCrlWithWorkingOcspIsPartialWarning()
+    public void BlockedPublishedHostWithWorkingFallbackIsPartialWarning()
     {
         var tiers = new[]
         {
             Tier("Microsoft TLS G2 RSA CA OCSP 10",
-                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.Valid),
-                Probe(RevocationUrlKind.Crl, "http://crl2.microsoft.com/pkiinfra/CRL/ca.crl", RevocationProbeOutcome.Blocked))
+                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.Blocked),
+                Probe(RevocationUrlKind.Crl, "http://www.microsoft.com/pkiops/crl/ca.crl", RevocationProbeOutcome.Valid))
         };
 
         var outcome = RevocationAnalysis.Assess(tiers, authoritativeRoute: true);
 
         Assert.AreEqual("Warning", outcome.Status);
-        StringAssert.Contains(outcome.Summary, "crl2.microsoft.com");
+        StringAssert.Contains(outcome.Summary, "oneocsp.microsoft.com");
         StringAssert.Contains(outcome.Summary, "still has one method working on the machine route");
+    }
+
+    [DataTestMethod]
+    [DataRow("Blocked")]
+    [DataRow("Timeout")]
+    public void UnpublishedBackupHostFailureIsInfoWhenPublishedHostsWork(string crl2OutcomeName)
+    {
+        var tiers = new[]
+        {
+            Tier("Microsoft TLS G2 RSA CA OCSP 10",
+                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.Valid),
+                Probe(RevocationUrlKind.Crl, "http://www.microsoft.com/pkiops/crl/ca.crl", RevocationProbeOutcome.Valid),
+                Probe(RevocationUrlKind.Crl, "http://crl2.microsoft.com/pkiops/crl/ca.crl", Enum.Parse<RevocationProbeOutcome>(crl2OutcomeName)))
+        };
+
+        var outcome = RevocationAnalysis.Assess(tiers, authoritativeRoute: true);
+
+        Assert.AreEqual("Info", outcome.Status);
+        StringAssert.Contains(outcome.Summary, "not in the AVD endpoint list");
+        StringAssert.Contains(outcome.Summary, "crl2.microsoft.com");
+        StringAssert.Contains(outcome.Remediation!, "no action is required");
+    }
+
+    [TestMethod]
+    public void PublishedAndUnpublishedFailuresTogetherStillWarn()
+    {
+        var tiers = new[]
+        {
+            Tier("Microsoft TLS G2 RSA CA OCSP 10",
+                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.Blocked),
+                Probe(RevocationUrlKind.Crl, "http://www.microsoft.com/pkiops/crl/ca.crl", RevocationProbeOutcome.Valid),
+                Probe(RevocationUrlKind.Crl, "http://crl2.microsoft.com/pkiops/crl/ca.crl", RevocationProbeOutcome.Blocked))
+        };
+
+        Assert.AreEqual("Warning", RevocationAnalysis.Assess(tiers, authoritativeRoute: true).Status);
+    }
+
+    [TestMethod]
+    public void PartialDigiCertFailureStillWarnsBecauseItIsPublished()
+    {
+        var tiers = new[]
+        {
+            Tier("DigiCert Global Root G2",
+                Probe(RevocationUrlKind.Ocsp, "http://ocsp.digicert.com", RevocationProbeOutcome.Blocked),
+                Probe(RevocationUrlKind.Crl, "http://crl3.digicert.com/DigiCertGlobalRootG2.crl", RevocationProbeOutcome.Valid))
+        };
+
+        Assert.AreEqual("Warning", RevocationAnalysis.Assess(tiers, authoritativeRoute: true).Status);
+    }
+
+    [DataTestMethod]
+    [DataRow("oneocsp.microsoft.com", "Required")]
+    [DataRow("WWW.MICROSOFT.COM", "Required")]
+    [DataRow("eus.aikcertaia.microsoft.com", "Required")]
+    [DataRow("crl3.digicert.com", "Optional")]
+    [DataRow("crl2.microsoft.com", "NotListed")]
+    [DataRow("caissuers.microsoft.com", "NotListed")]
+    [DataRow("evil-digicert.com", "NotListed")]
+    public void ClassifiesHostsAgainstTheAvdList(string host, string expected)
+    {
+        Assert.AreEqual(Enum.Parse<RevocationAnalysis.AvdListing>(expected), RevocationAnalysis.ClassifyAvdListing(host));
     }
 
     [TestMethod]
