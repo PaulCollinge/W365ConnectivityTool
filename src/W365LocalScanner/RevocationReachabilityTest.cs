@@ -67,7 +67,11 @@ partial class Program
                 return errors == SslPolicyErrors.None;
             }
 
-            HttpClient ClientFor(Uri uri, out string routeLabel)
+            // Chain collection may authenticate to the proxy as the signed-in
+            // user (it only fetches public certificates). Revocation probes
+            // must not: SYSTEM services cannot use the user's proxy
+            // credentials, so a 407 there is a real finding.
+            HttpClient ClientFor(Uri uri, bool authenticate, out string routeLabel)
             {
                 Uri? proxy;
                 if (winHttp.Available)
@@ -87,7 +91,7 @@ partial class Program
                         : "direct") + ", invoking-user route";
                 }
 
-                var key = proxy?.AbsoluteUri ?? "direct";
+                var key = (proxy?.AbsoluteUri ?? "direct") + (authenticate ? "|auth" : "|anon");
                 lock (clients)
                 {
                     if (clients.TryGetValue(key, out var existing))
@@ -100,7 +104,7 @@ partial class Program
                         ServerCertificateCustomValidationCallback = CaptureChain
                     };
                     if (proxy != null)
-                        handler.Proxy = new WebProxy(proxy) { Credentials = CredentialCache.DefaultCredentials };
+                        handler.Proxy = new WebProxy(proxy) { Credentials = authenticate ? CredentialCache.DefaultCredentials : null };
                     else
                         handler.UseProxy = false;
 
@@ -130,7 +134,7 @@ partial class Program
                     try
                     {
                         var uri = new Uri($"https://{host}/");
-                        var client = ClientFor(uri, out var route);
+                        var client = ClientFor(uri, authenticate: true, out var route);
                         using var cts = new CancellationTokenSource(RevocationProbeTimeoutMs);
                         using var request = new HttpRequestMessage(HttpMethod.Head, uri);
                         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
@@ -193,15 +197,23 @@ partial class Program
 
             // ── 3. Probe each unique URL on the machine route ──
             var probeCache = new ConcurrentDictionary<string, Lazy<Task<RevocationProbeResult>>>(StringComparer.Ordinal);
-            using var probeGate = new SemaphoreSlim(6);
+            using var probeGate = new SemaphoreSlim(8);
 
-            async Task<RevocationProbeResult> FetchAsync(
+            // A proxy that silently drops a host drops every URL on it. Probe
+            // each host once while its state is unknown, and reuse a
+            // connection-level failure (timeout / unreachable) for the other
+            // URLs on that host instead of paying the timeout per URL.
+            // Content-level blocks stay per-URL because proxies filter paths.
+            var routeHosts = new HostProbeMemo<RevocationProbeResult>();
+            var nativeHosts = new HostProbeMemo<NativeFetchResult>();
+
+            async Task<RevocationProbeResult> FetchOnRouteAsync(
                 Uri uri,
                 byte[]? ocspRequest,
                 Func<int, string?, byte[], RevocationProbeResult> classify)
             {
                 await probeGate.WaitAsync();
-                var client = ClientFor(uri, out var route);
+                var client = ClientFor(uri, authenticate: false, out var route);
                 var stopwatch = Stopwatch.StartNew();
                 try
                 {
@@ -233,6 +245,30 @@ partial class Program
                 }
             }
 
+            Task<RevocationProbeResult> FetchAsync(
+                Uri uri,
+                byte[]? ocspRequest,
+                Func<int, string?, byte[], RevocationProbeResult> classify) =>
+                routeHosts.RunAsync(
+                    uri.Host,
+                    () => FetchOnRouteAsync(uri, ocspRequest, classify),
+                    r => r.Outcome == RevocationProbeOutcome.Valid,
+                    r => r.Outcome is RevocationProbeOutcome.Timeout or RevocationProbeOutcome.Unreachable,
+                    r => r with { Detail = $"{r.Detail} [same host as an earlier request; not retried]" });
+
+            async Task<NativeFetchResult> FetchNativeAsync(Uri uri)
+            {
+                await probeGate.WaitAsync();
+                try
+                {
+                    return await nativeFetch!(uri, RevocationProbeTimeoutMs);
+                }
+                finally
+                {
+                    probeGate.Release();
+                }
+            }
+
             // A failure on the static WinHTTP route may only mean Windows
             // reaches the URL another way (WPAD/PAC). Ask Windows' own
             // certificate retrieval before reporting a block, so the result
@@ -247,25 +283,40 @@ partial class Program
                     return routed;
 
                 var nativeUri = ocspRequest == null ? uri : RevocationAnalysis.BuildOcspGetUri(uri, ocspRequest);
-                NativeFetchResult native;
-                await probeGate.WaitAsync();
-                try
-                {
-                    native = await nativeFetch(nativeUri, RevocationProbeTimeoutMs);
-                }
-                finally
-                {
-                    probeGate.Release();
-                }
+                var native = await nativeHosts.RunAsync(
+                    nativeUri.Host,
+                    () => FetchNativeAsync(nativeUri),
+                    n => n.Success,
+                    n => !n.Success && NativeCertificateRetrieval.IsConnectionFailure(n.Error),
+                    n => n with { Error = $"{n.Error} [same host as an earlier request; not retried]" });
 
                 if (!native.Success)
                     return routed with { Detail = $"{routed.Detail}; Windows certificate retrieval (cryptnet) also failed: {native.Error}" };
 
                 var confirmed = classify(200, null, native.Body);
-                return confirmed.Outcome == RevocationProbeOutcome.Valid
-                    ? new(RevocationProbeOutcome.Valid,
-                        $"{confirmed.Detail} by Windows certificate retrieval (cryptnet, which applies WPAD/PAC); the static machine WinHTTP route failed: {routed.Detail}")
-                    : routed with { Detail = $"{routed.Detail}; Windows certificate retrieval (cryptnet) also returned non-revocation data: {confirmed.Detail}" };
+                if (confirmed.Outcome != RevocationProbeOutcome.Valid)
+                    return routed with { Detail = $"{routed.Detail}; Windows certificate retrieval (cryptnet) also returned non-revocation data: {confirmed.Detail}" };
+
+                // cryptnet ran as the signed-in user, so its success proves
+                // reachability with the user's proxy settings/credentials, not
+                // for SYSTEM services.
+                var why = routed.Detail.Contains("HTTP 407", StringComparison.Ordinal)
+                    ? "with the signed-in user's proxy credentials; the machine route requires proxy authentication, which SYSTEM services can only answer as the computer account"
+                    : "with the signed-in user's proxy settings (PAC/WPAD); the static machine WinHTTP route failed";
+                return new(RevocationProbeOutcome.UserContextOnly,
+                    $"{confirmed.Detail} by Windows certificate retrieval {why}: {routed.Detail}");
+            }
+
+            static async Task<RevocationProbeResult> NeverThrowAsync(Func<Task<RevocationProbeResult>> probe)
+            {
+                try
+                {
+                    return await probe();
+                }
+                catch (Exception ex)
+                {
+                    return new(RevocationProbeOutcome.Unreachable, $"probe could not be performed: {ex.Message}");
+                }
             }
 
             Task<RevocationProbeResult> Probe(RevocationTarget target, RevocationUrl url)
@@ -275,7 +326,7 @@ partial class Program
                     RevocationUrlKind.Ocsp => $"ocsp|{url.Uri.AbsoluteUri}|{target.Issuer.Thumbprint}",
                     _ => $"{url.Kind}|{url.Uri.AbsoluteUri}"
                 };
-                return probeCache.GetOrAdd(cacheKey, _ => new Lazy<Task<RevocationProbeResult>>(() => url.Kind switch
+                return probeCache.GetOrAdd(cacheKey, _ => new Lazy<Task<RevocationProbeResult>>(() => NeverThrowAsync(() => url.Kind switch
                 {
                     RevocationUrlKind.Ocsp => FetchWithCrossCheckAsync(url.Uri,
                         RevocationAnalysis.BuildOcspRequest(target.Subject, target.Issuer),
@@ -284,7 +335,7 @@ partial class Program
                         (status, type, body) => RevocationAnalysis.ClassifyCrlResponse(status, type, body, target.Issuer.SubjectName)),
                     _ => FetchAsync(url.Uri, null,
                         (status, type, body) => RevocationAnalysis.ClassifyIssuerCertificateResponse(status, type, body, target.Issuer.SubjectName))
-                })).Value;
+                }))).Value;
             }
 
             var tierTasks = targets.Values.Select(async target =>
@@ -318,7 +369,7 @@ partial class Program
                 foreach (var (url, probe) in tier.Probes.OrderBy(p => p.Url.Kind))
                 {
                     var glyph = probe.Outcome == RevocationProbeOutcome.Valid ? "\u2714"
-                        : url.Kind == RevocationUrlKind.CaIssuers ? "\u2139"
+                        : url.Kind == RevocationUrlKind.CaIssuers || probe.Outcome == RevocationProbeOutcome.UserContextOnly ? "\u2139"
                         : "\u2718";
                     var label = url.Kind switch
                     {
@@ -346,7 +397,12 @@ partial class Program
                 foreach (var host in hostStates)
                 {
                     bool ok = host.All(p => p.Result.Outcome == RevocationProbeOutcome.Valid);
-                    sb.AppendLine($"  {(ok ? "\u2714" : "\u2718")} {host.Key}{(ok ? "" : " \u2014 unreachable on this route")}");
+                    bool userOnly = !ok && host.All(p => p.Result.Outcome is RevocationProbeOutcome.Valid or RevocationProbeOutcome.UserContextOnly);
+                    sb.AppendLine(ok
+                        ? $"  \u2714 {host.Key}"
+                        : userOnly
+                            ? $"  \u2139 {host.Key} \u2014 reachable only with the signed-in user's proxy context"
+                            : $"  \u2718 {host.Key} \u2014 unreachable on this route");
                 }
             }
 

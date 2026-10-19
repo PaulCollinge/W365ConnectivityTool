@@ -186,7 +186,27 @@ public sealed class RevocationAnalysisTests
 
         Assert.AreEqual("Warning", outcome.Status);
         StringAssert.Contains(outcome.Summary, "crl2.microsoft.com");
-        StringAssert.Contains(outcome.Summary, "still has one working method");
+        StringAssert.Contains(outcome.Summary, "still has one method working on the machine route");
+    }
+
+    [TestMethod]
+    public void UserContextOnlyMethodDoesNotKeepACaOnlineForSystem()
+    {
+        // Reviewer scenario: OCSP 407 then cryptnet succeeds as the user; the
+        // CRL host is silently dropped. SYSTEM has no verified method.
+        var tiers = new[]
+        {
+            Tier("Microsoft TLS G2 RSA CA OCSP 10",
+                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.UserContextOnly),
+                Probe(RevocationUrlKind.Crl, "http://crl2.microsoft.com/pkiops/crl/ca.crl", RevocationProbeOutcome.Timeout))
+        };
+
+        var outcome = RevocationAnalysis.Assess(tiers, authoritativeRoute: true);
+
+        Assert.AreEqual("Warning", outcome.Status);
+        StringAssert.Contains(outcome.Summary, "offline for 1 issuing CA");
+        StringAssert.Contains(outcome.Summary, "reachable only in this user's proxy context: oneocsp.microsoft.com");
+        StringAssert.Contains(outcome.Remediation!, "oneocsp.microsoft.com worked only with the signed-in user");
     }
 
     [TestMethod]
@@ -280,6 +300,80 @@ public sealed class RevocationAnalysisTests
         Assert.AreEqual(expected, NativeCertificateRetrieval.DescribeError(error));
     }
 
+    [TestMethod]
+    public void PaddedSerialNumberDoesNotBreakOcspRequest()
+    {
+        using var ca = CreateCertificateAuthority("CN=Padded Serial Issuer");
+        using var leaf = CreateLeaf(ca, "CN=padded.example", serial: [0x00, 0x05, 0x33, 0x44]);
+
+        var request = RevocationAnalysis.BuildOcspRequest(leaf, ca);
+
+        var certId = new AsnReader(request, AsnEncodingRules.DER)
+            .ReadSequence().ReadSequence().ReadSequence().ReadSequence().ReadSequence();
+        certId.ReadSequence();
+        certId.ReadOctetString();
+        certId.ReadOctetString();
+        CollectionAssert.AreEqual(new byte[] { 0x05, 0x33, 0x44 }, certId.ReadIntegerBytes().ToArray());
+    }
+
+    [DataTestMethod]
+    [DataRow(new byte[] { 0x00, 0x05 }, new byte[] { 0x05 })]
+    [DataRow(new byte[] { 0x00, 0x85 }, new byte[] { 0x00, 0x85 })]
+    [DataRow(new byte[] { 0xFF, 0xFF, 0x85 }, new byte[] { 0x85 })]
+    [DataRow(new byte[] { 0x00 }, new byte[] { 0x00 })]
+    public void MinimalSignedIntegerStripsOnlyRedundantPadding(byte[] input, byte[] expected)
+    {
+        CollectionAssert.AreEqual(expected, RevocationAnalysis.MinimalSignedInteger(input).ToArray());
+    }
+
+    [TestMethod]
+    public void HostileCrlLengthsAreRejectedNotThrown()
+    {
+        var hostile = new byte[] { 0x30, 0x10, 0x30, 0x0E, 0x30, 0x84, 0x7F, 0xFF, 0xFF, 0xF5, 0x30, 0x84, 0x7F, 0xFF, 0xFF, 0xFF, 0x00, 0x00 };
+
+        Assert.IsFalse(RevocationAnalysis.TryReadCrlIssuer(hostile, out _));
+        Assert.AreEqual(RevocationProbeOutcome.Blocked,
+            RevocationAnalysis.ClassifyCrlResponse(200, null, hostile, new X500DistinguishedName("CN=x")).Outcome);
+    }
+
+    [TestMethod]
+    public void UserContextOnlyReachabilityIsInfoNotPassOrWarning()
+    {
+        var tiers = new[]
+        {
+            Tier("DigiCert Global Root G2",
+                Probe(RevocationUrlKind.Ocsp, "http://ocsp.digicert.com", RevocationProbeOutcome.UserContextOnly),
+                Probe(RevocationUrlKind.Crl, "http://crl3.digicert.com/DigiCertGlobalRootG2.crl", RevocationProbeOutcome.UserContextOnly)),
+            Tier("Microsoft TLS RSA Root G2",
+                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.Valid))
+        };
+
+        var outcome = RevocationAnalysis.Assess(tiers, authoritativeRoute: true);
+
+        Assert.AreEqual("Info", outcome.Status);
+        StringAssert.Contains(outcome.Summary, "crl3.digicert.com, ocsp.digicert.com");
+        StringAssert.Contains(outcome.Remediation!, "SYSTEM");
+    }
+
+    [TestMethod]
+    public void RealFailureStillWarnsWhenOtherHostsAreUserContextOnly()
+    {
+        var tiers = new[]
+        {
+            Tier("DigiCert Global Root G2",
+                Probe(RevocationUrlKind.Ocsp, "http://ocsp.digicert.com", RevocationProbeOutcome.Blocked),
+                Probe(RevocationUrlKind.Crl, "http://crl3.digicert.com/DigiCertGlobalRootG2.crl", RevocationProbeOutcome.Blocked)),
+            Tier("Microsoft TLS RSA Root G2",
+                Probe(RevocationUrlKind.Ocsp, "http://oneocsp.microsoft.com/ocsp", RevocationProbeOutcome.UserContextOnly))
+        };
+
+        var outcome = RevocationAnalysis.Assess(tiers, authoritativeRoute: true);
+
+        Assert.AreEqual("Warning", outcome.Status);
+        StringAssert.Contains(outcome.Summary, "(crl3.digicert.com, ocsp.digicert.com)");
+        StringAssert.Contains(outcome.Summary, "reachable only in this user's proxy context: oneocsp.microsoft.com");
+    }
+
     private static RevocationTier Tier(string issuer, params (RevocationUrl, RevocationProbeResult)[] probes) =>
         new(issuer, ["example.host"], probes);
 
@@ -302,7 +396,8 @@ public sealed class RevocationAnalysisTests
         string subject,
         string[]? crlUrls = null,
         string[]? ocspUrls = null,
-        string[]? caIssuerUrls = null)
+        string[]? caIssuerUrls = null,
+        byte[]? serial = null)
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var request = new CertificateRequest(subject, key, HashAlgorithmName.SHA256);
@@ -310,7 +405,7 @@ public sealed class RevocationAnalysisTests
             request.CertificateExtensions.Add(CertificateRevocationListBuilder.BuildCrlDistributionPointExtension(crlUrls));
         if (ocspUrls != null || caIssuerUrls != null)
             request.CertificateExtensions.Add(new X509AuthorityInformationAccessExtension(ocspUrls, caIssuerUrls));
-        var serial = new byte[] { 0x01, 0x23, 0x45, 0x67, 0x89 };
+        serial ??= new byte[] { 0x01, 0x23, 0x45, 0x67, 0x89 };
         return request.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30), serial);
     }
 

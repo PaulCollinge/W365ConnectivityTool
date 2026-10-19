@@ -116,9 +116,43 @@ public sealed class RevocationReachabilityLiveTests
 
         var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), NativeCertificateRetrieval.FetchAsync);
 
-        Assert.AreEqual("Passed", result.Status, result.DetailedInfo);
-        StringAssert.Contains(result.DetailedInfo, "by Windows certificate retrieval (cryptnet");
-        StringAssert.Contains(result.DetailedInfo, "the static machine WinHTTP route failed");
+        Assert.AreEqual("Info", result.Status, result.DetailedInfo);
+        StringAssert.Contains(result.ResultValue, "only with this user's proxy context");
+        StringAssert.Contains(result.DetailedInfo, "with the signed-in user's proxy settings (PAC/WPAD)");
+    }
+
+    [TestMethod]
+    public async Task ProxyAuthenticationOnRevocationHostsIsAFindingAndNoCredentialsAreSent()
+    {
+        RequireLive();
+        using var proxy = new MiniHttpProxy(host =>
+            host.EndsWith("digicert.com", StringComparison.OrdinalIgnoreCase)
+                ? ProxyPolicy.RequireAuth
+                : ProxyPolicy.Forward);
+
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsAlsoBlocked);
+
+        Assert.AreEqual("Warning", result.Status, result.DetailedInfo);
+        StringAssert.Contains(result.DetailedInfo, "HTTP 407");
+        Assert.IsFalse(
+            proxy.Requests.Any(r => r.Contains("digicert.com") && r.Contains("+credentials")),
+            "revocation probes must not authenticate as the user: " + string.Join("; ", proxy.Requests));
+    }
+
+    [TestMethod]
+    public async Task ProxyAuthenticationSatisfiedOnlyByUserIsInfoNotPass()
+    {
+        RequireLive();
+        using var proxy = new MiniHttpProxy(host =>
+            host.EndsWith("digicert.com", StringComparison.OrdinalIgnoreCase)
+                ? ProxyPolicy.RequireAuth
+                : ProxyPolicy.Forward);
+
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), NativeCertificateRetrieval.FetchAsync);
+
+        Assert.AreEqual("Info", result.Status, result.DetailedInfo);
+        StringAssert.Contains(result.DetailedInfo, "with the signed-in user's proxy credentials");
+        StringAssert.Contains(result.DetailedInfo, "\u2139 ocsp.digicert.com");
     }
 
     [TestMethod]
@@ -151,6 +185,52 @@ public sealed class RevocationReachabilityLiveTests
 
         Assert.IsFalse(result.Success);
         Assert.IsFalse(string.IsNullOrWhiteSpace(result.Error));
+    }
+
+    [TestMethod]
+    public async Task WorstCaseRevocationBlackholeStaysBounded()
+    {
+        // Proxy silently drops all revocation hosts AND Windows retrieval
+        // also times out: every URL costs a full route timeout plus a full
+        // native timeout. The test must still finish in bounded time.
+        RequireLive();
+        using var proxy = new MiniHttpProxy(host =>
+            host.Contains("ocsp", StringComparison.OrdinalIgnoreCase)
+            || host.StartsWith("crl", StringComparison.OrdinalIgnoreCase)
+            || host.Contains("cacerts", StringComparison.OrdinalIgnoreCase)
+            || host.Contains("caissuers", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("www.microsoft.com", StringComparison.OrdinalIgnoreCase)
+                ? ProxyPolicy.Blackhole
+                : ProxyPolicy.Forward);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsTimesOut);
+        stopwatch.Stop();
+
+        Console.WriteLine($"WORST-CASE revocation blackhole: {stopwatch.Elapsed.TotalSeconds:F1}s, {result.Status}: {result.ResultValue}");
+        Assert.AreEqual("Warning", result.Status, result.DetailedInfo);
+        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(60), $"took {stopwatch.Elapsed}");
+    }
+
+    [TestMethod]
+    public async Task WorstCaseEverythingBlackholedStaysBounded()
+    {
+        RequireLive();
+        using var proxy = new MiniHttpProxy(_ => ProxyPolicy.Blackhole);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsTimesOut);
+        stopwatch.Stop();
+
+        Console.WriteLine($"WORST-CASE total blackhole: {stopwatch.Elapsed.TotalSeconds:F1}s, {result.Status}: {result.ResultValue}");
+        Assert.AreEqual("Info", result.Status, result.DetailedInfo);
+        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(60), $"took {stopwatch.Elapsed}");
+    }
+
+    private static async Task<NativeFetchResult> WindowsTimesOut(Uri uri, int timeoutMs)
+    {
+        await Task.Delay(timeoutMs);
+        return new NativeFetchResult(false, [], "timed out");
     }
 
     private static Task<NativeFetchResult> WindowsAlsoBlocked(Uri uri, int timeoutMs) =>

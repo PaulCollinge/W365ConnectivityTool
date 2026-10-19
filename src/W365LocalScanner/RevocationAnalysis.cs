@@ -16,6 +16,9 @@ internal sealed record RevocationUrl(RevocationUrlKind Kind, Uri Uri);
 internal enum RevocationProbeOutcome
 {
     Valid,
+    // Reachable only via Windows retrieval in the scanner's user context
+    // (user proxy credentials or user PAC/WPAD); the machine route failed.
+    UserContextOnly,
     Blocked,
     Timeout,
     Unreachable
@@ -158,9 +161,22 @@ internal static class RevocationAnalysis
             }
             writer.WriteOctetString(issuerNameHash);
             writer.WriteOctetString(issuerKeyHash);
-            writer.WriteInteger(subject.SerialNumberBytes.Span);
+            writer.WriteInteger(MinimalSignedInteger(subject.SerialNumberBytes.Span));
         }
         return writer.Encode();
+    }
+
+    /// <summary>
+    /// Some CAs issue serials with redundant leading 0x00/0xFF bytes, which
+    /// Windows accepts but DER (and AsnWriter) does not. Strip the padding:
+    /// the integer value, which the responder matches on, is unchanged.
+    /// </summary>
+    internal static ReadOnlySpan<byte> MinimalSignedInteger(ReadOnlySpan<byte> value)
+    {
+        while (value.Length > 1
+               && ((value[0] == 0x00 && value[1] < 0x80) || (value[0] == 0xFF && value[1] >= 0x80)))
+            value = value[1..];
+        return value;
     }
 
     /// <summary>
@@ -251,17 +267,19 @@ internal static class RevocationAnalysis
 
         if (position < data.Length && data[position] == 0x02)
         {
-            if (!TryReadHeader(data, position, 0x02, out int versionContent, out int versionLength))
+            if (!TryReadHeader(data, position, 0x02, out int versionContent, out int versionLength)
+                || versionLength > data.Length - versionContent)
                 return false;
             position = versionContent + versionLength;
         }
 
-        if (!TryReadHeader(data, position, 0x30, out int algorithmContent, out int algorithmLength))
+        if (!TryReadHeader(data, position, 0x30, out int algorithmContent, out int algorithmLength)
+            || algorithmLength > data.Length - algorithmContent)
             return false;
         position = algorithmContent + algorithmLength;
 
         if (!TryReadHeader(data, position, 0x30, out int issuerContent, out int issuerLength)
-            || issuerContent + issuerLength > data.Length)
+            || issuerLength > data.Length - issuerContent)
             return false;
 
         try
@@ -284,7 +302,7 @@ internal static class RevocationAnalysis
     {
         contentOffset = 0;
         length = 0;
-        if (offset < 0 || offset + 2 > data.Length || data[offset] != expectedTag)
+        if (offset < 0 || offset > data.Length - 2 || data[offset] != expectedTag)
             return false;
 
         int position = offset + 1;
@@ -387,32 +405,57 @@ internal static class RevocationAnalysis
         static bool IsRevocation((RevocationUrl Url, RevocationProbeResult Result) p) =>
             p.Url.Kind != RevocationUrlKind.CaIssuers;
 
+        static bool Works(RevocationProbeOutcome outcome) =>
+            outcome is RevocationProbeOutcome.Valid or RevocationProbeOutcome.UserContextOnly;
+
+        static List<string> HostsWhere(
+            IEnumerable<RevocationTier> source,
+            Func<RevocationProbeOutcome, bool> predicate) =>
+            source
+                .SelectMany(t => t.Probes.Where(IsRevocation))
+                .Where(p => predicate(p.Result.Outcome))
+                .Select(p => p.Url.Uri.Host)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(h => h, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        // "Offline" means no method verified on the machine route: a
+        // user-context-only success does not vouch for SYSTEM services.
         var offline = checkedTiers
             .Where(t => !t.Probes.Where(IsRevocation).Any(p => p.Result.Outcome == RevocationProbeOutcome.Valid))
             .ToList();
-        var failedHosts = checkedTiers
-            .SelectMany(t => t.Probes.Where(IsRevocation))
-            .Where(p => p.Result.Outcome != RevocationProbeOutcome.Valid)
-            .Select(p => p.Url.Uri.Host)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(h => h, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var failedHosts = HostsWhere(checkedTiers, o => !Works(o));
+        var userContextHosts = HostsWhere(checkedTiers, o => o == RevocationProbeOutcome.UserContextOnly);
         bool anyTimeout = checkedTiers
             .SelectMany(t => t.Probes.Where(IsRevocation))
             .Any(p => p.Result.Outcome == RevocationProbeOutcome.Timeout);
 
-        if (failedHosts.Count == 0)
+        if (failedHosts.Count == 0 && userContextHosts.Count == 0)
         {
             return new("Passed",
                 $"All revocation endpoints reachable for {checkedTiers.Count} issuing CA(s) in the sampled certificate chains");
         }
 
+        if (failedHosts.Count == 0)
+        {
+            var userHostList = string.Join(", ", userContextHosts);
+            return new("Info",
+                $"Revocation endpoints reachable, but only with this user's proxy context for {userHostList}; the machine WinHTTP route failed, so SYSTEM services are unverified",
+                $"Windows reached {userHostList} with the signed-in user's proxy settings or credentials, which SYSTEM services (AVD agent, Windows Update) do not use. " +
+                "Verify from SYSTEM context (for example a scheduled task running 'certutil -URL <url>' as SYSTEM), and either route these hosts through the machine WinHTTP proxy or exempt them from proxy authentication.");
+        }
+
         var hostList = string.Join(", ", failedHosts);
+        var userSuffix = userContextHosts.Count > 0
+            ? $"; reachable only in this user's proxy context: {string.Join(", ", userContextHosts)}"
+            : "";
         var remediation =
             $"Allow outbound HTTP (TCP 80) from session hosts to: {hostList}. These hosts are derived from the certificates the AVD and Arc endpoints actually present; " +
             "the AVD list documents *.digicert.com:80 as optional, but Windows uses these hosts to check revocation of every Microsoft TLS chain sampled.";
         if (anyTimeout)
             remediation += " At least one request timed out instead of being refused: Windows waits up to 15 seconds per unreachable revocation URL, which can stall TLS connections. A fast deny is far less disruptive than a silent drop.";
+        if (userContextHosts.Count > 0)
+            remediation += $" {string.Join(", ", userContextHosts)} worked only with the signed-in user's proxy settings or credentials, which SYSTEM services do not use: route them through the machine WinHTTP proxy or exempt them from proxy authentication, then verify as SYSTEM.";
 
         if (!authoritativeRoute)
         {
@@ -424,12 +467,12 @@ internal static class RevocationAnalysis
         if (offline.Count > 0)
         {
             return new("Warning",
-                $"Certificate revocation offline for {offline.Count} issuing CA(s) — neither OCSP nor CRL reachable ({hostList})",
+                $"Certificate revocation offline for {offline.Count} issuing CA(s) on the machine route — neither OCSP nor CRL reachable ({hostList}){userSuffix}",
                 remediation);
         }
 
         return new("Warning",
-            $"{failedHosts.Count} revocation host(s) unreachable ({hostList}); every issuing CA still has one working method",
+            $"{failedHosts.Count} revocation host(s) unreachable ({hostList}){userSuffix}; every issuing CA still has one method working on the machine route",
             remediation);
     }
 }
