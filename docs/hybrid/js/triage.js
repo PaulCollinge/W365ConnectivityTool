@@ -97,6 +97,8 @@ function triageNormalizeHost(raw) {
     value = value.replace(/^[^@]*@/, '');
     value = value.replace(/:\d+$/, '');
     value = value.replace(/\.$/, '');
+    // Squid-style ".example.com" domain rules mean "example.com and below".
+    if (/^\.[a-z0-9]/.test(value)) value = '*' + value;
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return null;
     if (!/^(\*\.)?[a-z0-9*][a-z0-9*.-]*\.[a-z0-9-]+$/.test(value)) return null;
     return value;
@@ -116,7 +118,8 @@ function triageParseInput(text) {
 }
 
 // Revocation hosts the imported C-PKI-01 result actually measured, with the
-// per-host outcome (true = reachable on the session host's machine route).
+// per-host outcome: true = reachable on the session host's machine route,
+// false = unreachable, 'user' = reachable only with the user's proxy context.
 function triageRevocationHostsFromResults(results) {
     const hosts = new Map();
     const pki = (results || []).find(r => r && r.id === 'C-PKI-01');
@@ -125,10 +128,21 @@ function triageRevocationHostsFromResults(results) {
     for (const line of pki.detailedInfo.split('\n')) {
         if (/Revocation hosts used by these chains/i.test(line)) { inSection = true; continue; }
         if (inSection && /\u2550\u2550/.test(line)) break;
-        const match = inSection && line.match(/^\s*([\u2714\u2718])\s+([a-z0-9.-]+)/i);
-        if (match) hosts.set(match[2].toLowerCase(), match[1] === '\u2714');
+        const match = inSection && line.match(/^\s*([\u2714\u2718\u2139])\s+([a-z0-9.-]+)/i);
+        if (match) hosts.set(match[2].toLowerCase(), match[1] === '\u2714' ? true : match[1] === '\u2718' ? false : 'user');
     }
     return hosts;
+}
+
+// Catalog entries a wildcard rule would also block, e.g. "*.windows.net"
+// covers pas.windows.net and *.prod.warm.ingest.monitor.core.windows.net.
+function triageCoveredEntries(wildcardHost) {
+    const suffix = wildcardHost.slice(2);
+    return TRIAGE_CATALOG.filter(entry => {
+        const shown = (entry.display || (typeof entry.pattern === 'string' ? entry.pattern : '')).toLowerCase();
+        const bare = shown.replace(/^\*\./, '');
+        return bare.endsWith('.' + suffix) || (bare === suffix && shown !== wildcardHost);
+    });
 }
 
 function triageClassify(host, measuredRevocationHosts) {
@@ -140,6 +154,21 @@ function triageClassify(host, measuredRevocationHosts) {
     const matches = TRIAGE_CATALOG.filter(entry => triageMatches(entry, probe));
     matches.sort((a, b) => TRIAGE_CATEGORIES[a.category].rank - TRIAGE_CATEGORIES[b.category].rank);
     let entry = matches[0];
+
+    if (host.startsWith('*.')) {
+        const covered = triageCoveredEntries(host)
+            .sort((a, b) => TRIAGE_CATEGORIES[a.category].rank - TRIAGE_CATEGORIES[b.category].rank);
+        if (covered.length > 0 && (!entry || TRIAGE_CATEGORIES[covered[0].category].rank < TRIAGE_CATEGORIES[entry.category].rank)) {
+            const names = covered.slice(0, 6).map(e => e.display || e.pattern);
+            const more = covered.length > names.length ? ` and ${covered.length - names.length} more` : '';
+            entry = {
+                category: covered[0].category,
+                display: host,
+                purpose: `This rule also covers ${covered.length} catalogued endpoint(s): ${names.join(', ')}${more}.`,
+                advice: 'Blocking a parent-domain wildcard blocks every endpoint listed. Exempt those endpoints from the rule rather than allowing the whole domain.'
+            };
+        }
+    }
 
     if (measured !== undefined && (!entry || TRIAGE_CATEGORIES[entry.category].rank > TRIAGE_CATEGORIES.revocation.rank)) {
         entry = {
@@ -163,6 +192,7 @@ function triageClassify(host, measuredRevocationHosts) {
     let advice = entry.advice || '';
     if (measured === true) advice = 'Reachable from this session host in the imported C-PKI-01 scan. ' + advice;
     if (measured === false) advice = 'Unreachable from this session host in the imported C-PKI-01 scan \u2014 likely the block in this log. ' + advice;
+    if (measured === 'user') advice = 'Reachable from this session host only with the signed-in user\u2019s proxy context in the imported C-PKI-01 scan \u2014 SYSTEM services may still be blocked. ' + advice;
 
     return {
         host,
