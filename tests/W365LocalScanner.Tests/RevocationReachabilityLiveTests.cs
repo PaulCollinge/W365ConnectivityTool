@@ -55,6 +55,24 @@ public sealed class RevocationReachabilityLiveTests
     }
 
     [TestMethod]
+    public async Task OnlyUnpublishedBackupHostsBlockedIsInfoNotWarning()
+    {
+        RequireLive();
+        using var proxy = new MiniHttpProxy(host =>
+            host.Equals("crl2.microsoft.com", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("caissuers.microsoft.com", StringComparison.OrdinalIgnoreCase)
+                ? ProxyPolicy.BlockPage200
+                : ProxyPolicy.Forward);
+
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsAlsoBlocked);
+
+        Assert.AreEqual("Info", result.Status, result.DetailedInfo);
+        StringAssert.Contains(result.ResultValue, "not in the AVD endpoint list");
+        StringAssert.Contains(result.DetailedInfo, "\u2718 crl2.microsoft.com [not in AVD list; backup location]");
+        StringAssert.Contains(result.DetailedInfo, "\u2714 oneocsp.microsoft.com [AVD required]");
+    }
+
+    [TestMethod]
     public async Task ProxyDenyIsDetected()
     {
         RequireLive();

@@ -46,8 +46,8 @@ const TRIAGE_CATALOG = [
     { pattern: 'azgn*.servicebus.windows.net', category: 'required', purpose: 'Arc notification service' },
     { pattern: 'download.microsoft.com', category: 'required', purpose: 'Arc agent installer (install and automatic upgrade)' },
     // Certificate revocation hosts used by the chains of the required endpoints
-    { pattern: 'crl2.microsoft.com', category: 'revocation', purpose: 'CRLs for Microsoft TLS G2 CAs (not in the AVD list, but referenced by the required endpoints\u2019 certificates)' },
-    { pattern: 'caissuers.microsoft.com', category: 'revocation', purpose: 'Issuer certificates for Microsoft TLS G2 CAs (fetched only if a server omits an intermediate)' },
+    { pattern: 'crl2.microsoft.com', category: 'optional', purpose: 'Backup CRL location named in Microsoft TLS certificates; not in the AVD endpoint list. Windows uses it only if oneocsp.microsoft.com and www.microsoft.com fail, so it is not required while those are allowed' },
+    { pattern: 'caissuers.microsoft.com', category: 'optional', purpose: 'Backup issuer-certificate location named in Microsoft TLS certificates; not in the AVD endpoint list. Only used if a server omits an intermediate and www.microsoft.com is unavailable' },
     { pattern: '*.digicert.com', category: 'revocation', purpose: 'OCSP / CRL for DigiCert Global Root G2/G3 and the Microsoft TLS root cross-certificates. Optional in the AVD list, but every sampled AVD and Arc certificate chain depends on it' },
     // Optional
     { pattern: 'login.windows.net', category: 'optional', purpose: 'Sign-in to Microsoft Online Services and Microsoft 365' },
@@ -170,7 +170,7 @@ function triageClassify(host, measuredRevocationHosts) {
         }
     }
 
-    if (measured !== undefined && (!entry || TRIAGE_CATEGORIES[entry.category].rank > TRIAGE_CATEGORIES.revocation.rank)) {
+    if (measured !== undefined && !entry) {
         entry = {
             category: 'revocation',
             display: host,
