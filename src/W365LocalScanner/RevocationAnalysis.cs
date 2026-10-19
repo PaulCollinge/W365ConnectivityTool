@@ -163,6 +163,17 @@ internal static class RevocationAnalysis
         return writer.Encode();
     }
 
+    /// <summary>
+    /// RFC 6960 Appendix A.1 GET form: the URL-encoded base64 request is
+    /// appended to the responder URL. Used for Windows-native retrieval,
+    /// which (like the chain engine itself) issues OCSP requests over GET.
+    /// </summary>
+    internal static Uri BuildOcspGetUri(Uri responder, byte[] request)
+    {
+        var baseUrl = responder.AbsoluteUri.EndsWith('/') ? responder.AbsoluteUri : responder.AbsoluteUri + "/";
+        return new Uri(baseUrl + Uri.EscapeDataString(Convert.ToBase64String(request)));
+    }
+
     internal static RevocationProbeResult ClassifyOcspResponse(int statusCode, string? contentType, byte[] body)
     {
         if (statusCode != 200)

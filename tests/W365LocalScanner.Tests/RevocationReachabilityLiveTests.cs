@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -19,7 +22,7 @@ public sealed class RevocationReachabilityLiveTests
         RequireLive();
         using var proxy = new MiniHttpProxy(_ => ProxyPolicy.Forward);
 
-        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port));
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsAlsoBlocked);
 
         Assert.AreEqual("Passed", result.Status, result.DetailedInfo);
         StringAssert.Contains(result.DetailedInfo, $"via http://127.0.0.1:{proxy.Port}");
@@ -37,7 +40,7 @@ public sealed class RevocationReachabilityLiveTests
                 ? ProxyPolicy.BlockPage200
                 : ProxyPolicy.Forward);
 
-        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port));
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsAlsoBlocked);
 
         Assert.AreEqual("Warning", result.Status, result.DetailedInfo);
         StringAssert.Contains(result.ResultValue, "offline");
@@ -60,7 +63,7 @@ public sealed class RevocationReachabilityLiveTests
                 ? ProxyPolicy.Deny403
                 : ProxyPolicy.Forward);
 
-        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port));
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsAlsoBlocked);
 
         Assert.AreEqual("Warning", result.Status, result.DetailedInfo);
         StringAssert.Contains(result.DetailedInfo, "HTTP 403");
@@ -76,7 +79,7 @@ public sealed class RevocationReachabilityLiveTests
                 : ProxyPolicy.Forward);
 
         var stopwatch = Stopwatch.StartNew();
-        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port));
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), WindowsAlsoBlocked);
         stopwatch.Stop();
 
         Assert.AreEqual("Warning", result.Status, result.DetailedInfo);
@@ -93,10 +96,77 @@ public sealed class RevocationReachabilityLiveTests
         using (var probe = new MiniHttpProxy(_ => ProxyPolicy.Forward))
             closedPort = probe.Port;
 
-        var result = await Program.RunRevocationReachability(ProxyRoute(closedPort));
+        var result = await Program.RunRevocationReachability(ProxyRoute(closedPort), WindowsAlsoBlocked);
 
         Assert.AreEqual("Info", result.Status, result.DetailedInfo);
         StringAssert.Contains(result.DetailedInfo, "Chains not collected");
+    }
+
+    [TestMethod]
+    public async Task StaticRouteBlockedButWindowsReachesItIsNotReportedAsBlock()
+    {
+        // WPAD/PAC estate: the static WinHTTP route fails, but Windows' own
+        // certificate retrieval (real cryptnet, direct on this machine)
+        // succeeds. That must not be reported as a revocation block.
+        RequireLive();
+        using var proxy = new MiniHttpProxy(host =>
+            host.EndsWith("digicert.com", StringComparison.OrdinalIgnoreCase)
+                ? ProxyPolicy.BlockPage200
+                : ProxyPolicy.Forward);
+
+        var result = await Program.RunRevocationReachability(ProxyRoute(proxy.Port), NativeCertificateRetrieval.FetchAsync);
+
+        Assert.AreEqual("Passed", result.Status, result.DetailedInfo);
+        StringAssert.Contains(result.DetailedInfo, "by Windows certificate retrieval (cryptnet");
+        StringAssert.Contains(result.DetailedInfo, "the static machine WinHTTP route failed");
+    }
+
+    [TestMethod]
+    public async Task WindowsRetrievalFetchesRealCrlAndOcspOverGet()
+    {
+        RequireLive();
+        var (leaf, issuer) = await FetchLeafAndIssuerAsync("login.microsoftonline.com");
+        var ocspUrl = RevocationAnalysis.ExtractUrls(leaf).First(u => u.Kind == RevocationUrlKind.Ocsp).Uri;
+        var crlUrl = RevocationAnalysis.ExtractUrls(leaf).First(u => u.Kind == RevocationUrlKind.Crl).Uri;
+
+        var crl = await NativeCertificateRetrieval.FetchAsync(crlUrl, 10_000);
+        var ocsp = await NativeCertificateRetrieval.FetchAsync(
+            RevocationAnalysis.BuildOcspGetUri(ocspUrl, RevocationAnalysis.BuildOcspRequest(leaf, issuer)), 10_000);
+
+        Assert.IsTrue(crl.Success, crl.Error);
+        Assert.AreEqual(RevocationProbeOutcome.Valid,
+            RevocationAnalysis.ClassifyCrlResponse(200, null, crl.Body, issuer.SubjectName).Outcome);
+        Assert.IsTrue(ocsp.Success, ocsp.Error);
+        var ocspResult = RevocationAnalysis.ClassifyOcspResponse(200, null, ocsp.Body);
+        Assert.AreEqual(RevocationProbeOutcome.Valid, ocspResult.Outcome);
+        StringAssert.Contains(ocspResult.Detail, "successful");
+    }
+
+    [TestMethod]
+    public async Task WindowsRetrievalReportsUnresolvableHost()
+    {
+        RequireLive();
+
+        var result = await NativeCertificateRetrieval.FetchAsync(new Uri("http://w365-nonexistent.invalid/x.crl"), 10_000);
+
+        Assert.IsFalse(result.Success);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(result.Error));
+    }
+
+    private static Task<NativeFetchResult> WindowsAlsoBlocked(Uri uri, int timeoutMs) =>
+        Task.FromResult(new NativeFetchResult(false, [], "HTTP 403 (simulated: Windows retrieval blocked too)"));
+
+    private static async Task<(X509Certificate2 Leaf, X509Certificate2 Issuer)> FetchLeafAndIssuerAsync(string host)
+    {
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(host, 443);
+        using var ssl = new SslStream(tcp.GetStream(), false, (_, _, _, _) => true);
+        await ssl.AuthenticateAsClientAsync(host);
+        var leaf = new X509Certificate2(ssl.RemoteCertificate!);
+        using var chain = new X509Chain();
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        chain.Build(leaf);
+        return (leaf, new X509Certificate2(chain.ChainElements[1].Certificate.RawData));
     }
 
     private static void RequireLive()
