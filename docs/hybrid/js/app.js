@@ -4057,7 +4057,20 @@ async function updateKeyFindings(results) {
         }
     }
 
-    // ── 12. Arc / AVD agent download path ──
+    // ── 12. Certificate revocation endpoints ──
+    const pki = r('C-PKI-01');
+    if (pki && pki.status !== 'NotRun' && pki.status !== 'Pending' && pki.status !== 'Skipped') {
+        if (pki.status === 'Passed') {
+            add('kf-pass', 'Certificate Revocation', esc(pki.resultValue));
+        } else if (pki.status === 'Warning') {
+            add('kf-issue', 'Certificate Revocation', esc(pki.resultValue),
+                'Allow the listed revocation hosts on TCP 80 \u2014 use Proxy Block Log Triage below to check other blocked hosts');
+        } else if (pki.status === 'Info') {
+            add('kf-info', 'Certificate Revocation', esc(pki.resultValue));
+        }
+    }
+
+    // ── 12b. Arc / AVD agent download path ──
     const arcDownload = r('C-ARC-02');
     if (arcDownload && arcDownload.status !== 'NotRun' && arcDownload.status !== 'Pending' && arcDownload.status !== 'Skipped') {
         if (arcDownload.status === 'Passed') {

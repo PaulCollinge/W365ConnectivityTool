@@ -989,6 +989,15 @@ function runAnalysisEngine(results) {
                 : 'Review the detailed endpoint results for partial or intermittent failures.'));
     }
 
+    const pki = r('C-PKI-01');
+    if (pki && pki.status === 'Warning') {
+        const offline = /offline/i.test(pki.resultValue || '');
+        findings.push(finding(offline ? SEV.WARNING : SEV.INFO,
+            offline ? 'Certificate revocation checks cannot complete' : 'Some certificate revocation hosts are blocked',
+            pki.resultValue,
+            pki.remediationText || 'Allow outbound HTTP (TCP 80) to the revocation hosts listed in the C-PKI-01 details.'));
+    }
+
     const agentDownloads = r('C-ARC-02');
     if (agentDownloads && (agentDownloads.status === 'Failed' || agentDownloads.status === 'Error')) {
         const avdBlocked = /Azure Virtual Desktop Agent/i.test(agentDownloads.resultValue || '');
