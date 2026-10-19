@@ -23,7 +23,7 @@ using Microsoft.Win32;
 
 namespace W365LocalScanner;
 
-class Program
+partial class Program
 {
     // â”€â”€ Static field: are we running in Cloud PC mode? â”€â”€
     static bool _isCloudPcMode = false;
@@ -2251,6 +2251,7 @@ class Program
             // Note: C-EP-01 was removed in v1.10.1 â€” it duplicated a subset of C-EP-02
             // (Session Host Required Endpoints), which is the authoritative list.
             new("C-EP-02", "Session Host Required Endpoints", "Tests required AVD/W365 endpoints and, on Hybrid hosts, applies Arc agent proxy precedence, service bypass, Private Link DNS classification, and regional notification discovery", "cloudpc-env", RunCpcRequiredEndpoints),
+            new("C-PKI-01", "Certificate Revocation Endpoints", "Collects the certificate chains AVD/Arc endpoints present and verifies each chain's OCSP/CRL endpoints on the machine WinHTTP route, validating responses so proxy block pages cannot pass", "cloudpc-env", RunRevocationReachability),
             new("C-LE-03", "CPC Connection Speed", "Estimates network throughput from within the Cloud PC", "cloudpc-env", RunCpcConnectionSpeed),
         };
 
@@ -11396,51 +11397,40 @@ class Program
             endpoints.Add(("sash.cloudpc.windows.static.microsoft", 443,
                 "Service traffic", requiredGroup));
 
-            // *.prod.warm.ingest.monitor.core.windows.net â€” Log Analytics / Azure Monitor
-            // ingestion wildcard. The real hostnames follow the pattern
-            // "{region}-{n}.prod.warm.ingest.monitor.core.windows.net" where {n} is
-            // 0, 1, or 2 depending on the region's cluster. Not every region has
-            // -1 (e.g. ukwest is -0 only) and some regions (westeurope, eastasia,
-            // koreacentral, japanwest, australiasoutheast) route to a neighbouring
-            // region and have no {region}-N subdomain of their own. Additionally,
-            // some regional warm-ingest clusters (e.g. ukwest-0 as of 2026)
-            // silently drop raw TCP SYN from arbitrary clients â€” they only answer
-            // authenticated agent connections through an Azure-internal path â€” so
-            // a TCP timeout against the VM's local region does not imply the
-            // *wildcard* firewall rule is blocked.
+            // *.prod.warm.ingest.monitor.core.windows.net - Log Analytics / Azure Monitor
+            // ingestion wildcard. Every region now publishes "{region}-shared"; some
+            // also keep numbered "{region}-0/-1/-2" slots, and the old numbered
+            // names in eastus/westus no longer exist (NXDOMAIN, verified Oct 2026).
+            // Some clusters also silently drop raw TCP SYN from unauthenticated
+            // clients, so a timeout against one cluster does not prove the
+            // *wildcard* rule is blocked.
             //
             // Strategy:
-            //   1. Probe {region}-0/-1/-2 in the VM's own region (DNS-resolved).
-            //      If the cluster answers, use that as the exemplar.
-            //   2. If none of them resolve OR (at probe time) the local exemplar
-            //      fails with a timeout, retry against eastus-0 and westus-0 as
-            //      canaries. Success on either proves the wildcard firewall rule
-            //      is open â€” which is what this check is actually trying to
-            //      establish. The fallback happens later, during the main probe.
-            //
-            //   On a hybrid Arc-onboarded host there IS no Azure VM region, so
-            //   skip the local-suffix loop entirely and go straight to the
-            //   eastus-0 canary — the multi-address probe + eastus/westus
-            //   canary fallback below handles it robustly. Using the Arc-
-            //   projected region as a hint isn't useful here because ingestion
-            //   clusters follow their own naming and can silently blackhole
-            //   arbitrary regional probes (see the warm-ingest comments below).
-            string? monitorExemplar = null;
-            if (!isHybrid)
+            //   1. Use the host's own region (Azure VM region, or the Arc-projected
+            //      region on a hybrid host) and pick the first DNS-resolvable
+            //      candidate from WarmIngestCandidates.ForRegion.
+            //   2. Otherwise use the first resolvable cross-region canary.
+            //   3. If the chosen exemplar fails at probe time, retry against every
+            //      resolvable canary (below). Success on any proves the wildcard
+            //      rule is open, which is what this check is establishing.
+            var monitorRegion = isHybrid ? _arcMetadata?.Location : _azureVmRegion;
+            async Task<string?> FirstResolvableAsync(IEnumerable<string> candidates)
             {
-                var monitorRegion = _azureVmRegion ?? "eastus";
-                foreach (var suffix in new[] { "-0", "-1", "-2" })
+                foreach (var candidate in candidates)
                 {
-                    var candidate = $"{monitorRegion}{suffix}.prod.warm.ingest.monitor.core.windows.net";
                     try
                     {
                         var addrs = await System.Net.Dns.GetHostAddressesAsync(candidate);
-                        if (addrs != null && addrs.Length > 0) { monitorExemplar = candidate; break; }
+                        if (addrs != null && addrs.Length > 0) return candidate;
                     }
-                    catch { /* NXDOMAIN â€” try next suffix */ }
+                    catch { /* NXDOMAIN - try the next candidate */ }
                 }
+                return null;
             }
-            monitorExemplar ??= "eastus-0.prod.warm.ingest.monitor.core.windows.net";
+            string monitorExemplar =
+                await FirstResolvableAsync(WarmIngestCandidates.ForRegion(monitorRegion))
+                ?? await FirstResolvableAsync(WarmIngestCandidates.Canaries(monitorRegion))
+                ?? WarmIngestCandidates.ForRegion(monitorRegion ?? "eastus")[0];
             endpoints.Add((monitorExemplar, 443,
                 "Agent diagnostics", requiredGroup));
 
@@ -11913,7 +11903,23 @@ class Program
             }
 
             static bool IsWarmIngestHost(string host) =>
-                host.EndsWith(".prod.warm.ingest.monitor.core.windows.net", StringComparison.OrdinalIgnoreCase);
+                WarmIngestCandidates.IsWarmIngestHost(host);
+
+            // When the machine route sends warm-ingest traffic through a proxy,
+            // a direct TCP probe tests a path the agent never uses (and fails on
+            // proxy-only networks). Probe through the same route as the agent.
+            bool WarmIngestUsesProxy(string host)
+            {
+                var uri = new Uri($"https://{host}/");
+                return winHttpProxy.Available
+                    ? winHttpProxy.Resolve(uri).UseProxy
+                    : ResolveSystemProxy(uri) != null;
+            }
+
+            async Task<(bool ok, long ms, string? err, bool authoritative)> ProbeWarmIngestAsync(string host, int port) =>
+                WarmIngestUsesProxy(host)
+                    ? await TryHttpConnectAsync((host, port, "Agent diagnostics", requiredGroup))
+                    : await TryConnectAnyAddressAsync(host, port);
 
             // Robust probe used only for the warm-ingest monitor wildcard (and
             // its canaries). A plain hostname-based connect resolves DNS once
@@ -11978,7 +11984,7 @@ class Program
             {
                 bool warmIngest = IsWarmIngestHost(ep.host);
                 var attempt = warmIngest
-                    ? await TryConnectAnyAddressAsync(ep.host, ep.port)
+                    ? await ProbeWarmIngestAsync(ep.host, ep.port)
                     : ep.port is 80 or 443
                         ? await TryHttpConnectAsync(ep)
                         : await TryConnectAsync(ep.host, ep.port);
@@ -11988,7 +11994,7 @@ class Program
                 if (!attempt.ok && (warmIngest || (attempt.err != null && attempt.err.StartsWith("Timeout"))))
                 {
                     var retry = warmIngest
-                        ? await TryConnectAnyAddressAsync(ep.host, ep.port)
+                        ? await ProbeWarmIngestAsync(ep.host, ep.port)
                         : ep.port is 80 or 443
                             ? await TryHttpConnectAsync(ep)
                             : await TryConnectAsync(ep.host, ep.port);
@@ -12029,19 +12035,25 @@ class Program
                 if (r.ok || !IsWarmIngestHost(r.ep.host))
                     continue;
 
-                var canaryCandidates = (from region in new[] { "eastus", "westus" }
-                                        from suffix in new[] { "-0", "-1", "-2" }
-                                        select $"{region}{suffix}.prod.warm.ingest.monitor.core.windows.net")
-                                       .Where(c => !string.Equals(c, r.ep.host, StringComparison.OrdinalIgnoreCase))
-                                       .ToArray();
+                var canaryCandidates = new List<string>();
+                foreach (var candidate in WarmIngestCandidates.Canaries(monitorRegion)
+                             .Where(c => !string.Equals(c, r.ep.host, StringComparison.OrdinalIgnoreCase)))
+                {
+                    try
+                    {
+                        if ((await System.Net.Dns.GetHostAddressesAsync(candidate)).Length > 0)
+                            canaryCandidates.Add(candidate);
+                    }
+                    catch { /* NXDOMAIN - not a usable canary */ }
+                }
 
-                var canaryTasks = canaryCandidates.Select(async c => (candidate: c, res: await TryConnectAnyAddressAsync(c, 443))).ToArray();
+                var canaryTasks = canaryCandidates.Select(async c => (candidate: c, res: await ProbeWarmIngestAsync(c, 443))).ToArray();
                 var canaryResults = await Task.WhenAll(canaryTasks);
                 var canaryWinner = Array.Find(canaryResults, x => x.res.ok);
                 if (canaryWinner.res.ok)
                 {
                     results[i] = (r.ep, ok: true, ms: canaryWinner.res.ms,
-                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) â€” every local-region cluster address refused the probe",
+                        err: $"via-canary:{canaryWinner.candidate} ({canaryWinner.res.ms}ms) - the local-region exemplar did not answer",
                         authoritative: true);
                 }
             }
@@ -12115,7 +12127,7 @@ class Program
             // warm-ingest wildcard) is ALSO soft, for a different reason than
             // wireserver: this scan already probes every DNS-resolved backend
             // address for the local-region exemplar in parallel and falls back
-            // to eastus/westus canaries across all three cluster slots (see
+            // to DNS-resolvable cross-region canaries ({region}-shared/-N) (see
             // TryConnectAnyAddressAsync and the canary loop above) before
             // giving up on it. A failure that survives ALL of that is still
             // more likely to be a probing artefact of this specific cluster
@@ -12130,7 +12142,12 @@ class Program
             {
                 if (IsWarmIngestHost(e.host))
                 {
-                    return "This wildcard's backend cluster round-robins across several nodes, and some individual nodes silently drop unauthenticated TCP probes even though the wildcard firewall rule is fully open â€” they only answer the signed agent traffic they're meant for. This scan already probed every resolved backend address for the local-region exemplar in parallel and retried against eastus/westus canaries across all three cluster slots (-0/-1/-2) before reporting this as unreachable. If it still fails here, either every one of those nodes was uncooperative for this run (has happened, e.g. ukwest-0 as observed Apr 2026), or there genuinely is a block. It is worth re-running the scan once before investigating further, since this specific endpoint is known to produce transient false negatives; it does not affect the overall pass/fail verdict.";
+                    var lowerErr = (err ?? "").ToLowerInvariant();
+                    if (lowerErr.Contains("dns resolution failed") || lowerErr.Contains("no such host"))
+                        return "No warm-ingest hostname for this region or the cross-region canaries resolved in local DNS, so the wildcard could not be exercised. Confirm that this host's DNS (or its proxy, when the proxy resolves names) can resolve *.prod.warm.ingest.monitor.core.windows.net. This does not affect the overall pass/fail verdict.";
+                    if (lowerErr.Contains("proxy"))
+                        return "This probe used the same machine proxy route as the AVD agent and the proxy refused or did not answer for the region exemplar and every resolvable cross-region canary. That points to a genuine proxy rule for *.prod.warm.ingest.monitor.core.windows.net:443 (Azure Monitor agent diagnostics). It does not affect the overall pass/fail verdict.";
+                    return "Some warm-ingest backend nodes silently drop unauthenticated direct TCP probes even when the wildcard rule is open; they only answer signed agent traffic. This scan probed every resolved address for the region exemplar and retried against every DNS-resolvable cross-region canary before reporting this. Re-run once before investigating, since this endpoint can produce transient false negatives; it does not affect the overall pass/fail verdict.";
                 }
                 if (e.host != "168.63.129.16") return "";
                 var lower = (err ?? "").ToLowerInvariant();
@@ -12290,7 +12307,7 @@ class Program
             sb.AppendLine("  \u2139 *.events.data.microsoft.com:443 \u2014 Telemetry (optional)");
             sb.AppendLine("  \u2139 *.prod.do.dsp.mp.microsoft.com:443 \u2014 Windows Update (optional)");
             sb.AppendLine("  \u2139 *.sfx.ms:443 \u2014 OneDrive client updates (optional)");
-            sb.AppendLine("  \u2139 *.digicert.com:80 \u2014 Certificate revocation (optional)");
+            sb.AppendLine("  \u2139 *.digicert.com:80 \u2014 Certificate revocation (optional in the AVD list; C-PKI-01 tests the revocation hosts these endpoints' certificate chains actually use)");
             sb.AppendLine("  \u2139 *.azure-dns.com / *.azure-dns.net:443 \u2014 Azure DNS (optional)");
             sb.AppendLine("  \u2139 *eh.servicebus.windows.net:443 \u2014 Event Hub diagnostic settings (optional)");
             sb.AppendLine("  Ensure these wildcard rules are configured in your firewall/proxy.");
