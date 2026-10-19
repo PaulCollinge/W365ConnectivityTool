@@ -288,7 +288,7 @@ const ALL_TESTS = [
     },
     {
         id: 'C-PKI-01', name: 'Certificate Revocation Endpoints',
-        description: 'Collects the certificate chains the AVD and Arc endpoints actually present, then verifies each chain\u2019s OCSP and CRL endpoints (e.g. oneocsp.microsoft.com, crl2.microsoft.com, ocsp/crl3/crl4.digicert.com) on the machine WinHTTP route. Responses are validated by content, so proxy block pages cannot pass.',
+        description: 'Collects the certificate chains the AVD and Arc endpoints actually present, then verifies each chain\u2019s OCSP and CRL endpoints (e.g. oneocsp.microsoft.com, crl2.microsoft.com, ocsp/crl3/crl4.digicert.com) on the machine WinHTTP route. Responses are validated by content, so proxy block pages cannot pass, and failures are re-checked with Windows\u2019 own certificate retrieval (WPAD/PAC-aware).',
         category: 'cloudpc', source: 'cloudpc'
     },
     {
