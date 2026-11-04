@@ -2211,6 +2211,7 @@ partial class Program
             new("C-LE-05", "Network Stack Agents (Cloud PC)", "Inventories VPN/SWG/proxy/security agents in the Cloud PC network stack that can affect RDP Shortpath UDP (informational)", "cloudpc-env", RunCpcNetworkStackAgents),
 
             // â”€â”€ Cloud PC â†’ Gateway/TURN Connectivity â”€â”€
+            new("C-TCP-03", "DNS Resolution Performance (Cloud PC)", "Measures pure DNS resolution time from Cloud PC", "cloudpc-tcp", RunCpcDnsPerformance),
             new("C-TCP-04", "Gateway Connectivity (Cloud PC)", "Tests RDP Gateway reachability from Cloud PC", "cloudpc-tcp", RunCpcGatewayConnectivity),
             new("C-TCP-05", "DNS CNAME Chain (Cloud PC)", "Validates DNS chain from Cloud PC", "cloudpc-tcp", RunCpcDnsCnameChain),
             new("C-TCP-06", "TLS Inspection (Cloud PC)", "Checks for TLS interception on Cloud PC", "cloudpc-tcp", RunCpcTlsInspection),
@@ -10549,6 +10550,13 @@ partial class Program
     {
         var r = await RunDnsCnameChain();
         r.Id = "C-TCP-05"; r.Name = "DNS CNAME Chain (Cloud PC)"; r.Category = "cloudpc-tcp";
+        return r;
+    }
+
+    static async Task<TestResult> RunCpcDnsPerformance()
+    {
+        var r = await RunDnsPerformance();
+        r.Id = "C-TCP-03"; r.Name = "DNS Resolution Performance (Cloud PC)"; r.Category = "cloudpc-tcp";
         return r;
     }
 
