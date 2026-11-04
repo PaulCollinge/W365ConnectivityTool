@@ -41,6 +41,17 @@ as a learned pool: normal rotation within that pool is informational, while an
 egress change accompanied by a W365 route or local network environment change
 remains a warning. Client mode continues to warn on every egress-IP change.
 
+## DNS diagnostics
+
+The map shows **Client DNS** and **Cloud PC DNS** (or **Session Host DNS**)
+separately when both sides' results are imported. Each card shows its own
+DNS timing, CNAME-chain validation, and DNS-integrity checks.
+
+Pure Cloud PC DNS timing requires a current scanner build containing
+`C-TCP-03`; older scans still show their available checks without borrowing
+client timings. Browser-only timing is labelled **DNS+TCP+TLS**, not pure
+DNS latency.
+
 ## Verify the download
 
 Every release includes a **SHA256 checksum** in the [release notes](https://github.com/PaulCollinge/W365ConnectivityTool/releases/latest) and is built with [GitHub artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) (SLSA provenance).

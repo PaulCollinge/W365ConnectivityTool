@@ -44,7 +44,7 @@ function updateConnectivityMap(results) {
             r.status && r.status !== 'NotRun' && r.status !== 'Pending'
         );
         if (hasAnyResult) {
-            document.querySelectorAll('.map-g-fanin, .map-g-azure, .map-g-arrow4, .map-g-nat, .map-g-arrow3, .map-g-rdgw, .map-g-turn, .map-g-dnsline, .map-g-dns')
+            document.querySelectorAll('.map-g-fanin, .map-g-azure, .map-g-arrow4, .map-g-nat, .map-g-arrow3, .map-g-rdgw, .map-g-turn, .map-g-cpc-dnsline, .map-g-cpc-dns')
                 .forEach(el => el.classList.add('cpc-revealed'));
         }
     } else if (hasImportedCpc) {
@@ -1394,33 +1394,12 @@ function updateMapRdGwCard(lookup) {
 
 // ── TURN Relay Card ──
 function updateMapTurnCard(lookup) {
-    const stunTest = lookup['B-UDP-01'] || lookup['C-UDP-03'];
-    const turnReach = lookup['L-UDP-03'];
-
-    let status = 'NotRun';
-    let detail1 = 'Awaiting results...';
-
-    if (turnReach && turnReach.status !== 'NotRun' && turnReach.status !== 'Pending') {
-        status = turnReach.status;
-        if (turnReach.status === 'Passed') {
-            detail1 = '✓ Reachable (UDP 3478)';
-        } else {
-            detail1 = '✗ Unreachable (UDP 3478)';
-        }
-    } else if (stunTest && stunTest.status !== 'NotRun') {
-        detail1 = stunTest.status === 'Passed' ? '✓ STUN OK' : stunTest.resultValue || '';
-        status = stunTest.status;
-    }
-
-    // TURN relay discovery — separate the CLIENT-side relay from the CPC-side
-    // relay. They are DIFFERENT relays: the client (laptop scanner, L-UDP-04)
-    // gets a relay near the USER's egress, while the Cloud PC (C-UDP-04) gets a
-    // relay near the CPC region. The W365 session's relay is the CPC-side one, so
-    // ONLY that one may be compared to the CPC region. Comparing the client-side
-    // relay to the CPC region produced false "Wrong region" alarms (e.g. a Redmond
-    // user correctly gets a West US relay while the CPC is in UK West).
+    const hasResult = t => t && t.status !== 'NotRun' && t.status !== 'Pending';
+    const clientReach = lookup['L-UDP-03'];
+    const cpcReach = lookup['C-UDP-03'];
+    const stunTest = lookup['B-UDP-01'];
     const parseTurnLoc = (t) => {
-        if (!t || t.status === 'NotRun' || t.status === 'Pending') return null;
+        if (!hasResult(t)) return null;
         // Match both "TURN relay: Region (ip)" and "TURN relay (DNS): Region (code) (ip)"
         const lm = (t.resultValue || '').match(/TURN relay(?:\s*\([^)]*\))?:\s*(.+?)\s*\(/);
         let slug = '';
@@ -1433,104 +1412,73 @@ function updateMapTurnCard(lookup) {
     };
     const clientTurnLoc = parseTurnLoc(lookup['L-UDP-04']);
     const cpcTurnLoc = parseTurnLoc(lookup['C-UDP-04']);
-    // The card represents the session's TURN relay. Prefer the CPC-side relay
-    // (the relay the W365 session actually uses); fall back to the client-side.
-    const sessionTurn = cpcTurnLoc || clientTurnLoc;
+    let status = 'NotRun';
+    let detail1 = 'Awaiting results...';
 
-    let turnLocationStr = '';
-    if (sessionTurn) {
-        turnLocationStr = sessionTurn.city;
-        if (turnLocationStr) {
-            setFlaggedBadge('map-turn-loc-badge', `📍 ${turnLocationStr}`, 'location-badge', turnLocationStr);
+    const renderSide = (side, location, reach) => {
+        const el = document.getElementById(`map-turn-${side}-side`);
+        const visible = !!location || !!hasResult(reach);
+        if (el) el.classList.toggle('hidden', !visible);
+        setFlaggedBadge(`map-turn-${side}-loc-badge`,
+            visible ? (location?.city || 'DNS location unavailable') : '',
+            'location-badge', location?.city);
+        setDualLatencyBadge(`map-turn-${side}-lat-badge`,
+            reach?.status === 'Passed' ? extractMs(reach) : null, null, false);
+        let reachText = '';
+        let reachClass = '';
+        if (hasResult(reach)) {
+            reachText = reach.status === 'Passed' ? '✓ UDP 3478 reachable'
+                : reach.status === 'Failed' ? '✗ UDP 3478 unreachable'
+                : reach.resultValue || reach.status;
+            reachClass = reach.status === 'Passed' ? 'status-ok'
+                : reach.status === 'Failed' || reach.status === 'Error' ? 'status-fail' : 'status-warn';
+            status = worstStatus(status, reach.status);
         }
-        status = worstStatus(status, sessionTurn.status);
-    } else if (stunTest && stunTest.status === 'Passed') {
-        // No scanner data — browser-side relay geolocation is disabled in the
-        // production build (it required a third-party DoH resolver). Run the
-        // Local Scanner (L-UDP-04) for authoritative TURN relay location.
-        geolocateTurnRelay();
+        setBadge(`map-turn-${side}-reach-badge`, reachText, reachClass);
+        if (location) status = worstStatus(status, location.status);
+        return visible;
+    };
+    const haveClient = renderSide('client', clientTurnLoc, clientReach);
+    const haveCpc = renderSide('cpc', cpcTurnLoc, cpcReach);
+    setBadge('map-turn-client-prox-badge', '', '');
+    setBadge('map-turn-prox-badge', '', '');
+    if (haveClient || haveCpc) {
+        detail1 = 'DNS-discovered relays (not live session routing)';
+    } else if (hasResult(stunTest)) {
+        detail1 = stunTest.status === 'Passed' ? '✓ STUN OK' : stunTest.resultValue || '';
+        status = stunTest.status;
     }
 
-    // Compare TURN region against the CPC's Azure region (from IMDS).
-    //
-    // IMPORTANT: unlike the RD Gateway, TURN is server-side — the VM's region
-    // determines which TURN relay the session uses, not the client's egress.
-    // Azure's platform DNS (168.63.129.16) is intercepted at the hypervisor,
-    // so even a full-tunnel VPN on the Cloud PC does NOT tunnel TURN name
-    // resolution through the VPN. Traffic Manager correctly returns the CPC's
-    // own region — which is exactly what the session will use.
-    //
-    // So the "correct" state here is the CPC-SIDE relay region == CPC region
-    // (green). We deliberately only run this check against the CPC-side relay
-    // (cpcTurnLoc); the client-side relay legitimately follows the user's egress
-    // and must never be flagged against the CPC region.
+    // Compare only CPC-side DNS discovery with IMDS, never the client's relay.
     const vpnCtxTurn = getVpnContext(lookup);
     const cpcSlug = (vpnCtxTurn.cpcRegionCode || '').toLowerCase();
     const stunHostOnly = stunTest && /host candidate/i.test(stunTest.resultValue || '');
-    // Once the CPC co-location verdict sets the proximity badge, the user-vs-relay
-    // distance check below must NOT overwrite it. The session uses the CPC-side
-    // relay, so co-location with the CPC region is the authoritative verdict;
-    // distance from the user's egress is expected (and irrelevant) for a CPC in
-    // another region (e.g. Redmond user, UK West CPC → UK West relay).
-    let proxBadgeSet = false;
     if (cpcTurnLoc && cpcTurnLoc.slug && cpcSlug) {
         const cmp = compareAzureRegions(cpcTurnLoc.slug, cpcSlug);
         if (cmp.level === 'same') {
-            setBadge('map-turn-prox-badge', `✓ Co-located with CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-near');
-            proxBadgeSet = true;
+            setBadge('map-turn-prox-badge', `✓ Cloud PC relay: same region (${vpnCtxTurn.cpcRegionName})`, 'proximity-near');
         } else if (cmp.level === 'intra') {
-            setBadge('map-turn-prox-badge', `≈ Neighbouring region to CPC (${vpnCtxTurn.cpcRegionName})`, 'proximity-moderate');
+            setBadge('map-turn-prox-badge', `≈ Cloud PC relay: neighbouring region to ${vpnCtxTurn.cpcRegionName}`, 'proximity-moderate');
             status = worstStatus(status, 'Warning');
-            proxBadgeSet = true;
         } else if (cmp.level === 'cross') {
-            setBadge('map-turn-prox-badge', `⚠ Wrong region — CPC in ${vpnCtxTurn.cpcRegionName}`, 'proximity-far');
+            setBadge('map-turn-prox-badge', `⚠ Cloud PC DNS relay differs from ${vpnCtxTurn.cpcRegionName}`, 'proximity-far');
             status = worstStatus(status, 'Warning');
-            detail1 = `⚠ Session relay in ${cpcTurnLoc.city}, CPC in ${vpnCtxTurn.cpcRegionName}`;
-            proxBadgeSet = true;
         }
-    } else if (vpnCtxTurn.vpnActive && stunHostOnly) {
-        // VPN blocked STUN outright — we can't verify the session path at all
-        setBadge('map-turn-loc-badge', '⚠ DNS-only region — session path unknown', 'status-warn');
+    } else if (vpnCtxTurn.vpnActive && stunHostOnly && !hasResult(clientReach) && !hasResult(cpcReach)) {
         status = worstStatus(status, 'Warning');
         detail1 = '⚠ STUN blocked by VPN — relay region uncertain';
-        turnLocationStr = '';
     }
 
-    // Proximity badge — DNS-resolved TURN location vs user (informational only,
-    // actual session TURN relay is assigned by RDP gateway via CRLB anycast).
-    // Skip entirely when the CPC co-location verdict already owns this badge —
-    // distance from the user is expected and irrelevant for a CPC-side relay.
-    if (turnLocationStr && !proxBadgeSet) {
+    if (clientTurnLoc?.city) {
         const user = getUserLocationContext(lookup);
-        const serviceCoords = getServiceCoords(turnLocationStr);
-        const prox = checkServiceProximity(user.countryCode, turnLocationStr, user.coords, serviceCoords);
+        const serviceCoords = getServiceCoords(clientTurnLoc.city);
+        const prox = checkServiceProximity(user.countryCode, clientTurnLoc.city, user.coords, serviceCoords);
         if (prox && prox.level === 'far') {
-            setBadge('map-turn-prox-badge', 'ℹ Relay follows CPC region — session unaffected', 'status-info');
+            setBadge('map-turn-client-prox-badge', 'ℹ Client DNS relay is distant; session relay may differ', 'status-info');
         } else if (prox && prox.level === 'ok') {
-            setBadge('map-turn-prox-badge', prox.label, prox.cssClass);
-        }
-        // 'near' = normal, no badge needed
-    }
-
-    // Reachability badge
-    if (turnReach && turnReach.status !== 'NotRun' && turnReach.status !== 'Pending') {
-        if (turnReach.status === 'Passed') {
-            setBadge('map-turn-badge', '✓ Reachable', 'status-ok');
-        } else {
-            setBadge('map-turn-badge', '✗ Unreachable', 'status-fail');
+            setBadge('map-turn-client-prox-badge', prox.label, prox.cssClass);
         }
     }
-
-    // Latency badge — render dual when both client and Cloud PC have a TURN
-    // probe. Client side is L-UDP-03 (laptop scanner, when present);
-    // Cloud PC side is C-UDP-03 (CPC scanner). On a laptop without the
-    // local scanner there's no client-side TURN latency probe, so this
-    // falls back to single-pill behaviour automatically.
-    const clientTurn = lookup['L-UDP-03'];
-    const cpcTurnLat = lookup['C-UDP-03'];
-    // Don't double-count: `turnReach` above already prefers L-UDP-03, so if
-    // we have a CPC-side reading too, render both.
-    setDualLatencyBadge('map-turn-lat-badge', extractMs(clientTurn), extractMs(cpcTurnLat), false);
 
     setText('map-turn-detail', detail1);
     setAccentStatus('map-turn-accent', status);
@@ -1551,36 +1499,36 @@ async function geolocateTurnRelay() {
 
 // ── DNS Card ──
 function updateMapDnsCard(lookup) {
-    // Prefer L-TCP-03 (scanner — pure DNS timing) over B-TCP-03 (browser — DNS+TCP+TLS combined)
-    const dnsPerf = lookup['L-TCP-03'] || lookup['B-TCP-03'] || lookup['C-TCP-05'];
-    const dnsCname = lookup['L-TCP-05'];
+    const active = result => result && result.status !== 'NotRun' && result.status !== 'Pending' ? result : null;
+    const clientPure = active(lookup['L-TCP-03']);
+    const cpcPure = active(lookup['C-TCP-03']);
+    const cpcCname = active(lookup['C-TCP-05']);
+    // Older dashboards saved browser HTTPS timing under the CNAME test ID.
+    const legacyBrowser = cpcCname && /Timing includes DNS \+ TCP \+ TLS/.test(cpcCname.detailedInfo || '')
+        ? cpcCname : null;
+    const clientTiming = clientPure || active(lookup['B-TCP-03']);
+    const cpcTiming = cpcPure || active(lookup['C-B-TCP-03']) || legacyBrowser;
 
-    let status = 'NotRun';
-    let detail1 = 'Awaiting results...';
-    let detail2 = '';
-
-    if (dnsPerf && dnsPerf.status !== 'NotRun') {
-        status = dnsPerf.status;
-        detail1 = dnsPerf.resultValue || '';
-
-        // Extract avg latency for badge
-        const match = (dnsPerf.resultValue || '').match(/(\d+)\s*ms/);
-        if (match) {
-            const ms = parseInt(match[1]);
-            const health = latencyLabel(ms, 'dns');
-            setBadge('map-dns-badge', `⏱ ${ms}ms · ${health}`, latencyClass(ms, true));
+    const renderCard = (prefix, timing, cname, hijack, pure) => {
+        let status = 'NotRun';
+        for (const result of [timing, cname, hijack]) {
+            if (result) status = worstStatus(status, result.status);
         }
-    }
+        setText(`map-${prefix}-detail`, timing ? timing.resultValue
+            : cname || hijack ? 'Run current scanner for DNS timing' : 'Awaiting DNS results...');
+        setText(`map-${prefix}-detail2`, cname ? `CNAME: ${cname.resultValue}` : '');
+        setText(`map-${prefix}-detail3`, hijack ? `DNS integrity: ${hijack.resultValue}` : '');
+        const ms = timing && (timing.status === 'Passed' || timing.status === 'Warning') ? extractMs(timing) : null;
+        const badgeClass = timing?.status === 'Warning' ? 'status-warn' : 'status-ok';
+        setBadge(`map-${prefix}-badge`, ms != null ? `⏱ ${ms}ms ${pure ? 'DNS' : 'DNS+TCP+TLS'}` : '', badgeClass);
+        setAccentStatus(`map-${prefix}-accent`, status);
+        setDeviceDot(`device-${prefix}-dot`, status);
+    };
 
-    if (dnsCname && dnsCname.status !== 'NotRun' && dnsCname.status !== 'Pending') {
-        detail2 = dnsCname.resultValue || '';
-        status = worstStatus(status, dnsCname.status);
-    }
-
-    setText('map-dns-detail', detail1);
-    setText('map-dns-detail2', detail2);
-    setAccentStatus('map-dns-accent', status);
-    setDeviceDot('device-dns-dot', status);
+    renderCard('dns', clientTiming, active(lookup['L-TCP-05']), active(lookup['L-TCP-08']), !!clientPure);
+    renderCard('cpc-dns', cpcTiming, legacyBrowser ? null : cpcCname, active(lookup['C-TCP-08']), !!cpcPure);
+    const isAvd = typeof hostType !== 'undefined' && (hostType === 'avd' || hostType === 'avd-arc');
+    setText('map-cpc-dns-title', isAvd ? 'Session Host DNS' : 'Cloud PC DNS');
 }
 function updateMapLatencyLabels(lookup) {
     function setLL(id, ms, type) {
@@ -2007,7 +1955,12 @@ function detectSwgSplitEgress(lookup) {
 function updateMapSecurityBar(lookup) {
     const tls = lookup['L-TCP-06'];
     const proxy = lookup['L-TCP-07'];
-    const dns = lookup['L-TCP-08'];
+    const cpcOnly = typeof cloudPcMode !== 'undefined' && cloudPcMode;
+    const dnsChecks = (cpcOnly ? [lookup['C-TCP-08']] : [lookup['L-TCP-08'], lookup['C-TCP-08']])
+        .filter(t => t && !['NotRun', 'Pending', 'Skipped'].includes(t.status));
+    const dns = dnsChecks.reduce((worst, test) =>
+        !worst || worstStatus(worst.status, test.status) === test.status ? test : worst, null);
+    const dnsSide = dns === lookup['C-TCP-08'] ? 'Cloud PC / Host' : 'Client';
     const gwUsed = lookup['L-TCP-09'];
     const bar = document.getElementById('map-security-bar');
 
@@ -2042,8 +1995,8 @@ function updateMapSecurityBar(lookup) {
     });
 
     updateSecBadge('sec-dns-badge', dns, {
-        pass: 'No DNS Hijacking',
-        fail: 'DNS Hijacking Detected',
+        pass: `No DNS Hijacking (${dnsChecks.length === 2 ? 'Client + Host' : dnsSide})`,
+        fail: `DNS Hijacking Detected (${dnsSide})`,
         pending: 'DNS Hijacking'
     });
 

@@ -1844,6 +1844,10 @@ textarea[readonly] {
    overlap the DNS card. Grid cell itself is just a marker for layout. */
 .map-g-dnsline { grid-column: 3; grid-row: 6; justify-self: center; align-self: stretch; z-index: 0; pointer-events: none; }
 .map-g-dns     { grid-column: 3; grid-row: 7; }
+.map-diagram .map-g-cpc-dnsline { grid-column: 11; grid-row: 6; display: none; }
+.map-diagram .map-g-cpc-dns { grid-column: 11; grid-row: 7; display: none; }
+.map-diagram.has-cloudpc .map-g-cpc-dnsline,
+.map-diagram.has-cloudpc .map-g-cpc-dns { display: flex; }
 
 /* ── Cloud PC right-side cards (hidden until .has-cloudpc or .cpc-mode) ── */
 .map-diagram .map-g-fanin   { grid-column: 8; grid-row: 1 / 6; align-self: stretch; display: none; }
@@ -1936,15 +1940,17 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .map-diagram.cpc-mode .map-g-localgw,
 .map-diagram.cpc-mode .map-g-arrow2,
 .map-diagram.cpc-mode .map-g-isp,
-.map-diagram.cpc-mode .map-g-afd {
+.map-diagram.cpc-mode .map-g-afd,
+.map-diagram.cpc-mode .map-g-dnsline,
+.map-diagram.cpc-mode .map-g-dns {
     display: none !important;
 }
 /* Reposition into 6-column grid: RDGw/TURN | fanin | Azure | NAT | arrow | CloudPC */
 .map-diagram.cpc-mode .map-g-fanout  { display: none !important; }
 .map-diagram.cpc-mode .map-g-rdgw    { grid-column: 1; grid-row: 1; display: none; }
 .map-diagram.cpc-mode .map-g-turn    { grid-column: 1; grid-row: 3; display: none; }
-.map-diagram.cpc-mode .map-g-dnsline { grid-column: 3; grid-row: 4; display: none; }
-.map-diagram.cpc-mode .map-g-dns     { grid-column: 3; grid-row: 5; display: none; }
+.map-diagram.cpc-mode .map-g-cpc-dnsline { grid-column: 7; grid-row: 4; display: none; }
+.map-diagram.cpc-mode .map-g-cpc-dns { grid-column: 7; grid-row: 5; display: none; }
 .map-diagram.cpc-mode .map-g-arrow4  { display: none; }
 /* These elements start hidden; JS adds .cpc-revealed when results arrive */
 .map-diagram.cpc-mode .map-g-fanin   { grid-column: 2; grid-row: 1 / 4; align-self: stretch; }
@@ -1957,12 +1963,12 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 .map-diagram.cpc-mode .map-g-fanin.cpc-revealed,
 .map-diagram.cpc-mode .map-g-rdgw.cpc-revealed,
 .map-diagram.cpc-mode .map-g-turn.cpc-revealed,
-.map-diagram.cpc-mode .map-g-dnsline.cpc-revealed { display: block; }
+.map-diagram.cpc-mode .map-g-cpc-dnsline.cpc-revealed { display: block; }
 .map-diagram.cpc-mode .map-g-arrow3.cpc-revealed,
 .map-diagram.cpc-mode .map-g-arrow4.cpc-revealed,
 .map-diagram.cpc-mode .map-g-azure.cpc-revealed,
 .map-diagram.cpc-mode .map-g-nat.cpc-revealed,
-.map-diagram.cpc-mode .map-g-dns.cpc-revealed { display: flex; }
+.map-diagram.cpc-mode .map-g-cpc-dns.cpc-revealed { display: flex; }
 /* CPC mode fanin: hide normal 3-branch lines, show CPC 2-branch lines */
 .map-diagram.cpc-mode .map-g-fanin .fan-entry,
 .map-diagram.cpc-mode .map-g-fanin .fan-afd,
@@ -2445,6 +2451,23 @@ html.early-cpc-mode #cpc-detected-badge { display: inline-flex !important; }
 }
 .map-card-badges .map-card-badge {
     margin-top: 0;
+}
+
+.map-turn-side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    width: 100%;
+}
+.map-turn-side + .map-turn-side {
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+    margin-top: 2px;
+}
+.map-turn-side .map-card-badge {
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 
 .map-card-badge {

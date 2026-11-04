@@ -30,7 +30,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="css/styles.css?v=308">
+    <link rel="stylesheet" href="css/styles.css?v=316">
     <link rel="icon" href="images/w365-logo.png" type="image/png">
     <!--
       Bootstrap: read URL ASAP (before <body> renders) to decide whether this
@@ -539,10 +539,20 @@
                         <div class="map-card-title"><span class="map-emoji">🔄</span> TURN Relay <span class="map-proto-label">UDP RDP</span></div>
                         <div class="map-card-detail" id="map-turn-detail">Awaiting results...</div>
                         <div class="map-card-badges">
-                            <div class="map-card-badge hidden" id="map-turn-loc-badge"></div>
-                            <div class="map-card-badge hidden" id="map-turn-prox-badge"></div>
-                            <div class="map-card-badge hidden" id="map-turn-lat-badge"></div>
-                            <div class="map-card-badge hidden" id="map-turn-badge"></div>
+                            <div class="map-turn-side hidden" id="map-turn-client-side">
+                                <strong class="map-card-detail">Client</strong>
+                                <div class="map-card-badge hidden" id="map-turn-client-loc-badge"></div>
+                                <div class="map-card-badge hidden" id="map-turn-client-lat-badge"></div>
+                                <div class="map-card-badge hidden" id="map-turn-client-reach-badge"></div>
+                                <div class="map-card-badge hidden" id="map-turn-client-prox-badge"></div>
+                            </div>
+                            <div class="map-turn-side hidden" id="map-turn-cpc-side">
+                                <strong class="map-card-detail">Cloud PC / Session host</strong>
+                                <div class="map-card-badge hidden" id="map-turn-cpc-loc-badge"></div>
+                                <div class="map-card-badge hidden" id="map-turn-cpc-lat-badge"></div>
+                                <div class="map-card-badge hidden" id="map-turn-cpc-reach-badge"></div>
+                                <div class="map-card-badge hidden" id="map-turn-prox-badge"></div>
+                            </div>
                         </div>
 
                     </div>
@@ -568,10 +578,32 @@
                         <div class="device-accent" id="map-dns-accent"></div>
                     </div>
                     <div class="device-info">
-                        <div class="device-title">DNS</div>
+                        <div class="device-title">Client DNS</div>
                         <div class="device-detail" id="map-dns-detail">Awaiting results...</div>
                         <div class="device-detail" id="map-dns-detail2"></div>
+                        <div class="device-detail" id="map-dns-detail3"></div>
                         <div class="map-card-badge hidden" id="map-dns-badge"></div>
+                    </div>
+                </div>
+
+                <div class="map-dns-connector map-g-cpc-dnsline"><div class="map-vline"></div><span class="map-dns-arw">▾</span></div>
+                <div class="map-client-device map-g-cpc-dns" id="map-cpc-dns">
+                    <div class="device-laptop device-dns-size">
+                        <svg class="device-svg" viewBox="0 0 100 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="10" y="4" width="80" height="48" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+                            <rect x="16" y="10" width="68" height="16" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                            <text x="44" y="21" text-anchor="middle" fill="#58a6ff" font-family="monospace" font-size="8" font-weight="700">DNS</text>
+                            <circle class="device-status-dot" id="device-cpc-dns-dot" cx="78" cy="18" r="2" fill="#484f58"/>
+                            <rect x="16" y="30" width="68" height="16" rx="2" fill="#161b22" stroke="#21262d" stroke-width="1"/>
+                        </svg>
+                        <div class="device-accent" id="map-cpc-dns-accent"></div>
+                    </div>
+                    <div class="device-info">
+                        <div class="device-title" id="map-cpc-dns-title">Cloud PC DNS</div>
+                        <div class="device-detail" id="map-cpc-dns-detail">Awaiting DNS results...</div>
+                        <div class="device-detail" id="map-cpc-dns-detail2"></div>
+                        <div class="device-detail" id="map-cpc-dns-detail3"></div>
+                        <div class="map-card-badge hidden" id="map-cpc-dns-badge"></div>
                     </div>
                 </div>
 
@@ -1046,11 +1078,11 @@
     })();
     </script>
     <script src="js/config.js?v=308"></script>
-    <script src="js/browser-tests.js?v=308"></script>
+    <script src="js/browser-tests.js?v=316"></script>
     <script src="js/ui.js?v=308"></script>
-    <script src="js/map.js?v=308"></script>
+    <script src="js/map.js?v=316"></script>
     <script src="js/ai-analysis.js?v=308"></script>
-    <script src="js/app.js?v=308"></script>
+    <script src="js/app.js?v=316"></script>
     <script src="js/watch.js?v=308"></script>
 </body>
 </html>

@@ -61,7 +61,8 @@ const BROWSER_TO_CPC_ID = {
     'B-LE-01': 'C-LE-01',
     'B-LE-02': 'C-LE-02',
     'B-LE-03': 'C-LE-03',
-    'B-TCP-03': 'C-TCP-05',
+    // Browser HTTPS timing is neither pure DNS timing nor a CNAME-chain check.
+    'B-TCP-03': 'C-B-TCP-03',
     'B-TCP-04': 'C-TCP-09',
     'B-UDP-01': 'C-UDP-03',
     'B-UDP-02': 'C-UDP-04',

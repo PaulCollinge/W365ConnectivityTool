@@ -76,6 +76,19 @@ binary other than to apply the signature. Specifically:
 5. Hand the tag to the signing pipeline. Pipeline signs from the tagged commit
    only — never from `HEAD`.
 
+## Dashboard regression tests
+
+With Node.js installed, run the dependency-free map tests from the
+repository root:
+
+```powershell
+node --test tests\map.test.cjs
+```
+
+These cover both dashboards, including merged client/Cloud PC relay locations,
+independent RTTs, separate DNS checks and timings, missing measurements,
+browser timing provenance, and failure states.
+
 ## Out of scope
 
 - The static dashboard under `docs/` is published via GitHub Pages (today) and

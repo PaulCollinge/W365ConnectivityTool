@@ -52,9 +52,30 @@ not flatten it.
 | Endpoint | Side | Determined by | VPN/SWG steering? |
 |---|---|---|---|
 | RD Gateway (`rdgateway-cNNN-<REGION>-rN.wvd.microsoft.com`) | **Client** entry point | Client-side DNS → Traffic Manager geo-DNS returning the nearest regional gateway to the *resolver's egress IP* | **Yes** — VPN egress country/region determines the gateway region. East-US-2 CPC + UK-egress VPN ⇒ UK RDGW (legitimate, not a bug). |
-| TURN relay (`world.relay.avd.microsoft.com`) | **Server** side (media relay for the VM) | CPC-side DNS returns the CPC's own region's TURN | **No, when the scanner runs on the CPC** — see "Azure platform DNS" below. So TURN region == CPC region is the expected green state. |
+| TURN relay (`world.relay.avd.microsoft.com`) | **Client and Cloud PC** DNS probes, displayed separately | Each device resolves its own DNS relay; this does not identify the live session relay | Client DNS can follow VPN/SWG egress; CPC platform DNS can bypass guest VPN routing (see below). |
 | AFD Edge (`*.wvd.microsoft.com`, anycast) | **Client** side | Anycast BGP from the client's egress | **Yes** — VPN changes which PoP terminates. |
 | Client-resolved DNS timings | **Client** side | Resolver the client is using | **Yes** |
+
+### Merged TURN and DNS display
+
+The map preserves client (`L-UDP-04` location, `L-UDP-03` RTT/reachability)
+and Cloud PC (`C-UDP-04`, `C-UDP-03`) TURN probes in separate labelled sections.
+These are independently DNS-resolved diagnostics, not proof of the live
+session's CRLB relay assignment or measurements of the same relay IP.
+Only the Cloud PC DNS relay is compared with the Cloud PC's IMDS region.
+
+The client DNS card uses `L-TCP-03` timing, `L-TCP-05` CNAME validation,
+and `L-TCP-08` integrity; the host card uses `C-TCP-03`, `C-TCP-05`, and
+`C-TCP-08`. Host timing reuses the client OS DNS probe on the host itself.
+Missing measurements are never copied between sides. Older scanner results
+still show their checks but require a new scanner for pure host DNS timing.
+
+Browser timings (`B-TCP-03` client, `C-B-TCP-03` host) are explicitly labelled
+DNS+TCP+TLS and cannot overwrite scanner timing or CNAME results. Legacy
+browser exports under `C-TCP-05` are recognised by their explicit
+"Timing includes DNS + TCP + TLS" detail and not displayed as CNAME checks.
+Merged mode shows both DNS cards and summarises the worst integrity result;
+CPC-only mode shows and summarises the host's DNS checks only.
 
 ### Region-mismatch diagnostic
 
@@ -63,14 +84,15 @@ Use **exact slug equality**, not free-text location matching:
 - **CPC region** — from IMDS via `C-NET-01` (e.g. `Azure Region: West Europe (westeurope)`)
 - **RDGW region** — from the short-code in the gateway FQDN in `L-TCP-09`/`C-TCP-09`
   (e.g. `rdgateway-c200-UKW-r1.wvd.microsoft.com` ⇒ `UKW` ⇒ `ukwest`)
-- **TURN region** — from Azure Service Tags subnet mapping in `L-UDP-04`
+- **TURN region** — from Azure Service Tags subnet mapping in `C-UDP-04`
+  for the host comparison; `L-UDP-04` describes only the client's DNS relay
 
 Comparison buckets in [docs/js/map.js](docs/js/map.js):
 
 - `compareAzureRegions(a, b)` → `'same' | 'intra' | 'cross' | 'unknown'`
 - `'same'` → green
 - `'intra'` → amber (flagged for RDGW only when VPN is active; always annotated for TURN)
-- `'cross'` → red (always flagged — should be impossible without path interception)
+- `'cross'` → red (DNS region mismatch does not prove live-session routing)
 
 `gatewayShortCodeToAzureSlug()` in [docs/js/map.js](docs/js/map.js) and
 `GetAzureRegionName()` in [src/W365LocalScanner/Program.cs](src/W365LocalScanner/Program.cs)

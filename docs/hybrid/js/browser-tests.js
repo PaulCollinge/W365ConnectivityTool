@@ -327,6 +327,16 @@ const ALL_TESTS = [
         category: 'cloudpc', source: 'cloudpc'
     },
     {
+        id: 'C-TCP-03', name: 'CPC DNS Resolution Performance',
+        description: 'Pure OS DNS resolution timing from the Cloud PC (requires current scanner)',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
+        id: 'C-B-TCP-03', name: 'CPC Browser Endpoint Timing',
+        description: 'Browser DNS + TCP + TLS timing from the Cloud PC; not pure DNS latency',
+        category: 'cloudpc', source: 'cloudpc'
+    },
+    {
         id: 'C-TCP-04', name: 'CPC Gateway Connectivity',
         description: 'RD Gateway reachability from within the Cloud PC',
         category: 'cloudpc', source: 'cloudpc'
